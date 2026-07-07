@@ -1,5 +1,7 @@
 # The Write-Ahead Log (WAL) on-disk format
 
+**Navigation**: [↑ Persistence architecture](README.md) · [Durability & recovery](durability-and-recovery.md) · [Lock-free overlay](lock-free-overlay.md) · [Storage backends](storage-backends.md)
+
 > Scope: the **byte-level on-disk format** of the `libdictenstein` Persistent
 > ARTrie write-ahead log — the 64-byte file header, the 17-byte record frame, the
 > 15 record types, the forward-compatibility tripwires (dual-magic + version), the
@@ -19,11 +21,11 @@ These symbols and acronyms are used throughout; each is defined here before use.
 
 | Term | Definition |
 |------|------------|
-| **WAL** (Write-Ahead Log) | A durable, append-only file of *intended* changes written **before** the change is made visible, so a crash can be repaired by replaying the log. The reconciling invariant of the whole subsystem is `acknowledged ⟹ durable`. |
+| **WAL** (Write-Ahead Log) | A durable, append-only file of *intended* changes written **before** the change is made visible, so a crash can be repaired by replaying the log. The reconciling invariant of the whole subsystem is $acknowledged \implies durable$. |
 | **LSN** (Log Sequence Number) | A monotonically increasing `u64` stamped on each WAL record. LSNs are globally monotone across segment rotation, so one global sort over `LSN` is a valid total order. |
 | **CRC** (Cyclic Redundancy Check) | A 32-bit checksum (`crc32`) over a record's `(length, lsn, type, payload)`. A mismatch marks the record (and everything after it) as a torn, non-durable tail. |
 | **Order-A** | The durability protocol "**log before publish**": append + fsync the WAL record **durable** *before* the visibility-publishing root CAS. Its antagonist, **Order-B** (CAS-then-log), is rejected — it can expose a visible-but-not-durable write. |
-| **Watermark** (committed prefix) | The largest LSN `L` such that **every** `LSN ≤ L` is committed. Under out-of-order lock-free commit this contiguous frontier is the **only** safe `checkpoint_lsn`. |
+| **Watermark** (committed prefix) | The largest LSN `L` such that **every** $LSN \le L$ is committed. Under out-of-order lock-free commit this contiguous frontier is the **only** safe `checkpoint_lsn`. |
 | **CAS** (Compare-And-Swap) | The atomic root-pointer swap that publishes a new trie version. The winning CAS is the **linearization point** (the single visibility instant) of a write. |
 | **EBR** (Epoch-Based Reclamation) | Memory for a superseded node is freed only after every reader that *could* hold a pointer to it has departed its epoch — lock-free, bounded-latency, free of use-after-free. |
 | **Rank-regime** | A per-file marker (`Owned` / `Overlay`) recorded in header byte 28 that selects the **replay drop-rule** for *unranked* records. See [§5](#5-the-rank-regime-replay-drop-rule). |
@@ -172,7 +174,7 @@ bump.
 **Version ceiling (the format tripwire).** `from_bytes` accepts only
 `version ∈ [MIN_SUPPORTED_VERSION, VERSION] = [1, 2]`. A too-**new** file
 (`version > VERSION`) is refused fail-closed; a too-**old** file
-(`version < MIN_SUPPORTED_VERSION`) is unreadable. The `1 → 2` bump marks the
+(`version < MIN_SUPPORTED_VERSION`) is unreadable. The $1 \to 2$ bump marks the
 additive arrival of the `CommitRank = 15` record. **Backward compatibility** is
 free: a v1 WAL contains no `CommitRank`, so replay falls back to
 `generation_of(lsn) = lsn` — byte-for-byte the pre-fix in-order behavior. No
@@ -219,7 +221,7 @@ branch is where the regime matters:
   (drops it).
 
 A **ranked** record is kept regardless of regime. A multi-segment archive rebuild
-that spans an `Owned → Overlay` flip passes a *per-segment* regime lookup, so an
+that spans an $Owned \to Overlay$ flip passes a *per-segment* regime lookup, so an
 Owned segment's unranked records are kept while an Overlay segment's unranked
 orphans are dropped — under one global `(generation, lsn)` order (LSNs are
 monotone across rotation). This is the `A2` correctness fix: it prevents an
@@ -273,7 +275,7 @@ exchange:
 
 **Why the watermark is the only safe `checkpoint_lsn`.** Under out-of-order
 lock-free commit, LSN `N+1` can reach disk before LSN `N`. A checkpoint may
-therefore only declare durable the largest `L` such that **every** `LSN ≤ L` is
+therefore only declare durable the largest `L` such that **every** $LSN \le L$ is
 committed — the contiguous prefix. Stamping the *appended* frontier instead would
 checkpoint past a hole and lose the missing write. This watermark discipline ("no
 lost writes") is model-checked in
@@ -339,7 +341,7 @@ Salient points:
   in [§7](#7-order-a-write-ordering-and-the-watermark). An evicted `OnDisk` child
   is resolved by `resolve_or_fault`, whose rich `ChildResolution` outcome
   (`InMem` · `Faulted` · `IoFailed` · `Null` · `Missing`) lets each
-  (variant × method) keep its own error mapping.
+  (variant $\times$ method) keep its own error mapping.
 - The byte variant uses a **two-phase** publish (CAS a non-final spine, then a
   single `try_set_final` arbiter flips the shared leaf final — the one
   linearization point); the durable single-phase publish bakes `as_final()` into a
@@ -360,9 +362,13 @@ Salient points:
   — the buffer manager, WAL theory, ARIES recovery, and checkpoint management
   ([crash-recovery section](../theory/disk-tries/05-buffer-management.md#crash-recovery)).
 - [README — "Durable writes: the Order-A protocol"](../../README.md#durable-writes-the-order-a-protocol)
-  — the prose summary of the `acknowledged ⟹ durable` contract.
-- [`mmap-architecture.md`](mmap-architecture.md) — the `mmap` storage substrate the
-  WAL is written to (and the `io_uring` + `O_DIRECT` alternative).
+  — the prose summary of the $acknowledged \implies durable$ contract.
+- [`storage-backends.md`](storage-backends.md) — the storage substrate the WAL is written
+  to (`mmap` default, `io_uring` + `O_DIRECT` alternative) and the on-disk block format.
+- [`durability-and-recovery.md`](durability-and-recovery.md) — the architecture-level
+  durability model: Order-A, checkpoint flips, the committed-watermark theorem, and recovery.
+- [`lock-free-overlay.md`](lock-free-overlay.md) — the immutable overlay the CAS-walk
+  publishes into · [`concurrency-model.md`](concurrency-model.md) — the F4 lock hierarchy.
 - Source: [`src/persistent_artrie/core/wal/`](../../src/persistent_artrie/core/wal/),
   [`core/overlay/durable_write.rs`](../../src/persistent_artrie/core/overlay/durable_write.rs),
   [`core/overlay/cas_walk.rs`](../../src/persistent_artrie/core/overlay/cas_walk.rs),

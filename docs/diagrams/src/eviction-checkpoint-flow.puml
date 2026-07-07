@@ -1,0 +1,24 @@
+@startuml eviction-checkpoint-flow
+' ============================================================================
+' eviction-checkpoint-flow.puml — checkpoint() rebuilds the DiskRegistry atomically.
+' Replaces the ASCII checkpoint-integration flow in docs/persistence/eviction.md.
+' Color key (persistence accents):  indigo = checkpoint trigger
+'             blue = on-disk serialization steps   teal = the atomic coordinator swap
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam ActivityBorderColor #37474F
+skinparam TitleFontSize 15
+
+title checkpoint() — rebuild the on-disk registry atomically
+
+start
+:**checkpoint()**;<<#C5CAE9>>
+:**Serialize Trie to Disk**\nDFS traversal — write nodes to disk;<<#BBDEFB>>
+:**Build New DiskRegistry**\nper node written:\nregistry.register(path, disk_ptr, size, depth, type);<<#BBDEFB>>
+:**Update Coordinator**\ncoordinator.update_disk_registry(new_registry)\nreplaces old registry atomically;<<#B2DFDB>>
+stop
+@enduml

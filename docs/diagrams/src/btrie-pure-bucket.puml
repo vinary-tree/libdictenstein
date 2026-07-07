@@ -1,0 +1,31 @@
+@startuml btrie-pure-bucket
+' ============================================================================
+' btrie-pure-bucket.puml — a pure bucket B^P: a SINGLE route from the parent
+' trie; the shared leading prefix has been consumed (stripped from the strings).
+' Source: docs/theory/disk-tries/02-b-trie.md (Askitis & Zobel 2009), § Bucket Types.
+' Color key:  blue  #BBDEFB  parent trie node
+'             green #C8E6C9  the pure bucket + its stored (prefix-stripped) strings
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam ArrowColor #37474F
+skinparam TitleFontSize 15
+
+title Pure bucket B^P('ab') — one route, leading prefix consumed
+
+rectangle "**Parent Trie**   [a][b][c] … [z]\nexactly one slot routes here" as PT #BBDEFB
+rectangle "**Pure Bucket  B^P('ab')**\nrange [*, *] (single char) · prefix consumed = 'ab'\n────────────\n'le'       (was 'able')\n'out'      (was 'about')\n'stract'   (was 'abstract')" as PB #C8E6C9
+
+PT --> PB : single route
+
+legend bottom
+  Single route from root · leading char removed · a split grows the trie **vertically**.
+endlegend
+@enduml

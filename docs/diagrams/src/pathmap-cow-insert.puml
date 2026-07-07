@@ -1,0 +1,54 @@
+@startuml pathmap-cow-insert
+' ============================================================================
+' pathmap-cow-insert.puml — before/after of inserting "team" into {test, testing}.
+' Replaces the ASCII structural-sharing insert figure in
+' docs/algorithms/implementations/pathmap-dictionary.md.
+' Only the new 'a'→'m' branch (for "team") is allocated; the shared t·e·s·t spine
+' and the i·n·g ("testing") tail are reused — O(m) new nodes for an m-char insert.
+' Color key:  teal = shared/reused nodes   green = newly allocated nodes
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam packageStyle rectangle
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.1
+}
+skinparam TitleFontSize 15
+
+title Structural sharing — insert "team" into { "test", "testing" }
+
+package "Before" #ECEFF1 {
+  rectangle "root" as OROOT #ECEFF1
+  rectangle "t → e" as OE #B2DFDB
+  rectangle "s" as OS #B2DFDB
+  rectangle "t ✓\ntest" as OT #B2DFDB
+  rectangle "i → n → g ✓\ntesting" as OING #B2DFDB
+  OROOT --> OE
+  OE --> OS
+  OS --> OT
+  OT --> OING
+}
+
+package "After — added the term team" #E8F5E9 {
+  rectangle "root'" as NRT #ECEFF1
+  rectangle "t → e" as NE #B2DFDB
+  rectangle "s" as NS #B2DFDB
+  rectangle "t ✓\ntest" as NT #B2DFDB
+  rectangle "i → n → g ✓\ntesting" as NING #B2DFDB
+  rectangle "a\n(new)" as NA #C8E6C9
+  rectangle "m ✓\nteam (new)" as NM #C8E6C9
+  NRT --> NE
+  NE --> NS
+  NS --> NT
+  NT --> NING
+  NE --> NA
+  NA --> NM
+}
+
+OROOT -[hidden]down- NRT
+@enduml

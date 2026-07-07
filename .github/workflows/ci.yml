@@ -381,6 +381,8 @@ jobs:
             echo "::error::Committed diagram SVGs are stale. Run 'scripts/render-diagrams.sh' and commit the result."
             exit 1
           fi
+      - name: SVG hygiene gate (root viewBox + no baked deprecation banner)
+        run: bash scripts/render-diagrams.sh --check
 
   # -----------------------------------------------------------------
   # Scheduled/manual deep bounded model check. This is intentionally

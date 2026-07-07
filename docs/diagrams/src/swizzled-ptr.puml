@@ -1,0 +1,35 @@
+@startuml swizzled-ptr
+' ============================================================================
+' swizzled-ptr.puml — the SwizzledPtr 64-bit state word (bit layout + states).
+' Source of truth: src/persistent_artrie/core/swizzled_ptr.rs (SwizzledPtr).
+' Replaces the no-viewBox svgbob bit-field SVG. Color: amber flags · blue disk fields.
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam noteFontSize 13
+skinparam TitleFontSize 15
+
+title SwizzledPtr — one 64-bit word: an in-memory pointer OR an on-disk location
+
+rectangle "bit  **63**    tag  (MSB: in-memory vs on-disk)" as F #FFE0B2
+rectangle "bits **62..40**    block_id  (23 bits)" as B #BBDEFB
+rectangle "bits **39..18**    location  (22 bits, offset in block)" as L #BBDEFB
+rectangle "bits **17..0**    flags  (18 bits)" as G #FFE0B2
+
+F -[hidden]down- B
+B -[hidden]down- L
+L -[hidden]down- G
+
+note bottom of G
+  **States** (atomic transitions):
+  null · MEMORY (resident ptr) · INSTALLING (faulting in)
+  EVICTING (unswizzling) · on-disk (block_id, location)
+end note
+@enduml

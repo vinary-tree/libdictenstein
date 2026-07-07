@@ -1,0 +1,38 @@
+@startuml burst-trie
+' ============================================================================
+' burst-trie.puml — a full bucket "bursts" into a trie node + child buckets.
+' Source of truth: docs/theory/disk-tries/02-b-trie.md (Askitis & Zobel 2009).
+' Replaces the no-viewBox svgbob before/after SVG.
+' Color: red = the over-full BEFORE bucket · blue = new trie node · green = child buckets.
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam packageStyle rectangle
+skinparam ArrowColor #37474F
+skinparam TitleFontSize 15
+
+title B-trie burst — an over-full bucket bursts into a trie node + child buckets
+
+package "BEFORE — one bucket at threshold" #F5F5F5 {
+  rectangle "bucket (sorted strings)\n**FULL** (> MAX_BUCKET_ENTRIES) → burst" as B #FFCDD2
+}
+
+package "AFTER — burst by leading character" #F5F5F5 {
+  rectangle "new **trie node**" as T #BBDEFB
+  rectangle "bucket **a…**" as A #C8E6C9
+  rectangle "bucket **b…**" as C #C8E6C9
+  rectangle "bucket **c…**" as D #C8E6C9
+  T --> A
+  T --> C
+  T --> D
+}
+
+B -[hidden]down- T
+@enduml

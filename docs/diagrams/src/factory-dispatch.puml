@@ -14,12 +14,13 @@ skinparam ArrowColor #37474F
 skinparam rectangleBorderColor #37474F
 skinparam packageBorderColor #90A4AE
 skinparam packageBackgroundColor #FAFAFA
+skinparam wrapWidth 200
 
 title DictionaryFactory — one call, any backend, one handle
 
 rectangle "DictionaryFactory::create(\n  backend: **DictionaryBackend**,\n  terms)\n  · ::empty(backend)" as F #ECEFF1
 
-package "DictionaryBackend (the 11 in-memory variants)" {
+package "DictionaryBackend — 11 in-memory variants" {
   package "byte (u8)  ·  char (UTF-8)  ·  u64" as fam {
     rectangle "DoubleArrayTrie\nDoubleArrayTrieChar" as DAT #C8E6C9
     rectangle "DynamicDawg\nDynamicDawgChar\nDynamicDawgU64" as DAWG #C8E6C9
@@ -41,9 +42,14 @@ DAWG --> C
 SA --> C
 SC --> C
 PM --> C
+' hidden ordering: stack the 5 backends vertically (narrows the canvas)
+DAT -[hidden]-> DAWG
+DAWG -[hidden]-> SA
+SA -[hidden]-> SC
+SC -[hidden]-> PM
 C ..> F : implements **Dictionary**\n(swap backends, same call sites)
 
-legend right
+legend bottom
 | Color | Family |
 |<#C8E6C9>| in-memory (always on) — 9 variants |
 |<#FFF59D>| feature `pathmap-backend` — 2 variants |

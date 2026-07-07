@@ -27,6 +27,7 @@
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 150
 skinparam ArrowColor #37474F
 skinparam shadowing false
 skinparam rectangle {
@@ -34,17 +35,17 @@ skinparam rectangle {
   FontName "DejaVu Sans"
 }
 
-title Value-merge lattice — 𝒫({a,b,c}) ordered by ⊆ (join = ∪ climbs up · meet = ∩ descends down)
+title Value-merge lattice — 𝒫({a,b,c}) ordered by ⊆\n(join = ∪ climbs up · meet = ∩ descends down)
 
 ' --- Lattice elements (levels low -> high) ----------------------------------
-rectangle "⊤ = {a, b, c}\n(JOIN of {a} and {b,c})" as TOP #FFF59D
+rectangle "⊤ = {a,b,c}\n(JOIN {a}⊔{b,c})" as TOP #FFF59D
 rectangle "{a, b}" as AB #C8E6C9
 rectangle "{a, c}" as AC #C8E6C9
 rectangle "{b, c}" as BC #C8E6C9
 rectangle "{a}" as A #C8E6C9
-rectangle "{b}\n(MEET of {a,b} and {b,c})" as B #BBDEFB
+rectangle "{b}\n(MEET {a,b}⊓{b,c})" as B #BBDEFB
 rectangle "{c}" as C #C8E6C9
-rectangle "⊥ = ∅\n(bottom · meet of disjoint sets)" as BOT #ECEFF1
+rectangle "⊥ = ∅\n(bottom;\nmeet of disjoints)" as BOT #ECEFF1
 
 ' --- Cover relations (Hasse edges): lower ⊆ upper, drawn upward -------------
 BOT -up-> A
@@ -61,17 +62,17 @@ AC -up-> TOP
 BC -up-> TOP
 
 ' --- Worked-example merge arrows (the two strategies in action) --------------
-A  -[#F9A825,thickness=3]-> TOP : "LatticeJoin\n{a} ⊔ {b,c} = {a,b,c}"
+A  -[#F9A825,thickness=3]-> TOP : "JOIN\n{a}⊔{b,c}"
 BC -[#F9A825,thickness=3]-> TOP
-AB -[#1565C0,thickness=3,dashed]-> B : "LatticeMeet\n{a,b} ⊓ {b,c} = {b}"
+AB -[#1565C0,thickness=3,dashed]-> B : "MEET\n{a,b}⊓{b,c}"
 BC -[#1565C0,thickness=3,dashed]-> B
 
 legend bottom
-  |= Strategy |= Operation |= Direction |= Example {a},{b,c} / {a,b},{b,c} |
-  |<#FFF59D> LatticeJoin | existing.join(&new)  (∪ / max / OR)  | climbs UP to least upper bound | {a,b,c} |
-  |<#BBDEFB> LatticeMeet | existing.meet(&new)  (∩ / min / AND)  | descends DOWN to greatest lower bound | {b} |
-  |<#C8E6C9> FirstWins (union default) | keep `existing` | n/a — picks left operand | (whichever came first) |
-  |<#C8E6C9> LastWins | take `new` | n/a — picks right operand | (whichever came last) |
-  Laws (lawful lattice): idempotent · commutative · associative · absorptive.
+  |= Strategy |= Operation |= Direction |= Ex. |
+  |<#FFF59D> LatticeJoin | join(&new) ∪/max/OR | UP (LUB) | {a,b,c} |
+  |<#BBDEFB> LatticeMeet | meet(&new) ∩/min/AND | DOWN (GLB) | {b} |
+  |<#C8E6C9> FirstWins* | keep existing | picks left | first |
+  |<#C8E6C9> LastWins | take new | picks right | last |
+  * union default.  Laws: idempotent · commutative · associative · absorptive.
 endlegend
 @enduml

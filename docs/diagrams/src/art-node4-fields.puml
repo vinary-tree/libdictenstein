@@ -1,0 +1,43 @@
+@startuml art-node4-fields
+' ============================================================================
+' art-node4-fields.puml — the Node4 struct layout (byte-ART, 1..4 children).
+' Source: docs/theory/disk-tries/03-adaptive-radix-tree.md (Leis et al. 2013).
+' Replaces the ASCII struct-field box with a compact, colored, viewBox'd byte-field.
+' Color key (theory-doc node palette; mirrors the sibling node-header.puml):
+'   green      #C8E6C9  identity (type tag, partial_len)
+'   amber      #FFE0B2  mutable child counter (num_children)
+'   light-blue #E3F2FD  inline compressed-path prefix (partial)
+'   blue       #BBDEFB  routing keys
+'   mid-blue   #90CAF9  child pointers
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam TitleFontSize 15
+
+title Node4 — 1..4 children (~48 B) · linear scan
+
+rectangle "**type** : u8 — node-type tag (= 4)" as R0 #C8E6C9
+rectangle "**num_children** : u8 — child count (1..4)" as R1 #FFE0B2
+rectangle "**partial_len** : u8 — compressed-path length" as R2 #C8E6C9
+rectangle "**partial** : [u8; 8] — inline compressed prefix" as R3 #E3F2FD
+rectangle "**keys** : [u8; 4] — unsorted key bytes" as R4 #BBDEFB
+rectangle "**children** : [ptr; 4] — child pointers" as R5 #90CAF9
+
+R0 -[hidden]down- R1
+R1 -[hidden]down- R2
+R2 -[hidden]down- R3
+R3 -[hidden]down- R4
+R4 -[hidden]down- R5
+
+legend bottom
+  green identity · amber child-count · light-blue inline prefix
+  blue keys · mid-blue child pointers
+endlegend
+@enduml

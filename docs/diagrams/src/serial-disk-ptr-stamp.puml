@@ -1,0 +1,71 @@
+@startuml serial-disk-ptr-stamp
+' ============================================================================
+' serial-disk-ptr-stamp.puml — the M-2a eviction-safety lynchpin. A node is safe
+' to unswizzle to disk IFF its `serial_disk_ptr` stamp still equals the disk_ptr
+' the eviction registry recorded. A concurrent writer that path-copies the node
+' publishes a NEW version with a fresh identity, so the registered stamp no longer
+' matches the live node — and the evictor backs off rather than publish a stale
+' image that would hide the writer's update.
+'
+' Source of truth: src/persistent_artrie/core/overlay/{node,evict}.rs
+'   (OverlayNode::serial_disk_ptr) + core/eviction/ (DiskLocationRegistry).
+' Model-checked: formal-verification/tla+/OverlayEvictionCas.tla,
+'                OverlayEvictionStale.tla (+ their _Unsafe negative controls).
+'
+' Color key:  teal   #B2DFDB = the immutable overlay node (the live representation)
+'             blue   #BBDEFB = durable on-disk action (write image / unswizzle)
+'             red    #FFCDD2 = the stamp-mismatch back-off (refuse the stale evict)
+'             green  #C8E6C9 = the safe path (stamps match ⇒ unswizzle)
+'             grey   #ECEFF1 = note / registry
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam maxMessageSize 220
+skinparam wrapWidth 220
+skinparam shadowing false
+skinparam sequenceArrowColor #37474F
+skinparam sequenceLifeLineBorderColor #90A4AE
+skinparam participantBorderColor #37474F
+skinparam noteBackgroundColor #ECEFF1
+skinparam noteBorderColor #90A4AE
+
+title The serial_disk_ptr stamp — race-free eviction\nunswizzle only if the stamp matches the registry,\nelse the evictor backs off
+
+participant "Evictor\n(background)" as EV
+participant "Node N\nOverlayNode (immutable)\nserial_disk_ptr" as N #B2DFDB
+participant "DiskLocationRegistry\npath → disk_ptr" as REG #ECEFF1
+participant "Writer\n(concurrent)" as WR
+
+note over N, REG #ECEFF1 : When N is checkpointed to disk_ptr D, the registry records\n(path → D) and N.serial_disk_ptr is stamped = D.
+
+== Case A — no writer touched N: the stamps match ⇒ safe to unswizzle ==
+EV -> REG : lookup(path)
+activate REG
+REG --> EV : registered disk_ptr = D
+deactivate REG
+EV -> N : read serial_disk_ptr
+activate N
+N --> EV : stamp = D
+deactivate N
+EV -> EV : D == D  ✓  (stamp matches — no concurrent version)
+EV -> N : unswizzle child → OnDisk(D)  <#C8E6C9>**SAFE**
+note right of EV #C8E6C9 : Readers that later reach the OnDisk child\nfault it back in from D — no data hidden.
+
+== Case B — a writer path-copied N first: the stamps DIFFER ⇒ back off ==
+WR -> N : path-copy N → N′ (new immutable version)\npublish new root by CAS
+activate N
+N --> WR : N′ is now live (fresh identity; its stamp ≠ D)
+deactivate N
+EV -> REG : lookup(path)
+activate REG
+REG --> EV : registered disk_ptr = D  (stale — points at the OLD N)
+deactivate REG
+EV -> N : read serial_disk_ptr of the LIVE node N′
+activate N
+N --> EV : stamp ≠ D
+deactivate N
+EV -> EV : D ≠ stamp  ✗  (a newer version exists)
+EV -[#C62828]-> EV : **back off** — do NOT publish the stale image  <#FFCDD2>**REFUSED**
+note right of EV #FFCDD2 : Publishing D now would unswizzle to an image that\npredates N′ and hide the writer's update. The stamp\nmismatch is the guard that forbids it (M-2a).
+
+@enduml

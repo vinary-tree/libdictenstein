@@ -1,0 +1,79 @@
+// ============================================================================
+// path-copy.dot — copy-on-write path copying in the lock-free overlay: an insert
+// copies ONLY the root→leaf spine it touches; every other subtree is shared by
+// Arc pointer between the old and new roots (Driscoll et al. 1989). The new root
+// is published by a single atomic CAS on the arc-swap cell.
+//
+// Source of truth: src/persistent_artrie/core/overlay/{node,atomic_ptr,cas_walk}.rs
+// (OverlayNode is immutable; a mutation allocates O(|key|) new node versions and
+//  compare_exchanges the AtomicNodePtr root).
+//
+// Color key (house palette + persistence accents — docs/diagrams/README.md):
+//   teal   #B2DFDB  path-COPIED nodes (the new spine + new root) — the overlay accent
+//   green  #C8E6C9  SHARED subtrees (unchanged; pointed to by BOTH roots)
+//   grey   #ECEFF1  the old root/version (superseded once the CAS lands)
+//   red    #C62828  the single publishing CAS edge
+//   dark slate #37474F  child pointers + borders
+// ============================================================================
+digraph path_copy {
+    rankdir=TB;
+    bgcolor="#FFFFFF";
+    fontname="DejaVu Sans";
+    labelloc="t";
+    fontsize=15;
+    fontcolor="#212121";
+    label="Copy-on-write: insert \"AC…\" copies only the root→A→C spine;\nsubtrees B and D are shared by Arc pointer between the old (R0) and new (R1) roots";
+    node [shape=box, style="filled,rounded", color="#37474F",
+          fontname="DejaVu Sans", fontcolor="#212121", penwidth=1.4, margin="0.14,0.09"];
+    edge [color="#37474F", fontname="DejaVu Sans", fontcolor="#37474F", penwidth=1.4];
+
+    // --- the arc-swap root cell (publication slot) -----------------------
+    root [label="AtomicNodePtr  (arc-swap root cell)", shape=box, style="filled",
+          fillcolor="#CFD8DC", color="#455A64", penwidth=1.8];
+
+    // --- old version (superseded) ----------------------------------------
+    R0  [label="R0  (old root)\nimmutable", fillcolor="#ECEFF1"];
+    A   [label="A", fillcolor="#ECEFF1"];
+
+    // --- new copied spine (teal) -----------------------------------------
+    R1  [label="R1  (new root)\npath-copied", fillcolor="#B2DFDB", color="#00695C", penwidth=1.8];
+    Ap  [label="A′  (copy of A)", fillcolor="#B2DFDB", color="#00695C"];
+    Cp  [label="C′  (new final leaf)", fillcolor="#B2DFDB", color="#00695C"];
+
+    // --- shared subtrees (green — pointed to by BOTH roots) --------------
+    B   [label="B  subtree\n(shared)", fillcolor="#C8E6C9", color="#2E7D32"];
+    C   [label="C  (old leaf)\n(shared)", fillcolor="#C8E6C9", color="#2E7D32"];
+    D   [label="D  subtree\n(shared)", fillcolor="#C8E6C9", color="#2E7D32"];
+
+    // --- old edges --------------------------------------------------------
+    R0 -> A  [label="a"];
+    R0 -> B  [label="b"];
+    A  -> C  [label="c"];
+    A  -> D  [label="d"];
+
+    // --- new edges: the copied spine + SHARED pointers into B and D ------
+    R1 -> Ap [label="a"];
+    R1 -> B  [label="b   (shared)", color="#2E7D32", fontcolor="#2E7D32", style="bold"];
+    Ap -> Cp [label="c"];
+    Ap -> D  [label="d   (shared)", color="#2E7D32", fontcolor="#2E7D32", style="bold"];
+
+    // --- publication: the single CAS swaps the root R0 → R1 --------------
+    root -> R0 [label="was", style="dashed", color="#90A4AE", fontcolor="#607D8B"];
+    root -> R1 [label="compare_exchange(R0, R1)\n= the linearization point",
+                color="#C62828", fontcolor="#C62828", penwidth=2.2, style="bold"];
+
+    { rank=same; R0; R1; }
+    { rank=same; A; Ap; B; }
+
+    // --- rendered legend --------------------------------------------------
+    legend [shape=note, style="filled", fillcolor="#FFF9C4", color="#FBC02D",
+            fontsize=10, fontcolor="#212121",
+            label=<
+<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
+<TR><TD ALIGN="LEFT"><B>Legend</B></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#00695C">teal = path-copied (new spine R1·A′·C′)</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#2E7D32">green = shared subtrees (B, C, D) — no copy</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#607D8B">grey = superseded old version (R0, A)</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#C62828">red = the single publishing CAS (root R0→R1)</FONT></TD></TR>
+</TABLE>>];
+}

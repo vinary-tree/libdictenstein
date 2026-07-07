@@ -200,19 +200,14 @@ edges: Arc<Vec<Vec<char>>>  // Edge labels are characters
 
 For a dictionary with N states:
 
-```
-┌────────────────┬────────┬─────────────┐
-│ Component      │ Size   │ Per State   │
-├────────────────┼────────┼─────────────┤
-│ BASE array     │ 4N     │ 4 bytes     │
-│ CHECK array    │ 4N     │ 4 bytes     │
-│ is_final       │ N      │ 1 byte      │
-│ edges (chars)  │ ~8N    │ ~8 bytes*   │
-│ values (none)  │ N      │ 1 byte      │
-├────────────────┼────────┼─────────────┤
-│ Total          │ ~18N   │ ~18 bytes   │
-└────────────────┴────────┴─────────────┘
-```
+| Component | Size | Per State |
+| --- | --- | --- |
+| BASE array | 4N | 4 bytes |
+| CHECK array | 4N | 4 bytes |
+| is_final | N | 1 byte |
+| edges (chars) | ~8N | ~8 bytes* |
+| values (none) | N | 1 byte |
+| Total | ~18N | ~18 bytes |
 
 *char is 4 bytes, average ~2 edges per state = 8 bytes
 

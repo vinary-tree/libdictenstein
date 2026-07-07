@@ -1,0 +1,32 @@
+@startuml pathmap-query-flow
+' ============================================================================
+' pathmap-query-flow.puml — a fuzzy-phonetic MeTTa query flowing down to PathMap.
+' Replaces the ASCII data-flow figure in docs/integration/pathmap/README.md.
+' Color key:  green = MeTTa entry   amber = MORK adapter   teal = liblevenshtein API
+'             blue = shared PathMap storage   amber diamond = the edit-distance branch
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam ActivityDiamondBackgroundColor #FFE0B2
+skinparam ActivityDiamondBorderColor #F9A825
+skinparam ActivityBorderColor #37474F
+skinparam TitleFontSize 15
+
+title Data flow — a fuzzy-phonetic MeTTa query down to shared PathMap
+
+start
+:MeTTa Query\n(fuzzy-phonetic "fone" 2 $result);<<#C8E6C9>>
+:MORK Space;<<#C8E6C9>>
+:FuzzyPhoneticSource.query()\nMORK adapter (Layer 2);<<#FFE0B2>>
+:PhoneticNormalizedDictionary.query()\nliblevenshtein API;<<#B2DFDB>>
+if (edit distance d) then (d = 0)
+  :Direct trie lookup\n(100–300× faster);<<#B2DFDB>>
+else (d ≥ 1)
+  :FuzzyMultiMap + Levenshtein\nautomaton pruning · O(k log n);<<#B2DFDB>>
+endif
+:PathMap (memory-mapped)\nshared storage;<<#BBDEFB>>
+stop
+@enduml

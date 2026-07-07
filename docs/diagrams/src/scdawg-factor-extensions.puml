@@ -1,0 +1,44 @@
+@startuml scdawg-factor-extensions
+' ============================================================================
+' scdawg-factor-extensions.puml — the two edge families of ONE prime subword P.
+' Right extensions APPEND a character (P·σ, the CDAWG's native direction);
+' left extensions PREPEND a character (σ·P, the symmetric edges the SCDAWG adds).
+' Together they give bidirectional growth of a matched factor.
+' Source: §Visual Representation of 04-scdawg.md.
+' Color key (house palette + scdawg accents):
+'   teal   #B2DFDB  the focus factor P (where you currently are)
+'   green  #C8E6C9  right-extension targets (append — CDAWG direction)
+'   blue   #BBDEFB  left-extension targets  (prepend — symmetric SCDAWG edges)
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.3
+}
+
+title Left vs right extensions of a prime subword **P**\nprepend σ·P (left, blue) · P · append P·σ (right, green)
+
+left to right direction
+
+rectangle "σ₁·P" as L1 #BBDEFB
+rectangle "σ₂·P" as L2 #BBDEFB
+rectangle "**P**\n(current factor)" as P #B2DFDB
+rectangle "P·σ₁" as R1 #C8E6C9
+rectangle "P·σ₂" as R2 #C8E6C9
+
+P -left-> L1 : "prepend σ₁\n(left ext ←)"
+P -left-> L2 : "prepend σ₂\n(left ext ←)"
+P -right-> R1 : "append σ₁\n(right ext →)"
+P -right-> R2 : "append σ₂\n(right ext →)"
+
+note bottom of P
+  Left extension P → σ·P and right extension P → P·σ each
+  cost O(|label|). "cab" is the **left** ext of "ab" by 'c';
+  "abc" is the **right** ext — different strings, not a reversal.
+end note
+@enduml

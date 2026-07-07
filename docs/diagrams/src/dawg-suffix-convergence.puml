@@ -1,0 +1,41 @@
+@startuml dawg-suffix-convergence
+' ============================================================================
+' dawg-suffix-convergence.puml — suffix sharing: {card,cart,hard,hart} converge.
+' Replaces the ASCII suffix-sharing listing in
+' docs/algorithms/implementations/dynamic-dawg.md.
+' Both prefixes c·a and h·a reach ONE shared "r" node (identical right language
+' {d✓, t✓}); the final 'd' and 't' states are shared across all four terms.
+' Color key:  grey = prefix nodes   teal = the shared suffix hub   green = shared final states
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.1
+}
+skinparam TitleFontSize 15
+
+title Suffix sharing in a DAWG — { card, cart, hard, hart } converge on one "r"
+
+rectangle "root" as ROOT #ECEFF1
+rectangle "c" as C #ECEFF1
+rectangle "a" as CA #ECEFF1
+rectangle "h" as H #ECEFF1
+rectangle "a" as HA #ECEFF1
+rectangle "**r**\nshared suffix hub" as R #B2DFDB
+rectangle "d ✓\ncard · hard" as D #C8E6C9
+rectangle "t ✓\ncart · hart" as T #C8E6C9
+
+ROOT --> C : c
+C --> CA : a
+ROOT --> H : h
+H --> HA : a
+CA --> R : r
+HA --> R : r
+R --> D : d
+R --> T : t
+@enduml

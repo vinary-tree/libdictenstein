@@ -9,6 +9,8 @@
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 170
+hide empty description
 skinparam shadowing false
 skinparam ArrowColor #37474F
 skinparam state {
@@ -24,7 +26,7 @@ Created --> Serving
 state Serving #C8E6C9 {
   [*] --> Ready
   Ready --> Ready : get / contains\n(lock-free overlay read)
-  Ready --> Ready : insert / upsert / remove\n(Order-A: WAL append+fsync → root CAS)
+  Ready --> Ready : insert / upsert /\nremove\n(Order-A: WAL fsync → CAS)
 }
 
 Serving --> Checkpointed : checkpoint()
@@ -39,7 +41,7 @@ state Crashed #FFCDD2
 Closed --> Recovering : reopen(path)
 Crashed --> Recovering : reopen(path)
 state Recovering #FFE0B2 : load checkpoint image,\nthen replay durable WAL tail\n(LSN ≥ checkpoint_lsn)
-Recovering --> Serving : acknowledged writes restored\n(un-acked writes were never durable)
+Recovering --> Serving : acked writes\nrestored\nun-acked dropped
 
 legend right
 | Color | Phase |

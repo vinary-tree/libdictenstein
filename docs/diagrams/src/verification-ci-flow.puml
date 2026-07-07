@@ -37,46 +37,46 @@ skinparam activity {
 title Formal-correspondence harness — scripts/verify-formal-correspondence.sh
 
 start
-#FFE0B2:**verify-formal-correspondence.sh**\n(CI-practical entry point);
+:**verify-formal-correspondence.sh**\n(CI-practical entry point);<<#FFE0B2>>
 
 partition "Default body — always run (job: formal-correspondence)" {
-  #ECEFF1:**Rust correspondence tests**\ncargo test trace tests:\nBTreeMap/reference vs trie, WAL crash-prefix,\nlock-free histories, dictionary laws;
+  :**Rust correspondence tests**\ncargo test trace tests:\nBTreeMap/reference vs trie, WAL crash-prefix,\nlock-free histories, dictionary laws;<<#ECEFF1>>
   if (all trace tests pass?) then (yes)
   else (no)
-    #FFCDD2:**fail closed** — code diverged from a spec;
+    :**fail closed** — code diverged from a spec;<<#FFCDD2>>
     stop
   endif
 
-  #C8E6C9:**Rocq proof build** — `cd rocq && make`\n(69 .v / 1,301 props; rejects any\nAdmitted / Axiom / Parameter);
+  :**Rocq proof build** — `cd rocq && make`\n(69 .v / 1,301 props; rejects any\nAdmitted / Axiom / Parameter);<<#C8E6C9>>
   if (make succeeds, 0 escape hatches?) then (yes)
   else (no)
-    #FFCDD2:**fail closed** — a proof broke;
+    :**fail closed** — a proof broke;<<#FFCDD2>>
     stop
   endif
 
-  #BBDEFB:**TLA⁺ SANY parse** — tla2sany on the focused\n.tla models (syntax + semantic check, no TLC);
+  :**TLA⁺ SANY parse** — tla2sany on the focused\n.tla models (syntax + semantic check, no TLC);<<#BBDEFB>>
   if (all 55 modules parse?) then (yes)
   else (no)
-    #FFCDD2:**fail closed** — a spec is malformed;
+    :**fail closed** — a spec is malformed;<<#FFCDD2>>
     stop
   endif
 
-  #FFE0B2:**unsafe-inventory set-equality gate**\nverify-unsafe-boundary-inventory.sh:\nlive src/**/*.rs `unsafe`  ≡  UNSAFE_INVENTORY.tsv (43)\n→ every tag in UNSAFE_CONTRACTS.tsv (31) w/ valid coverage+status;
+  :**unsafe-inventory set-equality gate**\nverify-unsafe-boundary-inventory.sh:\nlive src/**/*.rs `unsafe`  ≡  UNSAFE_INVENTORY.tsv (43)\n→ every tag in UNSAFE_CONTRACTS.tsv (31) w/ valid coverage+status;<<#FFE0B2>>
   if (inventory ≡ live, contracts valid?) then (yes)
   else (no)
-    #FFCDD2:**fail closed** — undocumented / drifted `unsafe`;
+    :**fail closed** — undocumented / drifted `unsafe`;<<#FFCDD2>>
     stop
   endif
 }
 
 ' --- Env-gated optional stages (each its own CI job; run in parallel in CI) --
 partition "Optional env-gated stages — each a separate CI job, run independently" {
-  #BBDEFB:**RUN_MIRI=1**  (job: formal-miri)\n**Miri** under FORMAL_MIRI_TOOLCHAIN=nightly —\nstrict-provenance UB checks: raw child ownership,\nswizzled extraction, SwizzledPtr state transitions,\nbuffer-fixed lifetime;
-  #BBDEFB:**RUN_IO_URING=1**  (job: formal-io-uring)\n**io_uring storage checks** (Linux host):\nrange rejection, fixed-buffer registration lifetime,\nSQE/CQE completion lifecycle;
-  #BBDEFB:**RUN_TLC=1**  (job: formal-tlc — schedule / dispatch only)\n**TLC model checking** of the bounded models —\nexhaustive reachable-state enumeration,\n0 invariant/temporal violations;
+  :**RUN_MIRI=1**  (job: formal-miri)\n**Miri** under FORMAL_MIRI_TOOLCHAIN=nightly —\nstrict-provenance UB checks: raw child ownership,\nswizzled extraction, SwizzledPtr state transitions,\nbuffer-fixed lifetime;<<#BBDEFB>>
+  :**RUN_IO_URING=1**  (job: formal-io-uring)\n**io_uring storage checks** (Linux host):\nrange rejection, fixed-buffer registration lifetime,\nSQE/CQE completion lifecycle;<<#BBDEFB>>
+  :**RUN_TLC=1**  (job: formal-tlc — schedule / dispatch only)\n**TLC model checking** of the bounded models —\nexhaustive reachable-state enumeration,\n0 invariant/temporal violations;<<#BBDEFB>>
 }
 
-#C8E6C9:**all green** — proofs, models, code, and the\n`unsafe` boundary agree;
+:**all green** — proofs, models, code, and the\n`unsafe` boundary agree;<<#C8E6C9>>
 stop
 
 legend right

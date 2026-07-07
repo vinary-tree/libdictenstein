@@ -28,6 +28,7 @@
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 130
 skinparam ArrowColor #37474F
 skinparam shadowing false
 skinparam state {
@@ -36,15 +37,15 @@ skinparam state {
   AttributeFontName "DejaVu Sans"
 }
 
-title Dual-cursor advance — intersection synchronizes L and R, emits only where BOTH agree
+title Dual-cursor advance\nintersection emits only where L and R BOTH agree
 
 [*] --> Aligned : new(vec![L, R])\nboth cursors at root, path = []
 
 state "Aligned\nL and R sit at the SAME path\n(both Some — operands still agree)" as Aligned #C8E6C9
 
-state "TestEmit\nevaluate the combinator predicate\nINTERSECTION: L.is_final() && R.is_final()" as TestEmit #FFF59D
+state "TestEmit\nevaluate the predicate\n∩: L.is_final() && R.is_final()" as TestEmit #FFF59D
 
-state "Emit\nyield (path, zipper) to consumer\nvalue = strategy.merge(L.value, R.value)" as Emit #BBDEFB
+state "Emit\nyield (path, zipper) to consumer\nvalue = merge(L.value, R.value)" as Emit #BBDEFB
 
 state "Descend\nlabel ∈ children(L) ∩ children(R)\ndescend(label) on BOTH cursors" as Descend #FFF59D
 
@@ -57,20 +58,20 @@ state "Exhausted\nDFS stack empty —\nno more aligned children" as Done #ECEFF1
 Aligned --> TestEmit : visit node
 
 TestEmit -[#1565C0,thickness=2]-> Emit : predicate TRUE\n(both final)
-TestEmit --> Descend : predicate FALSE\n(continue traversal)
-Emit -[#1565C0]-> Descend : after yield,\nkeep traversing subtree
+TestEmit --> Descend : predicate FALSE
+Emit -[#1565C0]-> Descend : after yield,\nkeep traversing
 
-Descend -[#2E7D32,thickness=2]-> Aligned : both descended\n(label in BOTH) → realign
-Descend -[#C62828,dashed]-> Prune : label missing in L or R
+Descend -[#2E7D32,thickness=2]-> Aligned : both descended
+Descend -[#C62828,dashed]-> Prune : label missing\nin L or R
 Prune --> Ascend : drop subtree
 
 Aligned --> Ascend : no more children here
-Ascend --> Aligned : next sibling exists\n(re-descend shared label)
+Ascend --> Aligned : next sibling\n(re-descend)
 Ascend --> Done : DFS stack empty
 
 Done --> [*]
 
-note right of Descend
+note bottom of Descend
   LOCKSTEP rule: a label is followed only if it is
   present in BOTH cursors' children (set ∩). UNION
   follows a label present in EITHER (set ∪) and never
@@ -78,7 +79,7 @@ note right of Descend
   where that operand lacks the path.
 end note
 
-note right of Emit
+note bottom of Emit
   Only the EMIT predicate changes per combinator;
   the descend / ascend / sibling machinery is shared.
   DIFFERENCE follows LEFT's children (right tags along

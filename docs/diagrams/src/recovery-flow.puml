@@ -17,6 +17,7 @@
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 230
 skinparam shadowing false
 skinparam ArrowColor #37474F
 skinparam ArrowFontName "DejaVu Sans"
@@ -30,15 +31,15 @@ skinparam activity {
 title Crash recovery — redo-only WAL replay from the last checkpoint
 
 start
-#BBDEFB:**open(path)**\nread the 64-byte WAL header;
+:**open(path)**\nread the 64-byte WAL header;<<#BBDEFB>>
 if (magic + version accepted?\n(dual-magic { "PARTWAL\0", "PARTWALO" },\nversion ∈ [MIN_SUPPORTED, VERSION])) then (no)
-  #FFCDD2:**fail-closed** — refuse the file\n(corrupt magic / too-new version);
+  :**fail-closed** — refuse the file\n(corrupt magic / too-new version);<<#FFCDD2>>
   stop
 else (yes)
 endif
 
-#FFE0B2:decode **checkpoint_lsn**, **commit_seq_floor**,\n**rank_regime** from the header;
-#BBDEFB:**load the last checkpoint image**\n(dense CX snapshot ⇒ the base in-memory trie);
+:decode **checkpoint_lsn**, **commit_seq_floor**,\n**rank_regime** from the header;<<#FFE0B2>>
+:**load the last checkpoint image**\n(dense CX snapshot ⇒ the base in-memory trie);<<#BBDEFB>>
 note right #BBDEFB
   Everything with LSN ≤ checkpoint_lsn is already
   folded into the image (the checkpoint truncated
@@ -46,22 +47,22 @@ note right #BBDEFB
   only needs the durable tail past checkpoint_lsn.
 end note
 
-#BBDEFB:**scan the durable WAL tail**\nrecords with LSN > checkpoint_lsn,\nstopping at the first torn / un-fsync'd frame\n(CRC mismatch or short read ⇒ end of durable prefix);
+:**scan the durable WAL tail**\nrecords with LSN > checkpoint_lsn,\nstopping at the first torn / un-fsync'd frame\n(CRC mismatch or short read ⇒ end of durable prefix);<<#BBDEFB>>
 
 partition "reconcile_lww  (per-term, max commit-generation)" {
-  #FFE0B2:**Pass 1** — collect CommitRank records into\nrank[data_lsn] = generation;
-  #FFE0B2:**Pass 2** — stamp each data record\ngeneration_of(lsn) = rank.get(lsn).unwrap_or(lsn),\napplying the RankRegime drop-rule\n(Overlay + unranked ⇒ DROP orphan);
-  #FFE0B2:**sort** all surviving ops by (generation, lsn)\n= CAS / commit-visibility order;
+  :**Pass 1** — collect CommitRank records into\nrank[data_lsn] = generation;<<#FFE0B2>>
+  :**Pass 2** — stamp each data record\ngeneration_of(lsn) = rank.get(lsn).unwrap_or(lsn),\napplying the RankRegime drop-rule\n(Overlay + unranked ⇒ DROP orphan);<<#FFE0B2>>
+  :**sort** all surviving ops by (generation, lsn)\n= CAS / commit-visibility order;<<#FFE0B2>>
 }
 
 if (per term, was the last writer's record\nfsync'd before the crash?) then (yes — acknowledged)
-  #C8E6C9:**restore** the term to its last committed value\n(redo the winning op);
+  :**restore** the term to its last committed value\n(redo the winning op);<<#C8E6C9>>
 else (no — un-acked / orphan)
-  #FFCDD2:**drop** — the write was never durable,\nno caller ever saw it succeed;
+  :**drop** — the write was never durable,\nno caller ever saw it succeed;<<#FFCDD2>>
 endif
 
-#C8E6C9:**rebuild the lock-free overlay**\nby applying the (generation, lsn)-ordered winners;
-#C8E6C9:**resume serving**\n(state == committed-visible membership at crash time);
+:**rebuild the lock-free overlay**\nby applying the (generation, lsn)-ordered winners;<<#C8E6C9>>
+:**resume serving**\n(state == committed-visible membership at crash time);<<#C8E6C9>>
 stop
 
 legend right

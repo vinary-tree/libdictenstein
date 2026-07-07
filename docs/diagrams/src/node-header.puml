@@ -1,0 +1,39 @@
+@startuml node-header
+' ============================================================================
+' node-header.puml — the 16-byte NodeHeader on every persistent ART node.
+' Source of truth: src/persistent_artrie/nodes/mod.rs (struct NodeHeader).
+' Replaces the tiny bytefield SVG with a compact, colored, viewBox'd byte-field.
+' Color key: green identity · amber flag/counter · grey pad · blue version
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam TitleFontSize 15
+
+title NodeHeader — the 16-byte fixed prefix on every ART node
+
+rectangle "byte  **0**    node_type  (N4 / N16 / N48 / N256 / CharBucket)" as R0 #C8E6C9
+rectangle "byte  **1**    prefix_len  (compressed-prefix length)" as R1 #C8E6C9
+rectangle "byte  **2**    flags  (IS_FINAL · IS_DIRTY · IS_LEAF · HAS_DIRTY_DESCENDANTS)" as R2 #FFE0B2
+rectangle "byte  **3**    _pad" as R3 #ECEFF1
+rectangle "bytes **4..5**   num_children  (u16)" as R4 #FFE0B2
+rectangle "bytes **6..7**   _pad2" as R5 #ECEFF1
+rectangle "bytes **8..15**   version  (u64 optimistic-lock counter)" as R6 #BBDEFB
+
+R0 -[hidden]down- R1
+R1 -[hidden]down- R2
+R2 -[hidden]down- R3
+R3 -[hidden]down- R4
+R4 -[hidden]down- R5
+R5 -[hidden]down- R6
+
+legend bottom
+  green identity · amber flags/counters · grey padding · blue optimistic-lock version
+endlegend
+@enduml

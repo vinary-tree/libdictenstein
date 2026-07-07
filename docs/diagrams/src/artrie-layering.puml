@@ -6,6 +6,7 @@
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 260
 skinparam ArrowColor #37474F
 title Persistent ARTrie family — lock-free **durable** overlay stack
 
@@ -22,7 +23,7 @@ Overlay --> Dur : "publish"
 Dur --> Store : "persist · fault-in"
 Store ..> Overlay : "reopen → rebuild overlay\n(dense image + WAL replay)"
 
-note right of Dur
+note bottom of Dur
   **acknowledged ⟹ durable**
   a write becomes visible only AFTER its
   WAL record is fsync-durable.

@@ -1,0 +1,31 @@
+@startuml path-compression
+' ============================================================================
+' path-compression.puml — collapse a unary chain into one inline-prefix node.
+' Source of truth: src/persistent_artrie/nodes/mod.rs (CompressedPrefix,
+' MAX_PREFIX_LEN = 12 bytes). Replaces the no-viewBox svgbob before/after SVG.
+' Color: red = the costly BEFORE chain · green = the compact AFTER node.
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam packageStyle rectangle
+skinparam TitleFontSize 15
+
+title Path compression — collapse a single-child chain into an inline prefix
+
+package "BEFORE — one node per byte" #F5F5F5 {
+  rectangle "insert **'metamorphosis'**\nm → e → t → a → m → o → r → p → h → o → s → i → s\n**14 unary nodes**, 14 pointer chases" as B #FFCDD2
+}
+
+package "AFTER — one path-compressed node" #F5F5F5 {
+  rectangle "**prefix = 'metamorphosi'**  (12 B inline, capped at MAX_PREFIX_LEN)\n→ leaf verifies the tail **'s'**\n**1 node**, height collapsed" as A #C8E6C9
+}
+
+B -[hidden]down- A
+@enduml

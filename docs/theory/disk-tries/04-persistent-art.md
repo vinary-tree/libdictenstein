@@ -74,11 +74,11 @@ Pointer swizzling — the term is due to the object-database literature for conv
 
 ### The Swizzled Pointer Design
 
-This crate's `SwizzledPtr` (source of truth: `src/persistent_artrie/core/swizzled_ptr.rs`) keeps the discriminant and the on-disk encoding in an `AtomicU64` state word, and keeps the *live* pointer in a **separate** `AtomicPtr` slot so that Rust pointer provenance is never destroyed by packing an address into an integer. The bit layout below is exact.
+This crate's `SwizzledPtr` (source of truth: `src/persistent_artrie/core/swizzled_ptr.rs`) keeps the discriminant and the on-disk encoding in an `AtomicU64` state word, and keeps the *live* pointer in a **separate** `AtomicPtr` slot so that Rust pointer provenance is never destroyed by packing an address into an integer. The bit layout below is exact. The systems-level treatment — how a swizzled reference sits inside the on-disk block/arena format alongside the `FileHeader` and node headers — is in [storage-backends.md](../../persistence/storage-backends.md#pointer-swizzling).
 
 <img src="../../diagrams/swizzled-ptr.svg" alt="Bit layout of the 64-bit SwizzledPtr state word, MSB on the left: bit 63 is the swizzle flag (1 = memory/transitional, 0 = on-disk); when the MSB is 0 the on-disk encoding packs block_id in bits 62 to 40 (23 bits), a location field in bits 39 to 18 (22 bits), and flags including the node type in bits 17 to 0 (18 bits). A separate memory_ptr AtomicPtr slot holds the live pointer when the MSB is set." width="760"/>
 
-*Figure: the `SwizzledPtr` state word plus its companion `memory_ptr` slot. When the MSB is `0` the word is an on-disk reference: bits `62..40` (23 bits) are the `block_id` (`≤ 8M − 1`), bits `39..18` (22 bits) are a `location` field (a byte offset for raw references, or an arena slot id for arena-backed byte nodes), and bits `17..0` (18 bits) are flags that include the `NodeType`. When the MSB is `1` the word carries no address at all — the live pointer is read from the separate `memory_ptr: AtomicPtr` slot.*
+*Figure: the `SwizzledPtr` state word plus its companion `memory_ptr` slot. When the MSB is `0` the word is an on-disk reference: bits `62..40` (23 bits) are the `block_id` ($\le 8M − 1$), bits `39..18` (22 bits) are a `location` field (a byte offset for raw references, or an arena slot id for arena-backed byte nodes), and bits `17..0` (18 bits) are flags that include the `NodeType`. When the MSB is `1` the word carries no address at all — the live pointer is read from the separate `memory_ptr: AtomicPtr` slot.*
 
 ### Why the MSB Works
 
@@ -170,26 +170,11 @@ The state word moves through four states over its lifetime — an on-disk refere
 
 <img src="../../diagrams/swizzled-ptr-states.svg" alt="State diagram of the SwizzledPtr lifecycle: Disk reference (MSB 0) transitions via swizzle CAS to Installing (state = MSB|1), then to Memory (state = MSB), then via unswizzle CAS to Evicting (state = MSB|2), then back to Disk reference. Disk-reference is colored blue, the in-memory state green, the transitional states amber." width="700"/>
 
-*Figure: the swizzle lifecycle. `Installing` (`state = (1<<63) | 1`) and `Evicting` (`state = (1<<63) | 2`) are the transitional states that let exactly one thread own publication or removal of `memory_ptr`; readers that lose the race simply observe the winner's final state. The reverse path (`Memory → Evicting → Disk reference`) is how eviction reclaims RAM while leaving the durable on-disk encoding behind.*
+*Figure: the swizzle lifecycle. `Installing` (`state = (1<<63) | 1`) and `Evicting` (`state = (1<<63) | 2`) are the transitional states that let exactly one thread own publication or removal of `memory_ptr`; readers that lose the race simply observe the winner's final state. The reverse path ($Memory \to Evicting \to Disk reference$) is how eviction reclaims RAM while leaving the durable on-disk encoding behind.*
 
 The `compare_exchange` ensures only one thread successfully swizzles a pointer:
 
-```
-Thread A                        Thread B
-────────                        ────────
-load ptr (sees disk ref)
-                                load ptr (sees disk ref)
-read from disk
-allocate node
-                                read from disk
-                                allocate node
-CAS(disk→memory) SUCCESS
-                                CAS(disk→memory) FAILS
-return node
-                                sees swizzled ptr
-                                frees allocated node
-                                return existing node
-```
+<img src="../../diagrams/part-swizzle-race.svg" alt="Sequence diagram of two threads racing to swizzle the same on-disk pointer: both load the disk reference and redundantly read the block and allocate a node; Thread A's compare-and-swap from disk to memory succeeds while Thread B's fails; A returns the new node and B frees its redundant node and follows A's swizzled pointer, so both return the same node." width="70%"/>
 
 Both threads get the same node; the losing thread just does redundant work.
 
@@ -223,19 +208,7 @@ fn serialize_tree(root: &Node, writer: &mut BlockWriter) -> DiskRef {
 ### Block Allocation Strategies
 
 **Strategy 1: Sequential allocation**
-```
-┌──────────────────────────────────────────────────────────────┐
-│ Block 0                                                       │
-│ ┌─────────┬─────────┬─────────┬─────────┬──────────────────┐ │
-│ │ Node A  │ Node B  │ Node C  │ Node D  │ (free space)     │ │
-│ └─────────┴─────────┴─────────┴─────────┴──────────────────┘ │
-├──────────────────────────────────────────────────────────────┤
-│ Block 1                                                       │
-│ ┌─────────┬─────────┬──────────────────────────────────────┐ │
-│ │ Node E  │ Node F  │ (free space)                         │ │
-│ └─────────┴─────────┴──────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────┘
-```
+<img src="../../diagrams/part-sequential-blocks.svg" alt="Strategy 1, sequential allocation: serialized nodes are packed into blocks in arrival order, with Block 0 holding Nodes A through D plus free space and Block 1 holding Nodes E and F plus free space; simple but fragments over time." width="70%"/>
 
 Simple but leads to fragmentation over time.
 
@@ -243,19 +216,7 @@ Simple but leads to fragmentation over time.
 
 Place parent near children for better cache/prefetch behavior:
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│ Block 0: Subtree rooted at A                                  │
-│ ┌─────────┬─────────┬─────────┬─────────┬──────────────────┐ │
-│ │ Node A  │ Child 1 │ Child 2 │ Child 3 │ grandchildren... │ │
-│ └─────────┴─────────┴─────────┴─────────┴──────────────────┘ │
-├──────────────────────────────────────────────────────────────┤
-│ Block 1: Subtree rooted at B                                  │
-│ ┌─────────┬─────────────────────────────────────────────────┐ │
-│ │ Node B  │ B's subtree...                                  │ │
-│ └─────────┴─────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────┘
-```
+<img src="../../diagrams/part-locality-blocks.svg" alt="Strategy 2, locality-aware allocation: each block holds a whole subtree with the parent next to its children, so Block 0 clusters Node A with child 1, child 2, child 3 and its grandchildren and Block 1 clusters Node B with its subtree, improving cache locality and prefetching." width="70%"/>
 
 ### Variable-Size Node Serialization
 
@@ -400,47 +361,11 @@ For NVMe SSDs with 128KB-256KB optimal I/O size, larger blocks amortize the per-
 
 ### Block Header
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ Block Header (64 bytes)                                          │
-├─────────────────────────────────────────────────────────────────┤
-│ magic: u32           │ Identifies valid block                   │
-│ version: u16         │ Format version                           │
-│ block_type: u8       │ 0=nodes, 1=buckets, 2=metadata           │
-│ flags: u8            │ Compression, etc.                        │
-│ block_id: u32        │ This block's ID                          │
-│ checksum: u64        │ CRC64 of contents                        │
-│ num_entries: u16     │ Number of nodes/entries                  │
-│ free_offset: u16     │ Start of free space                      │
-│ prev_block: u32      │ Previous block in chain (or 0)           │
-│ next_block: u32      │ Next block in chain (or 0)               │
-│ padding: [u8; 28]    │ Reserved for future use                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+<img src="../../diagrams/part-block-header.svg" alt="The 64-byte on-disk block header as a byte-field: magic, version, block_type (0 nodes, 1 buckets, 2 metadata), flags, block_id, a CRC-64 checksum, num_entries, free_offset, prev_block and next_block chain links, and 28 bytes of reserved padding." width="70%"/>
 
 ### Node Packing Within Blocks
 
-```
-┌───────────────────────────────────────────────────────────────────┐
-│ Block (256 KB)                                                     │
-├───────────────────────────────────────────────────────────────────┤
-│ Header (64 B)                                                      │
-├───────────────────────────────────────────────────────────────────┤
-│ Node Directory (variable)                                          │
-│ ┌────────────┬────────────┬────────────┬────────────────────────┐ │
-│ │ entry[0]   │ entry[1]   │ entry[2]   │ ...                    │ │
-│ │ off:64,    │ off:112,   │ off:272,   │                        │ │
-│ │ len:48     │ len:160    │ len:656    │                        │ │
-│ └────────────┴────────────┴────────────┴────────────────────────┘ │
-├───────────────────────────────────────────────────────────────────┤
-│ Node Data                                                          │
-│ ┌────────────────────────────────────────────────────────────────┐│
-│ │ [Node4 @ 64] [Node16 @ 112] [Node48 @ 272] [Node4 @ 928] ...  ││
-│ └────────────────────────────────────────────────────────────────┘│
-├───────────────────────────────────────────────────────────────────┤
-│ Free Space                                                         │
-└───────────────────────────────────────────────────────────────────┘
-```
+<img src="../../diagrams/part-block-layout.svg" alt="The layout of a 256 KB block: a 64-byte header, a variable node directory of offset-and-length entries (entry 0 at offset 64 length 48, entry 1 at 112 length 160, entry 2 at 272 length 656), then the packed node data of Node4, Node16, Node48 and Node4 at their offsets, then free space." width="70%"/>
 
 ### Alignment Considerations
 
@@ -582,6 +507,25 @@ Following B-trie lessons:
 - ART nodes for index (inner) layer
 - B-trie-style buckets for leaves
 - Amortize leaf I/O across multiple strings
+
+### Where these lessons are realized
+
+The shipping engine applies each lesson above; the systems-tier corpus documents
+how:
+
+- **Swizzled pointers & block layout** (lessons 1–3, 6) — the `BlockStorage` seam,
+  the on-disk `FileHeader`/arena/node-header format, and pointer swizzling:
+  [storage-backends.md](../../persistence/storage-backends.md#the-on-disk-format).
+- **Copy-on-write with lock-free readers** (lesson 4) — the immutable overlay node,
+  the path-copy write path, and the CAS-published root:
+  [lock-free-overlay.md](../../persistence/lock-free-overlay.md).
+- **Epoch-based reclamation** (lesson 4) — the deferred-free discipline that lets
+  evicted RAM be reclaimed while in-flight readers finish:
+  [concurrency-model.md](../../persistence/concurrency-model.md#eviction-safety--the-serial_disk_ptr-stamp).
+- **Checksums & crash recovery** (lesson 5) — the WAL frame and ARIES-style
+  redo replay: [durability-and-recovery.md](../../persistence/durability-and-recovery.md).
+
+The design that composes them is [06-persistent-artrie-design](06-persistent-artrie-design.md).
 
 ---
 

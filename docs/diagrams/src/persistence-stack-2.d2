@@ -1,0 +1,79 @@
+# =============================================================================
+# persistence-stack-2.d2 — PART ② of the PersistentARTrie lock-free durable
+# persistence stack: the checkpoint fold, the reopen replay, and the cross-cutting
+# concurrency + eviction concerns. The six layers ①–⑥ and the live WRITE + READ
+# paths are the companion figure persistence-stack.d2; here layers ② overlay,
+# ⑤ disk, and ⑥ arena appear as ANCHORS (their sub-module detail lives in part ①)
+# so the checkpoint/reopen/cross-cutting edges have their endpoints.
+# Split from the original single figure (was 1581px) so each part fits the prose
+# column; the same technique as architecture→architecture-2 / kernel-substrate→-2.
+#
+# Color key (house palette + persistence accents — docs/diagrams/README.md):
+#   green  #C8E6C9  client API / in-memory        teal   #B2DFDB  lock-free overlay
+#   orange #FFCC80  WAL / durability              indigo #C5CAE9  checkpoint / image
+#   blue   #BBDEFB  persistent / disk-backed      red    #FFCDD2  locks / serialization
+#   grey   #F1F1F1  infrastructure
+# =============================================================================
+
+vars: { d2-config: { layout-engine: elk } }
+direction: down
+
+title: |md
+  # Persistence stack — part ②
+
+  *checkpoint fold · reopen · concurrency + eviction*
+| { near: top-center; style.font-size: 16; style.font-color: "#212121" }
+
+concurrency: "Concurrency (cross-cutting)\nreads + writes lock-free (bare Arc)\nlocks only: CK > merge > OR > EC" {
+  style: { fill: "#FFCDD2"; stroke: "#C62828"; font-color: "#B71C1C"; stroke-width: 2; bold: true }
+}
+
+eviction: "Eviction (cross-cutting)\nunswizzle cold subtrees on pressure;\nfault back on read (serial_disk_ptr)" {
+  style: { fill: "#F1F1F1"; stroke: "#607D8B"; font-color: "#263238"; stroke-width: 2; bold: true }
+}
+
+# --- Anchors: the same layers ②/⑤/⑥ from part ①, drawn plain here so the
+# checkpoint/reopen/cross-cutting edges terminate somewhere; full sub-module
+# detail is in the companion figure persistence-stack.d2. -----------------------
+overlay: "② Lock-free overlay engine\n(layer detail → part ①)" {
+  style: { fill: "#B2DFDB"; stroke: "#00695C"; font-color: "#004D40"; stroke-width: 2; bold: true }
+}
+
+checkpoint: "Checkpoint\nbackground fold: overlay → dense CX image\npublish at checkpoint_lsn = watermark" {
+  style: { fill: "#C5CAE9"; stroke: "#3949AB"; font-color: "#1A237E"; stroke-width: 2; bold: true }
+}
+
+disk: "⑤ Disk manager (BlockStorage seam)\n(layer detail → part ①)" {
+  style: { fill: "#BBDEFB"; stroke: "#1565C0"; font-color: "#0D47A1"; stroke-width: 2; bold: true }
+}
+
+arena: "⑥ Arena · block storage\n(layer detail → part ①)" {
+  style: { fill: "#BBDEFB"; stroke: "#1565C0"; font-color: "#0D47A1"; stroke-width: 2; bold: true }
+}
+
+# --- Cross-cutting attachments (red governs / grey reclaims) -----------------
+concurrency -> overlay: "governs" { style.stroke: "#C62828"; style.stroke-width: 2; style.stroke-dash: 4 }
+eviction -> overlay: "reclaims" { style.stroke: "#607D8B"; style.stroke-width: 2; style.stroke-dash: 4 }
+
+# --- Checkpoint fold + REOPEN (indigo/blue dashed) --------------------------
+overlay -> checkpoint: "snapshot" { style.stroke: "#3949AB"; style.stroke-width: 2; style.stroke-dash: 3 }
+checkpoint -> disk: "publish image\n+ advance watermark" { style.stroke: "#3949AB"; style.stroke-width: 2; style.stroke-dash: 3 }
+arena -> overlay: "REOPEN · image + WAL tail\n→ rebuild overlay" { style.stroke: "#1565C0"; style.stroke-width: 2; style.stroke-dash: 3 }
+
+# --- Hidden vertical-stack edges: serialize the boxes into one narrow column
+# (concurrency above eviction; arena below disk) so width tracks the widest single
+# box, not a hub of parallel inbound edges. The real labeled edges route alongside.
+concurrency -> eviction: "" { style.opacity: 0.0 }
+disk -> arena: "" { style.opacity: 0.0 }
+
+# Legend wrapped into short paragraphs (blank line between each) so no single
+# line drives the width past the prose column.
+legend: |md
+  🟥 concurrency · ⬜ eviction · 🟦 overlay
+
+  🟪 checkpoint · 🟦 disk/arena
+
+  *layers ①–⑥ + WRITE/READ paths →*
+
+  *companion figure persistence-stack*
+| { near: bottom-center; style.font-size: 13; style.font-color: "#37474F" }

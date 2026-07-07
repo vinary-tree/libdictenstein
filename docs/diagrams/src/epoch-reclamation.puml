@@ -26,6 +26,9 @@
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 112
+skinparam maxMessageSize 105
+skinparam ParticipantPadding 3
 skinparam shadowing false
 skinparam sequenceArrowColor #37474F
 skinparam sequenceLifeLineBorderColor #90A4AE
@@ -35,63 +38,73 @@ skinparam noteBackgroundColor #ECEFF1
 skinparam noteBorderColor #90A4AE
 skinparam participantBorderColor #37474F
 
-title Epoch-based reclamation — defer the free until old-epoch readers depart (no use-after-free)
+title Epoch-based reclamation — defer the free\nuntil old-epoch readers depart (no use-after-free)
 
 participant "Reader A\n(old epoch)" as RA #C8E6C9
-participant "Reader B\n(arrives later)" as RB #C8E6C9
-participant "EBR counters\nglobal_epoch · active_readers" as E #ECEFF1
-participant "Eviction thread" as EV #FFE0B2
+participant "Reader B\n(later)" as RB #C8E6C9
+participant "EBR counters\n(epoch, readers)" as E #ECEFF1
+participant "Eviction\nthread" as EV #FFE0B2
 participant "Victim node\n→ DiskRef" as N #BBDEFB
 
 == Reader A enters and pins the current epoch ==
-RA -> E : enter_read()\nactive_readers.fetch_add(1, **SeqCst**)
+RA -> E : enter_read()\nactive_readers\n.fetch_add(1, **SeqCst**)
 activate RA
-E --> RA : epoch = 5 (Acquire load)
+E --> RA : epoch = 5\n(Acquire)
 note right of RA #C8E6C9
-  A now follows a **swizzled** child pointer at
-  native speed and may hold a raw `*const Node`
-  into the victim. The SeqCst pin publishes
-  BEFORE any pointer A subsequently loads.
+  A follows a **swizzled**
+  child pointer at native
+  speed, may hold a raw
+  `*const Node` into the
+  victim. The SeqCst pin
+  publishes BEFORE any
+  pointer A later loads.
 end note
 
 == Eviction thread opens an epoch boundary ==
-EV -> E : advance()\nglobal_epoch 5 → 6
+EV -> E : advance()\nepoch 5 → 6
 activate EV
-EV -> E : has_active_readers()? (**SeqCst** load)
+EV -> E : has_readers()?\n(**SeqCst** load)
 note over EV, E #FFE0B2
-  wait_for_quiescence: the SeqCst load pairs with A's
-  SeqCst pin (StoreLoad fence). If the scan misses A,
-  A is guaranteed to observe the unlink and re-fault —
-  AcqRel alone would NOT close this gap.
+  Quiescence wait: the
+  SeqCst load pairs with
+  A's SeqCst pin (StoreLoad
+  fence). If the scan
+  misses A, A observes the
+  unlink + re-faults —
+  AcqRel alone won't close
+  this gap.
 end note
-E --> EV : **true** — Reader A still active
-note right of EV #FFE0B2 : DEFER the free.\nSlow path: block on the quiescence condvar\n(bounded by quiescence_timeout).
+E --> EV : **true** — A active
+note right of EV #FFE0B2 : DEFER the free.\nSlow path: block on the\nquiescence condvar\n(bounded by timeout).
 
-... Reader A is still walking the victim subtree ...
+... Reader A still walking the victim subtree ...
 
 == Reader A finishes and leaves the epoch ==
-RA -> E : exit_read()\nactive_readers.fetch_sub(1, **SeqCst**)
-note left of RA #C8E6C9 : A's pointer accesses are globally ordered\nBEFORE this un-pin, so a reclaimer that now\nsees the count hit 0 knows A is done.
+RA -> E : exit_read()\nactive_readers\n.fetch_sub(1, **SeqCst**)
+note left of RA #C8E6C9 : A's accesses are ordered\nBEFORE this un-pin, so a\nreclaimer seeing count 0\nknows A is done.
 deactivate RA
-E -> EV : last reader left → condvar.notify_all()
-E --> EV : has_active_readers() == **false** → quiescence reached
+E -> EV : last reader →\nnotify_all()
+E --> EV : readers = **false**\n→ quiescence
 
 == Quiescent: now the swap + free are safe ==
-EV -> N : unswizzle(block_id, location, type)\natomic CAS: ChildNode → DiskRef
+EV -> N : unswizzle(block,\nloc, type)\nCAS: Child → DiskRef
 activate N
-N --> EV : Ok(old_ptr) — the in-memory node is unlinked
-hnote over N #FFCDD2 : **free(old_ptr)** — reclaim the RAM.\nNo live reader can still reach it.
+N --> EV : Ok(old_ptr) —\nnode unlinked
+hnote over N #FFCDD2 : **free(old_ptr)**\nreclaim the RAM;\nno live reader\ncan reach it.
 deactivate N
 deactivate EV
 
 == A reader that arrives AFTER the boundary is always safe ==
-RB -> E : enter_read()  → epoch = 6
+RB -> E : enter_read()\n→ epoch = 6
 activate RB
 RB -> N : follow child pointer
 note right of RB #BBDEFB
-  B observes the **already-published DiskRef** (the swap
-  preceded the free) and faults the node back in from
-  disk — it never touches the freed allocation.
+  B observes the already-
+  published DiskRef (the swap
+  preceded the free) and
+  faults the node back from
+  disk — never touches the
+  freed allocation.
 end note
 RB -> E : exit_read()
 deactivate RB
@@ -99,7 +112,7 @@ deactivate RB
 note across #FFF9C4
   EBR in one line: **advance → wait for quiescence → swap → free.**
   The free is delayed until no thread from the pre-boundary epoch can hold a
-  pointer to the victim, which is exactly what lets eviction run concurrently
-  with lock-free, lock-free-fast readers.
+  pointer to the victim — exactly what lets eviction run concurrently with
+  lock-free, fast readers.
 end note
 @enduml

@@ -45,26 +45,7 @@
 
 PathMap is a trie-based prefix-compressed key-value store that serves as the shared storage layer for three integrated projects:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Application Layer                        │
-│   ┌───────────────┐  ┌───────────────┐  ┌───────────────┐  │
-│   │ liblevenshtein│  │     MORK      │  │   MeTTa App   │  │
-│   │   (fuzzy)     │  │  (patterns)   │  │   (queries)   │  │
-│   └───────┬───────┘  └───────┬───────┘  └───────┬───────┘  │
-└───────────┼──────────────────┼──────────────────┼───────────┘
-            │                  │                  │
-            v                  v                  v
-┌─────────────────────────────────────────────────────────────┐
-│                     PathMap (Shared)                         │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │  Trie-based key-value store with zipper navigation  │   │
-│   │  - Prefix compression                               │   │
-│   │  - Memory-mapped I/O                                │   │
-│   │  - Concurrent read access                           │   │
-│   └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-```
+<img src="../../diagrams/pathmap-integration-stack.svg" alt="Layered architecture: an Application Layer of liblevenshtein (fuzzy), MORK (patterns), and MeTTa App (queries) all sit above a single shared PathMap trie-based key-value store with zipper navigation, prefix compression, memory-mapped I/O, and concurrent read access." width="70%"/>
 
 ### Project Locations
 
@@ -103,7 +84,7 @@ PhoneticNormalizedDictionary<V, D>
 ```
 
 **Key Optimizations:**
-- **Exact match fast path (d=0)**: Direct trie lookup is **100-300× faster** than automaton traversal
+- **Exact match fast path (d=0)**: Direct trie lookup is **100-300$\times$ faster** than automaton traversal
 - **FuzzyMultiMap**: O(k log n) fuzzy queries via Levenshtein automaton pruning
 - **Thread-local NormalizeBuffers (H3)**: Reuses buffers to reduce allocations
 - **O(1) vowel classification**: Bitmask lookup instead of linear array search
@@ -199,9 +180,9 @@ src/phonetic/
 
 | Query Type | Complexity | Notes |
 |------------|------------|-------|
-| Exact (d=0) | O(k) | Direct trie lookup, 100-300× faster |
-| Fuzzy (d≥1) | O(k log n) | Levenshtein automaton pruning |
-| Regex | O(n × k) | Scans normalized forms |
+| Exact (d=0) | O(k) | Direct trie lookup, 100-300$\times$ faster |
+| Fuzzy (d$\ge$1) | O(k log n) | Levenshtein automaton pruning |
+| Regex | O(n $\times$ k) | Scans normalized forms |
 
 Where k = query length, n = dictionary size.
 
@@ -217,34 +198,7 @@ PathMap is **the primary shared layer** between liblevenshtein and MORK. It is i
 
 ### Three Integration Layers
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Layer 3: MeTTa Query Syntax                                    │
-│  !(match &space (fuzzy-phonetic "fone" 2 $result) $result)     │
-│  !(match &space (fuzzy "colr" 2 $result) $result)              │
-│  User-facing query language (phonetic-aware and standard)       │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  Layer 2: MORK FuzzySource / FuzzyPhoneticSource Adapters       │
-│  FuzzyPhoneticSource → PhoneticNormalizedDictionary.query()    │
-│  FuzzySource → standard Levenshtein transducer                  │
-│  Location: MORK/kernel/src/fuzzy_source.rs                     │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  Layer 1: liblevenshtein + PathMap (THIS LAYER)                 │
-│  PhoneticNormalizedDictionary for phonetic-aware fuzzy matching │
-│  PathMapDictionary backend for standard transducers             │
-│  Location: liblevenshtein-rust/src/dictionary/                 │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  PathMap Storage (Shared)                                       │
-│  Memory-mapped trie shared by liblevenshtein and MORK          │
-│  Same data used by BTMSource, ACTSource, and PathMapDictionary │
-└─────────────────────────────────────────────────────────────────┘
-```
+<img src="../../diagrams/pathmap-four-layer-stack.svg" alt="Three integration layers over shared PathMap storage: Layer 3 MeTTa query syntax feeds Layer 2 MORK Fuzzy and FuzzyPhonetic source adapters, which call Layer 1 liblevenshtein plus PathMap (PhoneticNormalizedDictionary and PathMapDictionary), which read the bottom shared memory-mapped PathMap storage." width="70%"/>
 
 ### Why PathMap is Primary
 
@@ -257,23 +211,7 @@ PathMap is **the primary shared layer** between liblevenshtein and MORK. It is i
 
 ### Data Flow
 
-```
-MeTTa Query: (fuzzy-phonetic "fone" 2 $result)
-                 │
-                 ▼
-          MORK Space
-                 │
-                 ▼
-FuzzyPhoneticSource.query()  ←── MORK adapter (Layer 2)
-                 │
-                 ▼
-PhoneticNormalizedDictionary.query()  ←── liblevenshtein API
-                 │
-                 ├── d=0: Direct trie lookup (100-300× faster)
-                 ├── d≥1: FuzzyMultiMap with Levenshtein automaton pruning O(k log n)
-                 ▼
-    PathMap (memory-mapped)  ←── Shared storage
-```
+<img src="../../diagrams/pathmap-query-flow.svg" alt="Data flow of a fuzzy-phonetic MeTTa query: (fuzzy-phonetic 'fone' 2) enters the MORK Space, the FuzzyPhoneticSource adapter calls PhoneticNormalizedDictionary.query(), which for edit distance 0 does a direct trie lookup (100-300x faster) and for distance >= 1 uses a FuzzyMultiMap with Levenshtein automaton pruning at O(k log n), both reading the shared memory-mapped PathMap." width="70%"/>
 
 ---
 
@@ -885,7 +823,7 @@ Uncompressed trie:    Prefix-compressed PathMap:
 |-----------|------------|-----------------|
 | Exact lookup | O(k) | <1 μs |
 | Prefix scan | O(k + m) | <10 μs |
-| Fuzzy query (d=2) | O(k × 3^d) | <100 μs |
+| Fuzzy query (d=2) | O(k $\times$ 3^d) | <100 μs |
 
 Where:
 - k = key length
@@ -1059,7 +997,7 @@ src/wfst/                 # PROPOSED - Future Implementation
 |---------|----------------------------------------|---------------|
 | Location | `src/dictionary/phonetic_normalized/` | `src/wfst/` |
 | Weights | Levenshtein distance (integer) | Arbitrary semiring |
-| Composition | FuzzyMultiMap with automaton pruning | General WFST × WFST |
+| Composition | FuzzyMultiMap with automaton pruning | General WFST $\times$ WFST |
 | Primary Type | `PhoneticNormalizedDictionary` | `WeightedTransducer` |
 
 See **WFST Composition** (MORK project) for the full proposal.

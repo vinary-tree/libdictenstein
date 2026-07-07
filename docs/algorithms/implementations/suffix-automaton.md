@@ -21,7 +21,7 @@
 ### Key Advantages
 
 - 🔍 **Substring matching**: Find patterns anywhere, not just at word boundaries
-- 💾 **Space-efficient**: ≤ 2n-1 states for n characters
+- 💾 **Space-efficient**: $\le$ 2n-1 states for n characters
 - ⚡ **Fast construction**: `O(n)` online construction
 - 🔄 **Dynamic updates**: Insert and remove text at runtime
 - 📍 **Position tracking**: Know where matches occur in source text
@@ -124,7 +124,7 @@ Substrings ending at position 5 (all suffixes):
 States in suffix automaton ≈ equivalence classes of endpos sets
 ```
 
-**Minimality**: This grouping ensures ≤ 2n-1 states for n characters.
+**Minimality**: This grouping ensures $\le$ 2n-1 states for n characters.
 
 ### Suffix Links
 
@@ -194,47 +194,53 @@ println!("Found at positions: {:?}", positions);
 ### Core Components
 
 ```rust
-pub struct SuffixAutomaton {
-    inner: Arc<RwLock<SuffixAutomatonInner>>,
+// Public byte automaton (src/suffix_automaton/ascii.rs)
+pub struct SuffixAutomaton<V: DictionaryValue = ()> {
+    inner: LockFreeSuffixAutomaton<u8, V>,
 }
 
-struct SuffixAutomatonInner {
-    nodes: Vec<SuffixNode>,          // State storage
+// Atomic-snapshot cell (src/suffix_automaton/lockfree.rs): the entire
+// automaton graph is published as ONE immutable Arc snapshot. Readers
+// take a snapshot with load_full(); writers clone-mutate-publish via CAS.
+pub(crate) struct LockFreeSuffixAutomaton<U: CharUnit, V: DictionaryValue = ()> {
+    inner: Arc<ArcSwap<SuffixAutomatonInner<U, V>>>,
+}
+
+// The snapshot payload (src/suffix_automaton/core/inner.rs)
+struct SuffixAutomatonInner<U: CharUnit, V: DictionaryValue> {
+    nodes: Vec<SuffixNode<U, V>>,    // Dense, index-addressed state storage
     last_state: usize,               // Current state during construction
-    text_count: usize,               // Number of indexed texts
-    needs_compaction: bool,          // Deletion flag
+    string_count: usize,             // Number of indexed texts
+    needs_compaction: bool,          // Compaction-recommended flag
+    // … source_texts + endpos position metadata elided for brevity
 }
 
-struct SuffixNode {
-    edges: Vec<(u8, usize)>,         // Label → child state
-    suffix_link: Option<usize>,      // Longest proper suffix link
+// One state = an endpos equivalence class (src/suffix_automaton/core/node.rs)
+struct SuffixNode<U: CharUnit, V: DictionaryValue = ()> {
+    edges: Vec<(U, usize)>,          // Label → child state (sorted by label)
+    suffix_link: Option<usize>,      // Longest proper suffix in another class
     max_length: usize,               // Longest string in this class
     is_final: bool,                  // End-of-string marker
-    ref_count: usize,                // For garbage collection
+    // … per-class value + metadata
 }
 ```
 
 ### Memory Layout
 
-```
-┌─────────────────┬─────────────┬────────────────┐
-│ Component       │ Size        │ Per State      │
-├─────────────────┼─────────────┼────────────────┤
-│ edges (Vec)     │ ~24 bytes   │ ~24 bytes      │
-│ suffix_link     │ 16 bytes    │ 16 bytes       │
-│ max_length      │ 8 bytes     │ 8 bytes        │
-│ is_final        │ 1 byte      │ 1 byte         │
-│ ref_count       │ 8 bytes     │ 8 bytes        │
-├─────────────────┼─────────────┼────────────────┤
-│ Total per state │ ~57 bytes   │ ~57 bytes      │
-└─────────────────┴─────────────┴────────────────┘
-```
+| Component | Size | Per State |
+| --- | --- | --- |
+| edges (Vec) | ~24 bytes | ~24 bytes |
+| suffix_link | 16 bytes | 16 bytes |
+| max_length | 8 bytes | 8 bytes |
+| is_final | 1 byte | 1 byte |
+| ref_count | 8 bytes | 8 bytes |
+| Total per state | ~57 bytes | ~57 bytes |
 
 **For text of n characters**:
-- States: ≤ 2n-1 (typically ~1.5n)
+- States: $\le$ 2n-1 (typically ~1.5n)
 - Total memory: ~85n bytes
 
-**Example**: 10,000-character document ≈ 850 KB
+**Example**: 10,000-character document $\approx$ 850 KB
 
 ## Construction Algorithm
 
@@ -311,24 +317,28 @@ where
 }
 
 fn insert(&self, text: &str) {
-    let mut lock = self.inner.write().unwrap();
+    // Clone-mutate-publish: the writer works on a PRIVATE copy of the current
+    // graph snapshot and installs it with a single compare-and-swap. No lock
+    // is taken; a losing CAS race simply retries under a bounded CasBackoff.
+    self.inner.mutate(|inner| {
+        // Reset to root for the new text
+        inner.last_state = 0;
 
-    // Reset to root for new text
-    lock.last_state = 0;
+        // Extend with each character
+        for byte in text.bytes() {
+            inner.extend(byte);
+        }
 
-    // Extend with each character
-    for byte in text.bytes() {
-        lock.extend(byte);
-    }
+        // Mark final states along the suffix-link chain
+        let mut state = Some(inner.last_state);
+        while let Some(s) = state {
+            inner.nodes[s].is_final = true;
+            state = inner.nodes[s].suffix_link;
+        }
 
-    // Mark final states
-    let mut state = lock.last_state;
-    while let Some(s) = state {
-        lock.nodes[s].is_final = true;
-        state = lock.nodes[s].suffix_link;
-    }
-
-    lock.text_count += 1;
+        inner.string_count += 1;
+        ((), true) // (result, changed): `true` publishes the new snapshot
+    });
 }
 ```
 
@@ -515,7 +525,7 @@ if dict.text_count() > 1000 && dict.needs_compaction() {
 | **Construction** | O(n) | n = text length |
 | **Insert character** | O(1) amortized | Online construction |
 | **Contains (exact)** | O(m) | m = query length |
-| **Fuzzy search** | O(m×d²×b) | d = distance, b = branching |
+| **Fuzzy search** | O(m$\times$d²$\times$b) | d = distance, b = branching |
 | **Compact** | O(s) | s = number of states |
 
 ### Benchmark Results

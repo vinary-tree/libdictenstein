@@ -19,11 +19,13 @@
 //   dark slate #37474F  forward (right-extension) transitions + borders
 // ============================================================================
 digraph scdawg_structure {
-    rankdir=LR;
+    rankdir=TB;
     bgcolor="#FFFFFF";
     fontname="DejaVu Sans";
     labelloc="t";
-    label="SCDAWG for \"abcabcab\" — solid = right-extension (CDAWG), dashed blue = left-extension (symmetric)";
+    label="SCDAWG for \"abcabcab\"\nsolid = right-extension (CDAWG) · dashed blue = left-extension (symmetric)";
+    nodesep=0.35;
+    ranksep=0.5;
 
     node [shape=ellipse, style="filled", fillcolor="#C8E6C9",
           color="#37474F", fontname="DejaVu Sans", fontcolor="#212121",

@@ -30,69 +30,76 @@
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 150
 skinparam shadowing false
 skinparam ArrowColor #37474F
+skinparam nodesep 12
+skinparam ranksep 24
+hide empty description
 skinparam StateBorderColor #37474F
 skinparam StateFontName "DejaVu Sans"
 
-title Eviction pipeline — pressure band → urgency → queue → async thread → quiescence → LRU select → unswizzle
+title Eviction pipeline — pressure → urgency → LRU select → unswizzle
 
 ' ===== Stage 1: memory-pressure bands (MemoryPressureMonitor) =====
-state "Normal\n>30% available\n(full caching)" as Normal #C8E6C9
-state "Low\n10–30% available" as Low #FFE0B2
-state "Critical\n<10% available" as Critical #FFCDD2
+state "Normal\n>30% free\n(full cache)" as Normal #C8E6C9
+state "Low\n10–30% free" as Low #FFE0B2
+state "Critical\n<10% free" as Critical #FFCDD2
 
 [*] --> Normal
-Normal --> Low : available < low_memory_threshold
-Low --> Critical : available < critical_memory_threshold
-Critical --> Low : memory recovers
-Low --> Normal : memory recovers
+Normal --> Low : avail < low
+Low --> Critical : avail < crit
+Critical --> Low : recovers
+Low --> Normal : recovers
 
 ' ===== Stage 2: pressure level → eviction urgency (request_eviction) =====
-Normal --> Idle : Normal ⇒ no action
-state "Eviction idle\n(no request queued)" as Idle #C8E6C9
-Low -[#EF6C00]-> Queue : Low ⇒ request_eviction(Moderate)
-Critical -[#C62828]-> Queue : Critical ⇒ request_eviction(Emergency)
+Normal --> Idle : no-op
+state "Eviction idle" as Idle #C8E6C9
+Low -[#EF6C00]-> Queue : ⇒ Moderate
+Critical -[#C62828]-> Queue : ⇒ Emergency
 
 ' ===== Stage 3: coordinator request queue =====
-state "EvictionCoordinator queue\nVecDeque<EvictionRequest>" as Queue #ECEFF1 : higher urgency MERGES with the\npending request (no duplicate cycles)
-Queue --> Cooldown : async \"artrie-eviction\" thread\npolls try_pop_request (≈100 ms)
+state "Coordinator queue\nVecDeque<Request>" as Queue #ECEFF1 : higher urgency MERGES\nwith the pending request\n(no duplicate cycles)
+Queue --> Cooldown : async thread polls\ntry_pop (≈100 ms)
 
 ' ===== Stage 4: the async eviction-thread loop =====
-state "Cooldown check" as Cooldown #ECEFF1 : skip if too recent or > 5 s stale\n(record_skip)
-state "Wait for epoch quiescence" as Quiesce #FFE0B2 : advance() → wait_for_quiescence\n(EBR — see epoch-reclamation)
-state "Select cold nodes (LRU)" as Select #FFE0B2 : DiskLocationRegistry.select_for_eviction:\nkeep depth ≥ min_eviction_depth,\nscore by LRU coldness, take coldest\nup to batch_size × urgency multiplier
-state "Atomic unswizzle\nChildNode → DiskRef" as Swap #FFE0B2 : callback CAS-swaps each cold node;\nroot stays in memory (path non-empty)
-state "Record stats" as Stats #ECEFF1 : nodes_evicted · bytes_freed ·\neviction_cycles · last_eviction_duration_ms
-state "Skip cycle\n(no eviction this pass)" as Skip #ECEFF1
+state "Cooldown check" as Cooldown #ECEFF1 : skip if too recent or\n> 5 s stale (record_skip)
+state "Wait epoch\nquiescence" as Quiesce #FFE0B2 : advance() →\nwait_for_quiescence\n(EBR — see\nepoch-reclamation)
+state "Select cold\nnodes (LRU)" as Select #FFE0B2 : select_for_eviction:\nkeep depth ≥\nmin_eviction_depth, score\nby LRU coldness, take\ncoldest up to batch_size\n× urgency
+state "Atomic unswizzle\nChild → DiskRef" as Swap #FFE0B2 : callback CAS-swaps each\ncold node; root stays\nin memory (path non-empty)
+state "Record stats" as Stats #ECEFF1 : nodes_evicted ·\nbytes_freed ·\neviction_cycles ·\nlast_duration_ms
+state "Skip cycle" as Skip #ECEFF1 : no eviction this pass
 
-Cooldown --> Quiesce : within cooldown window
-Cooldown --> Skip : too recent → record_skip
-Quiesce --> Select : readers drained (quiescent)
-Quiesce --> Skip : timeout → record_quiescence_timeout
-Select --> Swap : non-empty cold set
-Select --> Skip : registry invalid / empty → (0, 0)
-Swap --> Stats : nodes_evicted, bytes_freed
-Stats --> Idle : cycle complete (await next request)
-Skip --> Idle : await next request
-Idle --> Cooldown : next request dequeued
+Cooldown --> Quiesce : within cooldown
+Cooldown --> Skip : too recent →\nrecord_skip
+Quiesce --> Select : readers drained
+Quiesce --> Skip : timeout
+Select --> Swap : non-empty set
+Select --> Skip : empty → (0,0)
+Swap --> Stats : nodes_evicted,\nbytes_freed
+Stats --> Idle : cycle complete
+Skip --> Idle : await request
+Idle --> Cooldown : next request
 
 ' ===== Stage 5: durable outcome =====
-Swap -[#1565C0]-> Evicted : RAM reclaimed after EBR free
-state "Cold node now on disk\n(DiskRef → block_id + location)" as Evicted #BBDEFB : re-faulted on next access\n(lazy load via BufferManager)
+Swap -[#1565C0]-> Evicted : RAM reclaimed\nafter EBR free
+state "Cold node on disk\n(DiskRef →\nblock_id + location)" as Evicted #BBDEFB : re-faulted on next\naccess (lazy load via\nBufferManager)
 
 note bottom of Stats #ECEFF1
-  The eviction thread NEVER blocks client inserts/lookups: it runs in the
-  background, holds only a Weak<Coordinator>, and only evicts nodes whose disk
-  image is current — a write invalidates the DiskLocationRegistry until the next
-  checkpoint re-publishes it.
+  The eviction thread NEVER blocks
+  client inserts/lookups: it runs in
+  the background, holds only a
+  Weak<Coordinator>, and evicts only
+  nodes whose disk image is current —
+  a write invalidates the registry
+  until the next checkpoint re-publishes.
 end note
 
 legend right
 | Color | Urgency / severity |
-|<#C8E6C9>| Normal — full caching, eviction idle |
-|<#FFE0B2>| Low → Moderate — proactive eviction |
-|<#FFCDD2>| Critical → Emergency — aggressive eviction |
+|<#C8E6C9>| Normal — full caching, idle |
+|<#FFE0B2>| Low → Moderate — proactive |
+|<#FFCDD2>| Critical → Emergency — aggressive |
 |<#ECEFF1>| coordinator plumbing |
 |<#BBDEFB>| durable on-disk outcome |
 endlegend

@@ -45,14 +45,14 @@ Both live under the shared core [`src/scdawg/core/`](../../../src/scdawg/core/)
 ### Key Advantages
 
 - 🔍 **Substring recognition**: any path from any state spells a substring of
-  the indexed corpus, so `contains_substring(p)` answers in `O(∣p∣)`.
+  the indexed corpus, so `contains_substring(p)` answers in $O(\mid p\mid )$.
 - 📦 **Compact**: asymptotically tighter than a generic suffix automaton because
   state merging and edge contraction are performed eagerly during batch
-  construction (`≤ n` branching states for an input of total length `n`, versus
-  the suffix automaton's `≤ 2n−1` states).
+  construction ($\le n$ branching states for an input of total length `n`, versus
+  the suffix automaton's $\le 2n−1$ states).
 - ⚡ **IS-features**: the *index structure* operations of Blumer et al. (1987) —
   `freq` (occurrence count) and `locations` (every start position) — run in
-  `O(∣p∣ + k)` for `k` occurrences.
+  $O(\mid p\mid + k)$ for `k` occurrences.
 - 🌐 **Unicode (char variant)**: correct multi-byte handling at the code-point
   level.
 
@@ -89,14 +89,14 @@ the symmetric on-line construction this implementation follows.
 The structure has two defining properties:
 
 1. **Right extensions are deterministic**: for each state `q` and each label
-   `c`, there is at most one outgoing transition `q → q'` on `c` (as in any DFA).
+   `c`, there is at most one outgoing transition $q \to q'$ on `c` (as in any DFA).
 2. **Non-branching chains are contracted**: a maximal run of states each with a
    single in-edge and single out-edge is collapsed into one edge carrying the
    whole factor. This is the "compact" refinement — it removes the redundancy a
    plain suffix automaton keeps for on-line constructibility.
 
 The resulting graph has at most `n` branching states for an input of total
-length `n`, a strict improvement over the suffix automaton's `≤ 2n−1` states.
+length `n`, a strict improvement over the suffix automaton's $\le 2n−1$ states.
 
 ### Endpos equivalence
 
@@ -107,7 +107,7 @@ essentials:
 > at which an occurrence of `x` ends in the indexed text.
 
 Like the basic suffix automaton, the SCDAWG groups substrings by their `endpos`
-sets: two substrings end at the same set of positions ⇔ they share a state.
+sets: two substrings end at the same set of positions $\iff$ they share a state.
 The compact refinement additionally contracts chains of states whose `endpos`
 sets are identical except for the implied offset, eliminating states that would
 otherwise be redundant after batch construction.
@@ -115,14 +115,29 @@ otherwise be redundant after batch construction.
 ## Data Structure
 
 `Scdawg<V>` wraps an internal `ScdawgInner<V>` (from
-[`src/scdawg/core/inner.rs`](../../../src/scdawg/core/inner.rs)) inside an
-`Arc<RwLock<…>>` for thread-safe shared access:
+[`src/scdawg/core/inner.rs`](../../../src/scdawg/core/inner.rs)) behind a
+lock-free atomic snapshot ([`src/scdawg/lockfree.rs`](../../../src/scdawg/lockfree.rs))
+for thread-safe shared access:
 
 ```rust,ignore
 pub struct Scdawg<V: DictionaryValue = ()> {
-    inner: Arc<RwLock<ScdawgInner<V>>>,
+    inner: LockFreeScdawg<u8, V>,
+}
+
+// The snapshot cell: the whole inner graph is published as one immutable Arc.
+pub(crate) struct LockFreeScdawg<U: CharUnit, V: DictionaryValue = ()> {
+    inner: Arc<ArcSwap<ScdawgCoreInner<U, V>>>,
 }
 ```
+
+The `Arc<ArcSwap<…>>` publishes the entire `ScdawgInner` graph as an *immutable
+snapshot*. A reader takes one `load_full()` snapshot — a single atomic load plus
+an `Arc` clone — so reads are **wait-free** and never observe a torn graph. A
+writer clones the current snapshot, applies its mutation to that private copy,
+and installs the new graph with a single `compare_and_swap`; on a losing race it
+retries under a bounded [`CasBackoff`](../../../src/nonblocking.rs), so writes
+are **lock-free** whole-graph copy-on-write. No blocking lock is involved;
+readers and writers never block one another.
 
 `ScdawgInner<V>` holds the state array plus the metadata the IS-features need.
 Each node (`ScdawgNode<V>`) carries:
@@ -189,10 +204,10 @@ pattern and `k` the number of occurrences:
 | `locations(p)` | `Vec<(String, usize)>` | `(term, start-position)` for every occurrence |
 | `find_exact_substring(p)` | `Vec<SubstringMatch<Node>>` | rich matches (term, position, length, end-node) |
 
-`contains_substring`, `find`, and `freq` run in `O(∣p∣)`; `locations` /
-`find_exact_substring` run in `O(∣p∣ + k)` because they additionally enumerate
+`contains_substring`, `find`, and `freq` run in $O(\mid p\mid )$; `locations` /
+`find_exact_substring` run in $O(\mid p\mid + k)$ because they additionally enumerate
 the `k` hits. Use `find` once and then `freq_at` / `locations_at` to amortize the
-`O(∣p∣)` descent across repeated queries against the same state.
+$O(\mid p\mid )$ descent across repeated queries against the same state.
 
 ```rust,no_run
 use libdictenstein::scdawg::Scdawg;
@@ -265,15 +280,15 @@ SCDAWG via `DictionaryNode::transition`, exactly as it would any other backend.
 
 ## Performance Analysis
 
-For an input corpus of total length `n` and a query pattern of length `∣p∣`
+For an input corpus of total length `n` and a query pattern of length $\mid p\mid$
 with `k` occurrences:
 
 | Operation | Time | Space |
 |---|---|---|
 | `from_terms` (batch build) | `O(n)` amortized | `O(n)` states |
-| `contains_substring(p)` / `find(p)` | `O(∣p∣)` | `O(1)` extra |
-| `freq(p)` | `O(∣p∣ + k)` | `O(1)` |
-| `locations(p)` / `find_exact_substring(p)` | `O(∣p∣ + k)` | `O(k)` returned |
+| `contains_substring(p)` / `find(p)` | $O(\mid p\mid )$ | `O(1)` extra |
+| `freq(p)` | $O(\mid p\mid + k)$ | `O(1)` |
+| `locations(p)` / `find_exact_substring(p)` | $O(\mid p\mid + k)$ | `O(k)` returned |
 
 Memory is smaller than `SuffixAutomaton` for the same corpus, since the compact
 form contracts the non-branching chains the constructible-online suffix

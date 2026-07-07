@@ -1,0 +1,57 @@
+@startuml lockfree-insert-recursive
+' ============================================================================
+' lockfree-insert-recursive.puml — how insert_recursive + create_path build the
+' new spine for "cat" BOTTOM-UP: the leaf is created first (and will be the
+' FINAL node), then wrapped by 't', then by 'a', yielding subtree_root; finally
+' the parent returns node.with_child('c', subtree_root) — a new immutable node.
+' Source: §Recursive Path Building (Bottom-Up) of lockfree-cas-artrie.md.
+' Color key (house palette):
+'   green  #C8E6C9  new in-memory nodes allocated bottom-up
+'   blue   #BBDEFB  the branch test (does the child exist?)
+'   grey   #ECEFF1  entry / return plumbing
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam ActivityBorderColor #37474F
+skinparam ActivityDiamondBorderColor #37474F
+skinparam NoteBackgroundColor #FFF9C4
+skinparam NoteBorderColor #FBC02D
+
+title insert_recursive("cat") — build the new spine **bottom-up** (leaf first)
+
+start
+
+partition "Descend (grey = plumbing)" #ECEFF1 {
+  :insert_recursive(node, "cat", depth = 0);
+  :depth 0 → key = 'c';
+}
+
+partition "Branch test (blue = decision)" #BBDEFB {
+  if (node has a child for 'c'?) then (no — new branch)
+  else (yes)
+    :recurse into that child\n(depth + 1) …;
+    detach
+  endif
+}
+
+partition "create_path('at') — allocate the tail BOTTOM-UP (green)" #C8E6C9 {
+  :**leaf** (empty) — created FIRST\n(will be marked FINAL for "cat");
+  :wrap with 't'  →  node  't' → leaf;
+  :wrap with 'a'  →  node  'a' → 't'  = **subtree_root**;
+  :return (subtree_root, leaf);
+  note right
+    Bottom-up = leaf → 't' → 'a'.
+    Every node is immutable, so the
+    wrap allocates a NEW node each step.
+  end note
+}
+
+partition "Return the new node (grey)" #ECEFF1 {
+  :return  node.with_child('c', subtree_root)\n— a NEW immutable root, ready to CAS-publish;
+}
+
+stop
+@enduml

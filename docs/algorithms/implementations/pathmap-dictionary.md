@@ -63,37 +63,13 @@ Old version lost!
 ```
 
 **Persistent approach** (PathMap):
-```
-Version 1:  root₁ → 'b'/'r' → 'est'
-Version 2:  root₂ → 'b'/'r'/'t' → 'est'
-                     ↑   ↑    ↑
-                     └───┴────┘
-                   Shared nodes (not copied)
-
-Both versions coexist!
-```
+<img src="../../diagrams/pathmap-cow-share.svg" alt="Persistent copy-on-write sharing: adding 'test' to {best, rest} creates root2 that reuses the shared 'b'/'r' branch and the shared 'est' suffix from root1, allocating only the new 't' node; both root1 (version 1) and root2 (version 2) remain valid." width="70%"/>
 
 ### Structural Sharing
 
 Only changed path from root is copied; rest is shared:
 
-```
-Insert "team" into {"test", "testing"}:
-
-Old tree:
-  root → 't' → 'e' → 's' → 't' (final)
-                      ↓
-                     'i' → 'n' → 'g' (final)
-
-New tree (after adding "team"):
-  root' → 't' → 'e' → 's' → 't' (final)  ← Shared
-                ↓       ↓
-               'a'     'i' → 'n' → 'g' (final)  ← Shared
-                ↓
-               'm' (final)  ← New
-
-Nodes marked "Shared" are reused, not copied
-```
+<img src="../../diagrams/pathmap-cow-insert.svg" alt="Structural sharing when inserting 'team' into {test, testing}: the new tree reuses the shared t-e-s-t spine and the i-n-g ('testing') tail and allocates only the new 'a' and 'm' nodes for 'team', so an m-character insert costs O(m) new nodes." width="70%"/>
 
 **Memory**: Only `O(m)` new nodes for m-character insert
 
@@ -149,20 +125,16 @@ PathMapDictionary is a thin wrapper that:
 
 ### Memory Layout
 
-```
-┌─────────────────┬─────────────────┐
-│ Component       │ Overhead        │
-├─────────────────┼─────────────────┤
-│ Arc pointers    │ 16 bytes        │
-│ RwLock          │ 8 bytes         │
-│ PathMap         │ ~32 bytes/node  │
-│ term_count      │ 8 bytes         │
-└─────────────────┴─────────────────┘
-```
+| Component | Overhead |
+| --- | --- |
+| Arc pointers | 16 bytes |
+| RwLock | 8 bytes |
+| PathMap | ~32 bytes/node |
+| term_count | 8 bytes |
 
 **Per-node overhead**: ~32 bytes (HashMap-based)
 
-**Example**: 10,000-term dictionary ≈ 320 KB
+**Example**: 10,000-term dictionary $\approx$ 320 KB
 
 ### Clone Behavior & Memory Semantics
 
@@ -463,7 +435,7 @@ PathMapDictionary provides constructors optimized for simple use cases and rapid
 
 Where n = number of terms, m = dictionary size (grows with insertions)
 
-**Note**: PathMapDictionary uses `insert()` internally which is `O(log m)`, making bulk construction `O(n·log m)` vs `O(n·m)` for DAWG variants.
+**Note**: PathMapDictionary uses `insert()` internally which is `O(log m)`, making bulk construction $O(n\cdot log m)$ vs $O(n\cdot m)$ for DAWG variants.
 
 ### Empty Dictionary
 
@@ -513,7 +485,7 @@ let dict = PathMapDictionary::from_terms(term_set);
 ```
 
 **Characteristics:**
-- **Time**: `O(n·log m)` where m grows from 0 to n
+- **Time**: $O(n\cdot log m)$ where m grows from 0 to n
 - **Memory**: ~32 bytes per node (HashMap-based)
 - **Structural sharing**: Minimal (PathMap not optimized for bulk insert)
 
@@ -559,9 +531,9 @@ let config_dict: PathMapDictionary<String> = PathMapDictionary::from_terms_with_
 
 | Method | Time | Memory | vs DynamicDawg |
 |--------|------|--------|----------------|
-| `new()` + inserts | ~12ms | ~320KB | ~3× slower |
-| `from_terms()` | ~12ms | ~320KB | ~3× slower |
-| `from_terms_with_values()` | ~13ms | ~320KB | ~3× slower |
+| `new()` + inserts | ~12ms | ~320KB | ~3$\times$ slower |
+| `from_terms()` | ~12ms | ~320KB | ~3$\times$ slower |
+| `from_terms_with_values()` | ~13ms | ~320KB | ~3$\times$ slower |
 
 **Memory usage**:
 
@@ -573,7 +545,7 @@ Large (100K terms):   ~3.2MB (vs ~2.5MB DynamicDawg)
 
 **Trade-offs**:
 - **Simpler API**: Easier to use, less boilerplate
-- **Slower**: 2-3× slower than DynamicDawg for bulk operations
+- **Slower**: 2-3$\times$ slower than DynamicDawg for bulk operations
 - **More memory**: ~30% higher memory footprint
 - **Good enough**: For < 10K terms, difference is negligible
 
@@ -637,13 +609,7 @@ let dicts: Vec<PathMapDictionary<Vec<u32>>> = documents
 
 **Decision guide:**
 
-```
-Start with: PathMapDictionary
-  ↓
-  If performance matters → Switch to DynamicDawg (~3× faster)
-  ↓
-  If static dictionary → Switch to DoubleArrayTrie (~12× faster)
-```
+<img src="../../diagrams/pathmap-migration-flow.svg" alt="Backend migration path: start with PathMapDictionary for prototyping; if performance matters switch to DynamicDawg (about 3x faster); if the dictionary is static switch to DoubleArrayTrie (about 12x faster and most compact)." width="70%"/>
 
 ### Parallel Construction
 
@@ -689,8 +655,8 @@ PathMapDictionary accessor methods have **simpler** implementations but **slower
 
 | Method | PathMapDictionary | DynamicDawg | Performance Impact |
 |--------|-------------------|-------------|---------------------|
-| `contains(term)` | `O(m·log k)` | `O(m)` | ~2-3× slower |
-| `get_value(term)` | `O(m·log k)` | `O(m)` | ~2-3× slower |
+| `contains(term)` | $O(m\cdot log k)$ | `O(m)` | ~2-3$\times$ slower |
+| `get_value(term)` | $O(m\cdot log k)$ | `O(m)` | ~2-3$\times$ slower |
 | `term_count()` | `O(1)` | `O(1)` | Similar |
 | `len()` / `is_empty()` | `O(1)` | `O(1)` | Similar |
 
@@ -734,8 +700,8 @@ let root = dict.root();
 
 | Method | PathMapDictionary | DynamicDawg | PathMap/DynamicDawg Ratio |
 |--------|-------------------|-------------|---------------------------|
-| `contains()` | ~700ns | ~250ns | 2.8× slower |
-| `get_value()` | ~750ns | ~260ns | 2.9× slower |
+| `contains()` | ~700ns | ~250ns | 2.8$\times$ slower |
+| `get_value()` | ~750ns | ~260ns | 2.9$\times$ slower |
 | `term_count()` | ~5ns | ~5ns | Same |
 | `len()` / `is_empty()` | ~5ns | ~5ns | Same |
 
@@ -842,7 +808,7 @@ where
 5. Update `self.term_count` for new entries
 
 **Complexity**:
-- **Time**: `O(n·log m)` where n = terms in `other`, m = terms in `self`
+- **Time**: $O(n\cdot log m)$ where n = terms in `other`, m = terms in `self`
   - `O(n)` for iteration over `other`
   - `O(log m)` per PathMap insertion/lookup
 - **Space**: `O(log m)` for PathMap tree height (structural sharing reduces actual allocation)
@@ -857,13 +823,13 @@ pub fn join_into<V: Lattice>(&mut self, other: &PathMap<V>) { ... }
 ```
 
 **Limitation**: The `Lattice` trait requires specific algebraic properties:
-- Commutative: `a ⊔ b = b ⊔ a`
-- Associative: `(a ⊔ b) ⊔ c = a ⊔ (b ⊔ c)`
-- Idempotent: `a ⊔ a = a`
+- Commutative: $a \sqcup b = b \sqcup a$
+- Associative: $(a \sqcup b) \sqcup c = a \sqcup (b \sqcup c)$
+- Idempotent: $a \sqcup a = a$
 
 **Our approach**: Uses **arbitrary merge functions** without algebraic constraints:
-- ✅ Supports non-commutative merges: `(old, new) → new` (last-writer-wins)
-- ✅ Supports non-idempotent merges: `(a, b) → a + b` (sum aggregation)
+- ✅ Supports non-commutative merges: $(old, new) \to new$ (last-writer-wins)
+- ✅ Supports non-idempotent merges: $(a, b) \to a + b$ (sum aggregation)
 - ✅ Flexible merge logic: Any `Fn(&V, &V) -> V`
 
 **Trade-off**: Slightly slower (~15-20% overhead) but far more flexible.
@@ -1322,7 +1288,7 @@ prototype_fuzzy_matcher(
 | **Insert** | O(m log n) | m = term length, n = dict size |
 | **Remove** | O(m log n) | HashMap operations |
 | **Contains** | O(m log n) | Tree traversal + lookups |
-| **Fuzzy search** | O(m×d²×b×log n) | Additional log factor |
+| **Fuzzy search** | O(m$\times$d²$\times$b$\times$log n) | Additional log factor |
 
 ### Benchmark Results
 

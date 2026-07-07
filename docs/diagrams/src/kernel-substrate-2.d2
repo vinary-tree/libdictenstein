@@ -1,0 +1,123 @@
+# =============================================================================
+# d2-layout: elk
+# kernel-substrate-2.d2 — COMPANION detail figure to kernel-substrate.d2.
+#
+# kernel-substrate.d2 shows the RELATIONSHIPS (which seams a new layer implements
+# and which services it inherits, plus the two reference clients). THIS figure zooms
+# into the kernel itself and lists the concrete core/ modules inside each of the
+# three service groups — the reference detail that would not fit the prose column
+# alongside the relationship arrows.
+#
+# Source of truth: src/persistent_artrie/core/ (block_storage.rs, key_encoding.rs,
+# overlay/{flip,durable_write,checkpoint}.rs, wal/, buffer_manager.rs, durability.rs,
+# committed_watermark.rs, recovery.rs, concurrency.rs, mvcc.rs, eviction/).
+#
+# Color key (house palette + persistence accents — docs/diagrams/README.md):
+#   slate  #CFD8DC  the reusable kernel substrate (container)
+#   teal   #B2DFDB  ① extension seams a client implements (overlay engine / write template)
+#   orange #FFCC80  ② durability services inherited (WAL, policy, watermark, recovery)
+#   blue   #BBDEFB  ③ storage + concurrency services inherited (buffer, epoch/MVCC, eviction)
+# =============================================================================
+
+direction: down
+
+title: |md
+  # Inside the durable-storage kernel
+  *the concrete `core/` modules in each service group*
+
+  *(who implements / inherits them → companion figure kernel-substrate.d2)*
+| {
+  near: top-center
+  style.font-size: 18
+  style.font-color: "#212121"
+}
+
+# ---------------------------------------------------------------------------
+# The kernel substrate (core/). grid-columns:1 stacks the three service groups —
+# and each group's modules — into one narrow column (no edge-routing lanes).
+# ---------------------------------------------------------------------------
+kernel: "Durable-storage kernel  (core/)" {
+  grid-columns: 1
+  style: {
+    fill: "#CFD8DC"
+    stroke: "#455A64"
+    font-color: "#263238"
+    stroke-width: 3
+    bold: true
+  }
+
+  seams: "① Extension seams  (you IMPLEMENT)" {
+    grid-columns: 1
+    style: {
+      fill: "#B2DFDB"
+      stroke: "#00695C"
+      font-color: "#004D40"
+      stroke-width: 2
+      bold: true
+    }
+    blockstorage: "BlockStorage  (block_storage.rs)\nread/write/allocate 256 KB blocks\n· header accessors\nplug Mmap / IoUring / your own" {
+      style.fill: "#E0F2F1"; style.stroke: "#00695C"; style.font-color: "#004D40"
+    }
+    keymodel: "Key / value model  (key_encoding.rs)\nKeyEncoding: Unit · Token · Term\non-disk magics · path-compression\n(or your own record model)" {
+      style.fill: "#E0F2F1"; style.stroke: "#00695C"; style.font-color: "#004D40"
+    }
+    overlayhooks: "Overlay Template-Method hooks\noverlay/{flip · durable_write\n· checkpoint}\nLockFreeOverlay →\nDurableOverlayWrite → OverlayCheckpoint\nsupply CAS-publish + WAL builder;\ninherit the Order-A skeleton" {
+      style.fill: "#E0F2F1"; style.stroke: "#00695C"; style.font-color: "#004D40"
+    }
+  }
+
+  durability: "② Durability services  (you INHERIT)" {
+    grid-columns: 1
+    style: {
+      fill: "#FFCC80"
+      stroke: "#EF6C00"
+      font-color: "#5D4037"
+      stroke-width: 2
+      bold: true
+    }
+    wal: "WAL  (wal/)\nappend + fsync · CRC · reader" {
+      style.fill: "#FFF3E0"; style.stroke: "#EF6C00"; style.font-color: "#5D4037"
+    }
+    policy: "DurabilityPolicy  (durability.rs)\nImmediate | GroupCommit\n| Periodic | None" {
+      style.fill: "#FFF3E0"; style.stroke: "#EF6C00"; style.font-color: "#5D4037"
+    }
+    watermark: "CommittedWatermark\n(committed_watermark.rs)\nthe only safe checkpoint_lsn" {
+      style.fill: "#FFF3E0"; style.stroke: "#EF6C00"; style.font-color: "#5D4037"
+    }
+    recovery: "RecoveryManager  (recovery.rs)\nimage + WAL-tail replay\ntorn-write fail-closed" {
+      style.fill: "#FFF3E0"; style.stroke: "#EF6C00"; style.font-color: "#5D4037"
+    }
+  }
+
+  storage: "③ Storage + concurrency  (you INHERIT)" {
+    grid-columns: 1
+    style: {
+      fill: "#BBDEFB"
+      stroke: "#1565C0"
+      font-color: "#0D47A1"
+      stroke-width: 2
+      bold: true
+    }
+    buffer: "BufferManager  (buffer_manager.rs)\nframe pool · fault-in · flush_dirty" {
+      style.fill: "#E3F2FD"; style.stroke: "#1565C0"; style.font-color: "#0D47A1"
+    }
+    epoch: "EpochManager + MVCC\n(concurrency.rs · mvcc.rs)\nepoch-based reclamation\nsnapshot ReadTransaction" {
+      style.fill: "#E3F2FD"; style.stroke: "#1565C0"; style.font-color: "#0D47A1"
+    }
+    eviction: "Eviction  (eviction/)\nmemory-pressure unswizzle-to-disk\n+ read-fault" {
+      style.fill: "#E3F2FD"; style.stroke: "#1565C0"; style.font-color: "#0D47A1"
+    }
+  }
+}
+
+legend: |md
+  **Color key** · ⬛ slate = the reusable kernel substrate ·
+
+  🟦 teal ① = extension seams you implement · 🟧 orange ② = durability services you inherit ·
+
+  🟦 blue ③ = storage + concurrency services you inherit · *clients → companion figure kernel-substrate.d2*
+| {
+  near: bottom-center
+  style.font-size: 13
+  style.font-color: "#37474F"
+}

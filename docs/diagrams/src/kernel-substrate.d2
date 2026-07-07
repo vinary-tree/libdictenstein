@@ -1,0 +1,81 @@
+# =============================================================================
+# d2-layout: elk
+# kernel-substrate.d2 — building a NEW persistent layer ON the reusable
+# DURABLE-STORAGE KERNEL: which seams you IMPLEMENT and which services you INHERIT.
+#
+# This is the RELATIONSHIPS view (kept within the prose column). The detailed
+# contents of each service group (every core/ module) live in the companion figure
+# kernel-substrate-2.d2 ("Inside the kernel — the service groups in detail").
+#
+# The two existing reference clients (ARTrie family, suffix-graph family) are noted
+# inside the seam/durability groups as EXAMPLES, so the figure keeps a single client
+# box ("④ your new layer") with clean, non-crossing implement/inherit edges.
+#
+# Source of truth: src/persistent_artrie/core/ (block_storage.rs, key_encoding.rs,
+# overlay/{flip,durable_write,checkpoint}.rs, wal/, buffer_manager.rs, durability.rs,
+# committed_watermark.rs, recovery.rs, concurrency.rs, mvcc.rs, eviction/).
+#
+# The message: to build a NEW durable, lock-free, crash-safe persistent file layer,
+# IMPLEMENT the seams (①) and INHERIT the data-loss-critical durability (②) and
+# storage + concurrency (③) machinery.
+#
+# Color key (house palette + persistence accents — docs/diagrams/README.md):
+#   grey   #ECEFF1 (dashed)  the "your new layer" placeholder
+#   slate  #CFD8DC  the reusable kernel substrate (container)
+#   teal   #B2DFDB  ① extension seams a client implements
+#   orange #FFCC80  ② durability services inherited
+#   blue   #BBDEFB  ③ storage + concurrency services inherited
+# =============================================================================
+
+direction: right
+
+title: |md
+  # Building on the durable-storage kernel
+  *implement the seams (①) · inherit the services (②③)*
+| {
+  near: top-center
+  style.font-size: 18
+  style.font-color: "#212121"
+}
+
+# --- The one client box (left) — your new layer ---
+yours: "④ Your new\npersistent layer" {
+  style.fill: "#ECEFF1"; style.stroke: "#546E7A"; style.font-color: "#263238"
+  style.stroke-width: 3; style.stroke-dash: 4; style.bold: true
+}
+
+# --- The kernel's three service groups (right), with example clients noted inline ---
+kernel: "Durable-storage kernel (core/)" {
+  seams: "① seams — IMPLEMENT\n(ex: ARTrie · overlay hooks)" {
+    style.fill: "#B2DFDB"; style.stroke: "#00695C"; style.font-color: "#004D40"; style.bold: true
+  }
+  durability: "② durability — INHERIT\n(ex: suffix-graph · WAL)" {
+    style.fill: "#FFCC80"; style.stroke: "#EF6C00"; style.font-color: "#5D4037"; style.bold: true
+  }
+  storage: "③ storage + concurrency\nINHERIT · buffer/epoch+MVCC/evict" {
+    style.fill: "#BBDEFB"; style.stroke: "#1565C0"; style.font-color: "#0D47A1"; style.bold: true
+  }
+}
+
+# --- Edges: implement ①, inherit ②③ (single source ⇒ no box crossings). The
+# implement-vs-inherit distinction is carried by each group's own label + edge color,
+# so the edges stay unlabeled and the client↔kernel gutter stays narrow. ---
+yours -> kernel.seams: "" { style.stroke: "#00695C"; style.stroke-width: 3; style.bold: true }
+yours -> kernel.durability: "" { style.stroke: "#EF6C00"; style.stroke-width: 2; style.stroke-dash: 3 }
+yours -> kernel.storage: "" { style.stroke: "#1565C0"; style.stroke-width: 2; style.stroke-dash: 3 }
+
+legend: |md
+  **Color key** · ⬜ grey (dashed) = your new layer · ⬛ slate = the kernel ·
+
+  🟦 teal ① = seams you implement · 🟧 orange ② + 🟦 blue ③ = services you inherit.
+
+  **Reference clients:** ARTrie family = PersistentARTrie · …Char · …U64Compact · …Vocab ·
+
+  suffix-graph family = …SuffixAutomaton · …Tree · …Scdawg.
+
+  *Per-group `core/` module detail (BlockStorage, WAL, BufferManager, …) → companion figure kernel-substrate-2.*
+| {
+  near: bottom-center
+  style.font-size: 13
+  style.font-color: "#37474F"
+}

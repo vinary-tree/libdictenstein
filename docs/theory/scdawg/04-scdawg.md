@@ -26,7 +26,7 @@ Without left extension, WallBreaker cannot efficiently grow pattern matches towa
 
 ## Left Context and Right Context
 
-The two contexts below are sometimes called the **right language** and **left language** of a factor — the sets of words that may legally follow it (append) or precede it (prepend) inside `w`. Right contexts drive standard (right-extension) navigation; left contexts are what the SCDAWG additionally indexes, over the alphabet `Σ`.
+The two contexts below are sometimes called the **right language** and **left language** of a factor — the sets of words that may legally follow it (append) or precede it (prepend) inside `w`. Right contexts drive standard (right-extension) navigation; left contexts are what the SCDAWG additionally indexes, over the alphabet $\Sigma$.
 
 ### Right Context (Review)
 
@@ -61,12 +61,12 @@ left-context₁(x) = {a ∈ Σ : ax ∈ F(w)}
 | Factor x | left-context₁(x) | right-context₁(x) |
 |----------|------------------|-------------------|
 | a | {ε, c} | {b} |
-| b | {a} | {c, $} |
-| c | {b} | {a, $} |
-| ab | {ε, c} | {c, $} |
-| bc | {a} | {a, $} |
+| b | {a} | {c, \$} |
+| c | {b} | {a, \$} |
+| ab | {ε, c} | {c, \$} |
+| bc | {a} | {a, \$} |
 | ca | {b} | {b} |
-| abc | {ε, c} | {a, $} |
+| abc | {ε, c} | {a, \$} |
 
 Where ε represents the empty context (factor at string boundary).
 
@@ -95,9 +95,9 @@ In other words, imps(x) is the longest string that occurs exactly where x occurs
 
 *Proof*: By definition, `imps(x)` occurs exactly where `x` occurs, so they have identical end-positions (`endpos` sets).
 
-**Lemma 3**: `∣imps(x)∣ ≥ ∣x∣`
+**Lemma 3**: $\mid imps(x)\mid \ge \mid x\mid$
 
-*Proof*: `imps(x)` contains `x` (`γxβ ⊇ x`).
+*Proof*: `imps(x)` contains `x` ($\gamma x\beta \supseteq x$).
 
 ### Example: Implications for "abcabcab"
 
@@ -136,12 +136,12 @@ P(w) = {x ∈ F(w) : x is prime} = {imps(y) : y ∈ F(w)}
 
 *Proof*:
 - If `x = longest([x])`, then no extension of `x` shares the same end-positions.
-- Therefore `γ = β = ε` in the implication.
+- Therefore $\gamma = \beta = \epsilon$ in the implication.
 - So `imps(x) = x`, making `x` prime.
 
-**Lemma 5**: `∣P(w)∣ ≤ ∣w∣ + 1` (same bound as CDAWG nodes).
+**Lemma 5**: $\mid P(w)\mid \le \mid w\mid + 1$ (same bound as CDAWG nodes).
 
-**Lemma 6**: For any factor `x`, `imps(x) ∈ P(w)`.
+**Lemma 6**: For any factor `x`, $imps(x) \in P(w)$.
 
 ### Prime Subwords for "abcabcab"
 
@@ -203,23 +203,13 @@ where γ_y is the left context prefix added by imps
 
 For a prime subword P, its edges form:
 
-```
-        Left Extensions                Right Extensions
-        ──────────────                 ────────────────
-
-            ╭─ σ₁·P ←── σ₁ ──╮    ╭── σ₁ ──→ P·σ₁ ─╮
-            │                 │    │                 │
-     ... ←──┤       P        ├────┤        P        ├──→ ...
-            │                 │    │                 │
-            ╰─ σ₂·P ←── σ₂ ──╯    ╰── σ₂ ──→ P·σ₂ ─╯
-
-```
+<img src="../../diagrams/scdawg-factor-extensions.svg" alt="The two edge families of a single prime subword P: left-extension edges go to the prepend targets sigma1-dot-P and sigma2-dot-P while right-extension edges go to the append targets P-dot-sigma1 and P-dot-sigma2, so a matched factor can be grown to the left or to the right in O(length of label) per step. Left and right extensions reach different strings and are not a mere reversal of each other." width="70%"/>
 
 Each prime subword has:
 - Right edges for each valid right extension character.
 - Left edges for each valid left extension character.
 
-The figure below renders the full SCDAWG for the running example `abcabcab`. Solid dark edges are the CDAWG's right-extension transitions; the dashed blue edges are the **symmetric left-extension edges** the SCDAWG adds. Together they let a matched factor be grown to the right (append) or to the left (prepend) in `O(∣label∣)` per step — the bidirectional capability the plain CDAWG lacks.
+The figure below renders the full SCDAWG for the running example `abcabcab`. Solid dark edges are the CDAWG's right-extension transitions; the dashed blue edges are the **symmetric left-extension edges** the SCDAWG adds. Together they let a matched factor be grown to the right (append) or to the left (prepend) in $O(\mid label\mid )$ per step — the bidirectional capability the plain CDAWG lacks.
 
 <img src="../../diagrams/scdawg-structure.svg" alt="SCDAWG for abcabcab over the prime-subword nodes v0=ε through v6=abcabcab. Solid dark-slate edges are right-extension (CDAWG) transitions labelled by their substrings; dashed blue edges are the symmetric left-extension edges that distinguish the SCDAWG, enabling prepend navigation and thus bidirectional search." width="860"/>
 
@@ -260,8 +250,8 @@ This symmetry means:
 
 *Proof sketch*:
 - `slink(x) = y` means `y` is a suffix of `x`.
-- `x = α·y` for some non-empty `α`.
-- The first character of `α` provides the left extension from `y` to `x`.
+- $x = \alpha \cdot y$ for some non-empty $\alpha$.
+- The first character of $\alpha$ provides the left extension from `y` to `x`.
 
 ### Building Left Extensions from Suffix Links
 
@@ -324,32 +314,10 @@ for each node x in CDAWG:
 
 Note: For this particular string, right and left extensions have similar structure due to its repetitive nature.
 
-### ASCII Diagram
+### The Two Extension Graphs
 
-```
-SCDAWG for "abcabcab":
-
-                      RIGHT EXTENSIONS (→)
-                      ════════════════════
-
-     ε ─────ab────→ ab ────ca────→ abca ────b────→ abcab
-     │               │               │               │
-     │               │               │               │
-     └───abcab───────────────────────┘               │
-                                                     │
-     abcab ────c────→ abcabc ────a────→ abcabca ────b────→ abcabcab
-
-
-                      LEFT EXTENSIONS (←)
-                      ═══════════════════
-
-     ε ←────ab───── ab ←────ca───── abca ←────b───── abcab
-     │               │               │               │
-     │               │               │               │
-     └───────────────────────────────abcab───────────┘
-
-     abcab ←────c───── abcabc ←────a───── abcabca ←────b───── abcabcab
-```
+<img src="../../diagrams/scdawg-extension-graphs-abcabcab.svg" alt="Part 1 of 2: the RIGHT-extension (append) graph of the SCDAWG of abcabcab over the prime-subword nodes epsilon, ab, abca, abcab, abcabc, abcabca and abcabcab. These are the plain CDAWG's forward transitions. Its mirror, the left-extension column, is part 2 below." width="70%"/>
+<img src="../../diagrams/scdawg-extension-graphs-abcabcab-2.svg" alt="Part 2 of 2: the LEFT-extension (prepend) graph of the SCDAWG of abcabcab over the same prime-subword nodes, carrying the same edge labels as part 1 with reversed direction pointing up toward epsilon. These are the symmetric edges the SCDAWG adds. For this repetitive string the two columns are isomorphic, illustrating the symmetry that names the SCDAWG." width="70%"/>
 
 ## Complexity Analysis
 
@@ -402,7 +370,7 @@ The SCDAWG satisfies all WallBreaker requirements from Gerdjikov et al. (2013, s
 | **(1b)** | Right extend V → V·σ | Follow right extension edge labeled with σ |
 | **(1c)** | Left extend V → σ·V | Follow left extension edge labeled with σ |
 
-All operations complete in `O(∣label∣)` time, where `label` is the edge-label length.
+All operations complete in $O(\mid label\mid )$ time, where `label` is the edge-label length.
 
 ## Summary
 

@@ -1,0 +1,77 @@
+@startuml architecture-2
+' ============================================================================
+' libdictenstein architecture (part 2 of 2) — the BACKEND FAMILIES that
+' implement the trait API from architecture.puml.  The purple/grey nodes are
+' compact ANCHORS for the traits (their detail is in part 1); hidden edges stack
+' the three backend packages vertically to stay within the prose column.
+' Color key:
+'   green = in-memory (always on)   amber = feature pathmap-backend
+'   blue  = feature persistent-artrie (disk)   purple/grey = trait anchor
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 150
+skinparam nodesep 12
+skinparam ranksep 30
+skinparam ArrowColor #37474F
+skinparam packageStyle rectangle
+title libdictenstein — backend families (2 of 2)
+
+' --- compact trait anchors (detail in part 1) ---
+rectangle "**Dictionary**\n(trait)" as Dict #E1BEE7
+rectangle "**BijectiveDictionary**\n(trait)" as Bij #E1BEE7
+rectangle "**DictionaryNode**\n(trait)" as Node #E1BEE7
+rectangle "CharUnit / KeyEncoding\n(unit bounds)" as UNIT #CFD8DC
+Dict -[hidden]-> Bij
+Bij -[hidden]-> Node
+Node -[hidden]-> UNIT
+
+package "In-memory (always on)" #C8E6C9 {
+  rectangle "DoubleArrayTrie\n/ …Char" as DAT
+  rectangle "DynamicDawg\n/ …Char / …U64" as DD
+  rectangle "SuffixAutomaton\n/ …Char" as SA
+  rectangle "Scdawg / …Char" as SC
+  DAT -[hidden]-> DD
+  DD -[hidden]-> SA
+  SA -[hidden]-> SC
+}
+
+package "pathmap-backend" #FFF59D {
+  rectangle "PathMapDictionary\n/ …Char" as PM
+}
+
+package "persistent-artrie (disk)" #BBDEFB {
+  rectangle "PersistentARTrie\n/ …Char" as PA
+  rectangle "PersistentARTrie\nU64Compact / Prefix3" as PU64
+  rectangle "PersistentVocabARTrie" as PV
+  rectangle "PersistentSuffix\nAutomaton / Tree /\nScdawg (byte / Char)" as PSG
+  PA -[hidden]-> PU64
+  PU64 -[hidden]-> PV
+  PV -[hidden]-> PSG
+}
+
+' stack the three backend packages vertically (keep it narrow)
+SC -[hidden]-> PM
+PM -[hidden]-> PA
+
+DAT ..|> Dict
+DD  ..|> Dict
+SA  ..|> Dict
+SC  ..|> Dict
+PM  ..|> Dict
+PA  ..|> Dict
+PU64 ..|> Dict
+PV  ..|> Bij
+PSG ..|> Dict
+PSG ..> Node : snapshot nodes
+DAT ..> UNIT : labels
+PA  ..> UNIT : keys
+
+legend right
+| Color | Family |
+|<#C8E6C9>| in-memory (always on) |
+|<#FFF59D>| feature pathmap-backend |
+|<#BBDEFB>| feature persistent-artrie (disk) |
+|<#E1BEE7>| trait anchor (see part 1) |
+endlegend
+@enduml

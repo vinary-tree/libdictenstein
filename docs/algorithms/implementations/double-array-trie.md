@@ -51,13 +51,7 @@ The **double-array trie** (**DAT**) algorithm, invented by Jun-ichi Aoe in 1989 
 
 Standard trie implementations use pointer-based nodes:
 
-```
-Traditional Node (32-64 bytes):
-┌─────────────┬──────────────────────────┐
-│  is_final   │  children: HashMap/Vec   │
-└─────────────┴──────────────────────────┘
-      1 byte           24-56 bytes
-```
+<img src="../../diagrams/dat-traditional-node.svg" alt="A traditional pointer-based trie node occupies 32 to 64 bytes: a 1-byte is_final flag plus a 24-to-56-byte children HashMap or Vec that is pointer-chased, giving high per-node overhead and poor cache locality." width="70%"/>
 
 **Problems**:
 1. High memory overhead per node
@@ -185,45 +179,24 @@ pub(crate) struct DATShared<V: DictionaryValue = ()> {
 
 For a dictionary with N states:
 
-```
-┌────────────────┬────────┬─────────────┐
-│ Component      │ Size   │ Per State   │
-├────────────────┼────────┼─────────────┤
-│ BASE array     │ 4N     │ 4 bytes     │
-│ CHECK array    │ 4N     │ 4 bytes     │
-│ is_final       │ N      │ 1 byte      │
-│ edges (avg)    │ ~2N    │ ~2 bytes    │
-│ values (none)  │ N      │ 1 byte*     │
-├────────────────┼────────┼─────────────┤
-│ Total          │ ~10N   │ ~10 bytes   │
-└────────────────┴────────┴─────────────┘
-```
+| Component | Size | Per State |
+| --- | --- | --- |
+| BASE array | 4N | 4 bytes |
+| CHECK array | 4N | 4 bytes |
+| is_final | N | 1 byte |
+| edges (avg) | ~2N | ~2 bytes |
+| values (none) | N | 1 byte* |
+| Total | ~10N | ~10 bytes |
 
 *When V=(), `Option<()>` is zero-sized
 
-**Example**: 50,000-term dictionary ≈ 500KB
+**Example**: 50,000-term dictionary $\approx$ 500KB
 
 ### Cache Efficiency
 
 The sequential array layout provides excellent cache performance:
 
-```
-Query "test" - Memory Access Pattern:
-┌────────────────────────────────────┐
-│ BASE[0]                            │ ← Cache line 1
-│ CHECK[t_state]                     │ ← Cache line 2 (prefetched)
-│ BASE[t_state]                      │ ← Cache line 2
-│ CHECK[te_state]                    │ ← Cache line 3 (prefetched)
-│ ...                                │
-└────────────────────────────────────┘
-
-Traditional trie pointer chasing:
-Node* root → Node* t → Node* te → Node* tes → Node* test
-  ↑           ↑          ↑           ↑           ↑
-Random       Random     Random      Random     Random
-address      address    address     address    address
-(cache miss) (cache miss) (cache miss) (cache miss) (cache miss)
-```
+<img src="../../diagrams/dat-base-check-cache.svg" alt="Memory-access comparison for the query 'test': the double-array trie reads contiguous BASE and CHECK array slots that share cache lines and are prefetcher-friendly, whereas a traditional trie chases Node pointers from root to t to te to tes to test, each a random address incurring a cache miss." width="70%"/>
 
 ## Construction Algorithm
 
@@ -330,13 +303,13 @@ impl<V: DictionaryValue> DoubleArrayTrieBuilder<V> {
 
 ### Complexity Analysis
 
-- **Time**: `O(N × L × M)` where:
+- **Time**: $O(N \times L \times M)$ where:
   - N = number of terms
   - L = average term length
   - M = average branching factor (~2-3 for natural language)
 
 - **Space**: `O(S)` where S = number of states
-  - Typically S ≈ 0.5N to 2N depending on prefix sharing
+  - Typically S $\approx$ 0.5N to 2N depending on prefix sharing
 
 ### Optimization: Sorted Insertion
 
@@ -401,7 +374,7 @@ let results: Vec<String> = automaton.query(&dict).collect();
 // Returns: ["test"] (transposition distance = 1)
 ```
 
-**Complexity**: `O(L × D × B)` where:
+**Complexity**: $O(L \times D \times B)$ where:
 - L = query length
 - D = max distance
 - B = average branching factor

@@ -1,0 +1,59 @@
+@startuml lockfree-arc-lifecycle
+' ============================================================================
+' lockfree-arc-lifecycle.puml — the Arc refcount lifecycle across one CAS
+' attempt: load bumps the count (no use-after-free), the built tree is handed
+' off by raw pointer, a losing CAS reclaims-and-drops the rejected Arc, and an
+' unreferenced old version deallocates when its count hits 0.
+' Source: §Memory Management → Arc Reference Counting of lockfree-cas-artrie.md.
+' NOTE: this is the SUPERSEDED pre-Phase-A raw-pointer path; the current
+' owned-Child overlay reclaims by plain Arc refcounting with NO into_raw/
+' from_raw (see the Phase-A box at the top of the doc).
+' Color key (house palette):
+'   green  #C8E6C9  ordinary safe Arc refcounting (auto reclaim)
+'   amber  #FFE0B2  the raw-pointer handoff (into_raw / from_raw)
+'   grey   #ECEFF1  load / plumbing
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam ActivityBorderColor #37474F
+skinparam ActivityDiamondBorderColor #37474F
+skinparam NoteBackgroundColor #FFF9C4
+skinparam NoteBorderColor #FBC02D
+
+title Arc lifecycle across one CAS attempt  (pre-Phase-A raw-pointer path)
+
+start
+
+partition "1 · Load from AtomicNodePtr (grey)" #ECEFF1 {
+  :**Arc::increment_strong_count**\nbump refcount BEFORE returning\n→ prevents use-after-free;
+}
+
+partition "2 · Build the new tree (amber = raw handoff)" #FFE0B2 {
+  :Arc::new — allocate new node versions;
+  :**Arc::into_raw** — store as a raw\npointer inside SwizzledPtr (u64);
+}
+
+if (CAS(root: old → new) result?) then (fail — root moved)
+  partition "3 · Reclaim the rejected Arc (amber)" #FFE0B2 {
+    :**Arc::from_raw** — take ownership back\nand drop it (else it would leak);
+  }
+else (win — published)
+  :new version is now the live root;
+endif
+
+partition "4 · Old version unreachable (green)" #C8E6C9 {
+  :**Arc refcount → 0** → automatic\ndeallocation of the superseded node;
+}
+
+stop
+
+note right
+  Phase A removed into_raw/from_raw:
+  children are an owned Child::InMem(Arc),
+  so steps 2–3 are ordinary Arc moves;
+  step 4 is unchanged.
+end note
+@enduml

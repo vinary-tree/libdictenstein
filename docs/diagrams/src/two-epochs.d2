@@ -1,0 +1,87 @@
+# =============================================================================
+# two-epochs.d2 — the two DIFFERENT concepts the codebase both calls "epoch".
+# They live in different modules and solve different problems; conflating them is a
+# documentation trap.
+#
+# Source of truth:
+#   src/persistent_artrie/core/concurrency.rs (EpochManager — EBR) + core/mvcc.rs
+#   src/persistent_artrie/core/epoch.rs       (CheckpointManager — durability epochs)
+#
+# Color key (house palette + persistence accents — docs/diagrams/README.md):
+#   blue   #BBDEFB  EBR — reader-safety epochs (reclamation under lock-free reads)
+#   indigo #C5CAE9  durability / checkpoint epochs (WAL rotation + checkpoint accounting)
+#   grey   #ECEFF1  the shared-word warning
+# =============================================================================
+
+direction: down
+
+title: |md
+  # Two distinct concepts, one word: "epoch"
+  *the codebase uses "epoch" for two unrelated mechanisms — keep them apart*
+| {
+  near: top-center
+  style.font-size: 18
+  style.font-color: "#212121"
+}
+
+ebr: "① EBR — reader-safety epochs" {
+  style: {
+    fill: "#BBDEFB"
+    stroke: "#1565C0"
+    font-color: "#0D47A1"
+    stroke-width: 2
+    bold: true
+  }
+  where: "core/concurrency.rs · core/mvcc.rs\nEpochManager · EpochGuard · ReadTransaction" {
+    style.fill: "#E3F2FD"; style.stroke: "#1565C0"; style.font-color: "#0D47A1"
+  }
+  purpose: "PURPOSE: safe memory reclamation + snapshot reads\nunder lock-free traversal" {
+    style.fill: "#E3F2FD"; style.stroke: "#1565C0"; style.font-color: "#0D47A1"
+  }
+  how: "HOW: a reader pins the current epoch; a superseded\nversion is reclaimed only after every reader pinned\nat its epoch has left. (Overlay nodes are ALSO\nArc-refcounted, so this layer gates snapshot\ntransactions + eviction, not basic node freeing.)" {
+    style.fill: "#E3F2FD"; style.stroke: "#1565C0"; style.font-color: "#0D47A1"
+  }
+}
+
+dur: "② Durability / checkpoint epochs" {
+  style: {
+    fill: "#C5CAE9"
+    stroke: "#3949AB"
+    font-color: "#1A237E"
+    stroke-width: 2
+    bold: true
+  }
+  where: "core/epoch.rs\nCheckpointManager · EpochMetadata · CheckpointMeta" {
+    style.fill: "#E8EAF6"; style.stroke: "#3949AB"; style.font-color: "#1A237E"
+  }
+  purpose: "PURPOSE: checkpoint accounting + WAL rotation" {
+    style.fill: "#E8EAF6"; style.stroke: "#3949AB"; style.font-color: "#1A237E"
+  }
+  how: "HOW: the WAL is divided into per-epoch segments\n(epoch_XXXX.wal); op-count / size thresholds advance\nthe epoch; a durable epoch is trusted ONLY after its\ntrie checkpoint publishes (CheckpointMeta carries the\ncheckpoint_lsn)." {
+    style.fill: "#E8EAF6"; style.stroke: "#3949AB"; style.font-color: "#1A237E"
+  }
+}
+
+warn: "⚠ Same word — DIFFERENT concept.\n① is about WHEN memory is safe to free;\n② is about HOW the WAL is segmented for checkpoints." {
+  style: {
+    fill: "#ECEFF1"
+    stroke: "#546E7A"
+    font-color: "#263238"
+    stroke-width: 2
+    bold: true
+  }
+}
+
+# Under direction:down, a container's edge-less children pack side by side (wide); these
+# hidden edges force each card's rows to stack vertically so the card stays narrow.
+ebr.where -> ebr.purpose: "" { style.opacity: 0.0 }
+ebr.purpose -> ebr.how: "" { style.opacity: 0.0 }
+dur.where -> dur.purpose: "" { style.opacity: 0.0 }
+dur.purpose -> dur.how: "" { style.opacity: 0.0 }
+
+# Stack the two concept cards vertically (hidden edge) instead of side by side, so the
+# figure fits the prose column; both still connect to the shared warning below.
+ebr -> dur: "" { style.opacity: 0.0 }
+
+ebr -> warn: "" { style.stroke: "#90A4AE"; style.stroke-dash: 3 }
+dur -> warn: "" { style.stroke: "#90A4AE"; style.stroke-dash: 3 }

@@ -1,0 +1,36 @@
+@startuml backend-selector-tree
+' ============================================================================
+' backend-selector-tree.puml — quick "which in-memory backend?" decision flow.
+' Replaces the ASCII selection flowchart in docs/algorithms/README.md.
+' Color key:  amber diamonds = decisions   green = chosen backend
+'             teal = the recommended default backend
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam ActivityDiamondBackgroundColor #FFE0B2
+skinparam ActivityDiamondBorderColor #F9A825
+skinparam ActivityBorderColor #37474F
+skinparam TitleFontSize 15
+
+title Choosing an in-memory backend
+
+start
+:What do you need?;
+if (Need to **remove** terms\nat runtime?) then (yes)
+  if (Unicode text?) then (yes)
+    :**DynamicDawg**\n**Char**;<<#C8E6C9>>
+  else (no)
+    :**DynamicDawg**;<<#C8E6C9>>
+  endif
+else (no)
+  if (Unicode text?) then (yes)
+    :**DoubleArrayTrie**\n**Char**;<<#C8E6C9>>
+  else (no)
+    :**DoubleArrayTrie**\n(default);<<#B2DFDB>>
+  endif
+endif
+stop
+@enduml

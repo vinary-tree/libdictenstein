@@ -24,36 +24,13 @@ The buffer manager mediates all access between the trie and disk storage, provid
 4. **Dirty tracking**: Track modified pages for write-back
 5. **I/O scheduling**: Batch and prioritize disk operations
 
+The crate's shipping buffer manager — a pinning page cache over the `BlockStorage`
+seam — is documented in
+[storage-backends.md § The buffer manager](../../persistence/storage-backends.md#the-buffer-manager).
+
 ### Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Application Layer                          │
-│                   (ART nodes, operations)                        │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │ get_page() / release_page()
-┌───────────────────────────┴─────────────────────────────────────┐
-│                      Buffer Manager                              │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │                     Page Table                               ││
-│  │  page_id → (frame_id, pin_count, dirty, last_access)        ││
-│  └─────────────────────────────────────────────────────────────┘│
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │                    Frame Pool                                ││
-│  │  [frame 0][frame 1][frame 2]...[frame N-1]                  ││
-│  │  (fixed-size memory frames for pages)                       ││
-│  └─────────────────────────────────────────────────────────────┘│
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │                  Eviction Policy (LRU)                       ││
-│  │  Tracks unpinned pages for replacement                      ││
-│  └─────────────────────────────────────────────────────────────┘│
-└───────────────────────────┬─────────────────────────────────────┘
-                            │ read() / write()
-┌───────────────────────────┴─────────────────────────────────────┐
-│                      Disk Manager                                │
-│              (file I/O, block allocation)                        │
-└─────────────────────────────────────────────────────────────────┘
-```
+<img src="../../diagrams/buffer-manager-stack.svg" alt="The three-layer storage stack: the application layer of ART nodes and operations calls get_page and release_page on the buffer manager, which contains a page table mapping page_id to frame plus pin, dirty and access state, a fixed-size frame pool, and an LRU eviction policy, and which in turn issues read and write calls to the disk manager." width="70%"/>
 
 ### Core API
 
@@ -296,7 +273,10 @@ impl MappedFile {
 
 ### Hybrid Approach
 
-Use mmap for read-heavy workloads, explicit I/O for write-heavy:
+Use mmap for read-heavy workloads, explicit I/O for write-heavy. The crate makes
+exactly this choice concrete behind the `BlockStorage` trait: an `mmap` backend
+(default) and an `io_uring` + `O_DIRECT` backend, selected by workload — see
+[storage-backends.md § The two backends](../../persistence/storage-backends.md#the-two-backends--a-workload-driven-choice):
 
 ```rust
 pub enum IoStrategy {
@@ -324,6 +304,15 @@ impl BufferManager for IoStrategy {
 ## Write-Ahead Logging
 
 WAL ensures durability by logging changes before applying them:
+
+> **Theory vs. this crate.** The `LogRecord` sketched below is the classical ARIES
+> **page-diff** model (before/after images per page). The shipping ARTrie WAL instead
+> frames each change as a compact **operation** record — a 17-byte frame plus payload,
+> with typed records (`Insert`, `Remove`, `Increment`, `CommitRank`, `Checkpoint`, …) —
+> and publishes under the **Order-A** "log-before-publish" rule. The exact on-disk frame
+> is in [wal-format.md](../../persistence/wal-format.md); the write ordering and
+> committed-watermark discipline are in
+> [durability-and-recovery.md](../../persistence/durability-and-recovery.md#the-order-a-write-protocol).
 
 ### WAL Guarantee
 
@@ -412,7 +401,10 @@ impl WalWriter {
 
 ### Group Commit
 
-Amortize fsync cost across multiple operations:
+Amortize fsync cost across multiple operations. The crate ships a group-commit
+coordinator behind the `group-commit` feature, but it is **experimental**: on NVMe,
+per-record `fsync` currently matches or beats it, so it is off by default — the
+measured trade-off is in [group-commit.md](../../persistence/group-commit.md).
 
 ```rust
 pub struct GroupCommit {
@@ -473,6 +465,11 @@ ARIES (defined above) is the standard WAL-based recovery algorithm. It proceeds 
 1. **Analysis**: Scan log to determine state at crash
 2. **Redo**: Replay all changes since last checkpoint
 3. **Undo**: Rollback incomplete transactions
+
+The crate's shipping recovery follows this redo-only shape — load the checkpoint
+image, then replay the durable WAL tail past the committed watermark in
+commit-generation order, guarded against reopen double-apply — and is specified in
+[durability-and-recovery.md § Crash recovery](../../persistence/durability-and-recovery.md#crash-recovery).
 
 For our single-writer trie, we simplify to redo-only recovery:
 
@@ -644,6 +641,26 @@ DFS traversal has predictable patterns:
 - Prefetch children when visiting parent
 - Use async I/O or madvise(MADV_WILLNEED)
 - Limit prefetch depth to avoid waste
+
+### Where these lessons are realized
+
+Each component in this chapter has a systems-tier counterpart:
+
+- **Page cache & the two backends** (lessons 1, 2, 4) —
+  [storage-backends.md](../../persistence/storage-backends.md#the-buffer-manager):
+  the pinning buffer manager over `BlockStorage`, with the `mmap` (default) and
+  `io_uring` + `O_DIRECT` backends.
+- **Write-ahead log** (lesson 3) —
+  [wal-format.md](../../persistence/wal-format.md): the compact 17-byte record frame
+  and the rank-regime replay rule, plus the Order-A ordering in
+  [durability-and-recovery.md](../../persistence/durability-and-recovery.md#the-order-a-write-protocol).
+- **Crash recovery & checkpoints** (lessons 3, 5) —
+  [durability-and-recovery.md](../../persistence/durability-and-recovery.md): redo-only
+  replay, the committed watermark, checkpoint flips, and the reopen double-apply guard.
+- **Group commit** — [group-commit.md](../../persistence/group-commit.md): the
+  experimental coordinator and why per-record `fsync` currently wins on NVMe.
+
+The design that assembles these is [06-persistent-artrie-design](06-persistent-artrie-design.md).
 
 ---
 

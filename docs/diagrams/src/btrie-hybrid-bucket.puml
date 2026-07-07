@@ -1,0 +1,42 @@
+@startuml btrie-hybrid-bucket
+' ============================================================================
+' btrie-hybrid-bucket.puml — a hybrid bucket B^H: MANY parent slots in range
+' [l,u] converge on one bucket; the leading char is kept (distinguishes strings).
+' Source: docs/theory/disk-tries/02-b-trie.md (Askitis & Zobel 2009), § Bucket Types.
+' Color key:  blue  #BBDEFB  parent-trie slots in the range ['a','n']
+'             grey  #ECEFF1  elision of the middle slots
+'             green #C8E6C9  the shared hybrid bucket
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam ArrowColor #37474F
+skinparam TitleFontSize 15
+
+title Hybrid bucket B^H(ε, 'a', 'n') — many routes converge on one bucket
+
+rectangle "slot **[a]**" as SA #BBDEFB
+rectangle "slot **[b]**" as SB #BBDEFB
+rectangle "**…**" as SD #ECEFF1
+rectangle "slot **[n]**" as SN #BBDEFB
+rectangle "**Hybrid Bucket  B^H(ε, 'a', 'n')**\nrange ['a', 'n'] · prefix consumed = ε (empty)\n────────────\n'apple'    (lead char 'a')\n'banana'   (lead char 'b')\n'mango'    (lead char 'm')\nleading char NOT removed — needed to tell strings apart" as HB #C8E6C9
+
+SA -[hidden]right- SB
+SB -[hidden]right- SD
+SD -[hidden]right- SN
+
+SA --> HB
+SB --> HB
+SD --> HB
+SN --> HB
+
+legend bottom
+  All parent slots in [l, u] point here · a split grows the trie **horizontally**.
+endlegend
+@enduml

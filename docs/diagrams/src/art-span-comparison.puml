@@ -1,0 +1,62 @@
+@startuml art-span-comparison
+' ============================================================================
+' art-span-comparison.puml — the radix span trade-off for keys {10, 25, 31}:
+' a span-1 binary trie is ~8 levels of mostly single-child chains, while a
+' span-8 (256-way) trie stores the same three keys as one node with three
+' children. Source: docs/theory/disk-tries/03-adaptive-radix-tree.md,
+' § The Span Trade-off Visualized.
+' Color key:  blue #BBDEFB = root / internal nodes · grey #ECEFF1 = elided chain
+'             green #C8E6C9 = leaves (the stored keys)
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam packageStyle rectangle
+skinparam ArrowColor #37474F
+skinparam TitleFontSize 15
+
+title The span trade-off — storing the keys {10, 25, 31}
+
+package "Span-1 (binary trie)" #F5F5F5 {
+  rectangle "root" as R1 #BBDEFB
+  rectangle "0" as A0 #BBDEFB
+  rectangle "1" as A1 #BBDEFB
+  rectangle "0" as B0 #BBDEFB
+  rectangle "1" as B1 #BBDEFB
+  rectangle "⋮" as D0 #ECEFF1
+  rectangle "⋮" as D1 #ECEFF1
+  rectangle "10" as L10 #C8E6C9
+  rectangle "25, 31" as L2531 #C8E6C9
+  R1 --> A0 : 0
+  R1 --> A1 : 1
+  A0 --> B0
+  A1 --> B1
+  B0 --> D0
+  B1 --> D1
+  D0 --> L10
+  D1 --> L2531
+}
+
+package "Span-8 (256-way trie)" #F5F5F5 {
+  rectangle "root" as R2 #BBDEFB
+  rectangle "10" as S10 #C8E6C9
+  rectangle "25" as S25 #C8E6C9
+  rectangle "31" as S31 #C8E6C9
+  R2 --> S10
+  R2 --> S25
+  R2 --> S31
+}
+
+L10 -[hidden]down- R2
+
+legend bottom
+  Span-1: ~8 levels of mostly single-child chains.
+  Span-8: one node with three children (one level).
+endlegend
+@enduml

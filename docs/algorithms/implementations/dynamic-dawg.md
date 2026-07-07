@@ -28,7 +28,7 @@ allows the dictionary to evolve during the application lifetime.
 ### Key Advantages
 
 - 🔄 **Full dynamic updates**: Insert AND remove terms at runtime
-- 🔒 **Thread-safe**: Safe for concurrent reads and exclusive writes
+- 🔓 **Non-blocking**: wait-free concurrent reads AND lock-free concurrent writes (no locks; per-node CAS)
 - 💾 **Space-efficient**: Shares common suffixes (20-40% reduction)
 - ⚡ **Good performance**: Suitable for dictionaries with frequent updates
 - 📊 **Reference counting**: Safe deletion without orphaning nodes
@@ -89,12 +89,7 @@ DAWG (prefix AND suffix sharing):
 ### Suffix Sharing
 
 Multiple prefixes can point to the same suffix:
-```
-"card" = c→a→r→d(final)
-"cart" = c→a→r→t(final)
-"hard" = h→a→r→d(final)  ← Shares "r→d" with "card"
-"hart" = h→a→r→t(final)  ← Shares "r→t" with "cart"
-```
+<img src="../../diagrams/dawg-suffix-convergence.svg" alt="Suffix sharing in a DAWG for {card, cart, hard, hart}: the prefixes c-a and h-a both converge on a single shared 'r' node whose two outgoing edges 'd' and 't' reach the shared final states, so card/hard share the r-to-d ending and cart/hart share the r-to-t ending." width="70%"/>
 
 This is achieved by **hashing node signatures** and reusing nodes with identical right languages.
 
@@ -105,73 +100,77 @@ This is achieved by **hashing node signatures** and reusing nodes with identical
 Adding a term while maintaining minimality:
 
 ```rust
-fn insert(&self, term: &str) {
-    let mut lock = self.inner.write();  // Exclusive lock
+fn insert(&self, term: &str) -> bool {
+    // No lock is taken. `begin_write` only registers this writer in an atomic
+    // counter so a concurrent `compact()` can wait for a quiescent moment — it
+    // does NOT block other writers, which proceed concurrently.
+    let _guard = self.begin_write();
 
-    // Traverse existing path
-    let mut node_idx = 0;  // Root
-    let mut path = Vec::new();
-
+    // Walk the path, creating any missing children by publishing new immutable
+    // edge-list snapshots with per-node compare-and-swap (see below).
+    let mut node = self.root_arc();          // atomic load of the root Arc
     for byte in term.bytes() {
-        path.push(node_idx);
-
-        // Find or create edge
-        node_idx = match lock.find_edge(node_idx, byte) {
-            Some(child_idx) => child_idx,
-            None => {
-                // Create new suffix
-                let new_suffix = lock.create_suffix(&term[pos..]);
-                lock.add_edge(node_idx, byte, new_suffix);
-                return;
-            }
-        };
+        node = self.find_or_create_child(&node, byte);
     }
 
-    // Mark final
-    lock.nodes[node_idx].is_final = true;
+    // Mark the terminal final with a single atomic compare-exchange.
+    node.is_final
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_ok()
+}
+
+// The lock-free primitive: publish a new child by CAS-swapping the parent's
+// immutable edge-list snapshot; retry under CasBackoff only on a losing race.
+fn find_or_create_child(node: &Arc<Node>, label: u8) -> Arc<Node> {
+    let mut backoff = CasBackoff::new();
+    loop {
+        let edges = node.edges.load();                 // atomic snapshot
+        if let Some(child) = edges.find(label) {
+            return child.clone();                      // already present
+        }
+        let child = Arc::new(Node::new(false));
+        let next = Arc::new(edges.with_edge(label, child.clone()));
+        if Arc::ptr_eq(&node.edges.compare_and_swap(&edges, next), &edges) {
+            return child;                              // won the race → published
+        }
+        backoff.snooze();                              // lost the race → retry
+    }
 }
 ```
 
-**Complexity**: `O(m)` where m = term length
+**Complexity**: `O(m)` where m = term length (plus bounded CAS retries only when
+another writer races on the same node)
 
 ### Deletion Algorithm
 
-Removing a term requires reference counting:
+Removal is a single atomic flag flip — no lock, no eager node deletion. The now
+unreachable nodes are reclaimed later by `compact()` (which is why `remove` sets
+the `needs_compaction` flag):
 
 ```rust
 fn remove(&self, term: &str) -> bool {
-    let mut lock = self.inner.write();
+    // `begin_write` registers the writer for compaction quiescence only; it
+    // does not block other writers or any reader.
+    let _guard = self.begin_write();
 
-    // Traverse to term
-    let mut node_idx = 0;
-    let mut path = Vec::new();
-
-    for byte in term.bytes() {
-        path.push(node_idx);
-        node_idx = lock.find_edge(node_idx, byte)?;
-    }
-
-    if !lock.nodes[node_idx].is_final {
+    // Wait-free descent to the terminal (atomic edge-list snapshot loads).
+    let Some(node) = self.find_node(term.as_bytes()) else {
         return false;  // Term not in dictionary
+    };
+
+    // Flip the terminal from final → non-final with one compare-exchange.
+    if node
+        .is_final
+        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+        .is_ok()
+    {
+        node.value.store(None);                      // drop any associated value
+        self.term_count.fetch_sub(1, Ordering::Relaxed);
+        self.needs_compaction.store(true, Ordering::Relaxed);
+        true
+    } else {
+        false                                        // was already non-final
     }
-
-    // Mark as non-final
-    lock.nodes[node_idx].is_final = false;
-
-    // Decrement reference counts along path
-    for &idx in path.iter().rev() {
-        lock.nodes[idx].ref_count -= 1;
-
-        // Delete node if no longer referenced
-        if lock.nodes[idx].ref_count == 0 && !lock.nodes[idx].is_final {
-            lock.delete_node(idx);
-        } else {
-            break;  // Still in use
-        }
-    }
-
-    lock.needs_compaction = true;
-    true
 }
 ```
 
@@ -182,21 +181,30 @@ fn remove(&self, term: &str) -> bool {
 Over time, deletions create orphaned branches. Compaction restores minimality:
 
 ```rust
-pub fn compact(&self) {
-    let mut lock = self.inner.write();
-
-    if !lock.needs_compaction {
-        return;
+pub fn compact(&self) -> usize {
+    // Become the SOLE compactor via one atomic compare_exchange (no lock).
+    // If another compaction is already running, bail out immediately.
+    if !self.acquire_compaction() {
+        return 0;
     }
 
-    // Rebuild suffix cache
-    lock.suffix_cache.clear();
-    lock.rebuild_suffix_cache();
+    // Let in-flight lock-free writers finish (spin on an atomic counter);
+    // readers are NEVER paused and keep seeing the current snapshot.
+    self.wait_for_writers_to_quiesce();
 
-    // Merge equivalent nodes
-    lock.merge_equivalent_nodes();
+    // Rebuild a minimized graph from the currently-visible terms, then
+    // republish it atomically at the root (edges / value / final-flag).
+    let entries = self.collect_visible_entries();
+    let new_root = Self::build_minimized_root(&entries);
+    self.root.edges.store(new_root.edges.load_full());
+    self.root.value.store(new_root.value.load_full());
+    self.root
+        .is_final
+        .store(new_root.is_final.load(Ordering::Acquire), Ordering::Release);
 
-    lock.needs_compaction = false;
+    self.needs_compaction.store(false, Ordering::Release);
+    self.release_compaction();          // clear the single-compactor flag
+    /* number of nodes reclaimed */ 0
 }
 ```
 
@@ -213,47 +221,54 @@ pub fn compact(&self) {
 
 ```rust
 pub struct DynamicDawg<V: DictionaryValue = ()> {
-    inner: Arc<RwLock<DynamicDawgInner<V>>>,
+    inner: Arc<DynamicDawgInner<V>>,        // shared handle to the lock-free core
 }
 
-struct DynamicDawgInner<V: DictionaryValue> {
-    nodes: Vec<DawgNode<V>>,           // Node storage
-    term_count: usize,                 // Number of terms
-    needs_compaction: bool,            // Deletion flag
-    suffix_cache: FxHashMap<u64, usize>, // Hash → node index
-    bloom_filter: Option<BloomFilter>, // Fast negative lookups
-    auto_minimize_threshold: f32,      // Lazy minimization trigger
+// The byte DAWG core IS the unit-generic lock-free graph (src/dynamic_dawg/lockfree.rs):
+type DynamicDawgInner<V = ()> = LockFreeDawg<u8, V>;
+
+struct LockFreeDawg<U: CharUnit, V: DictionaryValue> {
+    root: Arc<LockFreeDawgNode<U, V>>,      // entry node (edges swapped, not the node)
+    term_count: AtomicUsize,                // live term count
+    needs_compaction: AtomicBool,           // set by remove()
+    active_writers: AtomicUsize,            // writer registry for compaction quiescence
+    compaction_active: AtomicBool,          // single-compactor guard (CAS)
 }
 
-struct DawgNode<V: DictionaryValue> {
-    edges: SmallVec<[(u8, usize); 4]>, // Label → child index
-    is_final: bool,                    // Marks valid term
-    ref_count: usize,                  // For safe deletion
-    value: Option<V>,                  // Associated value
+// Each node publishes its state through atomic cells — there is no lock:
+struct LockFreeDawgNode<U: CharUnit, V: DictionaryValue> {
+    edges: ArcSwap<LockFreeEdgeList<U, V>>, // atomically-swapped edge-list snapshot
+    is_final: AtomicBool,                   // marks a valid term
+    value: ArcSwapOption<V>,                // associated value (optional)
+}
+
+// Immutable, copy-on-write edge list published atomically by a node:
+struct LockFreeEdgeList<U: CharUnit, V: DictionaryValue> {
+    edges: SmallVec<[(U, Arc<LockFreeDawgNode<U, V>>); 4]>, // label → child
 }
 ```
 
 ### Memory Layout
 
-```
-┌─────────────────┬─────────────┬────────────────┐
-│ Component       │ Size        │ Per Node       │
-├─────────────────┼─────────────┼────────────────┤
-│ SmallVec edges  │ Inline ≤4   │ ~16 bytes      │
-│ is_final        │ 1 byte      │ 1 byte         │
-│ ref_count       │ 8 bytes     │ 8 bytes        │
-│ value (Option)  │ V or 1 byte │ Varies         │
-├─────────────────┼─────────────┼────────────────┤
-│ Total per node  │ ~25+ bytes  │ ~25 bytes      │
-│ Overhead        │ Arc+RwLock  │ 16 bytes total │
-└─────────────────┴─────────────┴────────────────┘
-```
+| Component | Size | Notes |
+| --- | --- | --- |
+| edges: ArcSwap<EdgeList> | 8 bytes | atomic ptr → COW |
+|  |  | edge list (≤4 |
+|  |  | inline, ~16 bytes) |
+| is_final: AtomicBool | 1 byte | term marker |
+| value: ArcSwapOption<V> | 8 bytes | atomic ptr → V |
+| Node cells | ~17 bytes | + edge-list heap |
+| Shared handle overhead | Arc → core | 8 bytes (one ptr) |
 
-**Example**: 10,000-term dictionary ≈ 250KB (nodes) + 32KB (suffix cache)
+There is no lock-object byte cost: the per-node `ArcSwap`/`AtomicBool`/`ArcSwapOption`
+cells provide interior mutability atomically, and the whole structure is reached
+through a single shared `Arc` (8 bytes).
+
+**Example**: 10,000-term dictionary $\approx$ 250KB (nodes)
 
 ### Clone Behavior & Memory Semantics
 
-`DynamicDawg` uses `Arc<RwLock<...>>` internally, making `.clone()` a **shallow copy** that shares all underlying data structures between clones:
+`DynamicDawg` holds an `Arc` to its lock-free inner core, making `.clone()` a **shallow copy** that shares the same lock-free node graph between clones (no lock is shared — just the atomic reference count):
 
 ```rust
 use libdictenstein::dynamic_dawg::DynamicDawg;
@@ -275,10 +290,10 @@ assert_eq!(dict2.len(), Some(3));  // Same count
 | Property | Behavior | Impact |
 |----------|----------|--------|
 | **Time Complexity** | O(1) | Single atomic increment |
-| **Space Complexity** | O(1) | ~16 bytes (Arc pointer only) |
+| **Space Complexity** | O(1) | 8 bytes (one Arc pointer) |
 | **Data Sharing** | ✅ Complete | All clones share same node graph |
 | **Mutation Visibility** | ✅ Global | Changes via any clone affect all |
-| **Thread Safety** | ✅ RwLock | Multiple readers OR single writer |
+| **Thread Safety** | ✅ Lock-free | Wait-free reads AND lock-free writes (per-node CAS) |
 | **Independence** | ❌ None | No isolation between clones |
 
 #### How Clone Works
@@ -287,7 +302,7 @@ The clone operation only increments an atomic reference counter:
 
 ```rust
 pub struct DynamicDawg<V> {
-    inner: Arc<RwLock<DynamicDawgInner<V>>>,  // ← Single Arc
+    inner: Arc<DynamicDawgInner<V>>,  // ← single Arc to the lock-free core
 }
 
 // Cloning increments Arc's atomic refcount
@@ -297,10 +312,9 @@ let dict2 = dict1.clone();
 ```
 
 **What gets cloned:**
-- ✅ Arc smart pointer (~16 bytes on stack)
-- ❌ NOT the RwLock
-- ❌ NOT the node graph (Vec<DawgNode>)
-- ❌ NOT the suffix cache or bloom filter
+- ✅ Arc smart pointer (8 bytes on the stack — one atomic refcount bump)
+- ❌ NOT the lock-free node graph (shared, never deep-copied on clone)
+- ❌ NOT the per-node atomic cells (`ArcSwap` / `AtomicBool` / `ArcSwapOption`)
 - ❌ NOT any internal structures
 
 **Memory allocation:**
@@ -435,33 +449,42 @@ use std::thread;
 
 let dict = DynamicDawg::from_iter(vec!["concurrent", "access"]);
 
-// Multiple concurrent readers (fast - no blocking)
+// Concurrent readers — wait-free, never blocked by writers
 let readers: Vec<_> = (0..10).map(|i| {
     let dict = dict.clone();
     thread::spawn(move || {
-        dict.contains(&format!("term{}", i))  // Many readers OK
+        dict.contains(&format!("term{}", i))  // any number of readers OK
     })
 }).collect();
 
-// Single writer (blocks readers during write)
+// Concurrent writer(s) — lock-free, do not block the readers above
 let writer = {
     let dict = dict.clone();
     thread::spawn(move || {
-        dict.insert("new_term")  // Exclusive write access
+        dict.insert("new_term")  // lock-free CAS publication
     })
 };
 ```
 
-**RwLock semantics:**
-- **Multiple readers** can access simultaneously (read locks don't block each other)
-- **Single writer** gets exclusive access (write lock blocks all readers and other writers)
-- Write operations: `insert()`, `remove()`, `union_with()`, `compact()`
-- Read operations: `contains()`, `get_value()`, `len()`, iteration
+**Lock-free concurrency model:**
+- **Reads are wait-free**: `contains()`, `get_value()`, `len()`, and iteration
+  descend the graph through atomic edge-list loads (`ArcSwap::load`) and finish
+  in a bounded number of steps — they never spin, retry, or block.
+- **Writes are lock-free**: `insert()`, `remove()`, `union_with()` publish new
+  immutable edge-list snapshots with per-node `compare_and_swap`. Writers to
+  *different* nodes make progress simultaneously; only writers racing on the
+  *same* node's edge list retry, bounded by
+  [`CasBackoff`](../../../src/nonblocking.rs).
+- **Readers and writers never block each other**: a reader observes either the
+  pre-write snapshot or the post-write snapshot — never a torn graph.
+- `compact()` / `minimize()` briefly becomes the sole compactor (a
+  `compare_exchange` on an atomic flag) and waits for in-flight writers to
+  drain — still without any OS lock; readers proceed throughout.
 
 **Performance impact:**
-- Read locks: ~10-20ns overhead (atomic operations)
-- Write locks: ~50-100ns + potential thread wake-up costs
-- Contention: High write frequency can create bottlenecks
+- Read: a handful of atomic loads + `Arc` clones (no lock acquisition).
+- Write: one successful CAS per newly published node; under high *same-node*
+  contention the cost is bounded CAS retries (backoff), not lock blocking.
 
 #### Summary
 
@@ -469,14 +492,14 @@ let writer = {
 1. 🔗 `.clone()` creates a **shallow copy** - all clones share the same data
 2. 🚀 **`O(1)`** time and space - just increments atomic reference count
 3. 🔄 **Mutations are visible** across all clones (by design)
-4. 🔒 **Thread-safe** through RwLock (multiple readers, single writer)
+4. 🔓 **Non-blocking**: wait-free reads and lock-free writes (no locks; per-node CAS)
 5. 📊 For **independence**, use serialization or rebuild from terms (`O(n)` cost)
 
 ### Optimizations
 
 #### 1. SmallVec for Edges
 
-Most nodes have ≤4 edges. `SmallVec` avoids heap allocation:
+Most nodes have $\le$4 edges. `SmallVec` avoids heap allocation:
 
 ```rust
 // Inline storage for ≤4 edges (stack allocated)
@@ -540,17 +563,17 @@ Fast negative lookup rejection:
 
 ```rust
 fn contains(&self, term: &str) -> bool {
-    let lock = self.inner.read();
-
-    // Fast rejection (no DAWG traversal needed)
-    if let Some(ref bloom) = lock.bloom_filter {
+    // Wait-free read: no lock is taken. An optional Bloom pre-filter can reject
+    // obvious misses before the atomic-snapshot traversal.
+    if let Some(bloom) = self.bloom_filter() {
         if !bloom.might_contain(term) {
             return false;  // Definitely not present
         }
     }
 
-    // Full DAWG traversal
-    lock.traverse(term)
+    // Full traversal over immutable edge-list snapshots (atomic loads only).
+    self.find_node(term.as_bytes())
+        .is_some_and(|node| node.is_final.load(Ordering::Acquire))
 }
 ```
 
@@ -607,7 +630,7 @@ valued_dict.insert_with_value("world", 200);
 
 **Characteristics:**
 - **Time**: `O(1)` - Allocates minimal structure
-- **Memory**: ~48 bytes (Arc + RwLock + empty DynamicDawgInner)
+- **Memory**: ~64 bytes (one `Arc` to an empty lock-free core: a root node plus a few atomic counters — no lock object)
 - **Use case**: Real-time incremental updates, streaming input
 
 **When to use:**
@@ -641,7 +664,7 @@ let dict = DynamicDawg::from_iter(lines);
 ```
 
 **Characteristics:**
-- **Time**: `O(n·m)` where n=terms, m=avg length
+- **Time**: $O(n\cdot m)$ where n=terms, m=avg length
 - **Memory**: Linear with term count (~250KB for 10K terms)
 - **Optimization**: Pre-sorting terms improves cache locality
 
@@ -706,7 +729,7 @@ if let Some(freq) = dict.get_value("the") {
 
 | Method | Time | Memory Peak | Notes |
 |--------|------|-------------|-------|
-| `new()` + inserts | ~8.2ms | ~250KB | Sequential, more lock overhead |
+| `new()` + inserts | ~8.2ms | ~250KB | Sequential, per-insert CAS overhead |
 | `from_iter()` | ~4.1ms | ~250KB | Bulk construction, less overhead |
 | `from_terms()` | ~4.1ms | ~250KB | Same as from_iter |
 | Pre-sorted input | ~3.5ms | ~250KB | 15% faster due to cache locality |
@@ -796,7 +819,7 @@ let dicts: Vec<DynamicDawg<Vec<u32>>> = documents
 // Full pattern documented in Contextual Completion guide
 ```
 
-→ See [Parallel Workspace Indexing](https://github.com/universal-automata/liblevenshtein-rust) for complete pattern with ~150× speedup.
+→ See [Parallel Workspace Indexing](https://github.com/universal-automata/liblevenshtein-rust) for complete pattern with ~150$\times$ speedup.
 
 ## Accessor Methods
 
@@ -830,8 +853,8 @@ pub fn contains(&self, term: &str) -> bool
 
 **Performance**:
 - **Complexity**: `O(m)` where m is term length
-- **Optimizations**: Bloom filter for fast negative lookups (~100× faster rejection)
-- **Lock contention**: Read lock (shared access)
+- **Optimizations**: Bloom filter for fast negative lookups (~100$\times$ faster rejection)
+- **Concurrency**: Wait-free read (atomic-snapshot loads; no lock, never blocks)
 
 **Example**:
 ```rust
@@ -900,7 +923,7 @@ where
 
 **Performance**:
 - **Complexity**: `O(m)` where m is term length
-- **Lock contention**: Read lock (shared access)
+- **Concurrency**: Wait-free read (atomic-snapshot loads; no lock, never blocks)
 
 **Example**:
 ```rust
@@ -956,7 +979,7 @@ fn is_empty(&self) -> bool      // Dictionary trait
 
 **Performance**:
 - **Complexity**: `O(1)` - stored counter
-- **Lock contention**: Read lock (shared access)
+- **Concurrency**: Wait-free read (atomic-snapshot loads; no lock, never blocks)
 
 **Example**:
 ```rust
@@ -990,7 +1013,7 @@ pub fn term_count(&self) -> usize
 
 **Performance**:
 - **Complexity**: `O(1)` - stored counter
-- **Lock contention**: Read lock (shared access)
+- **Concurrency**: Wait-free read (atomic-snapshot loads; no lock, never blocks)
 
 **Example**:
 ```rust
@@ -1025,7 +1048,7 @@ pub fn node_count(&self) -> usize
 
 **Performance**:
 - **Complexity**: `O(1)` - stored counter
-- **Lock contention**: Read lock (shared access)
+- **Concurrency**: Wait-free read (atomic-snapshot loads; no lock, never blocks)
 
 **Example**:
 ```rust
@@ -1048,7 +1071,7 @@ assert_eq!(removed, 0); // Already minimal
 
 **Interpretation**:
 - Higher node count → More memory usage
-- `node_count()` ≈ `term_count()` → Good compression (lots of sharing)
+- `node_count()` $\approx$ `term_count()` → Good compression (lots of sharing)
 - `node_count()` >> `term_count()` → Poor compression (deletions without compaction)
 
 **Monitoring Example**:
@@ -1083,7 +1106,7 @@ pub fn needs_compaction(&self) -> bool
 
 **Performance**:
 - **Complexity**: `O(1)` - flag check
-- **Lock contention**: Read lock (shared access)
+- **Concurrency**: Wait-free read (atomic-snapshot loads; no lock, never blocks)
 
 **Example**:
 ```rust
@@ -1135,7 +1158,7 @@ fn root(&self) -> DynamicDawgNode // From Dictionary trait
 
 **Performance**:
 - **Complexity**: `O(1)`
-- **Lock contention**: Read lock acquired per node operation
+- **Concurrency**: Wait-free per-node traversal (atomic snapshot loads; no lock)
 
 **Example**:
 ```rust
@@ -1204,11 +1227,12 @@ if let Some(final_zipper) = result {
 | `needs_compaction()` | ~2ns | 500M ops/sec | Flag read |
 | `root()` | ~3ns | 333M ops/sec | Return node 0 |
 
-**Lock Contention**:
-- All accessors use read locks (shared access)
-- Multiple threads can query concurrently
-- No contention with other readers
-- Blocked during write operations (insert/remove)
+**Concurrency**:
+- All accessors are wait-free (atomic-snapshot reads; no lock acquisition)
+- Any number of threads can query concurrently
+- Reads never contend with one another
+- Reads are never blocked by concurrent `insert` / `remove` — each observes
+  either the pre- or post-write snapshot, never a torn graph
 
 **Memory Overhead**:
 - Term count: 8 bytes (usize)
@@ -1311,9 +1335,9 @@ The `union_with()` and `union_replace()` methods enable **merging two DynamicDaw
 - 🔢 Building composite symbol tables
 
 **Key Characteristics**:
-- 🔒 **Thread-safe**: Operations use RwLock for concurrent access
+- 🔓 **Non-blocking**: wait-free reads and lock-free CAS writes (no locks)
 - 💾 **DAWG-preserving**: Maintains minimization through `insert_with_value()`
-- ⚡ **Efficient**: `O(n·m)` traversal with minimal memory overhead
+- ⚡ **Efficient**: $O(n\cdot m)$ traversal with minimal memory overhead
 - 🎯 **Flexible**: Custom merge functions for value conflicts
 
 ### union_with() - Merge with Custom Logic
@@ -1345,8 +1369,8 @@ where
 5. Repeat until stack empty
 
 **Complexity**:
-- **Time**: `O(n·m)` where n = terms in `other`, m = average term length
-  - `O(n·m)` for DFS traversal
+- **Time**: $O(n\cdot m)$ where n = terms in `other`, m = average term length
+  - $O(n\cdot m)$ for DFS traversal
   - `O(m)` per term for `insert_with_value()`
 - **Space**: `O(d)` where d = maximum trie depth (typically < 50)
   - DFS stack size proportional to deepest path
@@ -1518,40 +1542,26 @@ assert_eq!(dict1.get_value("status"), Some("beta"));
 The union operation uses **iterative depth-first search** to traverse all terms in the source dictionary:
 
 ```rust
-// Simplified pseudocode
+// Simplified pseudocode (mirrors the real MutableMappedDictionary impl)
 fn union_with<F>(&self, other: &Self, merge_fn: F) -> usize {
-    let other_inner = other.inner.read();
+    // Take a WAIT-FREE snapshot of every visible (term, value) in `other`.
+    // `collect_visible_entries` walks an immutable graph snapshot with an
+    // explicit stack (iterative DFS) — no lock, and it never blocks writers.
+    let entries = other.inner.collect_visible_entries();
     let mut processed = 0;
 
-    // Initialize DFS with root: (node_index, accumulated_path)
-    let mut stack: Vec<(usize, Vec<u8>)> = vec![(0, Vec::new())];
+    for (path, other_value) in entries {
+        let Ok(term) = std::str::from_utf8(&path) else { continue };
+        processed += 1;
 
-    while let Some((node_idx, path)) = stack.pop() {
-        let node = &other_inner.nodes[node_idx];
-
-        // Process final nodes (complete terms)
-        if node.is_final {
-            if let Ok(term) = std::str::from_utf8(&path) {
-                processed += 1;
-
-                if let Some(other_value) = &node.value {
-                    if let Some(self_value) = self.get_value(term) {
-                        // Term exists - merge values
-                        let merged = merge_fn(&self_value, other_value);
-                        self.insert_with_value(term, merged);
-                    } else {
-                        // New term - insert directly
-                        self.insert_with_value(term, other_value.clone());
-                    }
-                }
+        if let Some(other_value) = other_value {
+            if let Some(self_value) = self.get_value(term) {
+                // Term exists — merge, then re-publish into `self` via lock-free CAS.
+                self.insert_with_value(term, merge_fn(&self_value, &other_value));
+            } else {
+                // New term — insert directly (lock-free CAS).
+                self.insert_with_value(term, other_value);
             }
-        }
-
-        // Push children onto stack (reversed for consistent order)
-        for &(label, target_idx) in node.edges.iter().rev() {
-            let mut child_path = path.clone();
-            child_path.push(label);
-            stack.push((target_idx, child_path));
         }
     }
 
@@ -1631,7 +1641,7 @@ No heap allocations during traversal (Vec reused)
 
 ### Thread Safety Considerations
 
-Union operations are **fully thread-safe** due to RwLock usage:
+Union operations are **non-blocking** — reads are wait-free and writes are lock-free (no locks are taken):
 
 ```rust
 use std::sync::Arc;
@@ -1660,15 +1670,19 @@ for h in handles { h.join().unwrap(); }
 dict1.union_with(&dict2, |a, b| a + b);
 ```
 
-**Lock Contention**: Union acquires a read lock on `other` and write lock on `self`. This blocks:
-- ❌ Concurrent mutations to `self` (expected)
-- ❌ Concurrent reads from `self` (temporary)
-- ✅ Concurrent reads from `other` (allowed)
+**Contention profile**: `union_with` takes a wait-free snapshot of `other`
+(`collect_visible_entries`) and applies each term to `self` with lock-free
+`insert_with_value`. Nothing is locked, so:
+- ✅ Concurrent reads of `self` proceed (each sees either the pre- or
+  post-insert snapshot of an affected node, never a torn graph)
+- ✅ Concurrent reads of `other` proceed (the collected snapshot is immutable)
+- ⚠️ Concurrent writers to `self` may trigger bounded CAS retries on the same
+  nodes — progress is still guaranteed (lock-free), never blocked
 
-For high-concurrency scenarios, consider:
-1. Performing union on a clone
-2. Batching multiple unions
-3. Using snapshot-and-merge patterns
+For high-write-contention scenarios, consider:
+1. Batching multiple unions
+2. Using snapshot-and-merge patterns
+3. Partitioning terms across dictionaries to reduce same-node CAS races
 
 ## Usage Examples
 
@@ -1816,7 +1830,7 @@ println!("{:?}", results);  // ["test", "tester"]
 | **Remove** | O(m) | Plus ref count updates |
 | **Contains** | O(m) | With Bloom filter: O(1) rejection |
 | **Compact** | O(n) | n = total nodes |
-| **Query (fuzzy)** | O(m×d²×b) | d = distance, b = branching |
+| **Query (fuzzy)** | O(m$\times$d²$\times$b) | d = distance, b = branching |
 
 ### Benchmark Results
 

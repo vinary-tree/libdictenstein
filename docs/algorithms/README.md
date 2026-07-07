@@ -10,34 +10,7 @@ This layer abstracts over different data structures (tries, DAWGs, double-array 
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Dictionary Layer API                         │
-│  ┌────────────────┐  ┌──────────────────┐  ┌─────────────────┐ │
-│  │  Dictionary    │  │ MappedDictionary │  │ DictionaryNode  │ │
-│  │   (Trait)      │  │     (Trait)      │  │    (Trait)      │ │
-│  └────────────────┘  └──────────────────┘  └─────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-          ┌───────────────────┼───────────────────┐
-          ▼                   ▼                   ▼
-    ┌──────────┐      ┌──────────────┐    ┌────────────┐
-    │   Trie   │      │    DAWG      │    │   Suffix   │
-    │ Backends │      │   Backends   │    │  Automaton │
-    └──────────┘      └──────────────┘    └────────────┘
-         │                   │                   │
-    ┌────┴────┐         ┌────┴────┐             │
-    │   DAT   │         │ Dynamic │             │
-    │  (rec)  │         │  DAWG   │             │
-    └─────────┘         └─────────┘             │
-         │                                       │
-    ┌────┴────┐                                  │
-    │ DAT-Char│                                  │
-    │ (UTF-8) │                                  │
-    └─────────┘                                  │
-```
-
-**Legend**: (rec) = recommended default
+<img src="../diagrams/algorithms-backend-family.svg" alt="The Dictionary Layer trait API (Dictionary, MappedDictionary, DictionaryNode) sits above three in-memory backend families - Trie, DAWG, and Suffix Automaton; the Trie family holds DoubleArrayTrie (the recommended default) and DAT-Char (UTF-8), and the DAWG family holds DynamicDawg." width="70%"/>
 
 ## Core Concepts
 
@@ -274,7 +247,7 @@ Crash-durable Adaptive Radix Tries: `PersistentARTrie` / `PersistentARTrieChar`
 lock-free overlay, write-ahead logging, and CX checkpoint images over `mmap`
 (or `io_uring`) block storage. See the
 [crate README](../../README.md#persistent-artrie--lock-free--durable) and
-[mmap-architecture.md](../persistence/mmap-architecture.md).
+[mmap-architecture.md](../persistence/README.md).
 
 #### 10. Persistent suffix graph family
 
@@ -288,19 +261,7 @@ graph revision and CAS-publish the winning copy.
 
 ### Quick Selection Flowchart
 
-```
-Start: What do you need?
-│
-├─ Need to remove terms? ──Yes──> Unicode? ─Yes─> DynamicDawgChar
-│   │                                │
-│   No                               └─No──> DynamicDawg
-│   │
-├─ Unicode text? ──Yes──> DoubleArrayTrieChar
-│   │
-│   No
-│   │
-└─> DoubleArrayTrie (recommended default)
-```
+<img src="../diagrams/backend-selector-tree.svg" alt="Decision flowchart for choosing an in-memory backend: if you must remove terms at runtime, pick DynamicDawgChar for Unicode or DynamicDawg otherwise; if not, pick DoubleArrayTrieChar for Unicode or DoubleArrayTrie (the recommended default) otherwise." width="70%"/>
 
 ### Detailed Comparison Table
 
@@ -313,7 +274,7 @@ Start: What do you need?
 | **Remove** | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
 | **Union** | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ |
 | **Clone Cost** | O(n) | O(n) | O(1) | O(1) | O(1) | N/A |
-| **Clone Sharing** | ❌ Deep | ❌ Deep | ✅ Arc | ✅ Arc | ✅ Arc×2 | N/A |
+| **Clone Sharing** | ❌ Deep | ❌ Deep | ✅ Arc | ✅ Arc | ✅ Arc$\times$2 | N/A |
 | **Unicode** | Byte | ✅ Char | Byte | ✅ Char | Byte | Byte |
 | **Thread-Safe** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Use Case** | General | Unicode | Dynamic | Dyn+Unicode | Simple | Substring |

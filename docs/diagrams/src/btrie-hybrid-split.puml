@@ -1,0 +1,43 @@
+@startuml btrie-hybrid-split
+' ============================================================================
+' btrie-hybrid-split.puml — splitting a hybrid bucket at point d: one over-full
+' bucket becomes two sibling buckets at the SAME level (grows horizontally).
+' Source: docs/theory/disk-tries/02-b-trie.md (Askitis & Zobel 2009), § Splitting.
+' Color key:  blue  #BBDEFB  parent trie   red #FFCDD2  the over-full bucket
+'             green #C8E6C9  the two resulting sibling buckets
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam packageStyle rectangle
+skinparam ArrowColor #37474F
+skinparam TitleFontSize 15
+
+title Hybrid-bucket split at d — grows the B-trie horizontally
+
+package "BEFORE — over full" #F5F5F5 {
+  rectangle "**Parent Trie**   [l] … [d][d'] … [u]\nall slots route to one bucket" as PB #BBDEFB
+  rectangle "**B^H(h, l, u)**   — FULL\nstrings with chars l through u" as HB #FFCDD2
+  PB --> HB
+}
+
+package "AFTER — split into siblings" #F5F5F5 {
+  rectangle "**Parent Trie**   [l] … [d]  │  [d'] … [u]" as PA #BBDEFB
+  rectangle "**Left Bucket**\nchars l … d" as LB #C8E6C9
+  rectangle "**Right Bucket**\nchars d' … u" as RB #C8E6C9
+  PA --> LB
+  PA --> RB
+}
+
+PB -[hidden]down- PA
+
+legend bottom
+  Two buckets at the same level · a slice l=d or d'=u yields a **pure** child.
+endlegend
+@enduml

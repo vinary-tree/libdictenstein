@@ -1,0 +1,37 @@
+@startuml pathmap-integration-stack
+' ============================================================================
+' pathmap-integration-stack.puml — application backends over shared PathMap.
+' Replaces the ASCII layered architecture in docs/integration/pathmap/README.md.
+' Color key:  green = application-layer consumers   blue = the shared PathMap store
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam packageStyle rectangle
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.1
+}
+skinparam TitleFontSize 15
+
+title PathMap as the shared storage layer
+
+package "Application Layer" #E8F5E9 {
+  rectangle "**liblevenshtein**\n(fuzzy)" as LL #C8E6C9
+  rectangle "**MORK**\n(patterns)" as MO #C8E6C9
+  rectangle "**MeTTa App**\n(queries)" as MA #C8E6C9
+  LL -[hidden]right- MO
+  MO -[hidden]right- MA
+}
+
+package "PathMap (Shared)" #E3F2FD {
+  rectangle "Trie-based key-value store with zipper navigation\n· prefix compression\n· memory-mapped I/O\n· concurrent read access" as PM #BBDEFB
+}
+
+LL --> PM
+MO --> PM
+MA --> PM
+@enduml

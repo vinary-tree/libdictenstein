@@ -84,6 +84,50 @@ MMDC_PUPPETEER="$SRC_DIR/puppeteer-config.json"
 
 have() { command -v "${1%% *}" >/dev/null 2>&1; }
 
+# --- SVG hygiene: guarantee a ROOT viewBox --------------------------------
+# vinary-viewer (docs/diagrams consumer) scales each <img> SVG by the first
+# viewBox it finds; an SVG whose ROOT <svg> lacks one (svgbob emits viewBox only
+# on nested <marker> arrowheads) is mis-scaled to a tiny square. If the root tag
+# has no viewBox, inject "0 0 <width> <height>" from its width/height. Idempotent
+# + byte-stable: a second run finds the viewBox and skips.
+ensure_root_viewbox() {  # $1 = svg path
+  local svg="$1" tag w h
+  [[ -f "$svg" ]] || return 0
+  tag="$(tr '\n' ' ' < "$svg" | grep -oE '<svg[^>]*>' | head -1 || true)"
+  [[ -z "$tag" || "$tag" == *viewBox=* ]] && return 0
+  w="$(printf '%s' "$tag" | grep -oE 'width="?[0-9.]+' | head -1 | grep -oE '[0-9.]+' || true)"
+  h="$(printf '%s' "$tag" | grep -oE 'height="?[0-9.]+' | head -1 | grep -oE '[0-9.]+' || true)"
+  [[ -n "$w" && -n "$h" ]] || return 0
+  sed -i -E "0,/<svg /s//<svg viewBox=\"0 0 ${w%.*} ${h%.*}\" /" "$svg"
+  echo "    + injected root viewBox=\"0 0 ${w%.*} ${h%.*}\" into $svg"
+}
+
+# --- SVG hygiene CHECK (CI gate) — run via: render-diagrams.sh --check ------
+# Fails if any committed docs/diagrams SVG carries a baked PlantUML deprecation
+# banner or lacks a root viewBox; warns if a viewBox is wider than the prose
+# column budget (~700px) — vinary-viewer caps wider figures and shrinks their text.
+hygiene_check() {
+  local bad=0 svg tag vbw
+  shopt -s nullglob
+  for svg in "$OUT_DIR"/*.svg; do
+    if grep -qE 'syntax is deprecated|end of the line, after' "$svg"; then
+      echo "  ✗ hygiene: baked PlantUML deprecation banner in $svg" >&2; bad=1
+    fi
+    tag="$(tr '\n' ' ' < "$svg" | grep -oE '<svg[^>]*>' | head -1 || true)"
+    if [[ "$tag" != *viewBox=* ]]; then
+      echo "  ✗ hygiene: no root viewBox in $svg" >&2; bad=1
+    else
+      vbw="$(printf '%s' "$tag" | grep -oE 'viewBox="[-0-9. ]+"' | head -1 | grep -oE '[0-9.]+' | sed -n 3p || true)"
+      if [[ -n "$vbw" ]] && (( ${vbw%.*} > 700 )); then
+        echo "  ⚠ hygiene: viewBox width ${vbw%.*}px > 700px column budget (text shrinks): $svg" >&2
+      fi
+    fi
+  done
+  shopt -u nullglob
+  [[ $bad -eq 0 ]] && echo "hygiene: OK — every SVG has a root viewBox; no deprecation banners"
+  return $bad
+}
+
 missing_tool() {  # $1=tool label
   if [[ "$ALLOW_MISSING" == "1" ]]; then
     echo "  ⚠ skipping — renderer '$1' not found (ALLOW_MISSING_RENDERERS=1)"
@@ -152,6 +196,7 @@ render_one() {  # $1=source path
       return
       ;;
   esac
+  ensure_root_viewbox "$out"
   rendered=$((rendered + 1))
 }
 
@@ -164,10 +209,17 @@ render_plot() {  # $1=gnuplot script (self-contained: sets terminal svg + output
   # SVG is byte-stable across gnuplot versions (keeps the CI freshness diff stable).
   local out_svg="${gp%.gp}.svg"
   [[ -f "$out_svg" ]] && sed -i -E 's#<desc>Produced by GNUPLOT[^<]*</desc>#<desc>gnuplot</desc>#' "$out_svg"
+  [[ -f "$out_svg" ]] && ensure_root_viewbox "$out_svg"
   rendered=$((rendered + 1))
 }
 
 # --- main -------------------------------------------------------------------
+# Hygiene-gate mode (CI): verify committed SVGs (root viewBox + no deprecation
+# banner), render nothing. Run after the freshness gate.
+if [[ "${1:-}" == "--check" ]]; then
+  if hygiene_check; then exit 0; else exit 1; fi
+fi
+
 echo "render-diagrams: repo=$REPO_ROOT"
 
 if [[ $# -gt 0 ]]; then

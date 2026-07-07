@@ -1,0 +1,35 @@
+@startuml btrie-storage-model
+' ============================================================================
+' btrie-storage-model.puml — the three storage components of a B-trie.
+' Source: docs/theory/disk-tries/02-b-trie.md (Askitis & Zobel 2009), § Structure.
+' Replaces the ASCII nested-box overview.
+' Color key:  blue  #BBDEFB  trie nodes (the index layer)
+'             green #C8E6C9  buckets (the disk-resident leaf storage)
+'             amber #FFE0B2  hash table (strings fully consumed by the trie)
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam TitleFontSize 15
+
+title B-trie — storage model
+
+rectangle "**B-trie**" as BT #F5F5F5 {
+  rectangle "**Trie Nodes**  (512 bytes each)\n128 pointers, one per ASCII character\neach pointer → trie node OR bucket\nmany pointers may share one hybrid bucket" as TN #BBDEFB
+  rectangle "**Buckets**  (8 KB each)\nheader: range [l, u] · count · free space\nsorted string-pointer array (binary search)\nstring data area (occurrence-ordered)" as BK #C8E6C9
+  rectangle "**Hash Table**  (consumed strings)\nstrings entirely consumed by trie traversal\ne.g. 'c' consumed by the root trie → stored here" as HT #FFE0B2
+
+  TN -[hidden]down- BK
+  BK -[hidden]down- HT
+}
+
+legend bottom
+  blue index nodes · green leaf buckets · amber consumed-string hash
+endlegend
+@enduml

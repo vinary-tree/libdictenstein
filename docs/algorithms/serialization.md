@@ -25,7 +25,7 @@ round trip, not just the term itself.
 | Term | Definition |
 |------|-----------|
 | **serialize / deserialize** | Encode an in-memory value into a byte stream (serialize) and decode a byte stream back into an equivalent in-memory value (deserialize). |
-| **round trip** | The composition *deserialize ∘ serialize*: serialize a dictionary, then deserialize the bytes. A serializer is *lossless* for a property if the round trip preserves it. |
+| **round trip** | The composition *deserialize $\circ$ serialize*: serialize a dictionary, then deserialize the bytes. A serializer is *lossless* for a property if the round trip preserves it. |
 | **[serde](https://serde.rs/)** | Rust's de-facto serialization *framework*. A type that is `#[derive(Serialize, Deserialize)]` can be encoded by any serde-compatible *format* (bincode, JSON, …). `libdictenstein`'s value types only need to be serde-serializable to survive a value-preserving round trip. |
 | **[bincode](https://docs.rs/bincode)** | A compact binary serde *format* (not human-readable). Fast and space-efficient; the recommended production format here. |
 | **wire format** | The exact byte layout a serializer emits. Two serializers with different wire formats are mutually unreadable even if they carry the same logical data. |
@@ -42,7 +42,7 @@ by the other.
 | Path | Trait / entry point | Wire payload | Preserves values? | Use when |
 |------|--------------------|--------------|-------------------|----------|
 | **Terms-only** | `DictionarySerializer::serialize` / `deserialize` | a list of terms (`Vec<String>`) | ❌ no — values are dropped | the dictionary is a *set* (`V = ()`), or you only need the keys back |
-| **Value-preserving** | the `*_with_values` methods | a list of `(term, value)` pairs (`Vec<(String, V)>`) | ✅ yes | the dictionary is a *map* (`V ≠ ()`) and the values must survive |
+| **Value-preserving** | the `*_with_values` methods | a list of `(term, value)` pairs (`Vec<(String, V)>`) | ✅ yes | the dictionary is a *map* ($V \ne ()$) and the values must survive |
 
 The terms-only path is governed by the `DictionarySerializer` trait:
 
@@ -89,7 +89,7 @@ feature except where noted.
 | **JSON** | `JsonSerializer` | `serialization` | ✅ text | ⭐⭐ | Debugging, manual inspection, interop with non-Rust tools. Pretty-printed. |
 | **Plain text** | `PlainTextSerializer` | `serialization` | ✅ text | ⭐⭐⭐ | One term per line; ideal for version control, manual editing, `grep`. |
 | **Protobuf** | `ProtobufSerializer`, `OptimizedProtobufSerializer`, `DatProtobufSerializer`, `SuffixAutomatonProtobufSerializer` | `protobuf` | ❌ binary | ⭐⭐⭐⭐ | Cross-language interchange via a stable `.proto` schema. |
-| **Gzip wrapper** | `GzipSerializer<S>` | `compression` | ❌ binary | ⭐⭐⭐⭐⭐⭐ | Wraps *any* `DictionarySerializer` `S` and gzip-compresses its output (≈40–60% smaller). |
+| **Gzip wrapper** | `GzipSerializer<S>` | `compression` | ❌ binary | ⭐⭐⭐⭐⭐⭐ | Wraps *any* `DictionarySerializer` `S` and gzip-compresses its output ($\approx$40–60% smaller). |
 
 ### Bincode — the production default
 
@@ -311,22 +311,7 @@ All entry points return `Result<_, SerializationError>`. The variants are:
 
 ## Choosing a serializer — quick guide
 
-```text
-Is the dictionary a set (V = ()) or do you not need values back?
-│
-├─ Yes → terms-only path (DictionarySerializer::serialize / deserialize)
-│        │
-│        ├─ Smallest / fastest?            → BincodeSerializer
-│        ├─ Human-readable / diffable?     → PlainTextSerializer  (one term/line)
-│        ├─ Inspect in a JSON tool?        → JsonSerializer
-│        ├─ Cross-language interchange?    → ProtobufSerializer family  (feature "protobuf")
-│        └─ Wrap any of the above smaller? → GzipSerializer<S>          (feature "compression")
-│
-└─ No, values must survive → value-preserving path (*_with_values)
-         │
-         ├─ Byte-unit backend (u8)?   → serialize_with_values / deserialize_with_values
-         └─ Unicode backend (char)?   → serialize_with_values_char  (+ deserialize_with_values)
-```
+<img src="../diagrams/serializer-selector.svg" alt="Decision tree for choosing a serializer: for a set (V = ()) or when values are not needed, the terms-only path offers BincodeSerializer (smallest/fastest), PlainTextSerializer (human-readable), JsonSerializer, ProtobufSerializer (cross-language), or GzipSerializer to wrap any of them; when values must survive, the value-preserving path uses serialize_with_values for byte backends or serialize_with_values_char for Unicode backends." width="70%"/>
 
 ## Related documentation
 

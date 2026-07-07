@@ -41,7 +41,9 @@ Dictionary API
 
 Published overlay nodes are immutable. This gives readers a stable view without
 holding a global mutation lock. Writers publish a new version through CAS after
-durability requirements are satisfied.
+durability requirements are satisfied. The immutable node, its owned-`Child` edge
+representation, and the path-copy write / hazard-protected read paths are specified
+in [lock-free-overlay.md](../../persistence/lock-free-overlay.md).
 
 ## Key Encodings
 
@@ -63,7 +65,10 @@ The shared overlay uses immutable adaptive edge storage:
 - Sparse indexed stores accelerate high-fanout non-byte labels.
 - Byte labels can use ART-style dense tiers for byte-indexed lookup.
 
-This is the common architecture for byte, char, vocab, and u64 ARTrie variants.
+This is the common architecture for byte, char, vocab, and u64 ARTrie variants. Its
+systems-level specification — the `AdaptiveEdgeStore` tiers and how each key width
+selects among them — is in
+[storage-backends.md](../../persistence/storage-backends.md#adaptive-edge-storage).
 
 ## U64 Profiles
 
@@ -102,7 +107,11 @@ record, publish by CAS, append `CommitRank`, and advance the committed-prefix
 watermark. Checkpoint capture serializes the published overlay into a dense disk
 image, records the safe `checkpoint_lsn`, and retains the WAL tail for recovery.
 Recovery loads the checkpoint, reconciles ranked WAL records, and replays only
-operations not covered by the checkpoint watermark.
+operations not covered by the checkpoint watermark. The Order-A protocol, the
+committed watermark, the checkpoint flip, and crash recovery are specified in
+[durability-and-recovery.md](../../persistence/durability-and-recovery.md); the
+17-byte WAL record frame and its replay rule are in
+[wal-format.md](../../persistence/wal-format.md).
 
 ## Concurrency Model
 
@@ -117,7 +126,11 @@ operations not covered by the checkpoint watermark.
   discipline used by the lock-free overlay.
 
 Do not apply this write-concurrency claim to the persistent suffix graph family:
-those types use snapshot reads and serialized graph rebuild/publish writes.
+those types use snapshot reads and serialized graph rebuild/publish writes. The full
+lock hierarchy (the F4 collapse), MVCC snapshot reads, and the epoch/GC reclamation
+discipline are specified in
+[concurrency-model.md](../../persistence/concurrency-model.md); the two-family split
+is in [families.md](../../persistence/families.md).
 
 ## Empirical Status
 
@@ -151,6 +164,23 @@ and pgmcp experiments `53`-`55` with artifact `132`.
 
 ## Related Material
 
-- [Persistent storage architecture](../../persistence/mmap-architecture.md)
-- [Persistence architecture README](../../architecture/persistence/README.md)
+This chapter is the *theory-tier* summary of the design; the *systems-tier*
+implementation corpus documents each subsystem it names, end to end:
+
+- [Persistence architecture — entry point](../../persistence/README.md) — the whole
+  durable, lock-free ARTrie engine on one page.
+- [families.md](../../persistence/families.md) — the ARTrie vs. suffix-graph split,
+  the profile table, and the "one implementation, three alphabets" layering.
+- [lock-free-overlay.md](../../persistence/lock-free-overlay.md) — the immutable
+  overlay node, path-copy write path, and hazard-protected read path.
+- [storage-backends.md](../../persistence/storage-backends.md) — the `BlockStorage`
+  seam (`mmap` / `io_uring`), on-disk format, adaptive edge storage, and the `u64`
+  profile formats.
+- [durability-and-recovery.md](../../persistence/durability-and-recovery.md) and
+  [wal-format.md](../../persistence/wal-format.md) — Order-A writes, the committed
+  watermark, checkpoint flips, crash recovery, and the WAL record frame.
+- [concurrency-model.md](../../persistence/concurrency-model.md) — the F4 lock
+  hierarchy, MVCC snapshot reads, and epoch reclamation.
+- [Architecture-tier orientation](../../architecture/persistence/README.md) — a
+  one-screen glance that redirects into the corpus above.
 - [Root README persistent section](../../../README.md#persistent-artrie--lock-free--durable)

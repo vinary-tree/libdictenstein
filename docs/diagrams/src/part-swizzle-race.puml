@@ -1,0 +1,47 @@
+@startuml part-swizzle-race
+' ============================================================================
+' part-swizzle-race.puml — two readers race to swizzle the same on-disk pointer;
+' a single atomic compare_exchange picks exactly one winner. The loser discards
+' its redundantly-loaded node and follows the winner's swizzled pointer.
+' Source: docs/theory/disk-tries/04-persistent-art.md, § Atomic Swizzling.
+' Color key:  green #C8E6C9  Thread A (the CAS winner)
+'             teal  #B2DFDB  the shared SwizzledPtr state word
+'             blue  #BBDEFB  Thread B (the CAS loser)
+'             red   #FFCDD2  the failed CAS
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam sequence {
+  LifeLineBorderColor #37474F
+  ParticipantBorderColor #37474F
+  ParticipantFontColor #212121
+}
+skinparam noteFontSize 13
+skinparam TitleFontSize 15
+
+title Concurrent swizzle — one CAS picks the winner
+
+participant "Thread A" as A #C8E6C9
+participant "SwizzledPtr\n(AtomicU64)" as P #B2DFDB
+participant "Thread B" as B #BBDEFB
+
+A -> P : load  → disk ref
+B -> P : load  → disk ref
+note over A: read block, allocate node
+note over B: read block, allocate node
+A -> P : CAS(disk → memory)
+P --> A : ok — swizzled
+hnote over A #C8E6C9: SUCCESS — A wins
+B -> P : CAS(disk → memory)
+P --> B : err — already swizzled
+hnote over B #FFCDD2: FAILS — B lost
+note over A: return the new node
+note over B: free the redundant node,\nfollow the winner's pointer
+
+legend bottom
+  Both threads return the **same** node · the loser only wastes a redundant load.
+endlegend
+@enduml

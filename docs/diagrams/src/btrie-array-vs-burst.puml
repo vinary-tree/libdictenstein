@@ -1,0 +1,53 @@
+@startuml btrie-array-vs-burst
+' ============================================================================
+' btrie-array-vs-burst.puml — why the burst trie beats the standard array trie:
+' the array trie spends a full (mostly-empty) child array at every node, while
+' the burst trie keeps whole strings in compact leaf buckets and branches only
+' at the top. Source: docs/theory/disk-tries/02-b-trie.md (Heinz et al. 2002).
+' Color key:  amber #FFE0B2 = wasteful per-node arrays · blue #BBDEFB = trie node
+'             green #C8E6C9 = compact string buckets · grey #ECEFF1 = elided subtree
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam packageStyle rectangle
+skinparam ArrowColor #37474F
+skinparam TitleFontSize 15
+
+title Where the strings live — array trie vs burst trie
+
+package "Standard array trie" #F5F5F5 {
+  rectangle "root\n[a–z array]" as SR #FFE0B2
+  rectangle "a\n[a–z array]" as SA #FFE0B2
+  rectangle "c\n[a–z array]" as SC #FFE0B2
+  rectangle "…" as SM #ECEFF1
+  rectangle "…" as SAM #ECEFF1
+  rectangle "…" as SCM #ECEFF1
+  SR --> SA
+  SR --> SC
+  SR --> SM
+  SA --> SAM
+  SC --> SCM
+}
+
+package "Burst trie" #F5F5F5 {
+  rectangle "root" as BR #BBDEFB
+  rectangle "bucket\napple\nant\narrow" as BA #C8E6C9
+  rectangle "bucket\ncat\ncar\ncup" as BC #C8E6C9
+  BR --> BA : a
+  BR --> BC : c
+}
+
+SAM -[hidden]down- BR
+
+legend bottom
+  Array trie: a full (mostly-empty) child array per node.
+  Burst trie: whole strings held in compact leaf buckets.
+endlegend
+@enduml

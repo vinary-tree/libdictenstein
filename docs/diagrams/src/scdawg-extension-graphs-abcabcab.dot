@@ -1,0 +1,84 @@
+// ============================================================================
+// scdawg-extension-graphs-abcabcab.dot — PART 1 of 2 (RIGHT extensions).
+//
+// The SCDAWG of  w = "abcabcab"  is drawn as its TWO extension graphs, split
+// across two figures so each stays within the prose column:
+//   • PART 1 (this file)                    — RIGHT extensions (→): the CDAWG's
+//                                             forward transitions (append).
+//   • PART 2 (…-abcabcab-2.dot)             — LEFT  extensions (←): the mirror
+//                                             graph (prepend) — same labels,
+//                                             reversed direction.
+// The plain CDAWG has only the LEFT column of the classic drawing; the SCDAWG
+// adds the RIGHT one. Separating them into two matched columns exposes the
+// mirror symmetry: ε sits at the top of both, and each row is a matched prime
+// subword. For this repetitive string the two graphs are ISOMORPHIC — exactly
+// the point the pair of figures makes. (Companion scdawg-structure.svg overlays
+// both edge families on ONE node set.)
+//
+// Nodes are the prime subwords (longest representative of each class):
+//   ε  ab  abca  abcab  abcabc  abcabca  abcabcab   (edges from the doc tables).
+//
+// Color key (house palette):
+//   green  #C8E6C9  right-extension graph nodes (CDAWG, append)
+//   grey   #ECEFF1  the source/sink ε
+//   dark slate #37474F  right-extension edges + borders
+//   (blue #BBDEFB / #1565C0 for the left-extension mirror lives in PART 2)
+// ============================================================================
+digraph scdawg_extension_graphs {
+    rankdir=TB;
+    bgcolor="#FFFFFF";
+    fontname="DejaVu Sans";
+    fontsize=14;
+    labelloc="t";
+    fontcolor="#212121";
+    label="SCDAWG of \"abcabcab\" — part 1 of 2: RIGHT extensions (→)\nappend — the CDAWG's forward δ. See part 2 for the mirror LEFT-extension column.";
+    nodesep=0.22;
+    ranksep=0.38;
+
+    node [shape=ellipse, style="filled", color="#37474F",
+          fontname="DejaVu Sans", fontcolor="#212121", penwidth=1.4];
+    edge [fontname="DejaVu Sans", penwidth=1.4, arrowhead="vee"];
+
+    // ================= RIGHT EXTENSIONS (→) — the CDAWG ================
+    subgraph cluster_right {
+        label="RIGHT extensions (→)\nappend — CDAWG forward δ";
+        labelloc="t";
+        fontcolor="#00695C";
+        color="#00695C";
+        style="rounded";
+        bgcolor="#F1F8F4";
+        node [fillcolor="#C8E6C9"];
+        edge [color="#37474F", fontcolor="#37474F"];
+
+        r0 [label="ε", fillcolor="#ECEFF1", shape=doublecircle];
+        r1 [label="ab"];
+        r2 [label="abca"];
+        r3 [label="abcab"];
+        r4 [label="abcabc"];
+        r5 [label="abcabca"];
+        r6 [label="abcabcab", shape=doublecircle];
+
+        r0 -> r1 [label="ab"];
+        r1 -> r2 [label="ca"];
+        r2 -> r3 [label="b"];
+        r0 -> r3 [label="abcab"];
+        r3 -> r4 [label="c"];
+        r4 -> r5 [label="a"];
+        r5 -> r6 [label="b"];
+    }
+
+    // --- rendered legend (part 1) ----------------------------------------
+    legend [shape=note, style="filled", fillcolor="#FFF9C4",
+            color="#FBC02D", fontsize=10, fontcolor="#212121",
+            label=<
+<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
+<TR><TD ALIGN="LEFT"><B>Legend — part 1 of 2 (RIGHT)</B></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#37474F">━━▶ right extension (append)</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#37474F">plain CDAWG has only these edges</FONT></TD></TR>
+<TR><TD ALIGN="LEFT">nodes = prime subwords (longest per class)</TD></TR>
+<TR><TD ALIGN="LEFT">◎ = source/sink (ε and the whole word)</TD></TR>
+<TR><TD ALIGN="LEFT">part 2 mirrors this column ⇒ the</TD></TR>
+<TR><TD ALIGN="LEFT">"symmetric" in SCDAWG (left extension, ←)</TD></TR>
+</TABLE>>];
+    r6 -> legend [style="invis"];
+}

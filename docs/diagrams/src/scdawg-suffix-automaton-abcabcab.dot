@@ -1,0 +1,90 @@
+// ============================================================================
+// scdawg-suffix-automaton-abcabcab.dot — the δ-transition structure of the
+// suffix automaton (DAWG) of  w = "abcabcab".  This is the "Graphical
+// Representation" figure of §The Suffix Automaton: it shows ONLY the transition
+// function δ (the machine itself).  Its companion, suffix-links.svg, overlays
+// the suffix-link TREE on the same states — that figure is introduced later,
+// in §Suffix Links, once slinks are defined.
+//
+// States q0..q8 are the end-position equivalence classes (Blumer et al. 1985):
+//     q0 {0..8}=ε   q1 {1,4,7}=a   q2 {2,5,8}=b,ab   q3 {3,6}=c,bc,abc
+//     q4 {4,7}=ca…  q5 {5,8}=cab…  q6 {6}=cabc…      q7 {7}=cabca…  q8 {8}=…
+// δ edges are read straight from the transition table in the doc.  The spine
+//     q0-a→q1-b→q2-c→q3-a→q4-b→q5-c→q6-a→q7-b→q8
+// spells the input "abcabcab"; the seven shortcut edges are the remaining δ.
+//
+// ACCEPTING states F = { [x] : longest(x) is a suffix of w } = states whose
+// endpos set contains |w| = 8  ⇒  { q0, q2, q5, q8 } (double circle).
+// q0 is also the INITIAL state (the "start ▸" entry arrow).
+//
+// Color key (house palette):
+//   green  #C8E6C9  in-memory automaton states
+//   grey   #ECEFF1  the initial/root state q0 (ε)
+//   dark slate #37474F  δ transitions + node borders
+// ============================================================================
+digraph scdawg_suffix_automaton {
+    rankdir=TB;
+    bgcolor="#FFFFFF";
+    fontname="DejaVu Sans";
+    fontsize=14;
+    labelloc="t";
+    fontcolor="#212121";
+    label="Suffix automaton of \"abcabcab\" — the δ-transition structure\n(spine q0–a→q1–b→q2–c→q3–a→…–b→q8 spells the input; double circle = accepting)";
+    nodesep=0.35;
+    ranksep=0.55;
+
+    node [shape=circle, style="filled", fillcolor="#C8E6C9",
+          color="#37474F", fontname="DejaVu Sans", fontcolor="#212121",
+          penwidth=1.4, width=0.5, fixedsize=false];
+    edge [color="#37474F", fontname="DejaVu Sans", fontcolor="#37474F",
+          penwidth=1.3];
+
+    // --- initial-state entry arrow --------------------------------------
+    start [shape=point, width=0.08, color="#37474F"];
+    start -> q0 [label="start"];
+
+    // --- states (accepting = double circle: endpos ∋ 8) -----------------
+    q0 [label="q0\nε", fillcolor="#ECEFF1", shape=doublecircle];
+    q1 [label="q1"];
+    q2 [label="q2", shape=doublecircle];
+    q3 [label="q3"];
+    q4 [label="q4"];
+    q5 [label="q5", shape=doublecircle];
+    q6 [label="q6"];
+    q7 [label="q7"];
+    q8 [label="q8", shape=doublecircle];
+
+    // --- δ transitions: the spine (spells "abcabcab") -------------------
+    q0 -> q1 [label="a"];
+    q1 -> q2 [label="b"];
+    q2 -> q3 [label="c"];
+    q3 -> q4 [label="a"];
+    q4 -> q5 [label="b"];
+    q5 -> q6 [label="c"];
+    q6 -> q7 [label="a"];
+    q7 -> q8 [label="b"];
+
+    // --- δ transitions: the seven shortcut edges ------------------------
+    q0 -> q2 [label="b"];
+    q0 -> q3 [label="c"];
+    q2 -> q4 [label="a"];
+    q3 -> q5 [label="b"];
+    q4 -> q6 [label="c"];
+    q5 -> q7 [label="a"];
+    q6 -> q8 [label="b"];
+
+    // --- rendered legend -------------------------------------------------
+    { rank=sink;
+      legend [shape=note, style="filled", fillcolor="#FFF9C4",
+              color="#FBC02D", fontsize=10, fontcolor="#212121",
+              label=<
+<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
+<TR><TD ALIGN="LEFT"><B>Legend</B></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#37474F">━━▶ δ transition (character-labelled)</FONT></TD></TR>
+<TR><TD ALIGN="LEFT">○ green state = endpos equivalence class</TD></TR>
+<TR><TD ALIGN="LEFT">◎ double circle = accepting (endpos ∋ |w|=8): q0,q2,q5,q8</TD></TR>
+<TR><TD ALIGN="LEFT">▸ start = initial state q0 (ε)</TD></TR>
+<TR><TD ALIGN="LEFT">suffix links are shown separately in §Suffix Links</TD></TR>
+</TABLE>>];
+    }
+}

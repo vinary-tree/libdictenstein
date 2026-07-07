@@ -1,70 +1,62 @@
 @startuml architecture
 ' ============================================================================
-' Trait layer over backend families.  Color key:
-'   purple = traits   grey = unit abstraction   green = in-memory
-'   amber = pathmap-backend   blue = persistent-artrie   teal = entry points
+' libdictenstein architecture (part 1 of 2) — the TRAIT API surface: trait
+' layer + unit abstraction + entry points.  The backend families that implement
+' these traits are in architecture-2.puml (kept separate so each fits the prose
+' column).  Color key:
+'   teal = entry points   purple = traits   grey = unit abstraction
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 150
+skinparam nodesep 12
+skinparam ranksep 30
 skinparam ArrowColor #37474F
 skinparam packageStyle rectangle
-title libdictenstein — one trait API, many backends
+title libdictenstein — trait API surface (1 of 2)
+
+package "Entry points" #B2DFDB {
+  rectangle "DictionaryFactory\n(11 in-memory)" as Fac
+  rectangle "prelude" as Pre
+  Fac -[hidden]-> Pre
+}
 
 package "Trait layer" #E1BEE7 {
-  rectangle "**Dictionary**\ncontains · root · len" as Dict
-  rectangle "**MappedDictionary**\nget_value (term → V)" as Mapped
+  rectangle "**Dictionary**\ncontains·root·len" as Dict
+  rectangle "**MappedDictionary**\nget_value" as Mapped
   rectangle "**BijectiveDictionary**\nterm ↔ value" as Bij
-  rectangle "**MutableDictionary**\ninsert · remove" as Mut
-  rectangle "**CompactableDictionary**\ncompact · minimize" as Compact
-  rectangle "**DictionaryNode**\ntransition · edges · is_final" as Node
+  rectangle "**MutableDictionary**\ninsert·remove" as Mut
+  rectangle "**CompactableDictionary**\ncompact·minimize" as Compact
+  rectangle "**DictionaryNode**\ntransition·edges" as Node
   Dict <|-- Mapped
   Mapped <|-- Bij
   Dict <|-- Mut
   Mut <|-- Compact
+  Node <.. Dict
+  ' hidden edges: fold the two child branches into one vertical chain
+  Bij -[hidden]-> Mut
+  Compact -[hidden]-> Node
 }
 
 package "Unit abstraction" #CFD8DC {
-  rectangle "**CharUnit**\nu8 · char · u64" as CU
-  rectangle "**KeyEncoding**\nByteKey · CharKey · U64Key" as KE
+  rectangle "**CharUnit**\nu8·char·u64" as CU
+  rectangle "**KeyEncoding**\nByteKey·CharKey·U64Key" as KE
+  CU -[hidden]-> KE
 }
 
-package "In-memory backends (always on)" #C8E6C9 {
-  rectangle "DoubleArrayTrie / …Char" as DAT
-  rectangle "DynamicDawg / …Char / …U64" as DD
-  rectangle "SuffixAutomaton / …Char" as SA
-  rectangle "Scdawg / …Char" as SC
-}
-
-package "feature pathmap-backend" #FFF59D {
-  rectangle "PathMapDictionary / …Char" as PM
-}
-
-package "feature persistent-artrie (disk-backed)" #BBDEFB {
-  rectangle "PersistentARTrie / …Char" as PA
-  rectangle "PersistentARTrieU64Compact\n/ Prefix3Compat" as PU64
-  rectangle "PersistentVocabARTrie" as PV
-  rectangle "PersistentSuffixAutomaton\nPersistentSuffixTree\nPersistentScdawg\n(byte / Char)" as PSG
-}
-
-package "Entry points" #B2DFDB {
-  rectangle "DictionaryFactory\n(11 in-memory backends)" as Fac
-  rectangle "prelude" as Pre
-}
-
-DAT ..|> Dict
-DD  ..|> Dict
-SA  ..|> Dict
-SC  ..|> Dict
-PM  ..|> Dict
-PA  ..|> Dict
-PU64 ..|> Dict
-PV  ..|> Bij
-PSG ..|> Dict
-PSG ..> Node : snapshot nodes
-Node <.. Dict
-DAT ..> CU  : labels
-PA  ..> KE  : keys
-PU64 ..> KE : native u64 keys
-Fac ..> DAT : builds
+Node ..> CU : Unit
 Pre ..> Dict : re-exports
+Fac ..> Dict : builds backends\n(→ part 2)
+
+note bottom of KE
+  Backend families that implement
+  these traits are in architecture-2.
+end note
+
+legend right
+| Color | Layer |
+|<#B2DFDB>| entry points |
+|<#E1BEE7>| trait layer |
+|<#CFD8DC>| unit abstraction |
+endlegend
 @enduml

@@ -1,6 +1,6 @@
 # BijectiveMap Implementation
 
-**Navigation**: [← Dictionary Layer](../README.md) | [PersistentVocabARTrie](../../persistence/mmap-architecture.md) | [Algorithms Home](../../README.md)
+**Navigation**: [← Dictionary Layer](../README.md) | [PersistentVocabARTrie](../../persistence/README.md) | [Algorithms Home](../../README.md)
 
 ## Table of Contents
 
@@ -19,17 +19,17 @@
 
 `BijectiveMap<V>` is a bidirectional map enforcing a 1:1 correspondence
 (a *bijection*) between string terms and arbitrary hashable values. It supports
-both **forward lookup** (`term → value`) and **reverse lookup** (`value → term`).
+both **forward lookup** ($term \to value$) and **reverse lookup** ($value \to term$).
 The forward direction is a Unicode-aware
 [`DynamicDawgChar<V>`](dynamic-dawg-char.md) — the same DAWG backend the vocab
-tries use — so forward lookup is `O(∣term∣)` and benefits from the DAWG's
+tries use — so forward lookup is $O(\mid term\mid )$ and benefits from the DAWG's
 prefix/suffix sharing; the reverse direction is a hash map, giving amortized
-`O(1)` `value → term`.
+`O(1)` $value \to term$.
 
 > **Why a DAWG for the forward side?** The forward map is conceptually a small
 > term dictionary, and reusing `DynamicDawgChar<V>` keeps `BijectiveMap`
 > consistent with the vocab-trie family (it is the in-memory analogue of
-> [`PersistentVocabARTrie`](../../persistence/mmap-architecture.md)) while
+> [`PersistentVocabARTrie`](../../persistence/README.md)) while
 > retaining correct Unicode edit-distance behavior if a caller later walks it
 > with a Levenshtein automaton.
 
@@ -172,7 +172,7 @@ hold a reference into the map while inserts proceed.
 | Backing store | in-memory DAWG (forward) + HashMap (reverse) | disk-backed ARTrie |
 | User-supplied values | yes (via `insert(term, value)`) | no (`insert_with_value` is a no-op, see A4) |
 | Persistence | none (in-memory only) | mmap + WAL |
-| Cost of forward lookup | `O(∣term∣)` (DAWG descent) | `O(∣term∣)` (trie descent) |
+| Cost of forward lookup | $O(\mid term\mid )$ (DAWG descent) | $O(\mid term\mid )$ (trie descent) |
 | Cost of reverse lookup | `O(1)` avg (hash) | `O(depth of trie)` — reconstructed |
 | Remove support | none (append-only) | none (append-only) |
 
@@ -240,21 +240,21 @@ assert!(matches!(
 
 ## Performance Analysis
 
-Let `N` be the number of pairs and `∣term∣` the term length in code points:
+Let `N` be the number of pairs and $\mid term\mid$ the term length in code points:
 
 | Operation | Time (avg) | Time (worst) |
 |---|---|---|
-| `insert` / `try_insert` | `O(∣term∣)` forward + `O(1)` reverse | `O(N)` on reverse-map rehash |
-| `get_value` | `O(∣term∣)` forward DAWG descent | `O(∣term∣)` |
-| `get_term` | `O(1)` reverse hash + 1 `String` clone | `O(N + ∣term∣)` on collision |
-| `contains_term` | `O(∣term∣)` forward | `O(∣term∣)` |
+| `insert` / `try_insert` | $O(\mid term\mid )$ forward + `O(1)` reverse | `O(N)` on reverse-map rehash |
+| `get_value` | $O(\mid term\mid )$ forward DAWG descent | $O(\mid term\mid )$ |
+| `get_term` | `O(1)` reverse hash + 1 `String` clone | $O(N + \mid term\mid )$ on collision |
+| `contains_term` | $O(\mid term\mid )$ forward | $O(\mid term\mid )$ |
 | `contains_value` | `O(1)` reverse hash | `O(N)` on collision |
 | `len` / `n` | `O(1)` (reverse-map length) | `O(1)` |
 
-Memory: roughly `(forward DAWG size) + (sizeof(V) + sizeof(String)) × N` for the
+Memory: roughly $(forward DAWG size) + (sizeof(V) + sizeof(String)) \times N$ for the
 reverse map. The forward side is a DAWG (so terms with shared prefixes/suffixes
 cost sub-linearly), while the reverse map keeps one owned `String` per value for
-`O(1)` `value → term` lookup. Forward and reverse are *separate* structures —
+`O(1)` $value \to term$ lookup. Forward and reverse are *separate* structures —
 the reverse direction is not derived from the DAWG on the fly.
 
 ## When to Use
@@ -274,8 +274,8 @@ your data flow.
 
 - [Dictionary Layer](../README.md) — overview of all dictionary backends.
 - [DynamicDawgChar](dynamic-dawg-char.md) — the Unicode DAWG that backs the
-  forward (`term → value`) direction.
-- [PersistentVocabARTrie / mmap architecture](../../persistence/mmap-architecture.md)
+  forward ($term \to value$) direction.
+- [PersistentVocabARTrie / mmap architecture](../../persistence/README.md)
   — the durable, auto-`u64`-assigning vocabulary trie `BijectiveMap` is the
   in-memory analogue of.
 - [Serialization & values](../serialization.md) — how `V` round-trips.

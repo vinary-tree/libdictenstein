@@ -1,0 +1,75 @@
+# =============================================================================
+# committed-watermark.d2 — the committed watermark under out-of-order lock-free
+# commit: the largest L such that EVERY LSN in 1..=L has committed. It is the ONLY
+# safe checkpoint_lsn — the appended/synced frontier is not, because a write
+# appended-before but committed-after a capture would be reclaimed out of recovery.
+# Source of truth: src/persistent_artrie/core/committed_watermark.rs.
+# Color key: green committed · red in-flight hole · grey pending · orange watermark
+# =============================================================================
+
+direction: down
+
+title: |md
+  # The committed watermark
+
+  *= the safe `checkpoint_lsn`*
+| {
+  near: top-center
+  style.font-size: 16
+  style.font-color: "#212121"
+}
+
+# Two rows of 4 (grid-columns: 4) keep the LSN strip inside the prose column:
+# row ① = the committed contiguous PREFIX (1..=4, all ✓); row ② = the danger
+# zone (hole ⧗ at 5, out-of-order ✓ at 6 & 7, pending · at 8). The row break
+# lands exactly at the watermark, so the geometry itself tells the story.
+log: "WAL log (LSN → · wraps at 4)" {
+  grid-columns: 4
+  grid-gap: 0
+  style.font-color: "#37474F"
+
+  l1: "1\n✓" { style.fill: "#C8E6C9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20" }
+  l2: "2\n✓" { style.fill: "#C8E6C9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20" }
+  l3: "3\n✓" { style.fill: "#C8E6C9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20" }
+  l4: "4\n✓" { style.fill: "#C8E6C9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20" }
+  l5: "5\n⧗" { style.fill: "#FFCDD2"; style.stroke: "#C62828"; style.font-color: "#B71C1C"; style.bold: true }
+  l6: "6\n✓" { style.fill: "#C8E6C9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20" }
+  l7: "7\n✓" { style.fill: "#C8E6C9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20" }
+  l8: "8\n·" { style.fill: "#ECEFF1"; style.stroke: "#90A4AE"; style.font-color: "#546E7A" }
+}
+
+watermark: "watermark = 4\n= safe checkpoint_lsn" {
+  style.fill: "#FFCC80"
+  style.stroke: "#EF6C00"
+  style.font-color: "#5D4037"
+  style.stroke-width: 2
+  style.bold: true
+}
+watermark -> log.l4: "prefix ends" {
+  style.stroke: "#EF6C00"
+  style.stroke-width: 3
+  style.bold: true
+}
+
+# Each rendered line is its OWN paragraph (blank line between) so D2 does not
+# collapse the soft line-breaks into one 1192px-wide line; the width now tracks
+# the longest single line (~46 chars), not the whole note.
+note: |md
+  ✓ committed · ⧗ in-flight · · pending
+
+  Row ① (LSN 1–4) is the committed prefix.
+
+  Row ② opens with the in-flight hole at 5, so
+
+  even though 6 & 7 committed *out of order*,
+
+  the contiguous prefix — hence `checkpoint_lsn`
+
+  — is 4. Reclaiming past 4 would lose LSN 5
+
+  on commit (the `#41` footgun).
+| {
+  near: bottom-center
+  style.font-size: 13
+  style.font-color: "#37474F"
+}

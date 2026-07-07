@@ -1,0 +1,46 @@
+@startuml algorithms-backend-family
+' ============================================================================
+' algorithms-backend-family.puml — the Dictionary Layer trait API sitting above
+' the three in-memory backend families (Trie / DAWG / Suffix Automaton).
+' Replaces the ASCII family tree in docs/algorithms/README.md.
+' Color key:  purple = the trait API   grey = family grouping
+'             green  = concrete in-memory backend   teal = recommended default
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam packageStyle rectangle
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.1
+}
+skinparam TitleFontSize 15
+
+title Dictionary Layer — one trait API over three backend families
+
+package "Dictionary Layer API (traits)" #E1BEE7 {
+  rectangle "**Dictionary**" as Dict
+  rectangle "**MappedDictionary**" as Mapped
+  rectangle "**DictionaryNode**" as Node
+  Dict -[hidden]down- Mapped
+  Mapped -[hidden]down- Node
+}
+
+rectangle "**Trie**\nBackends" as Trie #C8E6C9
+rectangle "**DAWG**\nBackends" as Dawg #C8E6C9
+rectangle "**Suffix**\nAutomaton" as Suffix #C8E6C9
+
+rectangle "**DoubleArrayTrie**\n(default)" as DAT #B2DFDB
+rectangle "**DAT-Char**\n(UTF-8)" as DATChar #C8E6C9
+rectangle "**DynamicDawg**" as DD #C8E6C9
+
+Dict --> Trie
+Dict --> Dawg
+Dict --> Suffix
+Trie --> DAT
+DAT --> DATChar
+Dawg --> DD
+@enduml

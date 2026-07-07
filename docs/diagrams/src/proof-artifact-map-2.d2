@@ -1,0 +1,63 @@
+# =============================================================================
+# proof-artifact-map-2.d2 — PART ② of the two-pronged formal-verification
+# strategy: the Rocq THEOREM-PROVING prong. Rocq theorem-proves functional
+# correctness + Map-ADT refinement for ALL inputs (Qed., 0 Admitted/Axiom). It
+# ties to the same running Rust (impl) and correspondence harness as the TLA⁺
+# prong. The TLA⁺/TLC MODEL-CHECKING prong (bounded concurrency + crash
+# interleavings) is the companion figure proof-artifact-map.d2.
+# Grounded in formal-verification/README.md + VERIFICATION_RESULTS.md.
+# Split from the original single figure (was 1615px) so each part fits the prose
+# column; the same technique as architecture→architecture-2 / kernel-substrate→-2.
+#
+# Color key (house palette): green theorem-proved (Rocq) · orange (amber)
+#            correspondence harness · slate/grey implementation under test.
+#            (blue model-checked (TLA⁺) lives in the companion figure.)
+# =============================================================================
+
+vars: { d2-config: { layout-engine: elk } }
+direction: down
+
+title: |md
+  # Proof-artifact map ② — theorem proving
+
+  *Rocq prong · ties to impl + harness*
+| { near: top-center; style.font-size: 16; style.font-color: "#212121" }
+
+rocq: "② Rocq — theorem proving" {
+  style: { fill: "#C8E6C9"; stroke: "#2E7D32"; font-color: "#1B5E20"; stroke-width: 2; bold: true }
+  artifacts: "proofs (.v)" {
+    grid-columns: 1
+    style.fill: "#E8F5E9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20"
+    refine: "MapRefinement" { style.fill: "#E8F5E9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20" }
+    spec: "ARTrieSpec" { style.fill: "#E8F5E9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20" }
+    laws: "DictionaryLawSpec" { style.fill: "#E8F5E9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20" }
+    ebr: "EpochReclamationSpec" { style.fill: "#E8F5E9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20" }
+  }
+  props: "properties (∀ inputs)" {
+    grid-columns: 1
+    style.fill: "#F1F8E9"; style.stroke: "#558B2F"; style.font-color: "#33691E"
+    q1: "Functional\ncorrectness" { style.fill: "#F1F8E9"; style.stroke: "#558B2F"; style.font-color: "#33691E" }
+    q2: "Map-ADT refinement" { style.fill: "#F1F8E9"; style.stroke: "#558B2F"; style.font-color: "#33691E" }
+    q3: "No-use-after-free\n(gated EBR)" { style.fill: "#F1F8E9"; style.stroke: "#558B2F"; style.font-color: "#33691E" }
+  }
+  artifacts -> props: "Qed. · 0 Admitted/Axiom" { style.stroke: "#2E7D32"; style.stroke-width: 2 }
+}
+
+impl: "Persistent ART (PART) — Rust under test\nsrc/persistent_artrie/ · overlay · WAL · arena" {
+  style: { fill: "#ECEFF1"; stroke: "#546E7A"; font-color: "#263238"; stroke-width: 2; bold: true }
+}
+
+harness: "Correspondence harness\nverify-formal-correspondence.sh:\nRust traces ⇔ Rocq make ⇔ TLA⁺ SANY ⇔ unsafe gate" {
+  style: { fill: "#FFE0B2"; stroke: "#EF6C00"; font-color: "#E65100"; stroke-width: 2; bold: true }
+}
+
+# The TLA⁺ prong (harness → tla, tla → impl) lives in the companion figure
+# proof-artifact-map.d2; here we keep only the Rocq-side ties.
+harness -> rocq: "make" { style.stroke: "#EF6C00"; style.stroke-width: 2; style.stroke-dash: 3 }
+rocq -> impl: "proves function of" { style.stroke: "#2E7D32"; style.stroke-width: 2 }
+
+legend: |md
+  🟩 theorem-proved (Rocq) · 🟧 harness · ⬜ under test
+
+  *🟦 model-checked (TLA⁺) prong → companion figure proof-artifact-map*
+| { near: bottom-center; style.font-size: 13; style.font-color: "#37474F" }

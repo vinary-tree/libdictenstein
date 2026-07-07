@@ -38,21 +38,7 @@ A `DictZipper` is a cursor positioned at one node of that term-tree. From any po
 
 Crucially, navigation is **non-destructive**: `descend` returns a *new* cursor and leaves the original valid. A zipper is cheap to `Clone` (backend cursors are an index or pointer plus a path), so a combinator can hold several cursors and fan them out independently. The term-tree itself is never mutated by navigation — the dictionary is read-only while you walk it.
 
-```text
-            term-tree for {"cat", "car", "cab"}            a DictZipper is a
-                                                            cursor at one node:
-                  (root)  ·  path = []
-                    │ c
-                    ▼                                       descend(b'c') → ●
-                   ( ) path = "c"
-                    │ a                                     descend(b'a') → ●
-                    ▼
-                   ( ) path = "ca"
-              ┌─────┼─────┐                                 children() →
-            t │   r │   b │                                   (b't', ●) (b'r', ●) (b'b', ●)
-              ▼     ▼     ▼
-            (✓cat)(✓car)(✓cab)   ← is_final() == true at each leaf
-```
+<img src="../diagrams/zipper-term-tree.svg" alt="The term-tree for the set {cat, car, cab}: the root has empty path; descending on 'c' then 'a' reaches the interior node with path 'ca', whose children() yields edges 't', 'r', and 'b' to the three final nodes cat, car, and cab where is_final is true." width="70%"/>
 
 The companion **liblevenshtein** transducer walks exactly this `DictZipper` surface: a Levenshtein automaton calls `descend` / `children` to explore only the dictionary paths within an edit-distance bound. The set-algebra combinators in this document are *also* just `DictZipper`s, so the same transducer can fuzzy-query a *union* or *intersection* of dictionaries with no extra machinery.
 
@@ -64,7 +50,7 @@ The combinators (`union`, `intersection`, `difference`, …) present a **derived
 
 This matters for three reasons:
 
-- **Memory** — a combinator owns `O(n)` cursors (one per operand dictionary) plus the `O(d)` DFS stack during iteration, never `O(|A ∪ B|)` materialized terms. Composition is essentially free in space.
+- **Memory** — a combinator owns `O(n)` cursors (one per operand dictionary) plus the `O(d)` DFS stack during iteration, never $O(|A \cup B|)$ materialized terms. Composition is essentially free in space.
 - **Short-circuiting** — fuzzy queries and prefix scopes prune the derived tree as they descend. If a Levenshtein walk abandons a subtree at depth 2, the combinator never touches the operands below depth 2 either.
 - **Composability** — because the result *is* a `DictZipper`, it can be fed straight into another combinator or into a transducer. `Intersection(Union(A, B), Difference(C, D))` is a tower of cursors, each pulling lazily from the one below.
 
@@ -134,15 +120,15 @@ The table below is the heart of the subsystem: each row is one combinator's fold
 
 | Combinator | `is_final()` (emit predicate) | `descend(label)` follows | `children()` set op | Value source |
 |------------|-------------------------------|--------------------------|---------------------|--------------|
-| **Union** `A ∪ B` | `ANY` operand final | label present in **any** operand | `∪` of operands' labels | merge via strategy (`FirstWins` default) |
-| **Intersection** `A ∩ B` | **ALL** operands final | label present in **all** operands (else prune) | `∩` of operands' labels | merge via strategy (`LatticeMeet` default) |
+| **Union** $A \cup B$ | `ANY` operand final | label present in **any** operand | $\cup$ of operands' labels | merge via strategy (`FirstWins` default) |
+| **Intersection** $A \cap B$ | **ALL** operands final | label present in **all** operands (else prune) | $\cap$ of operands' labels | merge via strategy (`LatticeMeet` default) |
 | **Difference** `A \ B` | `A` final **AND NOT** `B` final | `A` (left); `B` tags along | `A`'s children only | from `A` (no merge) |
-| **Symmetric diff** `A △ B` | **exactly one** operand final | label present in **any** operand | `∪` of operands' labels | from the single source |
-| **Prefix** `{t : p ⊑ t}` | underlying `is_final()` | underlying `descend` from prefix node | underlying children | underlying value |
+| **Symmetric diff** $A \triangle B$ | **exactly one** operand final | label present in **any** operand | $\cup$ of operands' labels | from the single source |
+| **Prefix** ${t : p \sqsubseteq t}$ | underlying `is_final()` | underlying `descend` from prefix node | underlying children | underlying value |
 | **Excluding-prefix** | underlying `is_final()`, excluded subtrees pruned | underlying, skipping excluded prefixes | underlying minus excluded | underlying value |
-| **Value-diff** | both final **AND** `L.value ≠ R.value` | label in **both** (intersection) | `∩` of children | both values exposed separately |
+| **Value-diff** | both final **AND** $L.value \ne R.value$ | label in **both** (intersection) | $\cap$ of children | both values exposed separately |
 
-Notation: `p ⊑ t` means "`p` is a prefix of `t`"; `∪`/`∩` are set union/intersection over the *child label sets* at a node.
+Notation: $p \sqsubseteq t$ means "`p` is a prefix of `t`"; $\cup$/$\cap$ are set union/intersection over the *child label sets* at a node.
 
 ---
 
@@ -152,7 +138,7 @@ Every example below uses the **real public API** and mirrors the crate's own com
 
 ### 5.1 Union — *any-of*
 
-`A ∪ B` yields every term in **either** dictionary; a term in both appears **once** (iteration deduplicates by path). Source: [`src/union_zipper/mod.rs`](../../src/union_zipper/mod.rs).
+$A \cup B$ yields every term in **either** dictionary; a term in both appears **once** (iteration deduplicates by path). Source: [`src/union_zipper/mod.rs`](../../src/union_zipper/mod.rs).
 
 ```rust
 use libdictenstein::prelude::*;
@@ -178,7 +164,7 @@ assert_eq!(results, vec!["cat", "dog", "fish"]); // "cat" appears once
 
 ### 5.2 Intersection — *all-of*
 
-`A ∩ B` yields a term only if it exists in **every** operand. Source: [`src/intersection_zipper.rs`](../../src/intersection_zipper.rs).
+$A \cap B$ yields a term only if it exists in **every** operand. Source: [`src/intersection_zipper.rs`](../../src/intersection_zipper.rs).
 
 ```rust
 use libdictenstein::prelude::*;
@@ -229,9 +215,9 @@ assert_eq!(results, vec!["cat", "mat", "sat"]);
 
 Difference is **asymmetric**: navigation follows `A`'s structure (`children()` are `A`'s children), and `B` only "tags along" to test exclusion. The emit predicate is `left_final && !right_final`. A subtle but important case is the *proper-prefix* term: if `A = {"app", "apple"}` and `B = {"apple"}`, then `"app"` is in the difference (in `A`, not in `B`) even though `B` still has the path `a-p-p` on its way to `"apple"` — `B` is simply not *final* at `"app"`. Use `difference_from_optional(None)` when the exclusion set may be absent (the result then equals `A`).
 
-### 5.4 Symmetric difference — *A △ B*
+### 5.4 Symmetric difference — *A $\triangle$ B*
 
-`A △ B` yields terms in **exactly one** operand — the set XOR. Algebraically `A △ B = (A \ B) ∪ (B \ A) = (A ∪ B) \ (A ∩ B)` (both identities are property-tested in the source). Source: [`src/symmetric_difference_zipper.rs`](../../src/symmetric_difference_zipper.rs).
+$A \triangle B$ yields terms in **exactly one** operand — the set XOR. Algebraically $A \triangle B = (A \ B) \cup (B \ A) = (A \cup B) \ (A \cap B)$ (both identities are property-tested in the source). Source: [`src/symmetric_difference_zipper.rs`](../../src/symmetric_difference_zipper.rs).
 
 ```rust
 use libdictenstein::prelude::*;
@@ -258,7 +244,7 @@ For the N-ary form `z1.symmetric_difference_all(vec![z2, z3])`, the rule general
 
 ### 5.5 Prefix — *scoped subtree*
 
-`PrefixZipper` is the autocomplete primitive: navigate to a prefix in `O(k)` (k = prefix length), then stream every term under it in `O(m)` (m = matching terms) — far cheaper than `O(n)` full iteration with `.starts_with()` filtering when `m ≪ n`. Source: [`src/prefix_zipper.rs`](../../src/prefix_zipper.rs).
+`PrefixZipper` is the autocomplete primitive: navigate to a prefix in `O(k)` (k = prefix length), then stream every term under it in `O(m)` (m = matching terms) — far cheaper than `O(n)` full iteration with `.starts_with()` filtering when $m \ll n$. Source: [`src/prefix_zipper.rs`](../../src/prefix_zipper.rs).
 
 ```rust
 use libdictenstein::prelude::*;
@@ -359,26 +345,26 @@ These model "layered dictionaries": `FirstWins` is base-with-fallback (earlier l
 
 For value types that form a **lattice**, two strategies combine values *algebraically* rather than positionally. A **lattice** (the `Lattice` trait, re-exported from the [`llattice`](../../../llattice/) crate) is a partially-ordered set with two operations:
 
-- **join** `⊔` — the *least upper bound* (supremum). For sets this is **union** `∪`; for numbers **max**; for `bool` **OR**.
-- **meet** `⊓` — the *greatest lower bound* (infimum). For sets this is **intersection** `∩`; for numbers **min**; for `bool` **AND**.
+- **join** $\sqcup$ — the *least upper bound* (supremum). For sets this is **union** $\cup$; for numbers **max**; for `bool` **OR**.
+- **meet** $\sqcap$ — the *greatest lower bound* (infimum). For sets this is **intersection** $\cap$; for numbers **min**; for `bool` **AND**.
 
 The adapters wire these into the merge contract:
 
-- **`LatticeJoin`** — `merge(e, n) = e.join(&n)`  (climbs **up** the lattice: `∪` / max / OR).
-- **`LatticeMeet`** *(default for `IntersectionZipper`)* — `merge(e, n) = e.meet(&n)`  (descends **down**: `∩` / min / AND).
+- **`LatticeJoin`** — `merge(e, n) = e.join(&n)`  (climbs **up** the lattice: $\cup$ / max / OR).
+- **`LatticeMeet`** *(default for `IntersectionZipper`)* — `merge(e, n) = e.meet(&n)`  (descends **down**: $\cap$ / min / AND).
 
 A *lawful* lattice satisfies four laws for all `a`, `b`, `c` (verified for the built-in impls in `llattice`):
 
 | Law | Statement |
 |-----|-----------|
-| **Idempotency** | `a ⊔ a = a` and `a ⊓ a = a` |
-| **Commutativity** | `a ⊔ b = b ⊔ a` and `a ⊓ b = b ⊓ a` |
-| **Associativity** | `(a ⊔ b) ⊔ c = a ⊔ (b ⊔ c)` (and for `⊓`) |
-| **Absorption** | `a ⊔ (a ⊓ b) = a` and `a ⊓ (a ⊔ b) = a` |
+| **Idempotency** | $a \sqcup a = a$ and $a \sqcap a = a$ |
+| **Commutativity** | $a \sqcup b = b \sqcup a$ and $a \sqcap b = b \sqcap a$ |
+| **Associativity** | $(a \sqcup b) \sqcup c = a \sqcup (b \sqcup c)$ (and for $\sqcap$) |
+| **Absorption** | $a \sqcup (a \sqcap b) = a$ and $a \sqcap (a \sqcup b) = a$ |
 
-Commutativity + associativity are what make a merge **order-independent** — essential because the combinators fold operands left-to-right and you should get the same answer regardless of operand order (the CRDT property). `llattice` ships lawful impls for the integer and float primitives (`join = max`, `meet = min`), `bool` (OR / AND), `Option<T>` (`Some` if either / both), `HashSet<T>` (`∪` / `∩`, bottom `⊥ = ∅`), and `Vec<T>` (a join-semilattice *up to content-equality* — `join`/`meet` are order-preserving but left-biased, so the laws hold for the *element set*, not the `Vec` value).
+Commutativity + associativity are what make a merge **order-independent** — essential because the combinators fold operands left-to-right and you should get the same answer regardless of operand order (the CRDT property). `llattice` ships lawful impls for the integer and float primitives (`join = max`, `meet = min`), `bool` (OR / AND), `Option<T>` (`Some` if either / both), `HashSet<T>` ($\cup$ / $\cap$, bottom $\bot = \emptyset$), and `Vec<T>` (a join-semilattice *up to content-equality* — `join`/`meet` are order-preserving but left-biased, so the laws hold for the *element set*, not the `Vec` value).
 
-> **On the term "semiring-lattice."** The crate's value-merge model is the **lattice** semilattice above; there is no separate `semiring_lattice` module (the C6 split of `union_zipper.rs` produced exactly `mod.rs`, `merge_strategies.rs`, and `lattice.rs`). The connection to semirings is documented in `llattice` itself: for an *idempotent* semiring (`a ⊕ a = a`), the `⊕` (plus) operation forms a **join semilattice**, while `⊗` (times) is generally path composition rather than lattice meet. The bridge from `IdempotentSemiring` to `Lattice` lives in the `lling-llang` crate; within `libdictenstein` the relevant structure is purely the join/meet lattice.
+> **On the term "semiring-lattice."** The crate's value-merge model is the **lattice** semilattice above; there is no separate `semiring_lattice` module (the C6 split of `union_zipper.rs` produced exactly `mod.rs`, `merge_strategies.rs`, and `lattice.rs`). The connection to semirings is documented in `llattice` itself: for an *idempotent* semiring ($a \oplus a = a$), the $\oplus$ (plus) operation forms a **join semilattice**, while $\otimes$ (times) is generally path composition rather than lattice meet. The bridge from `IdempotentSemiring` to `Lattice` lives in the `lling-llang` crate; within `libdictenstein` the relevant structure is purely the join/meet lattice.
 
 ### 6.3 Worked merges
 
@@ -423,7 +409,7 @@ impl ValueMergeStrategy<usize> for Sum {
 
 For `IntersectionZipper`, the `ValuedDictZipper` impl is bounded `where Z::Value: Lattice` and merges with the configured strategy (default `LatticeMeet`); override via `intersection_with_strategy(other, LatticeJoin)`.
 
-The Hasse diagram below draws the partial order for `HashSet` values over the universe `{a, b, c}` (ordered by `⊆`), and traces both worked merges: `LatticeJoin` climbing to the least upper bound, `LatticeMeet` descending to the greatest lower bound.
+The Hasse diagram below draws the partial order for `HashSet` values over the universe `{a, b, c}` (ordered by $\subseteq$), and traces both worked merges: `LatticeJoin` climbing to the least upper bound, `LatticeMeet` descending to the greatest lower bound.
 
 <img src="../diagrams/zipper-lattice.svg" alt="Hasse diagram of the powerset of {a,b,c} ordered by subset inclusion, with the empty set as bottom and {a,b,c} as top; amber arrows show LatticeJoin climbing to the least upper bound and blue dashed arrows show LatticeMeet descending to the greatest lower bound." width="760"/>
 
@@ -435,11 +421,11 @@ How does a binary combinator actually *walk* two operands? It advances them **in
 
 | Combinator | Emit a term iff |
 |------------|-----------------|
-| Intersection | `L_final ∧ R_final` |
-| Union | `L_final ∨ R_final` |
-| Difference | `L_final ∧ ¬R_final` |
-| Symmetric difference | exactly one of `L_final, R_final` |
-| Value-diff | `L_final ∧ R_final ∧ (L.value ≠ R.value)` |
+| Intersection | $L_\text{final} \land R_\text{final}$ |
+| Union | $L_\text{final} \lor R_\text{final}$ |
+| Difference | $L_\text{final} \land \neg R_\text{final}$ |
+| Symmetric difference | exactly one of `L_final`, `R_final` |
+| Value-diff | $L_\text{final} \land R_\text{final} \land (L.\text{value} \ne R.\text{value})$ |
 
 Iteration is a depth-first search: descend a shared child, test the emit predicate, then ascend (pop the DFS frame) and try the next sibling. Two structural rules distinguish the combinators during the *descend* step:
 
@@ -458,20 +444,20 @@ Let `k` = prefix/term length, `n` = number of operand dictionaries, `c` = max ch
 
 | Combinator | `descend` (point) | `children` | full `iter` | extra memory |
 |------------|-------------------|------------|-------------|--------------|
-| Union | `O(k·n)` | `O(c·n)` | `O(m)` (deduped) | `O(n)` cursors + `O(d)` stack |
-| Intersection | `O(k·n)` | `O(c·n)` | `O(m)` | `O(n)` + `O(d)` |
+| Union | $O(k\cdot n)$ | $O(c\cdot n)$ | `O(m)` (deduped) | `O(n)` cursors + `O(d)` stack |
+| Intersection | $O(k\cdot n)$ | $O(c\cdot n)$ | `O(m)` | `O(n)` + `O(d)` |
 | Difference | `O(k)` (2 cursors) | `O(c)` (A only) | `O(m_A)` | `O(1)` cursors + `O(d)` |
-| Symmetric diff | `O(k·n)` | `O(c·n)` | `O(m·n)` | `O(n)` + `O(d)` |
+| Symmetric diff | $O(k\cdot n)$ | $O(c\cdot n)$ | $O(m\cdot n)$ | `O(n)` + `O(d)` |
 | Prefix | `O(k)` | `O(c)` | `O(m)` | `O(d)` stack |
-| Excluding-prefix | `O(k)` | `O(c·e)` (e = #excluded) | `O(m)` | `O(d)` stack |
-| Value-diff | `O(k)` (2 cursors) | `O(c)` (∩) | `O(m_∩)` | `O(d)` + dedup set |
+| Excluding-prefix | `O(k)` | $O(c\cdot e)$ (e = #excluded) | `O(m)` | `O(d)` stack |
+| Value-diff | `O(k)` (2 cursors) | `O(c)` ($\cap$) | $O(m_\cap )$ | `O(d)` + dedup set |
 
 Two practical notes:
 
 - **The structure is always `O(n)`-space** — composition never materializes the result. Only the *iterators* allocate (the per-path dedup `HashSet`, and the `Vec<Unit>` path each yield clones). For point queries via `descend`, there is no allocation beyond the path vector.
 - **Iteration deduplicates by path.** Each combinator iterator inserts every yielded path into a `HashSet<Vec<Unit>>`. This guarantees each term is emitted once even when reachable via multiple operands, at the cost of `O(m)` retained paths during a full scan.
 
-The **`PrefixZipper`** fast path is the headline optimization: navigating to a selective prefix and streaming its subtree is `O(k + m)` versus `O(n)` for full-iterate-and-filter — a 5–10× speedup when `m ≪ n` (the autocomplete regime). The iterator deliberately stores *only zippers* on its DFS stack and reconstructs each path **lazily** at final nodes, which profiling showed removes ≈2–4% of per-child `Vec` clone/realloc overhead.
+The **`PrefixZipper`** fast path is the headline optimization: navigating to a selective prefix and streaming its subtree is `O(k + m)` versus `O(n)` for full-iterate-and-filter — a 5–10$\times$ speedup when $m \ll n$ (the autocomplete regime). The iterator deliberately stores *only zippers* on its DFS stack and reconstructs each path **lazily** at final nodes, which profiling showed removes $\approx$2–4% of per-child `Vec` clone/realloc overhead.
 
 ---
 

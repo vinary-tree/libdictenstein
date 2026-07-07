@@ -231,48 +231,7 @@ update(c):
 
 ## Relationship Between Papers
 
-```
-    Blumer et al. (1985)   Crochemore (1986)      Weiner (1973)
-    Suffix Automaton       Factor Transducer      Suffix Tree
-    (endpos classes)       (repetitions)          (suffix links)
-         │                       │                     │
-         └───────────┬───────────┘                     │
-                     ▼                                  ▼
-    ┌────────────────────────────────────────────────────────┐
-    │                                                        │
-    │   Crochemore & Vérin (1997)                           │
-    │   Direct CDAWG Construction                            │
-    │                                                        │
-    └────────────────────────────────────────────────────────┘
-                      │
-                      ▼
-    ┌────────────────────────────────────────┐
-    │   Inenaga et al. (2005)               │
-    │   On-line CDAWG Construction          │
-    │   Multi-string Support                │
-    └────────────────────────────────────────┘
-                      │
-         ┌────────────┴────────────┐
-         │                         │
-         ▼                         ▼
-    Blumer et al. (1987)     Inenaga et al. (2001)
-    SCDAWG Definition        On-line SCDAWG with
-    IS Features              Sext Links
-         │                         │
-         └───────────┬─────────────┘
-                     │
-                     ▼
-            ┌─────────────────┐
-            │  OUR            │
-            │  IMPLEMENTATION │
-            │  (Hybrid)       │
-            └─────────────────┘
-                     │
-                     ▼
-            Gerdjikov et al. (2013)
-            WallBreaker Algorithm
-            (Validation Criteria)
-```
+<img src="../../diagrams/scdawg-citation-lineage.svg" alt="Citation-lineage DAG for the SCDAWG. The three foundational results, Blumer et al. 1985 (suffix automaton), Crochemore 1986 (factor transducer) and Weiner 1973 (suffix tree), feed Crochemore and Verin 1997 (direct CDAWG construction), which feeds Inenaga et al. 2005 (on-line CDAWG construction). That in turn splits to Blumer et al. 1987 (SCDAWG definition with IS features) and Inenaga et al. 2001 (on-line SCDAWG with sext links), both of which feed OUR IMPLEMENTATION, which is validated against Gerdjikov et al. 2013 (the WallBreaker criteria)." width="70%"/>
 
 ## Implementation Notes
 

@@ -1,0 +1,53 @@
+@startuml lockfree-hybrid-overlay-checkpoint
+' ============================================================================
+' lockfree-hybrid-overlay-checkpoint.puml — the hybrid write path: high-
+' concurrency imports land in the lock-free overlay (atomic root + sharded
+' cache) via insert_cas(); at a checkpoint, merge_lockfree_to_persistent()
+' drains the cache into the durable, WAL-backed persistent ARTrie on disk.
+' Source: §Integration with Persistent Storage of lockfree-cas-artrie.md.
+' Color key (house palette):
+'   green  #C8E6C9  the lock-free in-memory overlay (import phase)
+'   teal   #B2DFDB  the overlay cache accent
+'   amber  #FFE0B2  the checkpoint merge (the in-mem → on-disk hand-off)
+'   blue   #BBDEFB  the durable on-disk persistent ARTrie + WAL
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam packageStyle rectangle
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.3
+}
+
+title Hybrid write path — lock-free overlay ▸ checkpoint merge ▸ persistent ARTrie
+
+package "1 · During import  (high concurrency)" #C8E6C9 {
+  rectangle "**AtomicNodePtr** (root)\nCAS-published" as ROOT #CFD8DC
+  rectangle "**DashMap** (cache)\nsharded, lock-free" as CACHE #B2DFDB
+}
+
+package "2 · On checkpoint (merge to durable)" #FFE0B2 {
+  rectangle "**merge_lockfree_to_persistent()**\n· drain cache entries\n· insert to trie (+ WAL)\n· clear cache" as MERGE #FFE0B2
+}
+
+package "3 · Persistent ARTrie  (disk-backed)" #BBDEFB {
+  rectangle "disk-backed nodes\n(mmap / io_uring)" as DISK #BBDEFB
+  rectangle "**WAL**\nappend + fsync → recovery" as WAL #BBDEFB
+}
+
+ROOT -down-> MERGE : insert_cas()\nduring import
+CACHE -down-> MERGE : checkpoint\ndrains cache
+MERGE -down-> DISK : bulk insert
+MERGE -down-> WAL : log before\npublish
+
+note bottom of WAL
+  The overlay absorbs bursts
+  lock-free; durability is paid
+  once, in batch, at the
+  checkpoint — not per insert.
+end note
+@enduml

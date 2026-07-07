@@ -7,6 +7,13 @@
 '   src/persistent_artrie/core/wal/header.rs   (RankRegime { Owned=0, Overlay=1 })
 '   src/persistent_artrie/core/recovery.rs     (reconcile_lww / generation_of /
 '                                               the `RankRegime::Overlay => continue` drop)
+'
+' LAYOUT: a top regime decision followed by a VERTICAL STACK of the three
+' disjoint outcome cases (condition -> action -> rationale, one colored card
+' each), so the figure reads top-to-bottom within the prose column. The three
+' cards partition every record: RANKED (kept), UNRANKED+Owned (kept), and
+' UNRANKED+Overlay (dropped as a two-append orphan).
+'
 ' Color key:  amber #FFE0B2 = control / regime decision (frontier)
 '             green #C8E6C9 = KEEP — the record contributes to recovered state
 '             red   #FFCDD2 = DROP — the record is a two-append orphan, discarded
@@ -14,57 +21,46 @@
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 300
 skinparam shadowing false
 skinparam ArrowColor #37474F
 skinparam ArrowFontName "DejaVu Sans"
-skinparam activity {
+skinparam rectangle {
   BorderColor #37474F
   FontName "DejaVu Sans"
-  DiamondBorderColor #F9A825
-  DiamondBackgroundColor #FFE0B2
+}
+skinparam card {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
 }
 
-title RankRegime replay drop-rule — applied per record, generation_of(lsn) = rank.unwrap_or(lsn)
+title RankRegime replay drop-rule\nper record: generation_of(lsn) = rank.unwrap_or(lsn)
 
-start
-:read next durable WAL record\n(lsn, record);
+card "recover()  ▶\nreplay the durable WAL" as START #ECEFF1
 
-if (does this record carry a\ndurable **CommitRank**?) then (yes — RANKED)
-  #C8E6C9:**KEEP** (generation = its CommitRank generation)\nthe op committed: its visibility CAS won AND\nthe rank was durably bound before the ack;
-  note right #C8E6C9
-    A ranked record is KEPT regardless of regime.
-    Recovery stamps generation_of(lsn) = rank, and
-    reconciles per term by MAX (generation, lsn) so
-    LSN-ordered replay == CAS-order committed state.
-  end note
-else (no — UNRANKED)
-  if (header **rank_regime** of this\nfile/segment?) then (Owned = 0)
-    #C8E6C9:**KEEP** in LSN order\n(generation = lsn);
-    note right #C8E6C9
-      Owned / legacy / base / vocab producer:
-      NO record is ever ranked, so every unranked
-      record is a confirmed in-order append.
-      generation_of(lsn) = lsn → stable LSN replay
-      (byte-for-byte the pre-fix behavior).
-    end note
-  else (Overlay = 1)
-    #FFCDD2:**DROP** — `continue` (skip the record)\nit is a **two-append orphan**;
-    note right #FFCDD2
-      Overlay producer: every CONFIRMED op carries a
-      CommitRank. An unranked record is the gap between
-      the data append and the (never-written) rank — a
-      crash landed in the two-append window, so the op
-      was NEVER acknowledged. Keeping it would RESURRECT
-      a write that no caller ever saw succeed.
-      THIS IS THE SAFETY-CRITICAL RULE.
-    end note
-  endif
-endif
+rectangle "read next durable WAL\nrecord (lsn, record)" as READ #ECEFF1
 
-:emit the kept op (or nothing for a dropped /\nno-op record) into the (generation, lsn) merge;
-stop
+rectangle "**per record** — stamp\ngeneration_of(lsn) = rank.unwrap_or(lsn)\nclassify by: (durable **CommitRank**?,\nheader **rank_regime**). Three\ndisjoint outcomes ↓" as DECIDE #FFE0B2
 
-legend right
+card "**CASE 1 · RANKED → KEEP**\n--\n**when:** the record carries a\ndurable **CommitRank**\n**do:** KEEP — generation = its rank\n(the op committed: CAS won AND rank\nwas durably bound before the ack)\n**why:** ranked ⇒ KEPT for any\nregime. Stamp gen_of(lsn) = rank;\nreconcile per term by MAX(gen, lsn)\n⇒ LSN replay == CAS state." as C1 #C8E6C9
+
+card "**CASE 2 · Owned → KEEP**\n--\n**when:** no CommitRank ∧ header\n**rank_regime = Owned (0)**\n**do:** KEEP in LSN order\n(generation = lsn)\n**why:** Owned / legacy / base /\nvocab — NO record is ranked, so each\nunranked record is a confirmed\nin-order append. gen = lsn ⇒\nstable replay." as C2 #C8E6C9
+
+card "**CASE 3 · Overlay → DROP**\n--\n**when:** no CommitRank ∧ header\n**rank_regime = Overlay (1)**\n**do:** DROP — `continue` (skip the\nrecord): a **two-append orphan**\n**why:** Overlay — every CONFIRMED\nop carries a rank. An unranked\nrecord is the gap between the data\nappend and the (never-written) rank\n— a crash in the two-append window,\nso the op was NEVER acked. Keeping\nit RESURRECTS a write no caller saw\nsucceed. THE SAFETY-CRITICAL RULE." as C3 #FFCDD2
+
+rectangle "emit the kept op (or nothing\nfor a dropped record) into the\n(generation, lsn) merge" as EMIT #ECEFF1
+
+card "◼ recovered state =\nlast committed writer per term" as DONE #ECEFF1
+
+START --> READ
+READ --> DECIDE
+DECIDE --> C1 : record carries a\ndurable **CommitRank**
+C1 --> C2 : else · UNRANKED\n∧ regime = Owned (0)
+C2 --> C3 : else · UNRANKED\n∧ regime = Overlay (1)
+C3 --> EMIT
+EMIT --> DONE
+
+legend bottom
 | Color | Outcome |
 |<#FFE0B2>| regime decision |
 |<#C8E6C9>| KEEP (recovered) |

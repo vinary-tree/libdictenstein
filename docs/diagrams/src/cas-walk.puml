@@ -18,6 +18,7 @@
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 180
 skinparam shadowing false
 skinparam ArrowColor #37474F
 skinparam ArrowFontName "DejaVu Sans"
@@ -39,29 +40,29 @@ note right #ECEFF1
   would burn LSNs and punch a hole in the watermark).
 end note
 
-#FFE0B2:**claim_generation** = next durable global commit_seq\n(restart-seeded — NEVER the walk's root.version());
+:**claim_generation** = next durable global commit_seq\n(restart-seeded — NEVER the walk's root.version());<<#FFE0B2>>
 repeat :load the current **root** (atomic snapshot);
 
   partition "descend  (non-faulting on the membership hot path)" {
-    #C8E6C9:**find leaf** — walk edges for the key,\nresolving each spine edge;
+    :**find leaf** — walk edges for the key,\nresolving each spine edge;<<#C8E6C9>>
     if (next spine edge is an evicted\n**OnDisk** child?) then (yes)
-      #BBDEFB:**resolve_or_fault** — fault the child in from disk\n(rich ChildResolution: InMem · Faulted · IoFailed ·\nNull · Missing → per-variant mapping);
+      :**resolve_or_fault** — fault the child in from disk\n(rich ChildResolution: InMem · Faulted · IoFailed ·\nNull · Missing → per-variant mapping);<<#BBDEFB>>
     else (no — in memory)
     endif
-    #C8E6C9:**build the spine** (create_spine / build_value_spine)\n— copy-on-write the path for the key suffix\n(leaf shape per mode: non-final / as_final / valued);
+    :**build the spine** (create_spine / build_value_spine)\n— copy-on-write the path for the key suffix\n(leaf shape per mode: non-final / as_final / valued);<<#C8E6C9>>
   }
 
   if (two-phase publish — does this\nvariant CAS a NON-final spine first?) then (non-durable: yes)
-    #C8E6C9:CAS the non-final spine into place;
-    #FFE0B2:**try_set_final** — the single arbiter flips the\nshared leaf to final (the ONE linearization point);
+    :CAS the non-final spine into place;<<#C8E6C9>>
+    :**try_set_final** — the single arbiter flips the\nshared leaf to final (the ONE linearization point);<<#FFE0B2>>
   else (durable single-phase)
-    #FFE0B2:**root CAS** publishes a fresh **as_final** leaf\n(the ONE linearization point — sole commit);
+    :**root CAS** publishes a fresh **as_final** leaf\n(the ONE linearization point — sole commit);<<#FFE0B2>>
   endif
 
-backward :#FFCDD2:**CAS lost** — a concurrent writer moved the root.\nRe-load the root and retry. The WAL append is\nNOT repeated; claim_generation is re-claimed.;
+backward:**CAS lost** — a concurrent writer moved the root.\nRe-load the root and retry. The WAL append is\nNOT repeated; claim_generation is re-claimed.;<<#FFCDD2>>
 repeat while (did the publish CAS / try_set_final win?) is (no — conflict) not (yes — published)
 
-#C8E6C9:the new leaf is now **visible** to lock-free readers\n(the committed generation = the claimed commit_seq);
+:the new leaf is now **visible** to lock-free readers\n(the committed generation = the claimed commit_seq);<<#C8E6C9>>
 note right #FFE0B2
   Order-A tail (next, in durable_write.rs): append a
   durable CommitRank for (data_lsn, term, generation),

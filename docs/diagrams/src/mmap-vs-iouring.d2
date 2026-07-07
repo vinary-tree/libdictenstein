@@ -21,15 +21,15 @@
 direction: down
 
 title: |md
-  # `MmapDiskManager`  vs  `IoUringDiskManager` + O_DIRECT
-  *one `BlockStorage` trait · two paths to the device · different workload winners*
+  # `mmap` vs `io_uring` backends
+  *one `BlockStorage` trait · two device paths · different winners*
 | {
   near: top-center
   style.font-size: 19
   style.font-color: "#212121"
 }
 
-trait: "BlockStorage trait  (the shared seam — chosen by type param / feature gate)" {
+trait: "BlockStorage trait — the shared seam\nchosen by type param / feature gate" {
   style: {
     fill: "#F1F1F1"
     stroke: "#37474F"
@@ -67,7 +67,7 @@ mmap: "MmapDiskManager  —  DEFAULT" {
 }
 
 # --- RIGHT: IoUringDiskManager ----------------------------------------------
-iouring: "IoUringDiskManager + O_DIRECT  —  feature io-uring-backend" {
+iouring: "IoUringDiskManager + O_DIRECT\nfeature io-uring-backend" {
   style: {
     fill: "#BBDEFB"
     stroke: "#1565C0"
@@ -103,6 +103,17 @@ nvme: "NVMe SSD  (256 KB block size)" {
   }
 }
 
+# Stack the two backend cards vertically (hidden edge) so the figure stays within
+# the prose column instead of spreading the two big siblings side by side.
+mmap -> iouring: "" { style.opacity: 0.0 }
+
+# Stack each card's how/durability/wins rows vertically (hidden edges) so a card is
+# one narrow column rather than three boxes side by side.
+mmap.how -> mmap.durab: "" { style.opacity: 0.0 }
+mmap.durab -> mmap.wins: "" { style.opacity: 0.0 }
+iouring.how -> iouring.durab: "" { style.opacity: 0.0 }
+iouring.durab -> iouring.wins: "" { style.opacity: 0.0 }
+
 trait -> mmap: "default" {
   style.stroke: "#1565C0"
   style.stroke-width: 2
@@ -111,19 +122,19 @@ trait -> iouring: "feature-gated" {
   style.stroke: "#1565C0"
   style.stroke-width: 2
 }
-mmap -> nvme: "page-cache writeback" {
+mmap -> nvme: "writeback" {
   style.stroke: "#37474F"
   style.stroke-width: 2
 }
-iouring -> nvme: "O_DIRECT (batched)" {
+iouring -> nvme: "O_DIRECT" {
   style.stroke: "#37474F"
   style.stroke-width: 2
 }
 
 legend: |md
-  **Rule of thumb** · choose **mmap** for cached, single-block, latency-sensitive serving ·
-  choose **io_uring + O_DIRECT** for eviction-heavy / batch flush and when you need
-  device-level durability without the page-cache writeback gap.
+  **Rule of thumb** · choose **mmap** for cached, single-block, latency-sensitive serving.
+
+  Choose **io_uring + O_DIRECT** for eviction-heavy / batch flush and true device-level durability.
 | {
   near: bottom-center
   style.font-size: 13

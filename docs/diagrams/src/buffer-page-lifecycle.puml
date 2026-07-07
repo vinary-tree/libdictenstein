@@ -1,13 +1,15 @@
 @startuml buffer-page-lifecycle
 ' ============================================================================
-' Buffer-pool PAGE (frame) lifecycle — how one 256 KB block-storage page moves
-' between disk and a buffer-pool frame, and through the Clean ⇄ Dirty and
-' Pinned ⇄ Unpinned conditions that govern when it may be flushed or evicted.
+' Buffer-pool PAGE (frame) lifecycle, PART 1 of 2 — the TOP-LEVEL cycle: how one
+' 256 KB block-storage page moves between disk and a buffer-pool frame and back
+' out again (fault-in · write-back · CLOCK victim eviction). The Resident state's
+' internal Clean/Dirty × Pinned/Unpinned substates are the companion figure
+' buffer-page-lifecycle-2.puml (PART 2).
 '
 ' Source of truth: src/persistent_artrie/core/buffer_manager.rs
 '   A `Frame` carries  block_id · lease_state (read-pin count | WRITE_LEASE) ·
 '   dirty flag · reference_bit (CLOCK second-chance).  There is no literal
-'   `enum PageState`; the lifecycle below is the product of
+'   `enum PageState`; the lifecycle is the product of
 '     {resident, on-disk} × {clean, dirty} × {pinned, unpinned}.
 '   Operations:  load_page / pin_page_data (fault-in) · pin_read / pin_write ·
 '   unpin_read / unpin_write · mark_dirty (on write) · flush_page / flush_all
@@ -26,6 +28,7 @@
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 210
 skinparam shadowing false
 skinparam ArrowColor #37474F
 skinparam state {
@@ -33,41 +36,23 @@ skinparam state {
   FontName "DejaVu Sans"
 }
 
-title Buffer-pool page (frame) lifecycle — fault-in · pin/unpin · dirty/flush · evict
+title Buffer-pool page (frame) lifecycle (1 of 2)\ntop-level cycle: Disk ⇄ Resident ⇄ eviction
 
-state "On disk\n(no resident frame)" as Disk #BBDEFB : durable block in block-storage;\nthe SwizzledPtr child names it\nby block_id + location
+state "On disk\n(no resident frame)" as Disk #BBDEFB : durable block;\nblock_id + location
 
-state "Fault-in\nload_page / pin_page_data" as FaultIn #FFE0B2 : read_block_fixed(block_id)\ninto a free CLOCK frame,\nthen install in the page table
+state "Fault-in\nload_page / pin_page_data" as FaultIn #FFE0B2 : read_block_fixed →\nfree CLOCK frame
 
-Disk -[#1565C0]-> FaultIn : access misses the buffer pool\n(page not in page_table)
-FaultIn --> Resident : frame populated\n(reference_bit ← 1)
+state "Resident\n(buffer-pool frame)" as Resident #C8E6C9 : Clean/Dirty × Pinned/Unpinned;\ninternal substates in PART 2\n(buffer-page-lifecycle-2)
 
-state "Resident in a buffer-pool frame" as Resident #C8E6C9 {
+state "Write-back\n(victim was dirty)" as WriteBack #FFE0B2 : write_block_fixed\n→ clear_dirty
 
-  state "Clean · Unpinned" as CleanUnpinned #C8E6C9 : dirty = false, lease_state = 0\n→ CLOCK-evictable
-  state "Clean · Pinned" as CleanPinned #C8E6C9 : ≥1 read lease OR the write lease\n→ pinned, NOT evictable
-  state "Dirty · Pinned" as DirtyPinned #C8E6C9 : modified under a lease\n(write differs from disk)
-  state "Dirty · Unpinned" as DirtyUnpinned #C8E6C9 : modified, all leases dropped\n→ must be flushed before reuse
+Disk -[#1565C0]-> FaultIn : miss\n(not in page_table)
+FaultIn --> Resident : populated
+Resident -[#1565C0]-> WriteBack : victim DIRTY\n(get_free_frame)
+WriteBack -[#1565C0]-> Disk : frame detached
+Resident -[#1565C0]-> Disk : victim CLEAN\n→ reuse as-is
 
-  [*] --> CleanUnpinned
-
-  CleanUnpinned --> CleanPinned : pin_read / pin_write\n(lease acquired)
-  CleanPinned --> CleanUnpinned : unpin_read / unpin_write\n(no writes performed)
-
-  CleanPinned -[#C62828]-> DirtyPinned : mark_dirty\n(data_mut written under WRITE_LEASE)
-  DirtyPinned --> DirtyUnpinned : unpin_write\n(lease released, still dirty)
-
-  DirtyUnpinned --> CleanUnpinned : flush_page / flush_all\nwrite_block_fixed → clear_dirty
-  DirtyPinned --> DirtyPinned : flush blocked\nwhile a WRITE_LEASE is held
-}
-
-' --- Reclaim: a clean, unpinned frame is taken as a CLOCK victim ---
-Resident -[#1565C0]-> WriteBack : CLOCK victim is DIRTY\n(get_free_frame needs the frame)
-state "Write-back\n(victim was dirty)" as WriteBack #FFE0B2 : write_block_fixed(old_block)\nthen clear_dirty
-WriteBack -[#1565C0]-> Disk : frame detached\n(page_table entry removed)
-CleanUnpinned -[#1565C0]-> Disk : CLOCK victim is CLEAN\n(reference_bit == 0) → frame reused as-is
-
-note right of Resident #ECEFF1
+note bottom of Resident #ECEFF1
   CLOCK (second-chance) reuse in get_free_frame:
   a frame is a candidate only when **unpinned**;
   a set reference_bit grants one reprieve (cleared,

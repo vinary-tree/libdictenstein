@@ -1,166 +1,64 @@
 # =============================================================================
-# proof-artifact-map.d2 — the two-pronged formal-verification strategy.
+# proof-artifact-map.d2 — PART ① of the two-pronged formal-verification strategy:
+# the TLA⁺/TLC MODEL-CHECKING prong plus the shared implementation-under-test and
+# correspondence harness that both prongs tie to. TLA⁺/TLC model-checks bounded
+# concurrency + crash interleavings (temporal safety/liveness). The Rocq
+# THEOREM-PROVING prong (functional correctness + ADT refinement, ∀ inputs, Qed.,
+# 0 Admitted/Axiom) is the companion figure proof-artifact-map-2.d2.
+# Grounded in formal-verification/README.md + VERIFICATION_RESULTS.md.
+# Split from the original single figure (was 1615px) so each part fits the prose
+# column; the same technique as architecture→architecture-2 / kernel-substrate→-2.
 #
-# libdictenstein verifies the Persistent ART (PART) two ways that divide the
-# obligation space cleanly:
-#   * TLA+ / TLC (MODEL CHECKING) — exhaustively explores BOUNDED concurrency
-#     and crash interleavings to establish temporal safety + liveness.
-#   * Rocq / Coq (THEOREM PROVING) — proves functional correctness and ADT
-#     refinement for ALL inputs (machine-checked Qed., no Admitted/Axiom).
-# The two prongs are tied to the running Rust by the executable correspondence
-# harness (scripts/verify-formal-correspondence.sh).
-#
-# Grounded in formal-verification/README.md (properties table, theorem list,
-# spec<->Rust correspondence table) and VERIFICATION_RESULTS.md.
-#
-# Color key (verification palette — task spec; cf. docs/diagrams/README.md):
-#   blue  #BBDEFB  model-checked (TLA+ / TLC) artifacts + their guarantees
-#   green #C8E6C9  theorem-proved (Rocq) artifacts + their guarantees
-#   amber #FFE0B2  CI / correspondence harness (the tie to real code)
-#   grey  #ECEFF1  infrastructure / framing / the implementation under test
+# Color key (house palette): purple/blue model-checked (TLA⁺) · orange (amber)
+#            correspondence harness · slate/grey implementation under test.
+#            (green theorem-proved (Rocq) lives in the companion figure.)
 # =============================================================================
 
-vars: {
-  d2-config: {
-    layout-engine: elk
-  }
-}
-
+vars: { d2-config: { layout-engine: elk } }
 direction: down
 
 title: |md
-  # libdictenstein — two-pronged proof-artifact map
-  *model checking (bounded, temporal) ⟂ theorem proving (all inputs, functional) · tied to code by correspondence*
-| {
-  near: top-center
-  style.font-size: 19
-  style.font-color: "#212121"
-}
+  # Proof-artifact map ① — model checking
 
-# --- Prong 1: TLA+ / TLC — MODEL CHECKING -----------------------------------
-tla: "① TLA⁺ / TLC  —  Model Checking  (concurrency + crash-recovery)" {
-  style: {
-    fill: "#BBDEFB"
-    stroke: "#1565C0"
-    font-color: "#0D47A1"
-    stroke-width: 2
-    bold: true
-  }
-  tooltip: "Explicit-state exploration of bounded instances; SANY type-checks; TLC enumerates every reachable state."
+  *TLA⁺ / TLC prong · ties to impl + harness*
+| { near: top-center; style.font-size: 16; style.font-color: "#212121" }
 
-  artifacts: "Representative specs (.tla)" {
-    style.fill: "#E3F2FD"
-    style.stroke: "#1565C0"
-    style.font-color: "#0D47A1"
-    lin: "LockFreeARTrieLinearizability" { style.fill: "#E3F2FD"; style.stroke: "#1565C0"; style.font-color: "#0D47A1" }
+tla: "① TLA⁺ / TLC — model checking" {
+  style: { fill: "#BBDEFB"; stroke: "#1565C0"; font-color: "#0D47A1"; stroke-width: 2; bold: true }
+  artifacts: "specs (.tla)" {
+    grid-columns: 1
+    style.fill: "#E3F2FD"; style.stroke: "#1565C0"; style.font-color: "#0D47A1"
+    lin: "LockFreeARTrie\nLinearizability" { style.fill: "#E3F2FD"; style.stroke: "#1565C0"; style.font-color: "#0D47A1" }
     crash: "CrashRecovery" { style.fill: "#E3F2FD"; style.stroke: "#1565C0"; style.font-color: "#0D47A1" }
     front: "DurabilityFrontier" { style.fill: "#E3F2FD"; style.stroke: "#1565C0"; style.font-color: "#0D47A1" }
     ebr: "EvictionWalkEBR" { style.fill: "#E3F2FD"; style.stroke: "#1565C0"; style.font-color: "#0D47A1" }
   }
-  props: "Headline properties established" {
-    style.fill: "#E1F5FE"
-    style.stroke: "#0277BD"
-    style.font-color: "#01579B"
-    p1: "Linearizability\n(operations appear atomic)" { style.fill: "#E1F5FE"; style.stroke: "#0277BD"; style.font-color: "#01579B" }
-    p2: "No-lost-writes\n(synced LSN prefix survives)" { style.fill: "#E1F5FE"; style.stroke: "#0277BD"; style.font-color: "#01579B" }
-    p3: "Crash-recovery completeness\n(durable prefix replays exactly)" { style.fill: "#E1F5FE"; style.stroke: "#0277BD"; style.font-color: "#01579B" }
+  props: "properties" {
+    grid-columns: 1
+    style.fill: "#E1F5FE"; style.stroke: "#0277BD"; style.font-color: "#01579B"
+    p1: "Linearizability" { style.fill: "#E1F5FE"; style.stroke: "#0277BD"; style.font-color: "#01579B" }
+    p2: "No-lost-writes" { style.fill: "#E1F5FE"; style.stroke: "#0277BD"; style.font-color: "#01579B" }
+    p3: "Crash-recovery\ncompleteness" { style.fill: "#E1F5FE"; style.stroke: "#0277BD"; style.font-color: "#01579B" }
   }
-  artifacts -> props: "TLC: 0 violations\nin bounded state space" {
-    style.stroke: "#1565C0"
-    style.stroke-width: 2
-  }
+  artifacts -> props: "TLC: 0 violations" { style.stroke: "#1565C0"; style.stroke-width: 2 }
 }
 
-# --- Prong 2: Rocq / Coq — THEOREM PROVING ----------------------------------
-rocq: "② Rocq / Coq  —  Theorem Proving  (functional correctness + ADT refinement)" {
-  style: {
-    fill: "#C8E6C9"
-    stroke: "#2E7D32"
-    font-color: "#1B5E20"
-    stroke-width: 2
-    bold: true
-  }
-  tooltip: "69 .v files / 1,301 propositions, all Qed.-closed; 0 Admitted / 0 Axiom / 0 Parameter."
-
-  artifacts: "Representative specs/proofs (.v)" {
-    style.fill: "#E8F5E9"
-    style.stroke: "#2E7D32"
-    style.font-color: "#1B5E20"
-    refine: "Proofs/MapRefinement\n(ARTrie refines the Map ADT)" { style.fill: "#E8F5E9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20" }
-    spec: "Spec/ARTrieSpec\n(insert/delete correctness)" { style.fill: "#E8F5E9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20" }
-    laws: "Spec/DictionaryLawSpec\n(public set/map/bijection laws)" { style.fill: "#E8F5E9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20" }
-    ebr: "Spec/PersistentCharEpochReclamationSpec" { style.fill: "#E8F5E9"; style.stroke: "#2E7D32"; style.font-color: "#1B5E20" }
-  }
-  props: "Headline properties established" {
-    style.fill: "#F1F8E9"
-    style.stroke: "#558B2F"
-    style.font-color: "#33691E"
-    q1: "Functional correctness\n(lookup = interpret_trie, ∀ inputs)" { style.fill: "#F1F8E9"; style.stroke: "#558B2F"; style.font-color: "#33691E" }
-    q2: "Map-ADT refinement\n(WFARTrieMapImpl)" { style.fill: "#F1F8E9"; style.stroke: "#558B2F"; style.font-color: "#33691E" }
-    q3: "No-use-after-free\n(gated EBR reclaim invariant)" { style.fill: "#F1F8E9"; style.stroke: "#558B2F"; style.font-color: "#33691E" }
-  }
-  artifacts -> props: "Qed.\n(machine-checked, all inputs)" {
-    style.stroke: "#2E7D32"
-    style.stroke-width: 2
-  }
+impl: "Persistent ART (PART) — Rust under test\nsrc/persistent_artrie/ · overlay · WAL · arena" {
+  style: { fill: "#ECEFF1"; stroke: "#546E7A"; font-color: "#263238"; stroke-width: 2; bold: true }
 }
 
-# --- The implementation under test (shared target) --------------------------
-impl: "Persistent ART (PART) — Rust implementation under test\nsrc/persistent_artrie{,_char,_vocab}/ · lock-free overlay · WAL · arena" {
-  style: {
-    fill: "#ECEFF1"
-    stroke: "#546E7A"
-    font-color: "#263238"
-    stroke-width: 2
-    bold: true
-  }
+harness: "Correspondence harness\nverify-formal-correspondence.sh:\nRust traces ⇔ Rocq make ⇔ TLA⁺ SANY ⇔ unsafe gate" {
+  style: { fill: "#FFE0B2"; stroke: "#EF6C00"; font-color: "#E65100"; stroke-width: 2; bold: true }
 }
 
-# --- The correspondence harness ties both prongs to the code ----------------
-harness: "Correspondence harness — scripts/verify-formal-correspondence.sh\nRust trace tests ⇔ Rocq make ⇔ TLA⁺ SANY ⇔ unsafe-inventory gate" {
-  style: {
-    fill: "#FFE0B2"
-    stroke: "#EF6C00"
-    font-color: "#E65100"
-    stroke-width: 2
-    bold: true
-  }
-}
+# The Rocq prong (rocq → impl, harness → rocq) lives in the companion figure
+# proof-artifact-map-2.d2; here we keep only the TLA⁺-side ties.
+harness -> tla: "SANY + TLC" { style.stroke: "#EF6C00"; style.stroke-width: 2; style.stroke-dash: 3 }
+tla -> impl: "models concurrency\n+ crash of" { style.stroke: "#1565C0"; style.stroke-width: 2 }
+harness -> impl: "trace tests" { style.stroke: "#EF6C00"; style.stroke-width: 3; style.bold: true }
 
-# --- Edges: both prongs model the same implementation, tied by the harness --
-tla -> impl: "models concurrency\n+ crash behavior of" {
-  style.stroke: "#1565C0"
-  style.stroke-width: 2
-}
-rocq -> impl: "proves functional\nbehavior of" {
-  style.stroke: "#2E7D32"
-  style.stroke-width: 2
-}
-harness -> tla: "SANY-parses\n+ (RUN_TLC) checks" {
-  style.stroke: "#EF6C00"
-  style.stroke-width: 2
-  style.stroke-dash: 3
-}
-harness -> rocq: "runs `make`\n(0 Admitted/Axiom)" {
-  style.stroke: "#EF6C00"
-  style.stroke-width: 2
-  style.stroke-dash: 3
-}
-harness -> impl: "executes trace\ncorrespondence tests" {
-  style.stroke: "#EF6C00"
-  style.stroke-width: 3
-  style.bold: true
-}
-
-# --- Legend ------------------------------------------------------------------
 legend: |md
-  **Color key** ·
-  🟦 blue = model-checked (TLA⁺ / TLC) ·
-  🟩 green = theorem-proved (Rocq) ·
-  🟧 amber = correspondence harness (tie to code) ·
-  ⬜ grey = implementation under test
-| {
-  near: bottom-center
-  style.font-size: 13
-  style.font-color: "#37474F"
-}
+  🟦 model-checked (TLA⁺) · 🟧 harness · ⬜ under test
+
+  *🟩 theorem-proved (Rocq) prong → companion figure proof-artifact-map-2*
+| { near: bottom-center; style.font-size: 13; style.font-color: "#37474F" }

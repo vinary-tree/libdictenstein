@@ -22,6 +22,7 @@
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 230
 skinparam ArrowColor #37474F
 skinparam shadowing false
 skinparam ActivityBorderColor #37474F
@@ -33,12 +34,12 @@ title Online suffix-automaton **extend(c)** — the clone-on-split step\n(runnin
 
 start
 
-partition "Setup (grey = infrastructure)" #ECEFF1 {
+partition "Setup" #ECEFF1 {
   :create new state **cur**;\nlen(cur) = len(last) + 1;
   :p := last;
 }
 
-partition "Walk the suffix-link chain (green = in-memory)" #C8E6C9 {
+partition "Walk the suffix-link chain" #C8E6C9 {
   while (p ≠ NULL **and** p has no c-edge?) is (true)
     :add transition  p --c--> cur;
     :p := slink(p)   (follow dashed suffix link);
@@ -46,22 +47,16 @@ partition "Walk the suffix-link chain (green = in-memory)" #C8E6C9 {
 }
 
 if (p = NULL?) then (yes — root reached)
-  partition "Root case (grey)" #ECEFF1 {
+  partition "Root case" #ECEFF1 {
     :slink(cur) := root;
   }
 else (no — p has c-edge)
   :q := delta(p, c);
-  partition "Branch test (blue = decision)" #BBDEFB {
+  partition "Branch test" #BBDEFB {
     if (len(q) = len(p) + 1 ?) then (yes — solid edge, CASE A)
       :slink(cur) := q;
-      note right
-        **Case A — no clone.**
-        q is already the right length;
-        a single suffix link suffices.
-        Cheap: O(1).
-      end note
     else (no — non-solid edge, CASE B)
-      partition "CLONE-ON-SPLIT (green = new in-memory state)" #C8E6C9 {
+      partition "CLONE-ON-SPLIT" #C8E6C9 {
         :create clone **q'**;
         :copy ALL transitions of q into q';
         :slink(q') := slink(q);
@@ -73,19 +68,20 @@ else (no — p has c-edge)
         ->false;
         :slink(q)  := q';
         :slink(cur) := q';
-        note right
-          **Case B — the costly step.**
-          One clone caps the total state
-          count at  ≤ 2·|T| − 1  and the
-          transition count at  ≤ 3·|T| − 4.
-        end note
       }
     endif
   }
 endif
 
-partition "Finalize (grey)" #ECEFF1 {
+partition "Finalize" #ECEFF1 {
   :last := cur;
+  note right
+    **Case A — no clone.** q already has the right
+    length; one suffix link suffices — O(1).
+    **Case B — the costly step.** A single clone caps
+    the state count at ≤ 2·|T|−1 and transitions
+    at ≤ 3·|T|−4.
+  end note
 }
 stop
 

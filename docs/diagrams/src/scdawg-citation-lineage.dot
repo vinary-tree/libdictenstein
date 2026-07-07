@@ -1,0 +1,78 @@
+// ============================================================================
+// scdawg-citation-lineage.dot — the citation lineage (a DAG) from the three
+// foundational results, through direct + on-line CDAWG construction, to the
+// SCDAWG, to OUR IMPLEMENTATION, validated against WallBreaker.
+// Source: §Relationship Between Papers of 07-references.md (each node carries
+// its DOI where one exists).
+//
+// Layout note: node labels use the compact "Author (year)" form with the DOI
+// wrapped onto continuation lines so no single line forces the figure wider
+// than the ~700px prose column — the full DOI text is preserved verbatim, just
+// line-wrapped. rankdir=TB with tightened nodesep/ranksep.
+//
+// Color key (house palette):
+//   grey   #ECEFF1  foundational roots (1973–1986)
+//   green  #C8E6C9  the CDAWG construction line
+//   teal   #B2DFDB  the SCDAWG definition + on-line SCDAWG
+//   amber  #FFE0B2  OUR IMPLEMENTATION (the hybrid we ship)
+//   blue   #BBDEFB  the WallBreaker validation criteria
+//   dark slate #37474F  "cited-by / builds-on" edges + borders
+// ============================================================================
+digraph scdawg_citation_lineage {
+    rankdir=TB;
+    bgcolor="#FFFFFF";
+    fontname="DejaVu Sans";
+    fontsize=14;
+    labelloc="t";
+    fontcolor="#212121";
+    label="Citation lineage — foundations → CDAWG → on-line CDAWG\n→ SCDAWG → our implementation → WallBreaker validation";
+    nodesep=0.28;
+    ranksep=0.40;
+
+    node [shape=box, style="filled,rounded", color="#37474F",
+          fontname="DejaVu Sans", fontcolor="#212121", penwidth=1.5,
+          margin="0.14,0.09"];
+    edge [color="#37474F", fontname="DejaVu Sans", penwidth=1.5,
+          arrowhead="vee"];
+
+    // --- foundational roots ---------------------------------------------
+    blumer85 [label="Blumer et al. (1985)\nSuffix automaton\n(endpos classes)\ndoi:10.1016/\n0304-3975(85)90157-4",
+              fillcolor="#ECEFF1"];
+    croch86  [label="Crochemore (1986)\nFactor transducer\n(repetitions)\ndoi:10.1016/\n0304-3975(86)90041-1",
+              fillcolor="#ECEFF1"];
+    weiner73 [label="Weiner (1973)\nSuffix tree\n(suffix links)",
+              fillcolor="#ECEFF1"];
+
+    // --- CDAWG construction line (green) --------------------------------
+    cv97 [label="Crochemore & Vérin (1997)\nDirect CDAWG construction\ndoi:10.1007/\n3-540-63220-4_55",
+          fillcolor="#C8E6C9", color="#2E7D32"];
+    in05 [label="Inenaga et al. (2005)\nOn-line CDAWG construction\n+ multi-string support\ndoi:10.1016/\nj.dam.2004.04.012",
+          fillcolor="#C8E6C9", color="#2E7D32"];
+
+    // --- SCDAWG (teal) ---------------------------------------------------
+    blumer87 [label="Blumer et al. (1987)\nSCDAWG definition\n+ IS features\ndoi:10.1145/\n28869.28873",
+              fillcolor="#B2DFDB", color="#00695C"];
+    in01     [label="Inenaga et al. (2001)\nOn-line SCDAWG\n+ sext links\ndoi:10.1109/\nSPIRE.2001.989743",
+              fillcolor="#B2DFDB", color="#00695C"];
+
+    // --- our implementation (amber) + validation (blue) -----------------
+    ours [label="OUR IMPLEMENTATION\n(hybrid: on-line CDAWG\n· sext links · IS features)",
+          fillcolor="#FFE0B2", color="#E65100", penwidth=2.2];
+    wall [label="Gerdjikov et al. (2013)\nWallBreaker — validation criteria\n(substring · right ext · left ext)",
+          fillcolor="#BBDEFB", color="#1565C0"];
+
+    // --- edges: builds-on / cited-by ------------------------------------
+    blumer85 -> cv97;
+    croch86  -> cv97;
+    weiner73 -> cv97;
+    cv97 -> in05;
+    in05 -> blumer87;
+    in05 -> in01;
+    blumer87 -> ours;
+    in01 -> ours;
+    ours -> wall [label="validated against", fontcolor="#1565C0", color="#1565C0"];
+
+    // keep the two roots-of-each-branch on a rank
+    { rank=same; blumer85; croch86; weiner73; }
+    { rank=same; blumer87; in01; }
+}

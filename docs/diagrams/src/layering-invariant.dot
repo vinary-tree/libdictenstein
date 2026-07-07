@@ -28,9 +28,9 @@ digraph layering_invariant {
     labelloc="t";
     fontsize=16;
     fontcolor="#212121";
-    label="persistent-ARTrie module layering — every `use` points DOWN onto the shared foundation\n(core has zero use of any variant; byte has zero use of char/vocab — grep-verified)";
-    nodesep=0.6;
-    ranksep=1.0;
+    label="persistent-ARTrie module layering — every `use`\npoints DOWN onto the shared foundation\n(core has zero use of any variant;\nbyte has zero use of char/vocab — grep-verified)";
+    nodesep=0.3;
+    ranksep=0.7;
 
     node [shape=box, style="filled,rounded", color="#37474F",
           fontname="DejaVu Sans", fontcolor="#212121", penwidth=1.6, margin="0.20,0.12"];
@@ -43,8 +43,8 @@ digraph layering_invariant {
     { rank=same; core; nodes; }
 
     // --- variants (upper ranks) ------------------------------------------
-    byte  [label="persistent_artrie  (byte)\nPersistentARTrie · ByteKey (u8)", fillcolor="#C8E6C9"];
-    chr   [label="char/\nPersistentARTrieChar · CharKey (u32)", fillcolor="#BBDEFB"];
+    byte  [label="persistent_artrie (byte)\nPersistentARTrie\nByteKey (u8)", fillcolor="#C8E6C9"];
+    chr   [label="char/\nPersistentARTrieChar\nCharKey (u32)", fillcolor="#BBDEFB"];
     vocab [label="vocab/\nPersistentVocabARTrie\n(term <-> u64, builds on char)", fillcolor="#FFF59D"];
 
     // --- ALLOWED `use` edges: everything depends DOWN onto core + nodes ---
@@ -61,10 +61,10 @@ digraph layering_invariant {
     edge [color="#C62828", fontcolor="#C62828", style="dashed",
           arrowhead="none", arrowtail="odiamond", dir="both", penwidth=1.4,
           constraint=false];
-    core  -> byte  [label="✗ core never uses a variant"];
+    core  -> byte  [label="✗"];
     core  -> chr   [label="✗"];
     core  -> vocab [label="✗"];
-    byte  -> chr   [label="✗ byte never uses char/vocab"];
+    byte  -> chr   [label="✗"];
     byte  -> vocab [label="✗"];
 
     // --- rendered legend --------------------------------------------------
@@ -75,9 +75,12 @@ digraph layering_invariant {
 <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
 <TR><TD ALIGN="LEFT"><B>Legend</B></TD></TR>
 <TR><TD ALIGN="LEFT"><FONT COLOR="#37474F">&#9472;&#9472;&#9654; allowed `use` (points down onto the foundation)</FONT></TD></TR>
-<TR><TD ALIGN="LEFT"><FONT COLOR="#C62828">- -&#9671; FORBIDDEN (grep-verified empty — the invariant)</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#C62828">- -&#9671; FORBIDDEN (grep-verified empty — the invariant):</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#C62828">&#160;&#160;core never uses a variant; byte never uses char/vocab</FONT></TD></TR>
 <TR><TD ALIGN="LEFT"><FONT COLOR="#607D8B">grey = shared foundation (core, nodes)</FONT></TD></TR>
 <TR><TD ALIGN="LEFT">green = byte &#183; blue = char &#183; amber = vocab</TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#607D8B">note: char/vocab reach some core facilities via byte's</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#607D8B">`pub use` re-export aliases — the true dependency is still on core</FONT></TD></TR>
 </TABLE>>];
     }
 }

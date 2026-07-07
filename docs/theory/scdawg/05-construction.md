@@ -26,7 +26,7 @@ struct ReferencePair {
 
 **Explicit**: When `start > end`, the reference is at the node itself.
 
-**Implicit**: When `start ≤ end`, the reference is within the edge starting at `node` with first character `text[start]`.
+**Implicit**: When $start \le end$, the reference is within the edge starting at `node` with first character `text[start]`.
 
 ### Node Structure
 
@@ -363,7 +363,7 @@ fn add_term(term: &str, term_idx: usize) {
 
 Consider adding "cat" and "catalog":
 - Without end markers: "cat" becomes a prefix of "catalog", sharing nodes
-- With end markers: "cat$₁" and "catalog$₂" are distinct, each gets its own sink
+- With end markers: "cat\$₁" and "catalog\$₂" are distinct, each gets its own sink
 
 The end markers ensure:
 1. Each term has a unique accepting state
@@ -491,7 +491,7 @@ Construction continues similarly, with nodes being created and potentially split
 | Separate node | Clone node when equivalence class needs splitting |
 | Open edges | Edges with end = 'open' extend automatically |
 | Sext links | Left extension edges, maintained via suffix links |
-| Unique end markers | $₁, $₂, ... for multi-string dictionaries |
+| Unique end markers | \$₁, \$₂, ... for multi-string dictionaries |
 
 **Key insight**: On-line construction enables dynamic dictionary updates while maintaining O(n) complexity. Sext links provide left extensions without building CDAWG(w^rev) explicitly.
 

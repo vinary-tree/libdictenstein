@@ -1,0 +1,39 @@
+@startuml pathmap-cow-share
+' ============================================================================
+' pathmap-cow-share.puml — persistent copy-on-write: two versions share nodes.
+' Replaces the ASCII structural-sharing figure in
+' docs/algorithms/implementations/pathmap-dictionary.md.
+' Adding "test" to {best, rest}: only the new 't' branch is allocated; the
+' 'b'/'r' branch and the 'est' suffix are reused. Both roots stay valid.
+' Color key:  grey = version roots   teal = shared (reused) nodes   green = the new node
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.1
+}
+skinparam noteBackgroundColor #B2DFDB
+skinparam noteBorderColor #00796B
+skinparam TitleFontSize 15
+
+title Persistent COW — adding "test" to { "best", "rest" } keeps both versions
+
+rectangle "**root₁**\nVersion 1" as R1 #ECEFF1
+rectangle "**root₂**\nVersion 2  (+ “test”)" as R2 #ECEFF1
+rectangle "'b' / 'r'\nbranch" as BR #B2DFDB
+rectangle "'t'\n(new)" as T #C8E6C9
+rectangle "'est'\nshared suffix" as EST #B2DFDB
+
+R1 --> BR
+R2 --> BR
+R2 --> T
+BR --> EST
+T --> EST
+
+note right of EST : Shared nodes — reused, not copied.\nBoth versions coexist.
+@enduml

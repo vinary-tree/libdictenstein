@@ -1,0 +1,68 @@
+@startuml buffer-page-lifecycle-2
+' ============================================================================
+' Buffer-pool PAGE (frame) lifecycle, PART 2 of 2 — the RESIDENT composite's
+' internal substates: the product {clean, dirty} × {pinned, unpinned} that a
+' page cycles through while it occupies a buffer-pool frame, and the operations
+' that move it between them. The enclosing Disk ⇄ Resident ⇄ eviction cycle is
+' the companion figure buffer-page-lifecycle.puml (PART 1).
+'
+' Source of truth: src/persistent_artrie/core/buffer_manager.rs
+'   A `Frame` carries  block_id · lease_state (read-pin count | WRITE_LEASE) ·
+'   dirty flag · reference_bit (CLOCK second-chance).
+'   Operations:  pin_read / pin_write · unpin_read / unpin_write ·
+'   mark_dirty (on write) · flush_page / flush_all (write-back → clear_dirty).
+'   Invariants enforced by the code:
+'     · a frame is NOT evictable while pinned (any read lease or the write lease);
+'     · a dirty frame may NOT be flushed while a WRITE_LEASE is held;
+'     · the CLOCK victim must be unpinned AND have reference_bit == 0;
+'     · a dirty victim is written back (clear_dirty) before its frame is reused.
+'
+' Color key:
+'   green (#C8E6C9) = page is RESIDENT in a buffer-pool frame (in memory)
+'   red   (#C62828) = the write-transition (mark_dirty under a WRITE_LEASE)
+'   grey  (#ECEFF1) = infrastructure note
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 210
+skinparam shadowing false
+skinparam ArrowColor #37474F
+skinparam state {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
+}
+
+title Resident (buffer-pool frame) — internal substates (2 of 2)\nClean/Dirty × Pinned/Unpinned
+
+state "Resident (buffer-pool frame)" as Resident #C8E6C9 {
+
+  state "Clean · Unpinned" as CleanUnpinned #C8E6C9 : dirty=false · lease=0\n→ CLOCK-evictable
+  state "Clean · Pinned" as CleanPinned #C8E6C9 : read/write lease held\n→ pinned, NOT evictable
+  state "Dirty · Pinned" as DirtyPinned #C8E6C9 : modified under a lease\n(differs from disk)
+  state "Dirty · Unpinned" as DirtyUnpinned #C8E6C9 : modified · leases dropped\n→ flush before reuse
+
+  [*] --> CleanUnpinned : entry\n(fault-in populates)
+
+  CleanUnpinned --> CleanPinned : pin_read / pin_write
+  CleanPinned --> CleanUnpinned : unpin (no writes)
+
+  CleanPinned -[#C62828]-> DirtyPinned : mark_dirty\n(under WRITE_LEASE)
+  DirtyPinned --> DirtyUnpinned : unpin_write\n(still dirty)
+
+  DirtyUnpinned --> CleanUnpinned : flush_page / flush_all\n→ clear_dirty
+  DirtyPinned --> DirtyPinned : flush blocked\n(WRITE_LEASE held)
+}
+
+note bottom of Resident #ECEFF1
+  Entry from **fault-in** (PART 1) populates **Clean · Unpinned**.
+  Eviction (PART 1) leaves the frame from **Clean · Unpinned**
+  (clean → reuse as-is) or **Dirty · Unpinned** (write-back →
+  clear_dirty), so no acknowledged bytes are lost.
+end note
+
+legend right
+| Color | Page condition |
+|<#C8E6C9>| resident in a buffer-pool frame |
+|<#C62828>| write-transition (mark_dirty) |
+endlegend
+@enduml

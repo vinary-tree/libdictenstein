@@ -19,6 +19,8 @@
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 240
+hide empty description
 skinparam shadowing false
 skinparam ArrowColor #37474F
 skinparam state {
@@ -26,7 +28,7 @@ skinparam state {
   FontName "DejaVu Sans"
 }
 
-title Checkpoint flip — capture live overlay -> publish dense CX image -> advance checkpoint_lsn
+title Checkpoint flip — capture live overlay →\npublish dense CX image → advance checkpoint_lsn
 
 [*] --> Serving
 

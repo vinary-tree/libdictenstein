@@ -9,13 +9,16 @@
 '    ArcSwap::compare_and_swap (Arc::ptr_eq) → Commit; MAX_CAS_RETRIES = 64).
 '   The identical shape backs suffix_tree.rs and scdawg.rs.
 '
-' Color key:  green #C8E6C9 = in-memory immutable graph snapshot (reader-visible)
-'             blue  #BBDEFB = durable on-disk operation-segment WAL (append + fsync)
-'             amber #FFE0B2 = control / linearization (the pointer-identity CAS)
-'             grey  #ECEFF1 = note / infrastructure
+' Color key:  green  #C8E6C9 = in-memory immutable graph snapshot (reader-visible)
+'             orange #FFCC80 = durable on-disk operation-segment WAL (append + fsync)
+'             amber  #FFE0B2 = control / linearization (the pointer-identity CAS)
+'             grey   #ECEFF1 = note / infrastructure
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 110
+skinparam maxMessageSize 100
+skinparam ParticipantPadding 2
 skinparam shadowing false
 skinparam sequenceArrowColor #37474F
 skinparam sequenceLifeLineBorderColor #90A4AE
@@ -25,65 +28,65 @@ skinparam noteBackgroundColor #ECEFF1
 skinparam noteBorderColor #90A4AE
 skinparam participantBorderColor #37474F
 
-title Persistent suffix graph — copy-on-write rebuild, log, then CAS-publish\n(reads never block; acknowledged ⟹ durable AND visible)
+title Persistent suffix graph — CoW rebuild, log, then CAS-publish\n(reads never block; acknowledged ⟹ durable AND visible)
 
 actor "Writer" as WR
 actor "Reader\n(concurrent)" as RD
-participant "Snapshot (old)\nArc<NativeSuffixGraph>\nimmutable" as OLD #C8E6C9
-participant "Candidate (new)\nrebuilt copy" as NEW #C8E6C9
-participant "Operation-segment WAL\nappend + fsync" as WAL #BBDEFB
-participant "ArcSwap root\n(linearization point)" as ROOT #FFE0B2
+participant "Old snapshot\n(immutable)" as OLD #C8E6C9
+participant "Candidate\n(rebuilt)" as NEW #C8E6C9
+participant "WAL\n(op-seg)" as WAL #FFCC80
+participant "ArcSwap\n(linearize)" as ROOT #FFE0B2
 
 note over OLD, ROOT #ECEFF1 : `ArcSwap` holds the current root. Readers `load_full()`\nan immutable `Arc` snapshot and traverse it lock-free.
 
 == Concurrent reads observe the committed snapshot — no writer lock ==
 RD -> ROOT : load_full()
 activate ROOT
-ROOT --> RD : Arc(Snapshot old)
+ROOT --> RD : Arc(old snapshot)
 deactivate ROOT
-RD -> OLD : match_positions(q) / contains_substring(q)
+RD -> OLD : match_positions(q)\n/ contains(q)
 activate OLD
-OLD --> RD : results from the OLD graph
+OLD --> RD : results (OLD graph)
 deactivate OLD
 
-== Step 1 — durability gate: append the Prepare record DURABLE, before any visibility ==
-WR -> WAL : append Prepare{ op_id, op }\n(one segment file, fsync)
+== Step 1 — durability gate: append Prepare DURABLE, before any visibility ==
+WR -> WAL : append Prepare\n{op_id, op} (fsync)
 activate WAL
-WAL --> WR : Lsn — Prepare is now **durable**
+WAL --> WR : Lsn — Prepare **durable**
 deactivate WAL
-note right of WR #ECEFF1 : op_id = next_op_id.fetch_add(1).\nLog-before-publish: a candidate is never\nmade visible before its op is durable.
+note right of WR #ECEFF1 : op_id = fetch_add(1).\nLog-before-publish:\nnever visible before\nits op is durable.
 
 == Step 2 — rebuild the candidate off to the side (copy-on-write) ==
-WR -> OLD : clone the current snapshot
+WR -> OLD : clone snapshot
 activate OLD
-OLD --> NEW : deep copy (candidate revision)
+OLD --> NEW : deep copy
 deactivate OLD
-WR -> NEW : apply_op(op)\n(insert_source / remove_source / set_value / compact)
+WR -> NEW : apply_op(op)\n(insert / remove /\nset_value / compact)
 activate NEW
-NEW --> WR : candidate graph ready
+NEW --> WR : candidate ready
 deactivate NEW
-note over OLD, NEW #ECEFF1 : Readers still see **Snapshot (old)** — the candidate\nis private to this writer until the CAS publishes it.
+note over OLD, NEW #ECEFF1 : Readers still see the **old snapshot** —\nthe candidate is private until the CAS.
 
 == Step 3 — publish: pointer-identity CAS (the linearization point) ==
 loop until the root CAS wins (≤ MAX_CAS_RETRIES = 64)
-  WR -> ROOT : compare_and_swap(old, Arc(new))
+  WR -> ROOT : compare_and_swap\n(old, Arc(new))
   activate ROOT
-  alt Arc::ptr_eq(previous, old)  —  WIN
-    ROOT --> WR : published — NEW is now the live snapshot
+  alt Arc::ptr_eq(previous, old) — WIN
+    ROOT --> WR : published — NEW is live
     deactivate ROOT
-  else lost a race — another writer swapped first
-    ROOT --> WR : retry: reload root, rebuild on the newer base
+  else lost a race
+    ROOT --> WR : retry: reload +\nrebuild on newer base
   end
 end
 
 == Step 4 — commit marker, then acknowledge ==
-WR -> WAL : append Commit{ op_id } (fsync)
+WR -> WAL : append Commit\n{op_id} (fsync)
 activate WAL
-WAL --> WR : Lsn — committed_op_id.fetch_max(op_id)
+WAL --> WR : Lsn — committed_op_id\n.fetch_max(op_id)
 deactivate WAL
-WR -> WR : Ack — write is **durable AND visible**
+WR -> WR : Ack — **durable AND visible**
 
-note over OLD #ECEFF1 : The old snapshot is reclaimed once the last reader\nholding its `Arc` drops it (reference-counted; no reader is ever interrupted).
+note over OLD #ECEFF1 : Old snapshot is reclaimed once the last\nreader holding its `Arc` drops it (no reader interrupted).
 
-note across #FFF9C4 : **Crash semantics.** On reopen the checkpoint image is loaded, then the durable\nWAL tail is replayed: Prepare records whose matching Commit is durable are applied in\nop_id order; un-committed Prepares are dropped. Recovery also folds the historical\nlength-prefixed monolithic WAL format when present.
+note across #FFF9C4 : **Crash semantics.** On reopen the checkpoint image loads, then the durable WAL\ntail replays: Prepares with a durable Commit apply in op_id order; un-committed Prepares are\ndropped. Recovery also folds the historical length-prefixed monolithic WAL format when present.
 @enduml

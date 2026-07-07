@@ -1,0 +1,37 @@
+@startuml art-node256-fields
+' ============================================================================
+' art-node256-fields.puml — the Node256 struct layout (byte-ART, 49..256 children).
+' Source: docs/theory/disk-tries/03-adaptive-radix-tree.md (Leis et al. 2013).
+' Replaces the ASCII struct-field box with a compact, colored, viewBox'd byte-field.
+' Color key:  green identity · amber child-count · light-blue inline prefix ·
+'             mid-blue direct child array
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam TitleFontSize 15
+
+title Node256 — 49..256 children (~2080 B) · direct array
+
+rectangle "**type** : u8 — node-type tag (= 256)" as R0 #C8E6C9
+rectangle "**num_children** : u16 — child count (49..256)" as R1 #FFE0B2
+rectangle "**partial_len** : u8 — compressed-path length" as R2 #C8E6C9
+rectangle "**partial** : [u8; 8] — inline compressed prefix" as R3 #E3F2FD
+rectangle "**children** : [ptr; 256] — direct-access array (O(1) index)" as R4 #90CAF9
+
+R0 -[hidden]down- R1
+R1 -[hidden]down- R2
+R2 -[hidden]down- R3
+R3 -[hidden]down- R4
+
+legend bottom
+  green identity · amber child-count · light-blue inline prefix
+  mid-blue direct child array
+endlegend
+@enduml

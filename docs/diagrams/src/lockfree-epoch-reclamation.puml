@@ -1,0 +1,44 @@
+@startuml lockfree-epoch-reclamation
+' ============================================================================
+' lockfree-epoch-reclamation.puml — a pinned reader and a CAS-ing writer run
+' concurrently. The reader pins an epoch and reads the old node safely; the
+' writer swaps the root and QUEUES the old node, but the epoch cannot advance
+' (and the node cannot be freed) until every reader pinned to that epoch exits.
+' This is what closes the ABA / use-after-free window.
+' Source: §Epoch-Based Reclamation of lockfree-cas-artrie.md.
+' Color key (house palette):
+'   green  #2E7D32  the reader's safe (pinned) window / the safe free
+'   red    #C62828  the deferred-until-quiescent reclamation
+'   slate  border   the epoch manager lifeline
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam sequenceArrowColor #37474F
+skinparam sequenceLifeLineBorderColor #90A4AE
+skinparam participantBorderColor #37474F
+skinparam noteBackgroundColor #ECEFF1
+skinparam noteBorderColor #90A4AE
+
+title Epoch reclamation — free the old node only after every pinned reader leaves
+
+participant "Reader\n(A)" as RD
+participant "Epoch\nmgr" as EP #CFD8DC
+participant "Writer\n(B)" as WR
+
+RD -> EP : enter_read()\npin epoch e
+activate RD
+note left of RD #C8E6C9 : reads OLD node\nsafely while\npinned to e
+
+WR -> WR : CAS root\nold → new
+WR -> EP : retire(old)\ninto epoch e
+note right of WR #FFCDD2 : old node is\nUNLINKED but\nNOT yet freed
+
+RD -> EP : exit_read()\nunpin e
+deactivate RD
+
+WR -> EP : try advance epoch
+EP -[#2E7D32]-> WR : e quiescent →\nfree old node
+note over EP #C8E6C9 : reclaim runs only\nonce e drains:\nno UAF, no ABA
+@enduml

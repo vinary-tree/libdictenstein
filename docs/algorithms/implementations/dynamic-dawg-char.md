@@ -34,7 +34,7 @@ multi-byte characters.
 
 - ✅ **Correct Unicode distances**: Treats 'é' as 1 character, not 2 bytes
 - 🔄 **Full dynamic updates**: Insert AND remove Unicode terms at runtime
-- 🔒 **Thread-safe**: Safe for concurrent reads and exclusive writes
+- 🔓 **Non-blocking**: wait-free concurrent reads AND lock-free concurrent writes (no locks; per-node CAS)
 - 🌍 **Full Unicode support**: CJK, emoji, accents, all scripts
 - 💾 **Space-efficient**: Shares common suffixes (20-40% reduction)
 
@@ -147,43 +147,51 @@ Character │ Code Point │ UTF-8 Bytes       │ Nodes in DAWG
 
 ```rust
 pub struct DynamicDawgChar<V: DictionaryValue = ()> {
-    inner: Arc<RwLock<DynamicDawgCharInner<V>>>,
+    inner: Arc<DynamicDawgCharInner<V>>,    // shared handle to the lock-free core
 }
 
-struct DynamicDawgCharInner<V: DictionaryValue> {
-    nodes: Vec<DawgNodeChar<V>>,           // Node storage
-    term_count: usize,                     // Number of terms
-    needs_compaction: bool,                // Deletion flag
-    suffix_cache: FxHashMap<u64, usize>,   // Hash → node index
-    bloom_filter: Option<BloomFilter>,     // Fast negative lookups
-    auto_minimize_threshold: f32,          // Lazy minimization trigger
+// The char DAWG core is the SAME unit-generic lock-free graph as the byte
+// variant, only the edge-label unit differs (char vs u8):
+type DynamicDawgCharInner<V = ()> = LockFreeDawg<char, V>;
+
+struct LockFreeDawg<U: CharUnit, V: DictionaryValue> {
+    root: Arc<LockFreeDawgNode<U, V>>,      // entry node (edges swapped, not the node)
+    term_count: AtomicUsize,                // live term count
+    needs_compaction: AtomicBool,           // set by remove()
+    active_writers: AtomicUsize,            // writer registry for compaction quiescence
+    compaction_active: AtomicBool,          // single-compactor guard (CAS)
 }
 
-struct DawgNodeChar<V: DictionaryValue> {
-    edges: SmallVec<[(char, usize); 4]>,  // Character → child index
-    is_final: bool,                        // Marks valid term
-    ref_count: usize,                      // For safe deletion
-    value: Option<V>,                      // Associated value
+// Each node publishes its state through atomic cells — there is no lock:
+struct LockFreeDawgNode<U: CharUnit, V: DictionaryValue> {
+    edges: ArcSwap<LockFreeEdgeList<U, V>>, // atomically-swapped edge-list snapshot
+    is_final: AtomicBool,                   // marks a valid term
+    value: ArcSwapOption<V>,                // associated value (optional)
+}
+
+// Immutable, copy-on-write edge list published atomically by a node.
+// For the char variant, U = char (a 4-byte Unicode scalar):
+struct LockFreeEdgeList<U: CharUnit, V: DictionaryValue> {
+    edges: SmallVec<[(U, Arc<LockFreeDawgNode<U, V>>); 4]>, // character → child
 }
 ```
 
 ### Memory Layout
 
-```
-┌─────────────────┬─────────────┬────────────────┐
-│ Component       │ Size        │ Per Node       │
-├─────────────────┼─────────────┼────────────────┤
-│ SmallVec edges  │ Inline ≤4   │ ~40 bytes*     │
-│ is_final        │ 1 byte      │ 1 byte         │
-│ ref_count       │ 8 bytes     │ 8 bytes        │
-│ value (Option)  │ V or 1 byte │ Varies         │
-├─────────────────┼─────────────┼────────────────┤
-│ Total per node  │ ~49+ bytes  │ ~49 bytes      │
-│ Overhead        │ Arc+RwLock  │ 16 bytes total │
-└─────────────────┴─────────────┴────────────────┘
-```
+| Component | Size | Notes |
+| --- | --- | --- |
+| edges: ArcSwap<EdgeList> | 8 bytes | atomic ptr → COW |
+|  |  | edge list (≤4 |
+|  |  | inline, ~48 bytes*) |
+| is_final: AtomicBool | 1 byte | term marker |
+| value: ArcSwapOption<V> | 8 bytes | atomic ptr → V |
+| Node cells | ~17 bytes | + edge-list heap |
+| Shared handle overhead | Arc → core | 8 bytes (one ptr) |
 
-*char is 4 bytes, so 4 edges = 4×(4+8) = 48 bytes inline
+*Each inline edge is a `(char, Arc<Node>)` tuple = 4 + 8 = 12 bytes, so 4
+edges $\approx$ 48 bytes inline. There is no lock-object byte cost: the per-node
+`ArcSwap`/`AtomicBool`/`ArcSwapOption` cells provide atomic interior mutability,
+and the whole structure is reached through a single shared `Arc`.
 
 **Comparison with DynamicDawg**:
 - DynamicDawg: ~25 bytes/node
@@ -193,7 +201,7 @@ struct DawgNodeChar<V: DictionaryValue> {
 
 ### Clone Behavior & Memory Semantics
 
-`DynamicDawgChar` uses `Arc<RwLock<...>>` internally, making `.clone()` a **shallow copy** that shares all underlying data structures between clones. The clone behavior is **identical** to `DynamicDawg` - only the edge label types differ (char vs u8).
+`DynamicDawgChar` holds an `Arc` to its lock-free inner core, making `.clone()` a **shallow copy** that shares the same lock-free node graph between clones (no lock is shared). The clone behavior is **identical** to `DynamicDawg` - only the edge label types differ (char vs u8).
 
 ```rust
 use libdictenstein::dynamic_dawg::DynamicDawgChar;
@@ -218,7 +226,7 @@ assert_eq!(dict2.len(), Some(3));  // Same count
 | **Space Complexity** | O(1) | ~16 bytes (Arc pointer only) |
 | **Data Sharing** | ✅ Complete | All clones share same node graph |
 | **Mutation Visibility** | ✅ Global | Changes via any clone affect all |
-| **Thread Safety** | ✅ RwLock | Multiple readers OR single writer |
+| **Thread Safety** | ✅ Lock-free | Wait-free reads AND lock-free writes (per-node CAS) |
 | **Independence** | ❌ None | No isolation between clones |
 
 #### Unicode Considerations
@@ -357,18 +365,18 @@ let readers: Vec<_> = (0..10).map(|i| {
     })
 }).collect();
 
-// Single writer
+// Concurrent writer (one of possibly many)
 let writer = {
     let dict = dict.clone();
     thread::spawn(move || {
-        dict.insert("新しい語")  // Unicode insertion still exclusive
+        dict.insert("新しい語")  // Unicode insertion via lock-free CAS
     })
 };
 ```
 
-**RwLock guarantees remain the same:**
-- Multiple concurrent readers (fast)
-- Single exclusive writer (blocks readers)
+**Lock-free guarantees remain the same:**
+- Wait-free concurrent readers (never block)
+- Lock-free concurrent writers (per-node CAS; never block readers)
 - No data races regardless of character encoding
 
 #### Summary
@@ -377,7 +385,7 @@ let writer = {
 1. 🔗 Clone behavior is **identical** to byte-level DynamicDawg
 2. 🚀 **`O(1)`** regardless of Unicode complexity (ASCII, CJK, emoji, etc.)
 3. 🔄 **Mutations visible** across all clones for all character types
-4. 🌍 **Unicode-safe** thread synchronization through RwLock
+4. 🌍 **Unicode-safe** non-blocking synchronization (wait-free reads, lock-free CAS writes; no locks)
 5. 📊 For **independence**, use serialization or rebuild (same as byte-level)
 
 ## Construction Methods
@@ -444,7 +452,7 @@ let dict = DynamicDawgChar::from_iter(lines);
 **Performance** (compared to byte-level):
 - **Slightly slower**: Character iteration vs byte iteration
 - **More accurate**: Levenshtein distance counts characters, not bytes
-- **Memory**: ~2× per node (char = 4 bytes vs u8 = 1 byte for edges)
+- **Memory**: ~2$\times$ per node (char = 4 bytes vs u8 = 1 byte for edges)
 
 ### Unicode-Specific Considerations
 
@@ -537,9 +545,9 @@ if let Some(contexts) = dict.get_value("α") {
 
 | Method | Time | Memory | vs DynamicDawg |
 |--------|------|--------|----------------|
-| `new()` + inserts | ~9.5ms | ~490KB | ~1.15× slower |
-| `from_iter()` | ~4.8ms | ~490KB | ~1.17× slower |
-| Pre-sorted | ~4.2ms | ~490KB | ~1.20× slower |
+| `new()` + inserts | ~9.5ms | ~490KB | ~1.15$\times$ slower |
+| `from_iter()` | ~4.8ms | ~490KB | ~1.17$\times$ slower |
+| Pre-sorted | ~4.2ms | ~490KB | ~1.20$\times$ slower |
 
 **Memory usage** (varies with character count):
 
@@ -549,7 +557,7 @@ Medium (10K terms, avg 10 chars):   ~490KB (vs ~250KB byte-level)
 Large (100K terms, avg 10 chars):   ~5MB (vs ~2.5MB byte-level)
 ```
 
-**Trade-off**: ~2× memory overhead, ~15-20% slower, but **correct** Unicode distances.
+**Trade-off**: ~2$\times$ memory overhead, ~15-20% slower, but **correct** Unicode distances.
 
 ### Best Practices
 
@@ -715,10 +723,10 @@ assert!(!dict.contains("cafe\u{0301}")); // Decomposed (e + combining ́) - diff
 | `get_value()` | ~290ns | ~260ns | +12% |
 | `term_count()` | ~5ns | ~5ns | None |
 | `node_count()` | ~5ns | ~5ns | None |
-| Memory (edge labels) | 4× larger | Baseline | +300% |
+| Memory (edge labels) | 4$\times$ larger | Baseline | +300% |
 
 **Why the overhead?**:
-- Edge labels are `char` (4 bytes) vs `u8` (1 byte) → 4× memory for edges
+- Edge labels are `char` (4 bytes) vs `u8` (1 byte) → 4$\times$ memory for edges
 - UTF-8 decoding during traversal adds ~10-15% latency
 - Node structure otherwise identical
 
@@ -796,10 +804,10 @@ The `union_with()` and `union_replace()` methods enable **merging two DynamicDaw
 - 🗂️ Building composite symbol tables with non-ASCII identifiers
 
 **Key Characteristics**:
-- 🔒 **Thread-safe**: Operations use RwLock for concurrent access
+- 🔓 **Non-blocking**: wait-free reads and lock-free CAS writes (no locks)
 - 💾 **DAWG-preserving**: Maintains minimization through `insert_with_value()`
 - 🌐 **Unicode-correct**: Operates on `char` (Unicode code points), not bytes
-- ⚡ **Efficient**: `O(n·m)` traversal with minimal memory overhead
+- ⚡ **Efficient**: $O(n\cdot m)$ traversal with minimal memory overhead
 - 🎯 **Flexible**: Custom merge functions for value conflicts
 
 ### union_with() - Merge with Custom Logic
@@ -836,8 +844,8 @@ where
 - Result: Proper handling of multi-byte Unicode sequences (emoji, diacritics, etc.)
 
 **Complexity**:
-- **Time**: `O(n·m)` where n = terms in `other`, m = average term length **in characters**
-  - `O(n·m)` for DFS traversal
+- **Time**: $O(n\cdot m)$ where n = terms in `other`, m = average term length **in characters**
+  - $O(n\cdot m)$ for DFS traversal
   - `O(m)` per term for `insert_with_value()`
 - **Space**: `O(d)` where d = maximum trie depth (characters, not bytes)
   - DFS stack size proportional to deepest path
@@ -1001,40 +1009,27 @@ assert_eq!(dict1.get_value("Köln"), Some("city_added"));
 The union operation uses **iterative depth-first search** on character-labeled edges:
 
 ```rust
-// Simplified pseudocode
+// Simplified pseudocode (mirrors the real MutableMappedDictionary impl)
 fn union_with<F>(&self, other: &Self, merge_fn: F) -> usize {
-    let other_inner = other.inner.read();
+    // WAIT-FREE snapshot of every visible (char-path, value) in `other`.
+    // `collect_visible_entries` walks an immutable graph snapshot with an
+    // explicit stack (iterative DFS on char edges) — no lock, never blocks.
+    let entries = other.inner.collect_visible_entries();
     let mut processed = 0;
 
-    // Initialize DFS with root: (node_index, accumulated_char_path)
-    let mut stack: Vec<(usize, Vec<char>)> = vec![(0, Vec::new())];
+    for (char_path, other_value) in entries {
+        // Vec<char> → String is infallible (no UTF-8 validation needed)
+        let term: String = char_path.iter().collect();
+        processed += 1;
 
-    while let Some((node_idx, path)) = stack.pop() {
-        let node = &other_inner.nodes[node_idx];
-
-        // Process final nodes (complete terms)
-        if node.is_final {
-            // Convert Vec<char> to String
-            let term: String = path.iter().collect();
-            processed += 1;
-
-            if let Some(other_value) = &node.value {
-                if let Some(self_value) = self.get_value(&term) {
-                    // Term exists - merge values
-                    let merged = merge_fn(&self_value, other_value);
-                    self.insert_with_value(&term, merged);
-                } else {
-                    // New term - insert directly
-                    self.insert_with_value(&term, other_value.clone());
-                }
+        if let Some(other_value) = other_value {
+            if let Some(self_value) = self.get_value(&term) {
+                // Term exists — merge, then re-publish into `self` via lock-free CAS.
+                self.insert_with_value(&term, merge_fn(&self_value, &other_value));
+            } else {
+                // New term — insert directly (lock-free CAS).
+                self.insert_with_value(&term, other_value);
             }
-        }
-
-        // Push children onto stack (char edges, not byte edges)
-        for &(label_char, target_idx) in node.edges.iter().rev() {
-            let mut child_path = path.clone();
-            child_path.push(label_char);  // Push char, not byte
-            stack.push((target_idx, child_path));
         }
     }
 
@@ -1367,7 +1362,7 @@ Same as DynamicDawg:
 | **Remove** | O(m) | Plus ref count updates |
 | **Contains** | O(m) | With Bloom filter: O(1) rejection |
 | **Compact** | O(n) | n = total nodes |
-| **Query (fuzzy)** | O(m×d²×b) | d = distance, b = branching |
+| **Query (fuzzy)** | O(m$\times$d²$\times$b) | d = distance, b = branching |
 
 ### Benchmark Results
 

@@ -22,6 +22,7 @@
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 240
 skinparam shadowing false
 skinparam ArrowColor #37474F
 skinparam ArrowFontName "DejaVu Sans"
@@ -46,9 +47,9 @@ MapSpec -[#EF6C00]-> Refine : **is refined by**\n(every concrete behavior is\na 
 Refine -[#EF6C00]-> Impl : **is implemented by**\n(interpret_trie maps the concrete\ntrie onto the abstract map)
 
 ' --- The upward witness (bottom-up = refines/implements) --------------------
-Impl -[#2E7D32,dashed]-> MapSpec : **refines / implements**\n(witnessed by WFARTrieMapImpl,\nmachine-checked Qed.)
+Impl -[#2E7D32,dashed]-> MapSpec : **refines / implements**\n(WFARTrieMapImpl, Qed.)
 
-note right of Refine #FFE0B2
+note bottom of Refine #FFE0B2
   The refinement is **proved**, not assumed:
   WFARTrieMapImpl discharges the Map-ADT
   obligations via canonical_lookup_correct
@@ -57,7 +58,7 @@ note right of Refine #FFE0B2
   No Admitted / Axiom / Parameter.
 end note
 
-legend right
+legend bottom
 | Color | Layer |
 |<#C8E6C9>| Rocq-proved (abstract spec + refinement witness) |
 |<#ECEFF1>| concrete Rust implementation |

@@ -17,7 +17,9 @@
 //! (edge label) and `KeyEncoding` (persistent key) abstractions let one
 //! implementation serve `u8`, `char`, and `u64` alphabets from a single code path.
 //!
-//! <img src="https://raw.githubusercontent.com/vinary-tree/libdictenstein/master/docs/diagrams/traits.svg" alt="libdictenstein trait layer: read, mutation, and persistent trait families with their associated-type bounds" width="820"/>
+//! <img src="https://raw.githubusercontent.com/vinary-tree/libdictenstein/master/docs/diagrams/traits.svg" alt="libdictenstein trait layer — read API and associated-type bounds (1 of 2)" width="620"/>
+//!
+//! <img src="https://raw.githubusercontent.com/vinary-tree/libdictenstein/master/docs/diagrams/traits-2.svg" alt="libdictenstein trait layer — mutation and persistent APIs (2 of 2)" width="560"/>
 //!
 //! See the [documentation index](https://github.com/vinary-tree/libdictenstein/blob/master/docs/README.md)
 //! for theory, per-backend algorithm walkthroughs, persistence architecture, and the

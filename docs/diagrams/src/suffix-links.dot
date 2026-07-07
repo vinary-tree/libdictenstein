@@ -20,11 +20,13 @@
 //   dark slate #37474F  δ transitions + borders
 // ============================================================================
 digraph suffix_links {
-    rankdir=LR;
+    rankdir=TB;
     bgcolor="#FFFFFF";
     fontname="DejaVu Sans";
     labelloc="t";
-    label="Suffix automaton of \"abcabcab\": solid = δ transitions, dashed blue = suffix-link tree (slink)";
+    label="Suffix automaton of \"abcabcab\"\nsolid = δ transitions · dashed blue = suffix-link tree (slink)";
+    nodesep=0.3;
+    ranksep=0.45;
 
     node [shape=circle, style="filled", fillcolor="#C8E6C9",
           color="#37474F", fontname="DejaVu Sans", fontcolor="#212121",

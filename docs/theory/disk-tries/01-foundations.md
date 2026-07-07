@@ -37,9 +37,9 @@ A **trie** (from "retrieval," pronounced either "try" or "tree"; introduced by F
 
 ### Formal Definition
 
-A trie `T` over alphabet `Σ` is a rooted tree where:
+A trie `T` over alphabet $\Sigma$ is a rooted tree where:
 
-1. Each edge is labeled with a symbol `σ ∈ Σ`
+1. Each edge is labeled with a symbol $\sigma \in \Sigma$
 2. No two edges from the same node have the same label
 3. Each node may be marked as "final" to indicate a stored string ends there
 4. The string represented by a node is the concatenation of edge labels on the path from root to that node
@@ -53,7 +53,7 @@ A trie `T` over alphabet `Σ` is a rooted tree where:
 - Prefix search: `O(m + k)` where `k` is the number of matches
 
 **Space Complexity:**
-- Worst case: `O(n × m × ∣Σ∣)` where `n` is the number of strings and `∣Σ∣` is the alphabet size
+- Worst case: $O(n \times m \times \mid \Sigma \mid )$ where `n` is the number of strings and $\mid \Sigma \mid$ is the alphabet size
 - In practice: much better due to prefix sharing
 
 ### Comparison with Other String Structures
@@ -75,7 +75,7 @@ Several trie variants optimize for specific use cases:
 
 ### Standard Trie
 
-The basic trie as described above. Each node has up to `∣Σ∣` children, stored in some collection (array, hash map, linked list).
+The basic trie as described above. Each node has up to $\mid \Sigma \mid$ children, stored in some collection (array, hash map, linked list).
 
 **Alphabet array representation:**
 ```
@@ -181,7 +181,7 @@ In this model, we count the number of **I/O operations** (block transfers betwee
 
 1. **Maximize useful data per I/O**: Pack related data into blocks
 2. **Minimize I/O count**: Trade CPU work for fewer disk accesses
-3. **Prefer sequential access**: Sequential reads are 10-100× faster than random
+3. **Prefer sequential access**: Sequential reads are 10-100$\times$ faster than random
 4. **Consider block size**: Optimal block size depends on workload and device
 
 ### B-tree: The Classic Disk-Optimized Structure
@@ -201,8 +201,8 @@ B-trees exemplify disk-optimized design:
 - **Node size = block size**: each node read/write is one I/O
 
 For `N = 1` billion items and `B = 4 KB` pages holding 400 keys:
-- B-tree height: `log₄₀₀(10⁹) ≈ 4` levels
-- Binary tree height: `log₂(10⁹) ≈ 30` levels
+- B-tree height: $log_4_0_0(10^9) \approx 4$ levels
+- Binary tree height: $log_2(10^9) \approx 30$ levels
 
 ---
 
@@ -224,7 +224,7 @@ Consider looking up `"international"` (13 characters) in a naive disk trie:
 - If each node is a separate disk read: 13 I/Os!
 
 Compare to a B-tree with fanout 256:
-- Height `≈ 3–4` for most dictionaries
+- Height $\approx 3–4$ for most dictionaries
 - Only 3-4 I/Os per lookup
 
 ### Design Goals for Disk Tries

@@ -15,7 +15,7 @@ libdictenstein provides the **container** half of approximate string matching: e
 
 It is the companion to **[liblevenshtein](https://github.com/universal-automata/liblevenshtein-rust)**, which supplies the *query* half: a Levenshtein-automaton transducer that walks any `Dictionary` to find all terms within an edit distance. libdictenstein itself contains **no** fuzzy-matching code — it focuses on being the fastest, most correct set of dictionaries that transducer can traverse.
 
-> **Terminology.** A **term** is a string in the dictionary. A **prefix** is a leading substring (`"ca"` of `"cat"`); a **substring** occurs anywhere (`"at"` in `"cat"`). `Σ` (sigma) is the *alphabet* — the set of symbols an edge can carry (256 byte values, or all Unicode scalar values). A symbol is a **unit**; **fanout** is a node's child count; `∣x∣` is the length of `x`.
+> **Terminology.** A **term** is a string in the dictionary. A **prefix** is a leading substring (`"ca"` of `"cat"`); a **substring** occurs anywhere (`"at"` in `"cat"`). $\Sigma$ (sigma) is the *alphabet* — the set of symbols an edge can carry (256 byte values, or all Unicode scalar values). A symbol is a **unit**; **fanout** is a node's child count; $\mid x\mid$ is the length of `x`.
 
 ---
 
@@ -32,29 +32,31 @@ It is the companion to **[liblevenshtein](https://github.com/universal-automata/
 
 ## Backend selector
 
-<img src="docs/diagrams/selector.svg" alt="Backend selection flowchart" width="720"/>
+<img src="docs/diagrams/selector.svg" alt="Backend selection flowchart, part 1 of 2 — the substring-search subtree" width="490"/>
+<img src="docs/diagrams/selector-2.svg" alt="Backend selection flowchart, part 2 of 2 — the prefix / word-lookup subtree" width="580"/>
 
 | Backend                                                      | Best for                                          | Updates               | Unicode               | Lookup           |
 |--------------------------------------------------------------|---------------------------------------------------|-----------------------|-----------------------|------------------|
-| **DoubleArrayTrie** / `…Char`                                | general use; fastest lookup, most compact         | insert-only (rebuild) | `u8` / `char`         | `O(∣q∣)`       |
-| **DynamicDawg** / `…Char` / `…U64`                           | runtime insert **and** remove; suffix sharing     | insert + remove       | `u8` / `char` / `u64` | `O(∣q∣)`       |
-| **SuffixAutomaton** / `…Char`                                | **substring** search (match anywhere)             | insert + remove       | `u8` / `char`         | `O(∣q∣)`       |
-| **Scdawg** / `…Char`                                         | static, compact **bidirectional** substring index | build-once            | `u8` / `char`         | `O(∣q∣)`       |
-| **PathMapDictionary** / `…Char` *(feat. `pathmap-backend`)*  | shared-structure mutable trie                     | insert + remove       | `u8` / `char`         | `O(∣q∣)`       |
-| **PersistentARTrie** / `…Char` *(feat. `persistent-artrie`)* | disk-backed, crash-durable key→value              | insert + remove       | `u8` / `char`         | `O(∣q∣)` + I/O |
-| **PersistentARTrieU64Compact** *(feat. `persistent-artrie`)* | durable `u64` sequence/time-series key→value      | insert + remove       | `u64`                 | `O(∣q∣)` + I/O |
-| **PersistentSuffixAutomaton** / `…Char` *(feat. `persistent-artrie`)* | disk-backed **substring** search                  | insert + remove       | `u8` / `char`         | `O(∣q∣)` + I/O |
-| **PersistentSuffixTree** / `…Char` *(feat. `persistent-artrie`)* | disk-backed suffix-tree-compatible substring API  | insert + remove       | `u8` / `char`         | `O(∣q∣)` + I/O |
-| **PersistentScdawg** / `…Char` *(feat. `persistent-artrie`)* | disk-backed compact bidirectional substring index | insert + remove       | `u8` / `char`         | `O(∣q∣)` + I/O |
-| **PersistentVocabARTrie** *(feat. `persistent-artrie`)*      | durable **term ↔ u64** vocabulary (bijection)     | insert                | `char`                | `O(∣q∣)`       |
+| **DoubleArrayTrie** / `…Char`                                | general use; fastest lookup, most compact         | insert-only (rebuild) | `u8` / `char`         | $O(\mid q\mid )$       |
+| **DynamicDawg** / `…Char` / `…U64`                           | runtime insert **and** remove; suffix sharing     | insert + remove       | `u8` / `char` / `u64` | $O(\mid q\mid )$       |
+| **SuffixAutomaton** / `…Char`                                | **substring** search (match anywhere)             | insert + remove       | `u8` / `char`         | $O(\mid q\mid )$       |
+| **Scdawg** / `…Char`                                         | static, compact **bidirectional** substring index | build-once            | `u8` / `char`         | $O(\mid q\mid )$       |
+| **PathMapDictionary** / `…Char` *(feat. `pathmap-backend`)*  | shared-structure mutable trie                     | insert + remove       | `u8` / `char`         | $O(\mid q\mid )$       |
+| **PersistentARTrie** / `…Char` *(feat. `persistent-artrie`)* | disk-backed, crash-durable key→value              | insert + remove       | `u8` / `char`         | $O(\mid q\mid )$ + I/O |
+| **PersistentARTrieU64Compact** *(feat. `persistent-artrie`)* | durable `u64` sequence/time-series key→value      | insert + remove       | `u64`                 | $O(\mid q\mid )$ + I/O |
+| **PersistentSuffixAutomaton** / `…Char` *(feat. `persistent-artrie`)* | disk-backed **substring** search                  | insert + remove       | `u8` / `char`         | $O(\mid q\mid )$ + I/O |
+| **PersistentSuffixTree** / `…Char` *(feat. `persistent-artrie`)* | disk-backed suffix-tree-compatible substring API  | insert + remove       | `u8` / `char`         | $O(\mid q\mid )$ + I/O |
+| **PersistentScdawg** / `…Char` *(feat. `persistent-artrie`)* | disk-backed compact bidirectional substring index | insert + remove       | `u8` / `char`         | $O(\mid q\mid )$ + I/O |
+| **PersistentVocabARTrie** *(feat. `persistent-artrie`)*      | durable **term ↔ u64** vocabulary (bijection)     | insert                | `char`                | $O(\mid q\mid )$       |
 
-`∣q∣` is the query length; lookup cost is **independent of the number of stored terms** `n` for every backend — the defining property of trie-shaped indexes. The factory (below) constructs all **11** in-memory backends from one call; disk-backed variants take a file path because creation, recovery, and checkpointing are part of the API.
+$\mid q\mid$ is the query length; lookup cost is **independent of the number of stored terms** `n` for every backend — the defining property of trie-shaped indexes. The factory (below) constructs all **11** in-memory backends from one call; disk-backed variants take a file path because creation, recovery, and checkpointing are part of the API.
 
 ---
 
 ## Architecture at a glance
 
-<img src="docs/diagrams/architecture.svg" alt="Trait layer over backend families" width="760"/>
+<img src="docs/diagrams/architecture.svg" alt="Trait API surface — read, mutation, and persistent trait families (1 of 2)" width="380"/>
+<img src="docs/diagrams/architecture-2.svg" alt="Backend families implementing the trait layer (2 of 2)" width="660"/>
 
 The design is a thin **trait layer** over interchangeable **backend families**. Backends implement only the traits they can honor (a read-only static trie implements `Dictionary`; a DAWG also implements `MutableDictionary` and `CompactableDictionary`). The **unit abstraction** (`CharUnit` for edge labels, `KeyEncoding` for persistent keys) lets shared implementations serve `u8`, `char`, and `u64` alphabets. The **factory** and **prelude** are the ergonomic entry points.
 
@@ -161,11 +163,11 @@ The public surface is small and layered — implement only what a backend can su
 |-------------------------------|-------------------------------------------------------|--------------------------------------------|
 | **`Dictionary`**              | `contains`, `root`, `len`, `is_empty`                 | every backend                              |
 | **`DictionaryNode`**          | `transition(unit)`, `edges`, `is_final`               | every node type                            |
-| **`MappedDictionary`**        | `get_value(term) → Option<V>`                         | valued backends                            |
+| **`MappedDictionary`**        | `get_value(term) → Option<V>`                           | valued backends                            |
 | **`MutableDictionary`**       | `insert`, `remove`, `extend`                          | DAWG, PathMap, SuffixAutomaton, persistent |
 | **`CompactableDictionary`**   | `compact`, `minimize`                                 | DAWG family                                |
 | **`MutableMappedDictionary`** | `insert_with_value`, `union_with`, `update_or_insert` | valued + mutable                           |
-| **`BijectiveDictionary`**     | reverse lookup `value → term`                         | `BijectiveMap`, vocab tries                |
+| **`BijectiveDictionary`**     | reverse lookup $value \to term$                         | `BijectiveMap`, vocab tries                |
 
 Two **unit abstractions** let one implementation serve every alphabet:
 
@@ -180,7 +182,7 @@ Construct any in-memory backend uniformly with [`DictionaryFactory`], or pull th
 
 ## Algorithms (the interesting part)
 
-Every backend answers a lookup in `O(∣q∣)` — but *how* they store terms, and what else they can do, differs sharply. Below, the load-bearing ideas in literate form. Deep dives live under [`docs/algorithms/`](docs/algorithms/) and [`docs/theory/`](docs/theory/).
+Every backend answers a lookup in $O(\mid q\mid )$ — but *how* they store terms, and what else they can do, differs sharply. Below, the load-bearing ideas in literate form. Deep dives live under [`docs/algorithms/`](docs/algorithms/) and [`docs/theory/`](docs/theory/).
 
 ### Double-Array Trie (DAT) — cache-resident static lookup
 
@@ -191,7 +193,7 @@ t = BASE[s] + offset(u)
 child exists  ⟺  CHECK[t] == s          # CHECK validates the parent that placed t
 ```
 
-Because `BASE[s]` and the candidate slot sit adjacently, a transition is typically a **single cache line** touch — empirically ~3× faster than pointer-following structures, at ~8 bytes/state. The cost: it is *insert-only* (built from a sorted term list); use a DAWG when you need `remove`. — Aoe (1989); Yata et al. (2007).
+Because `BASE[s]` and the candidate slot sit adjacently, a transition is typically a **single cache line** touch — empirically ~3$\times$ faster than pointer-following structures, at ~8 bytes/state. The cost: it is *insert-only* (built from a sorted term list); use a DAWG when you need `remove`. — Aoe (1989); Yata et al. (2007).
 
 ### DAWG minimization via signature hashing
 
@@ -201,7 +203,7 @@ A **DAWG** (Directed Acyclic Word Graph) is a trie that *also* merges identical 
 
 Two nodes are mergeable **iff** they have the same *right language*
 
-> **`Rᵤ`** = the set of strings spelled out on paths from `u` to any final state.
+> **$R_u$** = the set of strings spelled out on paths from `u` to any final state.
 
 Comparing right-languages directly is expensive, so libdictenstein hashes them. Each node folds a 64-bit [`FxHash`](src/node_signature.rs) of its `is_final` flag and its **sorted** edges, bottom-up:
 
@@ -215,9 +217,9 @@ for each new node u (deepest first):
             redirect u's parent edge to v # merge: u is discarded
 ```
 
-Sorting the edges makes the signature independent of insertion order; the structural re-check defeats the birthday-paradox collision of a 64-bit hash. This replaces a recursive `Box<Signature>` (≈ 3000 allocations for a 1000-node graph) with a single allocation-free `u64` comparison. — Blumer et al. (1987); Daciuk (2000).
+Sorting the edges makes the signature independent of insertion order; the structural re-check defeats the birthday-paradox collision of a 64-bit hash. This replaces a recursive `Box<Signature>` ($\approx$ 3000 allocations for a 1000-node graph) with a single allocation-free `u64` comparison. — Blumer et al. (1987); Daciuk (2000).
 
-### Suffix automaton — substring search in `O(∣q∣)`
+### Suffix automaton — substring search in $O(\mid q\mid )$
 
 To match a pattern *anywhere* in a text (not just at a word boundary), build the minimal DFA recognizing **every substring**. Its states are equivalence classes of substrings sharing the same set of end-positions (**endpos**). It is built **online** — one character at a time, amortized `O(1)` each:
 
@@ -238,26 +240,26 @@ extend(c):                              # append character c to the indexed text
     last ← cur
 ```
 
-The automaton provably has `≤ 2·∣T∣ − 1` states and `≤ 3·∣T∣ − 4` transitions for text `T`, giving `O(∣T∣)` construction and `O(∣q∣)` substring queries. The **Scdawg** backend is a *symmetric compact* refinement that adds left-extension edges for bidirectional search at ~20–30% fewer states. — Blumer et al. (1985); Crochemore (1986); Inenaga et al. (2001, 2005).
+The automaton provably has $\le 2\cdot \mid T\mid − 1$ states and $\le 3\cdot \mid T\mid − 4$ transitions for text `T`, giving $O(\mid T\mid )$ construction and $O(\mid q\mid )$ substring queries. The **Scdawg** backend is a *symmetric compact* refinement that adds left-extension edges for bidirectional search at ~20–30% fewer states. — Blumer et al. (1985); Crochemore (1986); Inenaga et al. (2001, 2005).
 
 ### Complexity & memory at a glance
 
-Let `∣q∣` = query length, `N` = number of terms, `n` = total indexed size in units. Every backend
-answers membership in `O(∣q∣)`, **independent of `N`** — they diverge on updates and footprint
+Let $\mid q\mid$ = query length, `N` = number of terms, `n` = total indexed size in units. Every backend
+answers membership in $O(\mid q\mid )$, **independent of `N`** — they diverge on updates and footprint
 (bytes/state are approximate, order-of-magnitude):
 
 | Backend              | Lookup                   | Insert           | Remove           | ~Bytes/state  | Construction               |
 |----------------------|--------------------------|------------------|------------------|---------------|----------------------------|
-| **DoubleArrayTrie**  | `O(∣q∣)`               | append-only      | —                | ~8            | `O(N log N)` (sort + pack) |
-| **DynamicDawg**      | `O(∣q∣)`               | `O(∣q∣ log n)` | `O(∣q∣ log n)` | ~25–32        | incremental + minimize     |
-| **SuffixAutomaton**  | `O(∣q∣)` *(substring)* | `O(1)` amortized | `O(n)` rebuild   | ~40–50        | `O(n)` online              |
-| **Scdawg**           | `O(∣q∣)` *(substring)* | build-once       | —                | ~30–40        | `O(n)`                     |
-| **PersistentARTrie** | `O(∣q∣)` + I/O         | `O(∣q∣)` + I/O | `O(∣q∣)` + I/O | ~30–50 + disk | incremental                |
-| **PersistentSuffix\*** | `O(∣q∣)` + I/O *(substring)* | rebuild+publish | rebuild+publish | graph + disk | copy-on-write native graph |
+| **DoubleArrayTrie**  | $O(\mid q\mid )$               | append-only      | —                | ~8            | `O(N log N)` (sort + pack) |
+| **DynamicDawg**      | $O(\mid q\mid )$               | $O(\mid q\mid log n)$ | $O(\mid q\mid log n)$ | ~25–32        | incremental + minimize     |
+| **SuffixAutomaton**  | $O(\mid q\mid )$ *(substring)* | `O(1)` amortized | `O(n)` rebuild   | ~40–50        | `O(n)` online              |
+| **Scdawg**           | $O(\mid q\mid )$ *(substring)* | build-once       | —                | ~30–40        | `O(n)`                     |
+| **PersistentARTrie** | $O(\mid q\mid )$ + I/O         | $O(\mid q\mid )$ + I/O | $O(\mid q\mid )$ + I/O | ~30–50 + disk | incremental                |
+| **PersistentSuffix\*** | $O(\mid q\mid )$ + I/O *(substring)* | rebuild+publish | rebuild+publish | graph + disk | copy-on-write native graph |
 
 The double-array trie's `O(N log N)` build buys the cheapest, most cache-resident lookup; the DAWG
 family trades a `log n` insert factor for runtime mutation **and** suffix sharing; the suffix automaton
-spends ~2× the memory to answer *substring* (not just prefix) queries; the persistent ARTrie family adds
+spends ~2$\times$ the memory to answer *substring* (not just prefix) queries; the persistent ARTrie family adds
 crash recovery and checkpointable disk images, while the persistent suffix family stores native substring
 graphs behind snapshot-style readers.
 
@@ -271,7 +273,7 @@ The flagship backend family is a disk-backed **Adaptive Radix Trie (ARTrie)**: a
 
 ### Adaptive nodes + SIMD
 
-A radix-tree node's fanout ranges from 1 to `∣Σ∣`. A fixed dense array wastes most of its slots on sparse nodes; a sorted list is slow on dense ones. The persistent overlay uses an immutable adaptive edge store: byte labels get the classic ART tiers, while `char` and `u64` labels stay native and choose between inline, sorted, and sparse-indexed storage by fanout.
+A radix-tree node's fanout ranges from 1 to $\mid \Sigma \mid$. A fixed dense array wastes most of its slots on sparse nodes; a sorted list is slow on dense ones. The persistent overlay uses an immutable adaptive edge store: byte labels get the classic ART tiers, while `char` and `u64` labels stay native and choose between inline, sorted, and sparse-indexed storage by fanout.
 
 For byte keys, the hot path is the familiar Node4/16/48/256 ART ladder:
 
@@ -286,7 +288,7 @@ find_child(node, byte):
         Node256 →  children[byte]                         # direct array; dense nodes
 ```
 
-Per-node lookup is bounded by the adaptive representation; the **Node16** byte path turns `≤ 16` scalar comparisons into one **SIMD** (single-instruction, multiple-data) `_mm_cmpeq_epi8` instruction. For non-byte labels, native `u32`/`u64` labels avoid byte expansion and use sorted or indexed lookup once fanout outgrows inline storage. — Leis et al. (2013).
+Per-node lookup is bounded by the adaptive representation; the **Node16** byte path turns $\le 16$ scalar comparisons into one **SIMD** (single-instruction, multiple-data) `_mm_cmpeq_epi8` instruction. For non-byte labels, native `u32`/`u64` labels avoid byte expansion and use sorted or indexed lookup once fanout outgrows inline storage. — Leis et al. (2013).
 
 ### Path compression
 
@@ -300,7 +302,7 @@ check_prefix(node, key, depth):
     # partial_len > 8 ("optimistic"): the prefix was truncated; verify fully at the leaf
 ```
 
-Tree height drops from `O(∣key∣)` to `O(∣key∣ / s̄)` for mean compressed span `s̄`, a ~2–4× reduction (hence ~2–4× fewer I/Os) on natural-language keys. — Morrison (1968).
+Tree height drops from $O(\mid key\mid )$ to $O(\mid key\mid / s̄)$ for mean compressed span `s̄`, a ~2–4$\times$ reduction (hence ~2–4$\times$ fewer I/Os) on natural-language keys. — Morrison (1968).
 
 ### Persistent variants
 
@@ -311,7 +313,7 @@ Tree height drops from `O(∣key∣)` to `O(∣key∣ / s̄)` for mean compresse
 
 ### Durable writes: the Order-A protocol
 
-The byte/char persistent ARTrie and vocabulary implementations are **lock-free** (readers and writers never block on a global mutation lock) yet **crash-durable** (an acknowledged write survives power loss). The reconciling invariant is `acknowledged ⟹ durable`, enforced by a strict, non-negotiable ordering ([`durable_write.rs`](src/persistent_artrie/core/overlay/durable_write.rs)):
+The byte/char persistent ARTrie and vocabulary implementations are **lock-free** (readers and writers never block on a global mutation lock) yet **crash-durable** (an acknowledged write survives power loss). The reconciling invariant is $acknowledged \implies durable$, enforced by a strict, non-negotiable ordering ([`durable_write.rs`](src/persistent_artrie/core/overlay/durable_write.rs)):
 
 <img src="docs/diagrams/durable-write-sequence.svg" alt="Order-A durable write sequence: append+fsync the WAL record before publishing via the overlay root CAS, then advance the committed watermark" width="760"/>
 
@@ -330,9 +332,9 @@ Why the order is sacred:
 
 - **Log before publish (Order A).** The opposite — publish-then-log (Order B) — can expose a write that is *visible but not yet durable*; a crash in that window loses an acknowledged write. Rejected.
 - **One append per write.** The single WAL record covers *every* CAS retry; re-appending on retry would burn log-sequence numbers (**LSN**s) and punch holes in the committed prefix.
-- **The watermark, not the frontier.** Under out-of-order lock-free commit, the only safe checkpoint LSN is the **committed-prefix watermark** (the largest `L` such that every `LSN ≤ L` is committed) — using the appended frontier instead would checkpoint an uncommitted write.
+- **The watermark, not the frontier.** Under out-of-order lock-free commit, the only safe checkpoint LSN is the **committed-prefix watermark** (the largest `L` such that every $LSN \le L$ is committed) — using the appended frontier instead would checkpoint an uncommitted write.
 
-Freed nodes are reclaimed by **epoch-based reclamation (EBR)**: memory is released only after every reader that *could* hold a pointer to it has departed its epoch — bounded-latency, lock-free, and free of use-after-free. The on-disk substrate is `mmap` by default, or `io_uring` + `O_DIRECT` (feature `io-uring-backend`, Linux ≥ 5.1) for batched async I/O. — Mohan et al. (1992) for the WAL/recovery discipline; Driscoll et al. (1989) for the copy-on-write structural sharing.
+Freed nodes are reclaimed by **epoch-based reclamation (EBR)**: memory is released only after every reader that *could* hold a pointer to it has departed its epoch — bounded-latency, lock-free, and free of use-after-free. The on-disk substrate is `mmap` by default, or `io_uring` + `O_DIRECT` (feature `io-uring-backend`, Linux $\ge$ 5.1) for batched async I/O. — Mohan et al. (1992) for the WAL/recovery discipline; Driscoll et al. (1989) for the copy-on-write structural sharing.
 
 The native `u64` profile follows the same log-before-publish rule with shared WAL records and lock-free root publication, but its compact CX snapshot format is intentionally not the old native bincode snapshot/WAL format. Historical bincode controls live only in git history.
 
@@ -350,9 +352,9 @@ The write path has no trie-wide mutation lock: publication is a CAS over immutab
 | `compression`                 | gzip the serialized form (`flate2`)               |                                                                                                                                                                                              |
 | `protobuf`                    | Protobuf (de)serialization (`prost`)              |                                                                                                                                                                                              |
 | `persistent-artrie`           | the disk-backed ARTrie, vocabulary, and native suffix graph families | `mmap` + WAL + CX/native snapshots                                                                                                                                                            |
-| `io-uring-backend`            | `io_uring` + `O_DIRECT` block storage             | Linux ≥ 5.1                                                                                                                                                                                  |
+| `io-uring-backend`            | `io_uring` + `O_DIRECT` block storage             | Linux $\ge$ 5.1                                                                                                                                                                                  |
 | `parallel-merge`              | multi-core merge via `rayon`                      |                                                                                                                                                                                              |
-| `group-commit`                | batched WAL group commit                          | ⚠️ **experimental** — measured ~1.5–2× *regression* on NVMe; intended only for slow storage. See [`docs/persistence/group_commit_regression.md`](docs/persistence/group_commit_regression.md) |
+| `group-commit`                | batched WAL group commit                          | ⚠️ **experimental** — measured ~1.5–2$\times$ *regression* on NVMe; intended only for slow storage. See [`docs/persistence/group-commit.md`](docs/persistence/group-commit.md) |
 | `lling-llang`                 | WFST semiring integration for the `Lattice` trait |                                                                                                                                                                                              |
 | `bench-internals`             | expose internal APIs to benchmarks                |                                                                                                                                                                                              |
 
@@ -365,7 +367,7 @@ The persistent ARTrie carries an unusually strong correctness budget. All figure
 | Tool | Scope | Status |
 |---|---|---|
 | **Rocq (Coq)** | functional correctness + refinement of the trie to an abstract map ADT | **69** `.v` files, **1,301** propositions (theorem/lemma/corollary), **0 `Admitted`, 0 `Axiom`, 0 `Parameter`** — fully constructive (every obligation closed by `Qed.`/`Defined.`) |
-| **TLA⁺ / TLC** | concurrency & crash-recovery safety/liveness | **55** specification modules — e.g. `LockFreeARTrieLinearizability`, `CrashRecovery`, `PersistentSuffixAutomaton`, `PublicDurabilityPolicy`; the composed model explores multi-million-state spaces (PART ≈ 4.2 M distinct states) |
+| **TLA⁺ / TLC** | concurrency & crash-recovery safety/liveness | **55** specification modules — e.g. `LockFreeARTrieLinearizability`, `CrashRecovery`, `PersistentSuffixAutomaton`, `PublicDurabilityPolicy`; the composed model explores multi-million-state spaces (PART $\approx$ 4.2 M distinct states) |
 | **loom** | exhaustive interleaving of the lock-free CAS paths | root-CAS, overlay value/index CAS, counter-merge, EBR |
 | **`unsafe` inventory** | every `unsafe` site bound to a reviewed contract + coverage class | **43** inventory rows / **31** contracts, CI-gated by `scripts/verify-unsafe-boundary-inventory.sh` (set-equality — no silent drift) |
 
@@ -399,8 +401,8 @@ Notable dated performance and storage changes are recorded in
 |--------------------------------------------------|----------------------------------------------------------------------------------|
 | Per-backend algorithm walkthroughs               | [`docs/algorithms/`](docs/algorithms/)                                           |
 | Theory: disk tries, ART, SCDAWG (with citations) | [`docs/theory/`](docs/theory/)                                                   |
-| Persistent-ARTrie mmap architecture              | [`docs/persistence/mmap-architecture.md`](docs/persistence/mmap-architecture.md) |
-| Eviction design                                  | [`docs/eviction/`](docs/eviction/)                                               |
+| Persistent-ARTrie persistence architecture       | [`docs/persistence/`](docs/persistence/README.md)                                |
+| Eviction design                                  | [`docs/persistence/eviction.md`](docs/persistence/eviction.md)                   |
 | Proof scope, results, gap ledger                 | [`formal-verification/`](formal-verification/)                                   |
 | Diagram sources & rendering (PlantUML · D2 · Graphviz · bytefield · gnuplot) | [`docs/diagrams/`](docs/diagrams/README.md)                          |
 | Changelog                                        | [`CHANGELOG.md`](CHANGELOG.md)                                                   |

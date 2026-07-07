@@ -1,0 +1,46 @@
+@startuml lockfree-cas-race-cat-dog
+' ============================================================================
+' lockfree-cas-race-cat-dog.puml — two threads insert disjoint terms ("cat" vs
+' "dog") concurrently. Both read the same old root r0 and build their new tree;
+' the first CAS wins and linearizes, the loser's CAS fails (root moved) and it
+' retries from the fresh root. No lock, no lost write.
+' Source: §Phase 2 (CAS at Root) of lockfree-cas-artrie.md.
+' Color key (house palette):
+'   green  #2E7D32  the winning / successful CAS
+'   red    #C62828  the failed CAS + the retry
+'   slate  border   the atomic root lifeline
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam sequenceArrowColor #37474F
+skinparam sequenceLifeLineBorderColor #90A4AE
+skinparam participantBorderColor #37474F
+skinparam noteBackgroundColor #ECEFF1
+skinparam noteBorderColor #90A4AE
+
+title CAS race — one wins, the other retries (no lock, no lost write)
+
+participant "T1\ncat" as T1
+participant "root" as R #CFD8DC
+participant "T2\ndog" as T2
+
+T1 -> R : load → r0
+T2 -> R : load → r0
+note over T1, T2 : both read old root r0
+T1 -> T1 : build r1 (r0+cat)
+T2 -> T2 : build r2 (r0+dog)
+
+T1 -> R : CAS(r0→r1)
+R -[#2E7D32]-> T1 : SUCCESS\n(linearizes)
+
+T2 -> R : CAS(r0→r2)
+R -[#C62828]-> T2 : FAIL\n(root is r1)
+note right of T2 #FFCDD2 : retry from\nfresh root
+
+T2 -> R : load → r1
+T2 -> T2 : rebuild r2′ (r1+dog)
+T2 -> R : CAS(r1→r2′)
+R -[#2E7D32]-> T2 : SUCCESS\n(cat & dog present)
+@enduml

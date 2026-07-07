@@ -1,0 +1,52 @@
+@startuml part-block-header
+' ============================================================================
+' part-block-header.puml — the 64-byte on-disk Block Header (persistent ART).
+' Source: docs/theory/disk-tries/04-persistent-art.md, § Block Layout.
+' Replaces the ASCII struct-field box with a compact, colored, viewBox'd byte-field.
+' Color key:  green  #C8E6C9  identity (magic, version, block_type, block_id)
+'             amber  #FFE0B2  flags / counters (flags, num_entries, free_offset)
+'             purple #E1BEE7  integrity (CRC-64 checksum)
+'             blue   #BBDEFB  block-chain links (prev / next)
+'             grey   #ECEFF1  reserved padding
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam TitleFontSize 15
+
+title Block Header — 64 bytes
+
+rectangle "**magic** : u32 — identifies a valid block" as R0 #C8E6C9
+rectangle "**version** : u16 — format version" as R1 #C8E6C9
+rectangle "**block_type** : u8 — 0 = nodes · 1 = buckets · 2 = metadata" as R2 #C8E6C9
+rectangle "**flags** : u8 — compression, etc." as R3 #FFE0B2
+rectangle "**block_id** : u32 — this block's ID" as R4 #C8E6C9
+rectangle "**checksum** : u64 — CRC-64 of contents" as R5 #E1BEE7
+rectangle "**num_entries** : u16 — number of nodes / entries" as R6 #FFE0B2
+rectangle "**free_offset** : u16 — start of free space" as R7 #FFE0B2
+rectangle "**prev_block** : u32 — previous block in chain (or 0)" as R8 #BBDEFB
+rectangle "**next_block** : u32 — next block in chain (or 0)" as R9 #BBDEFB
+rectangle "**padding** : [u8; 28] — reserved for future use" as R10 #ECEFF1
+
+R0 -[hidden]down- R1
+R1 -[hidden]down- R2
+R2 -[hidden]down- R3
+R3 -[hidden]down- R4
+R4 -[hidden]down- R5
+R5 -[hidden]down- R6
+R6 -[hidden]down- R7
+R7 -[hidden]down- R8
+R8 -[hidden]down- R9
+R9 -[hidden]down- R10
+
+legend bottom
+  green identity · amber flags/counters · purple CRC-64
+  blue block-chain links · grey padding
+endlegend
+@enduml

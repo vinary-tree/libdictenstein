@@ -30,9 +30,9 @@ digraph correspondence_matrix {
     node [shape=plaintext, fontname="DejaVu Sans"];
 
     matrix [label=<
-<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="7" COLOR="#37474F">
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#37474F">
   <TR>
-    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT"><B>Rust module  ·  spec / model</B></TD>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT"><B>Rust module · spec/model</B></TD>
     <TD BGCOLOR="#C8E6C9"><B>Rocq<BR/>spec</B></TD>
     <TD BGCOLOR="#BBDEFB"><B>TLA⁺<BR/>model</B></TD>
     <TD BGCOLOR="#BBDEFB"><B>Loom /<BR/>Miri</B></TD>
@@ -40,77 +40,77 @@ digraph correspondence_matrix {
   </TR>
 
   <TR>
-    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">lockfree_cas  ·  <FONT FACE="monospace">LockFreeARTrieLinearizability</FONT></TD>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">lockfree_cas · <FONT FACE="monospace">LockFreeARTrieLinearizability</FONT></TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
   </TR>
   <TR>
-    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">char/vocab lock-free overlay  ·  <FONT FACE="monospace">LockFreeIndexedOverlay</FONT></TD>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">char/vocab lock-free overlay · <FONT FACE="monospace">LockFreeIndexedOverlay</FONT></TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
   </TR>
   <TR>
-    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">core/recovery + wal  ·  <FONT FACE="monospace">CrashRecovery</FONT></TD>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">core/recovery + wal · <FONT FACE="monospace">CrashRecovery</FONT></TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#ECEFF1"> </TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
   </TR>
   <TR>
-    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">core/swizzled_ptr  ·  <FONT FACE="monospace">PointerOwnership</FONT></TD>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">core/swizzled_ptr · <FONT FACE="monospace">PointerOwnership</FONT></TD>
     <TD BGCOLOR="#ECEFF1"> </TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
   </TR>
   <TR>
-    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">core/buffer_manager  ·  <FONT FACE="monospace">BufferPageLease</FONT></TD>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">core/buffer_manager · <FONT FACE="monospace">BufferPageLease</FONT></TD>
     <TD BGCOLOR="#ECEFF1"> </TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#ECEFF1"> </TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
   </TR>
   <TR>
-    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">core/group_commit + version_gc  ·  <FONT FACE="monospace">DurabilityFrontier</FONT></TD>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">core/group_commit + version_gc · <FONT FACE="monospace">DurabilityFrontier</FONT></TD>
     <TD BGCOLOR="#ECEFF1"> </TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
   </TR>
   <TR>
-    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">char eviction / EBR  ·  <FONT FACE="monospace">EvictionWalkEBR</FONT></TD>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">char eviction / EBR · <FONT FACE="monospace">EvictionWalkEBR</FONT></TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
   </TR>
   <TR>
-    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">arena_manager  ·  <FONT FACE="monospace">ArenaReservationSpec</FONT></TD>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">arena_manager · <FONT FACE="monospace">ArenaReservationSpec</FONT></TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#ECEFF1"> </TD>
     <TD BGCOLOR="#ECEFF1"> </TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
   </TR>
   <TR>
-    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">dynamic_dawg  ·  <FONT FACE="monospace">DynamicDawgMutationSpec</FONT></TD>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">dynamic_dawg · <FONT FACE="monospace">DynamicDawgMutationSpec</FONT></TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#ECEFF1"> </TD>
     <TD BGCOLOR="#ECEFF1"> </TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
   </TR>
   <TR>
-    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">serialization codecs  ·  <FONT FACE="monospace">SerializationRoundtripSpec</FONT></TD>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">serialization codecs · <FONT FACE="monospace">SerializationRoundtripSpec</FONT></TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#ECEFF1"> </TD>
     <TD BGCOLOR="#ECEFF1"> </TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
   </TR>
   <TR>
-    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">io_uring_disk_manager  ·  <FONT FACE="monospace">IoUringSqeCqeLifecycle</FONT></TD>
+    <TD BGCOLOR="#ECEFF1" ALIGN="LEFT">io_uring_disk_manager · <FONT FACE="monospace">IoUringSqeCqeLifecycle</FONT></TD>
     <TD BGCOLOR="#ECEFF1"> </TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>
     <TD BGCOLOR="#C8E6C9">✓</TD>

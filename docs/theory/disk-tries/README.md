@@ -64,7 +64,7 @@ For the Persistent ARTrie design:
 | Exact lookup | `O(m)` | 2-4 (typical) |
 | Insert | `O(m + log B)` amortized | 2-4 + 1 write |
 | Prefix search | `O(m + k)` | Depends on `k` |
-| Levenshtein (`d = 1, 2`) | `O(n·m·d²)` | Varies with pruning |
+| Levenshtein (`d = 1, 2`) | $O(n\cdot m\cdot d^2)$ | Varies with pruning |
 
 Where: `m` = term length, `B` = bucket size (`~100–500`), `k` = result count
 
@@ -94,5 +94,9 @@ Primary sources underlying this documentation:
 
 ## Related Documentation
 
+- [Persistence architecture corpus](../../persistence/README.md) - the **systems-tier
+  implementation** of the PART design summarized in 06/07: the lock-free overlay,
+  storage backends, WAL format, durability/recovery, concurrency model, and eviction,
+  each documented end to end.
 - [SCDAWG Theory](../scdawg/) - Symmetric Compact Directed Acyclic Word Graph
 - [Levenshtein Automata](../../algorithms/) - Fuzzy string matching algorithms

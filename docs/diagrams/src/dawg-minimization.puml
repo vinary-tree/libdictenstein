@@ -12,79 +12,76 @@
 ' structural-equality check before the parent edge is redirected and the new
 ' node discarded.
 '
+' LAYOUT: a top decision (classify by signature) followed by a VERTICAL STACK of
+' the four disjoint outcome cases (condition -> action -> rationale, one colored
+' card each), so the figure reads top-to-bottom and stays within the prose
+' column. The amber container preserves the original 'collision guard' grouping:
+' it wraps CASE 1 (merge) and CASE 2 (collision) — the two cases reached only
+' once a live equal-signature candidate exists.
+'
 ' Color key (mirrors docs/diagrams/README.md house style):
 '   green  #C8E6C9 = signature computation (the bottom-up fold, in-memory)
 '   blue   #BBDEFB = the registry / canonical-table lookup + decision
 '   amber  #FFF59D = the collision guard (structural equality) — the safety net
-'   red    #FFCDD2 = collision detected → do NOT merge (register as distinct)
+'   red    #FFCDD2 = collision detected -> do NOT merge (register as distinct)
 '   neutral #ECEFF1 = terminal / edge-rewrite bookkeeping
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 280
 skinparam shadowing false
 skinparam ArrowColor #37474F
-skinparam ActivityBorderColor #37474F
-skinparam ActivityDiamondBorderColor #37474F
-skinparam NoteBackgroundColor #F1F1F1
-skinparam NoteBorderColor #37474F
+skinparam ArrowFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
+}
+skinparam card {
+  BorderColor #37474F
+  FontName "DejaVu Sans"
+}
 
 title DAWG minimization — signature hashing with a 64-bit-collision guard
 
-start
+card "minimize()  ▶\nreach a near-minimal DAWG" as START #C8E6C9
 
-partition "1 · Bottom-up signature fold  (compute_signatures_dfs, post-order)" #C8E6C9 {
-  :Post-order DFS over the node graph\n(children first ⇒ deepest nodes finalize first);
-  :For each node, once its children carry final\nsignatures, fold its own signature\n`sig = FxHash(is_final, sorted[(label, child_sig)])`\n(edges sorted by label ⇒ order-independent);
+rectangle "**① Signature fold** (post-order DFS)\nchildren first ⇒ deepest\nnode finalizes first" as P1a #C8E6C9
+rectangle "Fold each node's signature\n`sig = FxHash(is_final,`\n`sorted[(label, child_sig)])`\n(sorted ⇒ order-independent)" as P1b #C8E6C9
+
+rectangle "**② Classify nodes** (leaves-first)\ntake next node + its `sig`; probe\nthe canonical table; scan the\nbucket's **live** canonicals — skip\nmerged (`node_mapping[c] == c`).\nFour disjoint outcomes ↓" as CLASSIFY #BBDEFB
+
+rectangle "**Collision guard** — structural-eq" as GUARD #FFF59D {
+  card "**CASE 1 · MERGE**\n--\n**when:** `structurally_equal` —\nsame is_final · labels ·\nchild canonicals\n**do:** redirect parent edge to\ncanonical; `node_mapping[node]`\n`= canonical`; drop duplicate\n**why:** right langs identical —\nsame accept flag + same\n(label→canonical) edges;\nthe space win" as C1 #C8E6C9
+  card "**CASE 2 · HASH COLLISION**\n**— keep distinct**\n--\n**when:** equal `sig`,\n**diff structure** (birthday\nparadox)\n**do:** do NOT merge; register\na //new// canonical in the bucket\n**why:** else a birthday collision\nfuses two right langs and\ncorrupts the DAWG" as C2 #FFCDD2
 }
 
-partition "2 · Classify nodes  (minimize_incremental, reverse / leaves-first order)" #BBDEFB {
-  while (more nodes to classify?\n(reverse index order, leaves first)) is (yes)
-    :Take the next node and its signature `sig`;
-    if (signature `sig` already\nin the canonical table?) then (yes — bucket exists)
-      :Scan the bucket's **live** canonical nodes\n(skip any already merged: keep only `node_mapping[c] == c`);
-      if (a live canonical with\nan equal signature found?) then (candidate)
+card "**CASE 3 · APPEND**\n--\n**when:** `sig` in table, but\n**no live** equal-`sig`\ncanonical (all bucket entries\nmerged or differ)\n**do:** append node as a new\ncanonical in the bucket" as C3 #BBDEFB
 
-        partition "Collision guard  (nodes_structurally_equal)" #FFF59D {
-          if (`nodes_structurally_equal(node, canonical)`?\nsame is_final · no value · same labels ·\nchildren map to same canonicals) then (structurally equal)
-            #C8E6C9:**MERGE** — redirect the parent edge to the\ncanonical node; record `node_mapping[node] = canonical`;\ndiscard the duplicate;
-            note right #F1F1F1
-              The right languages are provably identical:
-              same accept flag and the same set of
-              (label → already-canonical child) edges.
-              Safe to share — this is the space win.
-            end note
-          else (**64-bit hash collision**)
-            #FFCDD2:Equal hash but **different structure** —\ndo NOT merge; register `node` as a\n*new* canonical in the same bucket;
-            note right #FFCDD2
-              Without this branch a birthday-paradox
-              collision would fuse two distinct right
-              languages and silently corrupt the DAWG.
-            end note
-          endif
-        }
+card "**CASE 4 · FRESH bucket**\n--\n**when:** `sig` ∉ canonical table\n(first time this `sig` is seen)\n**do:** fresh bucket\n`sig → [node]`; mark it canonical" as C4 #BBDEFB
 
-      else (no live match)
-        #BBDEFB:Append `node` to the bucket as a new canonical;
-      endif
-    else (no — first of its kind)
-      #BBDEFB:Insert a fresh bucket `sig → [node]`;\nmark `node` canonical;
-    endif
-  endwhile (no — all nodes classified)
-}
+rectangle "**③ Rewrite & compact**\nredirect **every** edge target\nthrough `node_mapping`" as P3a #ECEFF1
+rectangle "drop nodes unreachable from\nthe root (`find_reachable_nodes`)" as P3b #ECEFF1
+rectangle "clear suffix cache;\nrecompute ref-counts" as P3c #ECEFF1
 
-partition "3 · Rewrite & compact" #ECEFF1 {
-  :Redirect **every** edge target through `node_mapping`\n(`target = node_mapping[target]`);
-  :Drop nodes no longer reachable from the root\n(`find_reachable_nodes` → `compact_with_reachable`);
-  :Clear the suffix cache; recompute ref-counts;
-}
+card "▧ minimized, compacted DAWG" as DONE #ECEFF1
 
-stop
+START --> P1a
+P1a --> P1b
+P1b --> CLASSIFY
+CLASSIFY --> C1 : live equal-`sig`\ncandidate\n⇒ guard
+C1 --> C2 : else ·\nhash collision
+C2 --> C3 : else ·\nno live\nequal-`sig`
+C3 --> C4 : else ·\n`sig` ∉ table
+C4 --> P3a
+P3a --> P3b
+P3b --> P3c
+P3c --> DONE
 
 legend right
 | Color | Stage |
-|<#C8E6C9>| signature fold (bottom-up, in-memory) |
-|<#BBDEFB>| canonical-table lookup + decision |
-|<#FFF59D>| structural-equality collision guard |
+|<#C8E6C9>| signature fold (bottom-up) |
+|<#BBDEFB>| canonical-table lookup |
+|<#FFF59D>| structural-equality guard |
 |<#FFCDD2>| 64-bit collision → keep distinct |
 |<#ECEFF1>| edge rewrite + compaction |
 endlegend

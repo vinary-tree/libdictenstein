@@ -1,0 +1,30 @@
+@startuml art-sparse-vs-dense
+' ============================================================================
+' art-sparse-vs-dense.puml — ART's adaptive answer to the span trade-off: a
+' sparse region uses a tiny Node4, a dense region uses a direct Node256.
+' Source: docs/theory/disk-tries/03-adaptive-radix-tree.md, § ART's Solution.
+' Color key:  green #C8E6C9  the compact sparse node (Node4)
+'             blue  #BBDEFB  the large dense node (Node256)
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam TitleFontSize 15
+
+title Adaptive nodes — the representation follows the fan-out
+
+rectangle "**Sparse node** — 3 children\n**Node4**  (48 bytes)\nkeys: [a, m, z, _]\nchildren: [→, →, →, _]" as S #C8E6C9
+rectangle "**Dense node** — 200 children\n**Node256**  (2080 bytes)\nchildren[256] direct-access array" as D #BBDEFB
+
+S -[hidden]right- D
+
+legend bottom
+  Same O(1) child lookup · near-optimal space for any fan-out distribution.
+endlegend
+@enduml

@@ -2,7 +2,7 @@
 
 This document presents the **Adaptive Radix Tree (ART)** — an in-memory trie whose nodes change their internal representation according to how many children they hold — introduced by Leis, Kemper, and Neumann (2013, [doi:10.1109/ICDE.2013.6544812](https://doi.org/10.1109/ICDE.2013.6544812)). ART achieves both excellent space efficiency and lookup performance, making it an ideal foundation for our persistent trie design.
 
-Throughout, **SIMD** (Single Instruction, Multiple Data) denotes CPU vector instructions that apply one operation to several lanes of a register in parallel; ART uses SIMD to compare many child keys at once. We write key length as `m` (bytes), alphabet as `Σ`, and alphabet size as `∣Σ∣`.
+Throughout, **SIMD** (Single Instruction, Multiple Data) denotes CPU vector instructions that apply one operation to several lanes of a register in parallel; ART uses SIMD to compare many child keys at once. We write key length as `m` (bytes), alphabet as $\Sigma$, and alphabet size as $\mid \Sigma \mid$.
 
 ## Table of Contents
 
@@ -46,14 +46,7 @@ The choice of span presents a fundamental trade-off:
 
 ART resolves this trade-off by using different node types depending on the actual number of children:
 
-```
-Sparse node (3 children):       Dense node (200 children):
-┌─────────────────────┐        ┌─────────────────────────┐
-│ Node4 (48 bytes)    │        │ Node256 (2080 bytes)    │
-│ keys: [a, m, z, _]  │        │ children[256] direct    │
-│ children: [→,→,→,_] │        │ access array            │
-└─────────────────────┘        └─────────────────────────┘
-```
+<img src="../../diagrams/art-sparse-vs-dense.svg" alt="ART's adaptive answer to the span trade-off shown as two nodes side by side: a compact 48-byte Node4 holding 3 children in parallel key and child arrays for a sparse region, versus a 2080-byte Node256 with a direct 256-slot child array for a dense region." width="70%"/>
 
 This adaptivity provides near-optimal space for any fanout distribution while maintaining the `O(1)` child lookup that makes radix trees fast.
 
@@ -79,27 +72,7 @@ A radix tree with span `s` processes keys `s` bits at a time. For span-8 (byte k
 
 Consider storing the keys {10, 25, 31} (as 8-bit values):
 
-**Span-1 (binary trie):**
-```
-Height = 8 levels, many single-child chains
-                    root
-                   /    \
-                  0      1
-                 /        \
-                0          1
-               /            \
-              ...          ...
-              ↓             ↓
-             10            25,31
-```
-
-**Span-8 (256-way trie):**
-```
-Height = 1 level, one node with 3 children
-            root
-          /  |  \
-        10  25  31
-```
+<img src="../../diagrams/art-span-comparison.svg" alt="The radix span trade-off for the keys 10, 25, 31: a span-1 binary trie is about 8 levels deep with mostly single-child chains descending through 0/1 branches to the leaves 10 and 25,31, whereas a span-8 (256-way) trie stores the same three keys as a single root node with three direct children 10, 25 and 31." width="70%"/>
 
 ART uses span-8 for shallow trees but avoids the 256-pointer waste through adaptive nodes.
 
@@ -124,20 +97,7 @@ The four types are detailed below.
 The smallest node type for very sparse regions of the tree.
 
 **Structure:**
-```
-┌────────────────────────────────────────────────────────┐
-│ Node4 Header                                           │
-├────────────────────────────────────────────────────────┤
-│ type: u8              │ Node type identifier (4)       │
-│ num_children: u8      │ Current child count (1-4)      │
-│ partial_len: u8       │ Compressed path length         │
-│ partial: [u8; 8]      │ Compressed path prefix         │
-├────────────────────────────────────────────────────────┤
-│ keys: [u8; 4]         │ Unsorted key bytes             │
-│ children: [ptr; 4]    │ Corresponding child pointers   │
-└────────────────────────────────────────────────────────┘
-Total: ~48 bytes (with padding)
-```
+<img src="../../diagrams/art-node4-fields.svg" alt="The Node4 struct as a byte-field: a node-type tag, a num_children counter of 1 to 4, the compressed-path length and inline partial prefix, then an unsorted 4-byte key array and 4 child pointers; total about 48 bytes, searched by linear scan." width="70%"/>
 
 **Lookup:** Linear scan of keys array (4 comparisons max).
 
@@ -162,20 +122,7 @@ fn find_child_node4(node: &Node4, key: u8) -> Option<&Node> {
 Optimized for SIMD parallel comparison.
 
 **Structure:**
-```
-┌────────────────────────────────────────────────────────┐
-│ Node16 Header                                          │
-├────────────────────────────────────────────────────────┤
-│ type: u8              │ Node type identifier (16)      │
-│ num_children: u8      │ Current child count (5-16)     │
-│ partial_len: u8       │ Compressed path length         │
-│ partial: [u8; 8]      │ Compressed path prefix         │
-├────────────────────────────────────────────────────────┤
-│ keys: [u8; 16]        │ Sorted key bytes (16-aligned)  │
-│ children: [ptr; 16]   │ Corresponding child pointers   │
-└────────────────────────────────────────────────────────┘
-Total: ~160 bytes
-```
+<img src="../../diagrams/art-node16-fields.svg" alt="The Node16 struct as a byte-field: node-type tag, num_children counter of 5 to 16, compressed-path length and inline partial prefix, then a 16-aligned sorted 16-byte key array and 16 child pointers; total about 160 bytes, searched with an SSE 16-way SIMD compare." width="70%"/>
 
 **Lookup:** SIMD parallel comparison finds the key in one instruction.
 
@@ -207,20 +154,7 @@ fn find_child_node16_simd(node: &Node16, key: u8) -> Option<&Node> {
 Uses an index array for `O(1)` lookup without storing 256 pointers.
 
 **Structure:**
-```
-┌────────────────────────────────────────────────────────┐
-│ Node48 Header                                          │
-├────────────────────────────────────────────────────────┤
-│ type: u8              │ Node type identifier (48)      │
-│ num_children: u8      │ Current child count (17-48)    │
-│ partial_len: u8       │ Compressed path length         │
-│ partial: [u8; 8]      │ Compressed path prefix         │
-├────────────────────────────────────────────────────────┤
-│ child_index: [u8; 256]│ Maps byte → slot (255 = empty) │
-│ children: [ptr; 48]   │ Child pointers in slots        │
-└────────────────────────────────────────────────────────┘
-Total: ~656 bytes
-```
+<img src="../../diagrams/art-node48-fields.svg" alt="The Node48 struct as a byte-field: node-type tag, num_children counter of 17 to 48, compressed-path length and inline partial prefix, then a 256-byte child_index mapping each byte to a slot (255 meaning empty) and 48 child pointers; total about 656 bytes." width="70%"/>
 
 **Lookup:** Two array accesses with no searching.
 
@@ -236,8 +170,8 @@ fn find_child_node48(node: &Node48, key: u8) -> Option<&Node> {
 ```
 
 **Space analysis:**
-- 256-byte index array + `48 × 8` = 384 bytes of pointers ⇒ 640 bytes total
-- A full Node256 would need `256 × 8 = 2048` bytes
+- 256-byte index array + $48 \times 8$ = 384 bytes of pointers $\Rightarrow$ 640 bytes total
+- A full Node256 would need $256 \times 8 = 2048$ bytes
 - Savings: `~69%` for nodes with 17-48 children
 
 ### Node256 (49-256 children)
@@ -245,19 +179,7 @@ fn find_child_node48(node: &Node48, key: u8) -> Option<&Node> {
 Direct array indexing for dense nodes.
 
 **Structure:**
-```
-┌────────────────────────────────────────────────────────┐
-│ Node256 Header                                         │
-├────────────────────────────────────────────────────────┤
-│ type: u8              │ Node type identifier (256)     │
-│ num_children: u16     │ Current child count (49-256)   │
-│ partial_len: u8       │ Compressed path length         │
-│ partial: [u8; 8]      │ Compressed path prefix         │
-├────────────────────────────────────────────────────────┤
-│ children: [ptr; 256]  │ Direct access array            │
-└────────────────────────────────────────────────────────┘
-Total: ~2080 bytes
-```
+<img src="../../diagrams/art-node256-fields.svg" alt="The Node256 struct as a byte-field: node-type tag, num_children counter of 49 to 256, compressed-path length and inline partial prefix, then a direct 256-entry child-pointer array giving O(1) indexed lookup; total about 2080 bytes." width="70%"/>
 
 **Lookup:** Single array access.
 
@@ -289,7 +211,7 @@ Path compression eliminates chains of single-child nodes, reducing tree height a
 
 <img src="../../diagrams/path-compression.svg" alt="Before and after path compression for the term metamorphosis: a 14-node unary chain (one node per byte) collapses into a single final node carrying an inline 12-byte partial prefix, turning up to 14 page faults into 1." width="720"/>
 
-*Figure: path compression for `"metamorphosis"`. Collapsing the unary chain turns up to 14 page faults (one per node) into one read. In this crate the byte variant stores up to **12 inline prefix bytes** per node (`MAX_PREFIX_LEN = 12`); the first 8 are compared pessimistically during descent and any remainder is verified at the leaf. A run longer than the inline cap is split into `⌈len / 13⌉` such nodes rather than degenerating back into a per-byte chain.*
+*Figure: path compression for `"metamorphosis"`. Collapsing the unary chain turns up to 14 page faults (one per node) into one read. In this crate the byte variant stores up to **12 inline prefix bytes** per node (`MAX_PREFIX_LEN = 12`); the first 8 are compared pessimistically during descent and any remainder is verified at the leaf. A run longer than the inline cap is split into $\lceil len / 13\rceil$ such nodes rather than degenerating back into a per-byte chain.*
 
 ### The Problem with Uncompressed Tries
 
@@ -300,24 +222,13 @@ Consider storing only the key `"metamorphosis"`. Uncompressed, the trie is a cha
 ART supports two strategies:
 
 **Pessimistic (store full prefix):**
-```
-┌───────────────────────┐
-│ partial: "metamorph"  │  Store compressed bytes
-│ partial_len: 9        │  in the node
-│ child['o'] → ...      │
-└───────────────────────┘
-```
+<img src="../../diagrams/art-prefix-pessimistic.svg" alt="Pessimistic path compression: the node stores the full inline prefix bytes (partial = metamorph, partial_len = 9) alongside the onward child edge, so a key mismatch is detected during descent without reaching the leaf, bounded by the inline prefix size." width="70%"/>
 - Comparison during traversal
 - No need to reach leaf for mismatch detection
 - Limited by partial array size (typically 8 bytes)
 
 **Optimistic (store length only):**
-```
-┌───────────────────────┐
-│ partial: (not stored) │  Only store the length
-│ partial_len: 9        │  Verify at leaf
-└───────────────────────┘
-```
+<img src="../../diagrams/art-prefix-optimistic.svg" alt="Optimistic path compression: the node stores only the prefix length (partial_len = 9) and omits the prefix bytes, skipping the comparison during descent and instead verifying the full key once a leaf is reached, allowing unlimited compression length." width="70%"/>
 - Skip partial comparison during traversal
 - Must verify full key at leaf node
 - Unlimited compression length
@@ -351,21 +262,7 @@ fn check_prefix(node: &Node, key: &[u8], depth: usize) -> PrefixMatch {
 
 When inserting a key that diverges from an existing compressed path:
 
-```
-Before: node with partial="test" pointing to leaf("testing")
-Insert: "testament"
-
-1. Find mismatch at position 4 ("test" vs "test")
-   - Actually, compare: "testing" vs "testament"
-   - Mismatch at position 4: 'i' vs 'a'
-
-After:
-        node (partial="test")
-           /              \
-      'i'                'a'
-       ↓                  ↓
-   leaf("ing")      leaf("ament")
-```
+<img src="../../diagrams/art-insert-path-compression.svg" alt="Path compression during insert: before, a compressed node with partial 'test' points to a single leaf 'testing'; inserting 'testament' finds the keys agree through 'test' then diverge at position 4 ('i' versus 'a'), so after the split the node gains a second child edge and points to leaves 'ing' (reached via 'i') and 'ament' (reached via 'a')." width="70%"/>
 
 ---
 
@@ -658,8 +555,8 @@ This matches natural language patterns where certain character transitions are r
 ### 2. SIMD is Worth the Complexity
 
 Node16 with SIMD lookup provides:
-- `~5×` speedup over linear scan
-- Better than binary search for `≤16` elements
+- $~5\times$ speedup over linear scan
+- Better than binary search for $\le 16$ elements
 - Critical for inner loop performance
 
 For persistent storage, we'll ensure Node16 keys are 16-byte aligned in page layouts.
@@ -671,7 +568,7 @@ Without path compression:
 - Many single-child nodes waste space
 
 With compression:
-- Height `≈` number of branching points
+- Height $\approx$ number of branching points
 - Dramatic reduction for string keys with shared prefixes
 
 ### 4. Node Type Field Enables Polymorphism
@@ -693,6 +590,17 @@ In ART, leaves often store single values. For disk-based storage, we'll use B-tr
 - Multiple strings per leaf page
 - Amortize disk I/O across insertions
 - Better space utilization
+
+### Where these lessons are realized
+
+In the shipping engine the adaptive-node principle (lessons 1, 4) becomes a single
+generic `AdaptiveEdgeStore` inside `OverlayNode<K: KeyEncoding, V>`, monomorphized
+once per alphabet: byte keys use ART-style dense `Node4/16/48/256` tiers, while char
+and `u64` keys keep native labels and use inline / sorted / sparse-indexed storage as
+fan-out grows. The tiers are specified in
+[storage-backends.md § Adaptive edge storage](../../persistence/storage-backends.md#adaptive-edge-storage),
+and the "one implementation, three alphabets" layering is in
+[families.md](../../persistence/families.md#one-implementation-three-alphabets).
 
 ---
 

@@ -20,6 +20,7 @@
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 250
 skinparam shadowing false
 skinparam ArrowColor #37474F
 skinparam ArrowFontName "DejaVu Sans"
@@ -34,19 +35,19 @@ title PersistentVocabARTrie reopen — forward overlay is durable,\nreverse id�
 
 start
 
-#BBDEFB:**open_with_recovery(path)**\nread VocabTrieFileHeader (magic "VOCB");
+:**open_with_recovery(path)**\nread VocabTrieFileHeader (magic "VOCB");<<#BBDEFB>>
 if (version == V2 overlay format?) then (no)
-  #FFCDD2:**fail-closed** — legacy v1 owned\nformat is no longer loadable\n(rebuild with the overlay format);
+  :**fail-closed** — legacy v1 owned\nformat is no longer loadable\n(rebuild with the overlay format);<<#FFCDD2>>
   kill
 else (yes — durable forward path)
 endif
 
-#BBDEFB:decode **root_ptr**, **checkpoint_lsn**,\n**entry_count**, **start/next index** from the header;
+:decode **root_ptr**, **checkpoint_lsn**,\n**entry_count**, **start/next index** from the header;<<#BBDEFB>>
 
 partition "FORWARD overlay  (durable — the source of truth)" {
-  #C8E6C9:**reestablish_overlay_from_image(root_ptr)**\nload the dense char-overlay checkpoint image\ninto the lock-free overlay (value at each leaf = u64 id);
-  #BBDEFB:**replay_wal_into_overlay_rank_aware(checkpoint_lsn)**\nfold the durable WAL tail (LSN > checkpoint_lsn)\nrank-aware, stopping at the first torn frame;
-  #C8E6C9:forward map ready — `get_index(term)` walks\nthe overlay in `O(|term|)`;
+  :**reestablish_overlay_from_image(root_ptr)**\nload the dense char-overlay checkpoint image\ninto the lock-free overlay (value at each leaf = u64 id);<<#C8E6C9>>
+  :**replay_wal_into_overlay_rank_aware(checkpoint_lsn)**\nfold the durable WAL tail (LSN > checkpoint_lsn)\nrank-aware, stopping at the first torn frame;<<#BBDEFB>>
+  :forward map ready — `get_index(term)` walks\nthe overlay in `O(|term|)`;<<#C8E6C9>>
 }
 
 note right #ECEFF1
@@ -56,12 +57,12 @@ note right #ECEFF1
 end note
 
 partition "REVERSE map  (derived — rebuilt, never persisted)" {
-  #FFE0B2:allocate the `reverse_term_map: DashMap<u64, String>`\n(non-blocking, sharded);
-  #FFE0B2:**scan the recovered forward entries**\nfor each (term, id) leaf in the overlay\n→ reverse_term_map.insert(id, term);
-  #FFE0B2:reverse map ready — `get_term(id)` is now an\n`O(1)` sharded lookup into the rebuilt inverse;
+  :allocate the `reverse_term_map: DashMap<u64, String>`\n(non-blocking, sharded);<<#FFE0B2>>
+  :**scan the recovered forward entries**\nfor each (term, id) leaf in the overlay\n→ reverse_term_map.insert(id, term);<<#FFE0B2>>
+  :reverse map ready — `get_term(id)` is now an\n`O(1)` sharded lookup into the rebuilt inverse;<<#FFE0B2>>
 }
 
-#C8E6C9:**resume serving**\nforward + reverse lookups both answer the\ncommitted-visible bijection at checkpoint+tail time;
+:**resume serving**\nforward + reverse lookups both answer the\ncommitted-visible bijection at checkpoint+tail time;<<#C8E6C9>>
 stop
 
 legend right

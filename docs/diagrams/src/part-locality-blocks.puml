@@ -1,0 +1,47 @@
+@startuml part-locality-blocks
+' ============================================================================
+' part-locality-blocks.puml — Strategy 2: locality-aware allocation. Each block
+' holds a whole subtree (parent next to its children), so one block read warms
+' a prefetch-friendly neighbourhood.
+' Source: docs/theory/disk-tries/04-persistent-art.md, § Block Allocation Strategies.
+' Color key:  green #C8E6C9  subtree root   blue #BBDEFB  children
+'             l-blue #E3F2FD  grandchildren / deeper subtree
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam packageStyle rectangle
+skinparam TitleFontSize 15
+
+title Strategy 2 — locality-aware allocation (subtree per block)
+
+package "Block 0 — subtree of A" #F5F5F5 {
+  rectangle "Node A" as A #C8E6C9
+  rectangle "child 1" as C1 #BBDEFB
+  rectangle "child 2" as C2 #BBDEFB
+  rectangle "child 3" as C3 #BBDEFB
+  rectangle "grandkids …" as GK #E3F2FD
+  A -[hidden]right- C1
+  C1 -[hidden]right- C2
+  C2 -[hidden]right- C3
+  C3 -[hidden]right- GK
+}
+
+package "Block 1 — subtree of B" #F5F5F5 {
+  rectangle "Node B" as B #C8E6C9
+  rectangle "B's subtree …" as BS #BBDEFB
+  B -[hidden]right- BS
+}
+
+A -[hidden]down- B
+
+legend bottom
+  Parent next to its children → better cache locality and effective prefetch.
+endlegend
+@enduml

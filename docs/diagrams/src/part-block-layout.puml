@@ -1,0 +1,36 @@
+@startuml part-block-layout
+' ============================================================================
+' part-block-layout.puml — how nodes are packed within a 256 KB block:
+' header · node directory (offset/len entries) · node data · free space.
+' Source: docs/theory/disk-tries/04-persistent-art.md, § Block Layout.
+' Color key:  amber #FFE0B2  block header (metadata)
+'             blue  #BBDEFB  node directory (offset/len index)
+'             green #C8E6C9  node data (the packed node payloads)
+'             grey  #ECEFF1  free space
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam TitleFontSize 15
+
+title Node packing within a 256 KB block
+
+rectangle "**Header**  (64 B)" as H #FFE0B2
+rectangle "**Node Directory**  (variable)\nentry[0]  off 64 · len 48\nentry[1]  off 112 · len 160\nentry[2]  off 272 · len 656   · …" as DIR #BBDEFB
+rectangle "**Node Data**\n[Node4 @64]  [Node16 @112]  [Node48 @272]  [Node4 @928]  …" as DATA #C8E6C9
+rectangle "**Free Space**" as F #ECEFF1
+
+H -[hidden]down- DIR
+DIR -[hidden]down- DATA
+DATA -[hidden]down- F
+
+legend bottom
+  amber header · blue offset/len directory · green packed nodes · grey free space
+endlegend
+@enduml

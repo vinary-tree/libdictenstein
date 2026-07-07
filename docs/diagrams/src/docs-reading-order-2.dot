@@ -1,0 +1,131 @@
+// ============================================================================
+// docs-reading-order-2.dot — the documentation reading-path / prerequisite map,
+// PART 2 of 2: tracks 3–4 (Persistence + Formal verification).
+//
+// Companion to docs-reading-order.dot (part 1, tracks 1–2). Part 1 draws the
+// green getting-started spine + grey theory track; the three cross-track edges
+// that leave it (backends → persist_arch, disktries → persist_arch, scdawg →
+// suffixgraph) are re-attached HERE from a "← from part 1" note so no edge is
+// lost across the split. Every node + edge of the original single figure is
+// preserved across the two parts.
+//
+// Layout: top-to-bottom (rankdir=TB). Nodes are grouped into colored clusters
+// by track:
+//   (1. Getting started / usage — green, and 2. Theory — grey, are in PART 1.)
+//   3. Persistence / systems    (blue)   — the durable on-disk ARTrie + suffix
+//                                           graphs, WAL format, eviction.
+//   4. Formal / verification    (amber)  — the Rocq + TLA⁺ proofs and the
+//                                           unsafe-contract inventory.
+//
+// Color key (extends the house palette — docs/diagrams/README.md):
+//   green  #C8E6C9  getting-started / usage   (PART 1)
+//   grey   #ECEFF1  theory                    (PART 1)
+//   blue   #BBDEFB  persistence / systems      (durable ARTrie, suffix graphs, WAL, eviction)
+//   amber  #FFF59D  formal / verification      (Rocq, TLA⁺, unsafe contracts)
+//   dark slate #37474F  reading-order edges + node borders
+//   teal   #00897B  cross-track "go deeper" edges (from part 1 → persistence)
+// Cluster fills are a paler tint of each track color so the nodes stay readable.
+// ============================================================================
+digraph docs_reading_order_2 {
+    rankdir=TB;            // new readers enter at the top, depth grows downward
+    bgcolor="#FFFFFF";
+    fontname="DejaVu Sans";
+    labelloc="t";
+    fontsize=15;
+    fontcolor="#212121";
+    label=<<B>libdictenstein docs — reading order (part 2 of 2)</B><BR/><FONT POINT-SIZE="11">tracks 3&#8211;4: persistence (blue) &#8594; formal verification (amber).<BR/>Continues from getting-started &amp; theory in part 1.</FONT>>;
+    nodesep=0.22;
+    ranksep=0.50;
+    newrank=true;
+    compound=true;        // allow edges to/from cluster boundaries
+
+    node [shape=box, style="filled,rounded", color="#37474F",
+          fontname="DejaVu Sans", fontcolor="#212121", penwidth=1.6,
+          margin="0.10,0.07"];
+    edge [color="#37474F", fontname="DejaVu Sans", fontcolor="#37474F",
+          penwidth=1.6, arrowsize=0.9];
+
+    // === "← from part 1" note — the cross-track edges re-attach here ========
+    // Getting-started (green) + Theory (grey) tracks live in docs-reading-order.
+    from_part1 [shape=note, style="filled", fillcolor="#FFF9C4",
+                color="#FBC02D", fontsize=11, fontcolor="#212121",
+                label="← from PART 1\n(docs-reading-order):\nGetting-started (green)\n& Theory (grey) tracks"];
+
+    // === 3. Persistence / systems (blue) ===================================
+    subgraph cluster_persistence {
+        label=<<B>3 · Persistence / systems</B>>;
+        labeljust="l";
+        fontsize=12;
+        fontcolor="#0D47A1";
+        style="filled,rounded";
+        fillcolor="#E3F2FD";
+        color="#42A5F5";
+        penwidth=1.4;
+        margin=8;
+
+        persist_arch [label="architecture/\npersistence/\n+ persistence/\nstorage-backends.md\n(durability stack)", fillcolor="#BBDEFB"];
+        u64cx        [label="algorithms/\nnative-u64-\nand-cx.md\n(u64 keys +\nCX snapshot)", fillcolor="#BBDEFB"];
+        vocab        [label="algorithms/\nvocab-trie.md\n(term ↔ u64\nbijection)", fillcolor="#BBDEFB"];
+        suffixgraph  [label="algorithms/\npersistent-\nsuffix-graphs.md\n(durable substring\nindexes)", fillcolor="#BBDEFB"];
+        walfmt       [label="persistence/\nwal-format.md\n(on-disk\nWAL codec)", fillcolor="#BBDEFB"];
+        eviction     [label="eviction/\n(memory-\npressure\nreclamation)", fillcolor="#BBDEFB"];
+    }
+
+    // === 4. Formal / verification (amber) ==================================
+    subgraph cluster_formal {
+        label=<<B>4 · Formal verification</B>>;
+        labeljust="l";
+        fontsize=12;
+        fontcolor="#E65100";
+        style="filled,rounded";
+        fillcolor="#FFFDE7";
+        color="#FBC02D";
+        penwidth=1.4;
+        margin=8;
+
+        formal [label="formal-verification/\n(Rocq theorems ·\nTLA⁺ models ·\nunsafe-contract\ninventory)", fillcolor="#FFF59D"];
+    }
+
+    // === cross-track: from PART 1 → persistence (teal, re-attached) =========
+    // (originally backends → persist_arch, disktries → persist_arch,
+    //  scdawg → suffixgraph in the single figure.)
+    edge [color="#00897B", fontcolor="#00695C", penwidth=1.5, style="solid"];
+    from_part1 -> persist_arch [label="from backends:\nneed durability →"];
+    from_part1 -> persist_arch [label="from disktries:\nfoundations →"];
+    from_part1 -> suffixgraph  [label="from scdawg:\ndurable mirror →"];
+
+    // === reading-order edges inside persistence (dark slate) ==============
+    edge [color="#37474F", fontcolor="#37474F", penwidth=1.6, style="solid"];
+    persist_arch -> u64cx;
+    persist_arch -> vocab;
+    persist_arch -> suffixgraph;
+    u64cx        -> vocab        [style="dashed", label="ids reuse\nu64 keys"];
+    persist_arch -> walfmt       [label="format\nreference"];
+    persist_arch -> eviction     [label="memory\npressure"];
+
+    // === persistence → formal (trust it) ==================================
+    walfmt   -> formal [label="trust the\ndurability claims"];
+    eviction -> formal [style="dashed", label="EBR proof"];
+
+    // layout-only: drop the formal cluster strictly BELOW the persistence
+    // cluster (rather than beside it) so it does not widen the figure — this
+    // invisible edge adds no reading-order meaning beyond the visible
+    // walfmt/eviction → formal edges above.
+    vocab -> formal [style="invis"];
+
+    // === rendered legend (part 2: edge types + blue/amber track key) =======
+    legend [shape=note, style="filled", fillcolor="#FFF9C4",
+            color="#FBC02D", fontsize=10, fontcolor="#212121",
+            label=<
+<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
+<TR><TD ALIGN="LEFT"><B>Reading-order map &#8212; legend (part 2 of 2)</B></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#37474F">&#9472;&#9472;&#9654; recommended next read (prerequisite flow)</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#00897B">&#9472;&#9472;&#9654; "go deeper" branch (from part 1 → this track)</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#37474F">- -&#9654; optional / supporting link</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#1565C0">&#9632;</FONT> blue = persistence / systems &#183; <FONT COLOR="#F9A825">&#9632;</FONT> amber = formal / verification</TD></TR>
+<TR><TD ALIGN="LEFT">green = getting started &#183; grey = theory (both in part 1)</TD></TR>
+</TABLE>>];
+
+    // anchor the legend below the graph so it does not widen a rank
+    formal -> legend [style="invis"];
+}

@@ -1,0 +1,45 @@
+@startuml btrie-bucket-layout
+' ============================================================================
+' btrie-bucket-layout.puml — the B-trie bucket page (8192 B / 8 KB).
+' Source: docs/theory/disk-tries/02-b-trie.md (Askitis & Zobel 2009), § Page Layout.
+' Header (fixed) · sorted string-pointer array (grows ↓) · free space ·
+' string data area (grows ↑).
+' Color key:  green  #C8E6C9  char-range identity (range low/high)
+'             amber  #FFE0B2  counters + flags (counts, free, pointer count, flags)
+'             grey   #ECEFF1  reserved / free-space region
+'             blue   #BBDEFB  sorted string-pointer array (binary-search index)
+'             l-blue #E3F2FD  string data payload
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam TitleFontSize 15
+
+title B-trie bucket — 8 KB page
+
+rectangle "**Range Low** (1 B) · **Range High** (1 B) — char range [l, u]" as R0 #C8E6C9
+rectangle "**String Count** (2 B) · **Free Space** (2 B) · **Pointer Count** (2 B)" as R1 #FFE0B2
+rectangle "**Flags** (1 B) — pure / hybrid, …" as R2 #FFE0B2
+rectangle "**Reserved** (7 B) — alignment padding" as R3 #ECEFF1
+rectangle "**String Pointer Array** — grows ↓, sorted offsets (O(log b) binary search)" as R4 #BBDEFB
+rectangle "**Free Space**" as R5 #ECEFF1
+rectangle "**String Data Area** — grows ↑, [accumulator (4 B)][bytes][NUL]" as R6 #E3F2FD
+
+R0 -[hidden]down- R1
+R1 -[hidden]down- R2
+R2 -[hidden]down- R3
+R3 -[hidden]down- R4
+R4 -[hidden]down- R5
+R5 -[hidden]down- R6
+
+legend bottom
+  green range identity · amber counters/flags · grey reserved & free
+  blue sorted pointer array · light-blue string data
+endlegend
+@enduml

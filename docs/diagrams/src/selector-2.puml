@@ -1,0 +1,50 @@
+@startuml selector-2
+' ============================================================================
+' Backend selector (2 of 2) — "which libdictenstein backend should I reach for?"
+' This figure covers the PREFIX / WORD subtree (you answered NO to the top
+' decision, "match substrings, not prefixes"). The SUBSTRING-search subtree —
+' the other four backends — is the companion figure selector.puml.
+' Color key:  green = always-on in-memory   amber = feature `pathmap-backend`
+'             blue  = feature `persistent-artrie` (disk-backed)
+'             pale-yellow = the (already-resolved) top decision
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 115
+skinparam ArrowColor #37474F
+skinparam ActivityDiamondBackgroundColor #FFF9C4
+skinparam ActivityDiamondBorderColor #F9A825
+skinparam ActivityBorderColor #37474F
+
+title Choosing a libdictenstein backend — prefix / word lookup (2 of 2)
+
+start
+:Store terms\n(optionally\nterm → value);
+:Match **substrings**\n(not prefixes)? **→ no**\n(**prefix / word**; substring\nsearch: see companion **selector**);<<#FFF9C4>>
+
+if (Persist +\ncrash-safe?) then (yes)
+  if (Native **u64**\nkeys?) then (yes)
+    :**Persistent**\n**ARTrie**\n**U64Compact**\n64-bit labels\n(prefix-4 CX);<<#BBDEFB>>
+  elseif (Map\n**term ↔ u64**?) then (yes)
+    :**Persistent**\n**VocabARTrie**\nbijective\nterm ↔ id;<<#BBDEFB>>
+  else (key → value)
+    :**Persistent**\n**ARTrie / …Char**\nlock-free\ndurable ART\n(mmap /\nio_uring);<<#BBDEFB>>
+  endif
+  stop
+else (in-memory)
+  if (Need\n**remove()**?) then (yes)
+    :**DynamicDawg**\n**/ …Char / …U64**\ninsert +\nremove\n(suffix-share);<<#C8E6C9>>
+  else (read-mostly)
+    :**Double**\n**ArrayTrie**\n**/ …Char**\nfastest,\ncompact\n(BASE/CHECK);<<#C8E6C9>>
+  endif
+  stop
+endif
+
+legend bottom
+| Color | Family |
+|<#C8E6C9>| in-memory (always on) |
+|<#FFF59D>| feature pathmap-backend |
+|<#BBDEFB>| feature persistent-artrie (disk) |
+|<#FFF9C4>| top decision (resolved) |
+endlegend
+@enduml

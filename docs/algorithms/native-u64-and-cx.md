@@ -1,6 +1,6 @@
 # Native `u64` keys and the CX compact snapshot
 
-**Navigation**: [↑ Dictionary layer](README.md) · [Crate README → persistent ARTrie](../../README.md#persistent-artrie--lock-free--durable) · [Order-A writes →](../../README.md#durable-writes-the-order-a-protocol) · [Persistence architecture →](../persistence/mmap-architecture.md)
+**Navigation**: [↑ Dictionary layer](README.md) · [Crate README → persistent ARTrie](../../README.md#persistent-artrie--lock-free--durable) · [Order-A writes →](../../README.md#durable-writes-the-order-a-protocol) · [Persistence architecture →](../persistence/README.md)
 
 > **Scope.** This document describes the **native `u64` sequence/time-series
 > profile** of the persistent ARTrie — `PersistentARTrieU64` and its two
@@ -11,7 +11,7 @@
 > two profiles (prefix-4 disk-compact vs. prefix-3 compatibility) differ. The
 > general persistent-ARTrie machinery (lock-free overlay, WAL, Order-A writes,
 > recovery) is shared with the byte/char families and documented under
-> [`../persistence/`](../persistence/mmap-architecture.md); this page is the
+> [`../persistence/`](../persistence/README.md); this page is the
 > `u64`-specific layer.
 
 ---
@@ -30,7 +30,7 @@ sequences whose natural unit is a **64-bit word**, not a character:
   concatenated into one sequence.
 
 `PersistentARTrieU64` is the durable Adaptive Radix Trie for exactly these: a
-crash-safe, lock-free, write-ahead-logged `&[u64] → V` map where **one trie edge
+crash-safe, lock-free, write-ahead-logged $&[u64] \to V$ map where **one trie edge
 carries one whole `u64`**.
 
 ---
@@ -45,13 +45,13 @@ Consider a key of `n` sixty-four-bit words.
 
 | Aspect | Byte-expanded into a `u8` ARTrie | Native `u64` ARTrie |
 |--------|----------------------------------|---------------------|
-| **Edges traversed per lookup** | up to `8 · n` (one per byte) | `n` (one per word) |
-| **Interior nodes on the spine** | up to `8 · n` node hops | `n` node hops |
+| **Edges traversed per lookup** | up to $8 \cdot n$ (one per byte) | `n` (one per word) |
+| **Interior nodes on the spine** | up to $8 \cdot n$ node hops | `n` node hops |
 | **Label comparison** | byte-at-a-time descent | one 64-bit equality test per hop |
 | **Fan-out alphabet** | 256 (byte values) | the set of distinct next-words |
 | **Wasted structure** | 7 "filler" nodes per word for non-branching bytes | none — words are atomic |
 
-Byte expansion turns every key into an `8×`-longer path and forces the trie to
+Byte expansion turns every key into an $8\times$-longer path and forces the trie to
 spend interior nodes resolving *within* a word that never actually branches there.
 Native `u64` labels keep each transition **atomic**: the descent length is the
 number of *words*, the per-hop test is a single machine-word compare, and the
@@ -61,16 +61,7 @@ the same reasoning the Adaptive Radix Tree paper
 native-width labels and SIMD/indexed lookup once fan-out outgrows inline storage —
 here applied at 64-bit granularity.
 
-```text
-key = [w0, w1, w2]                 (three 64-bit words)
-
-byte-expanded (u8 trie):           native u64 trie:
-  root                               root
-   └b0└b1└b2└b3└b4└b5└b6└b7  (w0)     └──w0──┐
-        └b0…b7              (w1)             └──w1──┐
-             └b0…b7         (w2)                    └──w2──● value
-  → up to 24 hops, 21 filler nodes   → 3 hops, 0 filler nodes
-```
+<img src="../diagrams/native-u64-hops.svg" alt="Comparison of storing a three-word u64 key: a byte-expanded u8 ARTrie needs up to 24 node hops with 21 filler nodes (8 byte-nodes per word), while a native u64 ARTrie needs just 3 hops and 0 filler nodes because each 64-bit word is one atomic edge." width="70%"/>
 
 ---
 
@@ -130,16 +121,13 @@ image is the **CX compact snapshot** (magic `AR64CX01`, `SNAPSHOT_VERSION = 1`):
   git history** and are not a supported on-disk format. (Hence
   `PersistentARTrieU64Compact::open` reads CX images, not bincode.)
 
-```text
-CX compact node (conceptual):
-┌───────────┬────────────────────────────┬───────────┬──────────────────────────┐
-│ is_final  │ prefix: [u64; ≤ PREFIX]     │ value?    │ children: [(u64, u64); k]│
-└───────────┴────────────────────────────┴───────────┴──────────────────────────┘
-   leaf?       up to PREFIX collapsed labels   optional   (label, child) edges
-```
+<img src="../diagrams/cx-compact-node.svg" alt="Conceptual on-disk field layout of a CX compact snapshot node: is_final (leaf flag), a path-compressed prefix of up to PREFIX u64 labels, an optional value, and a children array of (label, child) u64 edge pairs." width="70%"/>
 
 The `PREFIX` budget is the *only* knob that distinguishes the two shipped
-profiles.
+profiles. The systems-level description of the `u64` on-disk image — the `AR64CX01`
+snapshot, the `b"AR64"` file magic, and how the CX format sits beside the byte/char
+formats and the two block backends — is in
+[`../persistence/storage-backends.md#u64-profile-formats`](../persistence/storage-backends.md#u64-profile-formats).
 
 ### 4.1 The two profiles
 
@@ -196,7 +184,7 @@ insert_sequence_with_value(seq, value):
 Recovery, then, is the standard redo-only path: load the CX image at the committed
 watermark, replay the durable WAL tail past it in `(generation, lsn)` order, drop
 un-acknowledged/orphan records, rebuild the overlay, resume. See
-[`../persistence/mmap-architecture.md`](../persistence/mmap-architecture.md) and
+[`../persistence/README.md`](../persistence/README.md) and
 the recovery flow under [`../persistence/wal-format.md`](../persistence/wal-format.md).
 
 ---
@@ -268,8 +256,11 @@ let legacy = PersistentARTrieU64Prefix3Compat::<u64>::open("legacy_p3.ar64")?;
 
 - The **shared** persistent-ARTrie substrate — lock-free overlay, WAL framing,
   Order-A writes, checkpoint/recovery, `mmap`/`io_uring` storage:
-  [`../persistence/mmap-architecture.md`](../persistence/mmap-architecture.md) and
+  [`../persistence/README.md`](../persistence/README.md) and
   [`../persistence/wal-format.md`](../persistence/wal-format.md).
+- The **on-disk** side of this profile — the `u64` CX image format and the
+  `BlockStorage` backends it is written through:
+  [`../persistence/storage-backends.md#u64-profile-formats`](../persistence/storage-backends.md#u64-profile-formats).
 - The byte/char ARTrie family this generalizes (same overlay, `ByteKey`/`CharKey`
   instead of `U64Key`): [crate README → persistent variants](../../README.md#persistent-artrie--lock-free--durable).
 - The sibling durable substring and vocabulary backends:
@@ -296,4 +287,4 @@ let legacy = PersistentARTrieU64Prefix3Compat::<u64>::open("legacy_p3.ar64")?;
 
 ---
 
-**Navigation**: [↑ Dictionary layer](README.md) · [Crate README → persistent ARTrie](../../README.md#persistent-artrie--lock-free--durable) · [Order-A writes →](../../README.md#durable-writes-the-order-a-protocol) · [Persistence architecture →](../persistence/mmap-architecture.md)
+**Navigation**: [↑ Dictionary layer](README.md) · [Crate README → persistent ARTrie](../../README.md#persistent-artrie--lock-free--durable) · [Order-A writes →](../../README.md#durable-writes-the-order-a-protocol) · [Persistence architecture →](../persistence/README.md)

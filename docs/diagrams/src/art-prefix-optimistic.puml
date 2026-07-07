@@ -1,0 +1,34 @@
+@startuml art-prefix-optimistic
+' ============================================================================
+' art-prefix-optimistic.puml — optimistic path compression: store only the
+' prefix LENGTH; skip the byte comparison on descent and verify at the leaf.
+' Source: docs/theory/disk-tries/03-adaptive-radix-tree.md, § Path Compression.
+' Color key:  grey  #ECEFF1  the prefix bytes are NOT stored
+'             green #C8E6C9  the prefix length (the only stored field)
+'             amber #FFE0B2  full-key verification deferred to the leaf
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam TitleFontSize 15
+
+title Optimistic — store the length only
+
+rectangle "**partial** = (not stored) — prefix bytes omitted" as R0 #ECEFF1
+rectangle "**partial_len** = 9 — the only stored field" as R1 #C8E6C9
+rectangle "full key **verified at the leaf**" as R2 #FFE0B2
+
+R0 -[hidden]down- R1
+R1 -[hidden]down- R2
+
+legend bottom
+  Skips the prefix comparison during traversal — unlimited compression length,
+  at the cost of a full-key check when a leaf is reached.
+endlegend
+@enduml

@@ -1,0 +1,82 @@
+// ============================================================================
+// scdawg-extension-graphs-abcabcab-2.dot — PART 2 of 2 (LEFT extensions).
+//
+// Companion to scdawg-extension-graphs-abcabcab.dot (part 1, RIGHT extensions).
+// This figure draws the LEFT extension graph (←) of  w = "abcabcab": the mirror
+// (prepend) graph — SAME labels as part 1's right column, reversed direction.
+// arrows point UP toward ε (prepend): l0 (ε) is ranked at the top.
+//
+// The plain CDAWG has only the classic single column; the SCDAWG ADDS these
+// symmetric left-extension edges. Placing this column next to part 1's RIGHT
+// column exposes the mirror symmetry: ε at the top of both, each row a matched
+// prime subword. For this repetitive string the two graphs are ISOMORPHIC —
+// exactly the point the pair of figures makes.
+//
+// Nodes are the prime subwords (longest representative of each class):
+//   ε  ab  abca  abcab  abcabc  abcabca  abcabcab   (edges from the doc tables).
+//
+// Color key (house palette):
+//   blue   #BBDEFB  left-extension graph nodes  (symmetric, prepend)
+//   grey   #ECEFF1  the source/sink ε
+//   blue   #1565C0  left-extension edges
+//   (green #C8E6C9 / dark-slate #37474F for the right-extension CDAWG is PART 1)
+// ============================================================================
+digraph scdawg_extension_graphs_left {
+    rankdir=TB;
+    bgcolor="#FFFFFF";
+    fontname="DejaVu Sans";
+    fontsize=14;
+    labelloc="t";
+    fontcolor="#212121";
+    label="SCDAWG of \"abcabcab\" — part 2 of 2: LEFT extensions (←)\nprepend — the symmetric edges the SCDAWG adds. Mirror of part 1's RIGHT column.";
+    nodesep=0.22;
+    ranksep=0.38;
+
+    node [shape=ellipse, style="filled", color="#37474F",
+          fontname="DejaVu Sans", fontcolor="#212121", penwidth=1.4];
+    edge [fontname="DejaVu Sans", penwidth=1.4, arrowhead="vee"];
+
+    // ================= LEFT EXTENSIONS (←) — the mirror ================
+    // arrows point UP toward ε (prepend): l0 (ε) is ranked at the top.
+    subgraph cluster_left {
+        label="LEFT extensions (←)\nprepend — mirror: same labels, reversed";
+        labelloc="t";
+        fontcolor="#1565C0";
+        color="#1565C0";
+        style="rounded";
+        bgcolor="#F3F7FC";
+        node [fillcolor="#BBDEFB"];
+        edge [color="#1565C0", fontcolor="#1565C0", style="dashed"];
+
+        l0 [label="ε", fillcolor="#ECEFF1", shape=doublecircle];
+        l1 [label="ab"];
+        l2 [label="abca"];
+        l3 [label="abcab"];
+        l4 [label="abcabc"];
+        l5 [label="abcabca"];
+        l6 [label="abcabcab", shape=doublecircle];
+
+        l1 -> l0 [label="ab"];
+        l2 -> l1 [label="ca"];
+        l3 -> l2 [label="b"];
+        l3 -> l0 [label="abcab"];
+        l4 -> l3 [label="c"];
+        l5 -> l4 [label="a"];
+        l6 -> l5 [label="b"];
+    }
+
+    // --- rendered legend (part 2) ----------------------------------------
+    legend [shape=note, style="filled", fillcolor="#FFF9C4",
+            color="#FBC02D", fontsize=10, fontcolor="#212121",
+            label=<
+<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
+<TR><TD ALIGN="LEFT"><B>Legend — part 2 of 2 (LEFT)</B></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#1565C0">- -▶ left extension (prepend)</FONT></TD></TR>
+<TR><TD ALIGN="LEFT"><FONT COLOR="#1565C0">symmetric edges the SCDAWG adds</FONT></TD></TR>
+<TR><TD ALIGN="LEFT">nodes = prime subwords (longest per class)</TD></TR>
+<TR><TD ALIGN="LEFT">◎ = source/sink (ε and the whole word)</TD></TR>
+<TR><TD ALIGN="LEFT">this column mirrors part 1's RIGHT column ⇒</TD></TR>
+<TR><TD ALIGN="LEFT">the "symmetric" in SCDAWG (right extension, →)</TD></TR>
+</TABLE>>];
+    l6 -> legend [style="invis"];
+}

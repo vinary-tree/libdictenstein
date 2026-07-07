@@ -1,0 +1,44 @@
+@startuml lockfree-try-set-final-race
+' ============================================================================
+' lockfree-try-set-final-race.puml — two threads insert the SAME term "hello".
+' The finalization is decided by ONE atomic fetch_or on the shared final node's
+' flags: exactly one caller flips IS_FINAL from 0→1 and returns true (inserted);
+' every other caller observes it already set and returns false (already exists).
+' The root-CAS + retry is folded into each thread's self-step to keep 3 lanes.
+' Source: §Finalization Race Handling of lockfree-cas-artrie.md.
+' Color key (house palette):
+'   green  #2E7D32  the winner (fetch_or flips 0→1 → inserted)
+'   red    #C62828  the loser (already final → returns false)
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam sequenceArrowColor #37474F
+skinparam sequenceLifeLineBorderColor #90A4AE
+skinparam participantBorderColor #37474F
+skinparam noteBackgroundColor #ECEFF1
+skinparam noteBorderColor #90A4AE
+
+title try_set_final race — both insert "hello"; one atomic fetch_or picks the winner
+
+participant "T1" as T1
+participant "final node\nflags (atomic)" as F #C8E6C9
+participant "T2" as T2
+
+T1 -> T1 : build "hello"\nCAS root → new (wins)
+T2 -> T2 : CAS fails → retry\nrebuild → CAS (wins)
+
+== single arbiter: fetch_or(IS_FINAL) on the shared final node ==
+T1 -> F : try_set_final()\n= fetch_or(IS_FINAL)
+F -[#2E7D32]-> T1 : old bit = 0\n→ true (inserted)
+T2 -> F : try_set_final()\n= fetch_or(IS_FINAL)
+F -[#C62828]-> T2 : old bit = 1\n→ false (already exists)
+
+note over T1, T2 #FFF9C4
+  A proper-prefix insert returns the EXISTING
+  shared node un-finalized, so fetch_or is the
+  SINGLE arbiter — the fix that stopped a racing
+  prefix term from being dropped at merge.
+end note
+@enduml

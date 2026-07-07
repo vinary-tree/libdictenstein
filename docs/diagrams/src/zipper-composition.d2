@@ -30,8 +30,10 @@ vars: {
 direction: down
 
 title: |md
-  # Zipper composition — set-algebra combinators nest over base cursors
-  *each combinator implements `DictZipper` and pulls from its operand cursors lazily*
+  # Zipper composition
+  *set-algebra combinators nest over base cursors — each implements `DictZipper`,*
+
+  *pulling from its operand cursors lazily*
 | {
   near: top-center
   style.font-size: 19
@@ -39,7 +41,7 @@ title: |md
 }
 
 # --- The consumer that drives the lazy pull ---------------------------------
-consumer: "Consumer\nIntersectionIterator (DFS)  ·  or a Levenshtein pull" {
+consumer: "Consumer — IntersectionIterator (DFS)\nor a Levenshtein pull" {
   style: {
     fill: "#BBDEFB"
     stroke: "#1565C0"
@@ -50,7 +52,7 @@ consumer: "Consumer\nIntersectionIterator (DFS)  ·  or a Levenshtein pull" {
 }
 
 # --- Top combinator: INTERSECTION wraps two sub-zippers ----------------------
-isect: "IntersectionZipper<Z, LatticeMeet>\nis_final = ALL operands final  ·  descend = ALL can descend\nchildren = ∩ of operands' labels  ·  value = meet-merge" {
+isect: "IntersectionZipper<Z, LatticeMeet>\nis_final = ALL operands final · descend = ALL\nchildren = ∩ of labels · value = meet-merge" {
   style: {
     fill: "#FFF59D"
     stroke: "#F9A825"
@@ -60,7 +62,7 @@ isect: "IntersectionZipper<Z, LatticeMeet>\nis_final = ALL operands final  ·  d
   }
 
   # --- Sub-combinator 1: UNION over two backend cursors ---------------------
-  uni: "UnionZipper<Z, FirstWins>\nis_final = ANY final  ·  descend = ANY can descend\nchildren = ∪ of labels  ·  value = FirstWins" {
+  uni: "UnionZipper<Z, FirstWins>\nis_final = ANY · descend = ANY\nchildren = ∪ of labels · value = FirstWins" {
     style: {
       fill: "#FFFDE7"
       stroke: "#F9A825"
@@ -80,7 +82,7 @@ isect: "IntersectionZipper<Z, LatticeMeet>\nis_final = ALL operands final  ·  d
   }
 
   # --- Sub-combinator 2: DIFFERENCE over two backend cursors ----------------
-  diff: "DifferenceZipper<Z>\nis_final = left final AND NOT right final\ndescend = follow LEFT (right tags along)" {
+  diff: "DifferenceZipper<Z>\nis_final = left AND NOT right\ndescend = follow LEFT (right tags along)" {
     style: {
       fill: "#FFFDE7"
       stroke: "#F9A825"
@@ -107,6 +109,10 @@ consumer -> isect: "next() pulls\ndescend / children / is_final" {
   style.bold: true
 }
 
+# Stack the two sub-combinators vertically (hidden edge) so the intersection card is
+# one narrow column instead of two side-by-side sub-towers.
+isect.uni -> isect.diff: "" { style.opacity: 0.0 }
+
 isect.uni -> isect.uni.dat_a: "pull (lazy)" {
   style.stroke: "#37474F"
   style.stroke-width: 2
@@ -127,11 +133,10 @@ isect.diff -> isect.diff.dat_d: "pull RIGHT\n(exclusion check)" {
 
 # --- Legend ------------------------------------------------------------------
 legend: |md
-  **Color key** ·
-  🟦 blue = consumer driving the pull ·
-  🟨 amber = set-algebra combinator (lazy, owns no storage) ·
-  🟩 green = in-memory backend cursor (leaf `DictZipper`) ·
-  ⬜ grey = arrows / borders.
+  **Color key** · 🟦 blue = consumer driving the pull · 🟨 amber = set-algebra combinator (lazy, owns no storage) ·
+
+  🟩 green = in-memory backend cursor (leaf `DictZipper`) · ⬜ grey = arrows / borders.
+
   Every combinator is itself a `DictZipper`, so operands may be backends **or** further combinators.
 | {
   near: bottom-center

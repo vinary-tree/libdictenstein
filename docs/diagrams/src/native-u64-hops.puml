@@ -1,0 +1,47 @@
+@startuml native-u64-hops
+' ============================================================================
+' native-u64-hops.puml — byte-expanded u8 trie (24 hops) vs native-u64 trie (3).
+' Replaces the ASCII comparison in docs/algorithms/native-u64-and-cx.md.
+' Color key:  red = the costly byte-expanded spine (filler nodes)
+'             green = the compact native-u64 spine (atomic word edges)
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam packageStyle rectangle
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.1
+}
+skinparam noteFontSize 13
+skinparam TitleFontSize 15
+
+title Storing key = [w0, w1, w2] (three 64-bit words)
+
+package "Byte-expanded into a u8 ARTrie" #FFEBEE {
+  rectangle "root" as BR #FFFFFF
+  rectangle "b0·b1·b2·b3·b4·b5·b6·b7  (w0)\n8 nodes · 7 filler" as BW0 #FFCDD2
+  rectangle "b0 … b7  (w1)\n8 nodes · 7 filler" as BW1 #FFCDD2
+  rectangle "b0 … b7  (w2)  → value\n8 nodes · 7 filler" as BW2 #FFCDD2
+  BR --> BW0
+  BW0 --> BW1
+  BW1 --> BW2
+  note bottom of BW2 : up to **24 hops**, **21 filler** nodes
+}
+
+package "Native u64 ARTrie" #E8F5E9 {
+  rectangle "root" as NR #FFFFFF
+  rectangle "w0" as NW0 #C8E6C9
+  rectangle "w1" as NW1 #C8E6C9
+  rectangle "w2  → ● value" as NW2 #C8E6C9
+  NR --> NW0 : w0
+  NW0 --> NW1 : w1
+  NW1 --> NW2 : w2
+  note bottom of NW2 : **3 hops**, **0 filler** nodes
+}
+
+BW2 -[hidden]down- NR
+@enduml

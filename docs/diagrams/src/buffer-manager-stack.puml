@@ -1,0 +1,44 @@
+@startuml buffer-manager-stack
+' ============================================================================
+' buffer-manager-stack.puml — the three-layer storage stack: the application
+' (ART nodes) talks to the buffer manager, which talks to the disk manager.
+' Source: docs/theory/disk-tries/05-buffer-management.md, § Architecture.
+' Color key:  green #C8E6C9  application layer (client-facing)
+'             blue  #BBDEFB  page table (page_id → frame lookup)
+'             teal  #B2DFDB  frame pool (the fixed-size page frames)
+'             amber #FFE0B2  eviction policy (LRU)
+'             slate #CFD8DC  disk manager (durable substrate)
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam ArrowColor #37474F
+skinparam TitleFontSize 15
+
+title Buffer-manager stack — application · buffer manager · disk
+
+rectangle "**Application Layer**\n(ART nodes, operations)" as App #C8E6C9
+
+rectangle "**Buffer Manager**" as BM #F5F5F5 {
+  rectangle "**Page Table**\npage_id → frame_id\n(pin_count · dirty · last_access)" as PT #BBDEFB
+  rectangle "**Frame Pool**\n[frame 0][frame 1] … [frame N-1]\nfixed-size page frames" as FP #B2DFDB
+  rectangle "**Eviction Policy (LRU)**\ntracks unpinned pages for replacement" as EV #FFE0B2
+  PT -[hidden]down- FP
+  FP -[hidden]down- EV
+}
+
+rectangle "**Disk Manager**\n(file I/O, block allocation)" as DM #CFD8DC
+
+App --> BM : get_page() / release_page()
+BM --> DM : read() / write()
+
+legend bottom
+  green app · blue page table · teal frame pool · amber LRU · slate disk
+endlegend
+@enduml

@@ -1,0 +1,34 @@
+@startuml art-prefix-pessimistic
+' ============================================================================
+' art-prefix-pessimistic.puml — pessimistic path compression: store the full
+' inline prefix bytes in the node, so a mismatch is caught during descent.
+' Source: docs/theory/disk-tries/03-adaptive-radix-tree.md, § Path Compression.
+' Color key:  teal  #B2DFDB  the stored compressed prefix bytes
+'             green #C8E6C9  the prefix length
+'             blue  #BBDEFB  onward child edge
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam TitleFontSize 15
+
+title Pessimistic — store the full inline prefix
+
+rectangle "**partial** = 'metamorph' — compressed bytes stored in the node" as R0 #B2DFDB
+rectangle "**partial_len** = 9" as R1 #C8E6C9
+rectangle "**child['o']** → subtree" as R2 #BBDEFB
+
+R0 -[hidden]down- R1
+R1 -[hidden]down- R2
+
+legend bottom
+  Mismatch is detected during traversal — no need to reach the leaf.
+  Bounded by the inline prefix size (≈ 8–12 bytes).
+endlegend
+@enduml

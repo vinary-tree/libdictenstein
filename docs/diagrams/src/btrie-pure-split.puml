@@ -1,0 +1,46 @@
+@startuml btrie-pure-split
+' ============================================================================
+' btrie-pure-split.puml — splitting a pure bucket: a NEW trie level is created
+' (all 128 pointers initially → the bucket), then a hybrid split runs.
+' Grows the B-trie vertically AND horizontally.
+' Source: docs/theory/disk-tries/02-b-trie.md (Askitis & Zobel 2009), § Splitting.
+' Color key:  blue  #BBDEFB  trie nodes   red #FFCDD2  the over-full pure bucket
+'             green #C8E6C9  the two resulting buckets
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.2
+}
+skinparam packageStyle rectangle
+skinparam ArrowColor #37474F
+skinparam TitleFontSize 15
+
+title Pure-bucket split — vertical + horizontal growth
+
+package "BEFORE — over full" #F5F5F5 {
+  rectangle "**Grandparent Trie**" as GP #BBDEFB
+  rectangle "**B^P(h)**  — FULL pure bucket" as PB #FFCDD2
+  GP --> PB
+}
+
+package "AFTER — new trie level + two buckets" #F5F5F5 {
+  rectangle "**Grandparent Trie**" as GA #BBDEFB
+  rectangle "**New Parent Trie**  [0]…[d] │ [d']…[127]\n(all 128 slots initially → the bucket)" as NP #BBDEFB
+  rectangle "**Left Bucket**\nchars 0 … d" as LB #C8E6C9
+  rectangle "**Right Bucket**\nchars d' … 127" as RB #C8E6C9
+  GA --> NP
+  NP --> LB
+  NP --> RB
+}
+
+GP -[hidden]down- GA
+
+legend bottom
+  A new trie node is inserted (vertical growth) and two buckets appear (horizontal).
+endlegend
+@enduml

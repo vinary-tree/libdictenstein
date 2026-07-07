@@ -1,0 +1,70 @@
+@startuml traits-2
+' ============================================================================
+' libdictenstein trait layer (part 2 of 2) — MUTATION + PERSISTENT API.
+' Split from the former single 12-interface diagram (too wide for the prose
+' column); the read traits + bounds live in traits.puml.
+' The `⇧ extends X` line names each root's cross-part supertrait (X is drawn in
+' part 1); hidden edges stack the three trait clusters vertically to stay narrow.
+' Source of truth: src/lib.rs (MutableDictionary, MutableMappedDictionary,
+' CompactableDictionary), src/artrie_trait.rs (ARTrie, EvictableARTrie),
+' core/key_encoding.rs (KeyEncoding).
+' Color key:  orange = mutation traits   blue = persistent (ARTrie) traits
+'             grey = unit / value bounds
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam nodesep 14
+skinparam ranksep 30
+skinparam ArrowColor #37474F
+skinparam classBorderColor #37474F
+skinparam classFontStyle bold
+skinparam classAttributeFontStyle plain
+
+title libdictenstein trait layer — mutation + persistent API (2 of 2)
+
+interface MutableDictionary <<mutate>> #FFE0B2 {
+  ⇧ extends Dictionary
+  +insert(term)
+  +remove(term)
+}
+interface CompactableDictionary <<mutate>> #FFE0B2 {
+  +compact()
+}
+interface MutableMappedDictionary <<mutate>> #FFE0B2 {
+  ⇧ extends MappedDictionary
+  +insert_with_value(…)
+}
+interface ARTrie <<persistent>> #BBDEFB {
+  +compare_and_swap(…)
+  +checkpoint() / reopen()
+}
+interface EvictableARTrie <<persistent>> #BBDEFB {
+  +evict_node_at_path(…)
+}
+interface KeyEncoding <<unit>> #ECEFF1 {
+  ByteKey|CharKey|U64Key
+}
+
+' --- real (in-part) inheritance + associated-type edges ---
+MutableDictionary <|-- CompactableDictionary
+ARTrie <|-- EvictableARTrie
+ARTrie ..> KeyEncoding : "K ="
+
+' --- hidden edges: stack the three clusters vertically (keep it narrow) ---
+CompactableDictionary -[hidden]-> MutableMappedDictionary
+MutableMappedDictionary -[hidden]-> ARTrie
+
+note right of MutableDictionary
+  Read traits (Dictionary, Node,
+  Mapped, Bijective) + bounds
+  are in traits (part 1).
+end note
+
+legend right
+| Color | Trait family |
+|<#FFE0B2>| mutation (insert / remove / compact) |
+|<#BBDEFB>| persistent ARTrie (CAS + checkpoint) |
+|<#ECEFF1>| unit / value bounds |
+endlegend
+@enduml
