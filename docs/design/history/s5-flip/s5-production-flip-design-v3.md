@@ -22,7 +22,7 @@ DATA file header is `FileHeader` (magic `"PART"`, `disk_manager.rs:76`), NOT the
 `compute_checksum` (disk_manager.rs:131–167) is FNV-1a over **{magic, version, flags, root_ptr,
 block_count, free_list_head, entry_count}** — it does NOT hash `_pad1`, the checksum field, or the
 reserved bytes 56..64. So:
-- writing `checkpoint_lsn` at 24..32 (v2's plan) CLOBBERS `block_count`+`_pad1` ⇒ checksum mismatch ⇒
+- writing `checkpoint_lsn` at 24..32 (v2's plan) CLOBBERS `block_count`+`_pad1` $\Rightarrow$ checksum mismatch $\Rightarrow$
   **unopenable** (the v2 bug). CONFIRMED-DEAD.
 - bytes **56..64 are genuinely free** (written 0, not checksummed) — the home IF a header field were
   used; but §1's re-red-team chose the WAL-record source instead, needing no header field at all.
@@ -36,9 +36,9 @@ data header" — it is "**stop reading checkpoint_lsn from the data header at al
 (recovery.rs:574) opens `trie_path`, reads block 0 (a 64-byte `FileHeader`, magic "PART") and parses it
 as a `CharTrieFileHeader` (magic "ARTC") via `from_bytes`, which pulls `checkpoint_lsn` from **bytes
 24..32 WITHOUT any magic check** (file_header.rs:159). In a `FileHeader`, bytes 24..32 are
-`block_count`(u32, 24..28) ⧺ `_pad1`(=0, 28..32) ⇒ `get_checkpoint_lsn` returns **`Some(block_count)`**.
+`block_count`(u32, 24..28) ⧺ `_pad1`(=0, 28..32) $\Rightarrow$ `get_checkpoint_lsn` returns **`Some(block_count)`**.
 `replay_wal_after_checkpoint` (recovery.rs:464–499) then **`continue`s past every WAL record with
-`lsn <= block_count`** (line 484) ⇒ if `block_count > real_checkpoint_lsn`, acked tail records are
+`lsn <= block_count`** (line 484) $\Rightarrow$ if `block_count > real_checkpoint_lsn`, acked tail records are
 silently DROPPED (loss); if `<`, already-folded counter increments re-apply (double-count).
 `CharTrieFileHeader` is **never written to the data file in production** (write-site grep empty), so the
 read is always garbage. CONFIRMED-DEAD as a source.
@@ -46,7 +46,7 @@ read is always garbage. CONFIRMED-DEAD as a source.
 **The correct source already exists and is already used by normal open: the WAL `Checkpoint` record.**
 Both ctors derive checkpoint_lsn by scanning the WAL for `max(WalRecord::Checkpoint{checkpoint_lsn})`
 (mmap_ctor.rs:319, io_uring_ctor.rs:142). The checkpoint protocol appends that record (then fsync, then
-rotate) AFTER publishing the data-file image, so it is the authoritative "image reflects ≤ this LSN"
+rotate) AFTER publishing the data-file image, so it is the authoritative "image reflects $\le$ this LSN"
 marker. v3 §4:
 - Add a shared helper `latest_checkpoint_lsn_from_wal(wal_path) -> Result<Lsn>` (extract the
   mmap_ctor.rs:309–323 scan; the ctors call it too — DRY).
@@ -90,7 +90,7 @@ Break-glass `--feature`-gated fail-closed-on-Overlay-segment. A3 floor populated
 
 v2 §1's `reestablish_overlay_after_recovery` materialized the whole `Vec` via `iter_with_values()` which
 (a) doubles peak memory at scale (RA-2 showstopper) and (b) SWALLOWS I/O errors to an empty Vec
-(`mod.rs:625` `.ok().unwrap_or_default()`) ⇒ silent total loss. v3:
+(`mod.rs:625` `.ok().unwrap_or_default()`) $\Rightarrow$ silent total loss. v3:
 - **Stream by first code-point:** for each of the (bounded) first-unit partitions, call the FALLIBLE
   `iter_prefix_with_values(prefix)?`, insert each chunk into the overlay (via `insert_cas` / the new
   no-WAL valued publisher), then DROP the chunk before the next. Peak overlay-build memory is bounded by
@@ -100,7 +100,7 @@ v2 §1's `reestablish_overlay_after_recovery` materialized the whole `Vec` via `
   yields the same membership/values as a single-pass enumeration.)
 - **Abort on `Err`:** any `iter_prefix_with_values(prefix)?` error ABORTS the open/flip (propagate the
   `Err` from the ctor) — never the lossy `iter_with_values()`. A mid-stream abort leaves the owned tree
-  UN-cleared (the clear is the LAST step, after all chunks succeed) ⇒ the trie is still owned-consistent,
+  UN-cleared (the clear is the LAST step, after all chunks succeed) $\Rightarrow$ the trie is still owned-consistent,
   the open fails loud, no half-built-overlay-then-cleared-owned loss. (RA-1 holds: the chunked inserts
   are still durable-free.)
 - `insert_cas_with_value_nodurable` (new): `build_value_path_recursive` + root CAS, **zero `append_*`/
@@ -117,11 +117,11 @@ v2 §1's `reestablish_overlay_after_recovery` materialized the whole `Vec` via `
   `set_overlay_regime` AND the new `set_owned_regime` RETURN `Err` if not empty; the flip caller asserts
   it; post-stamp `assert!(rank_regime()==expected)`.
 - **§9 non-faulting-first remove pre-flight:** `remove_cas_durable` (lockfree_cas.rs:553) tries
-  `find_leaf_lockfree` FIRST (present-in-memory ⇒ append; absent-via-non-OnDisk-edge ⇒ skip; OnDisk edge
-  ⇒ THEN `find_leaf_faulting`). Shrinks the fault window to cold-prefix removes. N-S4-3 soak mandatory.
+  `find_leaf_lockfree` FIRST (present-in-memory $\Rightarrow$ append; absent-via-non-OnDisk-edge $\Rightarrow$ skip; OnDisk edge
+  $\Rightarrow$ THEN `find_leaf_faulting`). Shrinks the fault window to cold-prefix removes. N-S4-3 soak mandatory.
 - **`begin_document` reject under overlay:** `begin_document` (document_tx.rs:40) returns `Err` under
-  `route_overlay()` (symmetry with `commit_document`) — else it burns an un-watermarked LSN ⇒ the
-  committed watermark stalls ⇒ checkpoint reclaim can't advance.
+  `route_overlay()` (symmetry with `commit_document`) — else it burns an un-watermarked LSN $\Rightarrow$ the
+  committed watermark stalls $\Rightarrow$ checkpoint reclaim can't advance.
 
 ## 5. Revised ordered edit list
 Reversible hardening (land before owner GO), then the single irreversible flip:
@@ -137,7 +137,7 @@ Reversible hardening (land before owner GO), then the single irreversible flip:
 - S5-9 (cfg un-gate + checkpoint route-split), S5-10 (§3 streaming-fallible reestablish + flip_to_overlay
   + kill_switch_to_owned + insert_cas_with_value_nodurable; wire reestablish into both ctors gated on
   Overlay regime), S5-11 (tests). Reversible.
-- **S5-12 — THE FLIP (IRREVERSIBLE, ~6 lines):** the V∈{(),u64} ctors call flip_to_overlay. Owner GO +
+- **S5-12 — THE FLIP (IRREVERSIBLE, ~6 lines):** the V$\in${(),u64} ctors call flip_to_overlay. Owner GO +
   full gate. Arbitrary-V UNCHANGED.
 
 ## 6. Gate additions (beyond v2 §12)
@@ -146,7 +146,7 @@ Reversible hardening (land before owner GO), then the single irreversible flip:
   reads exactly +1 (no double-count); unit: `latest_checkpoint_lsn_from_wal` == the ctors' value.
 - **Streaming-rebuild equivalence + memory bound:** streamed rebuild == single-pass membership/values;
   peak bounded (no whole-Vec materialization).
-- **I/O-error abort:** inject an `iter_prefix_with_values` `Err` mid-rebuild ⇒ open returns `Err`, owned
+- **I/O-error abort:** inject an `iter_prefix_with_values` `Err` mid-rebuild $\Rightarrow$ open returns `Err`, owned
   tree NOT cleared, no loss.
 - (plus all v2 §12 gates: V1 reopen→write→reopen, H1 negative-increment, N1 batch_bytes, V2 merge,
   H3 flip-after-checkpoint, kill-switch round-trip, A2 mixed-segment rebuild, flip-crash-at-each-step,

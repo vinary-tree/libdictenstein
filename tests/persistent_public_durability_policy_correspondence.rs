@@ -98,7 +98,7 @@ fn char_group_commit_policy_without_coordinator_still_waits_for_sync() {
 fn vocab_full_policy_public_mutations_ack_only_after_wal_tail_is_synced() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("vocab_immediate.vocab");
-    let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
+    let vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
 
     vocab.set_durability_policy(DurabilityPolicy::Immediate);
 
@@ -116,7 +116,7 @@ fn vocab_full_policy_public_mutations_ack_only_after_wal_tail_is_synced() {
 fn vocab_group_commit_policy_public_mutation_ack_is_synced() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("vocab_group.vocab");
-    let mut vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
+    let vocab = PersistentVocabARTrie::create(&path).expect("create vocab trie");
 
     vocab.set_durability_policy(DurabilityPolicy::GroupCommit);
 

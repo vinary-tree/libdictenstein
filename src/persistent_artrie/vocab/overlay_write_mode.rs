@@ -57,7 +57,11 @@ impl<S: BlockStorage> OverlayEvictable<CharKey, u64, S> for PersistentVocabARTri
     #[inline]
     fn overlay_eviction_coordinator(&self) -> Option<Arc<EvictionCoordinator>> {
         // Vocab's coordinator is a bare `Option<Arc<..>>` (no Mutex, unlike char).
-        self.eviction_coordinator.as_ref().map(Arc::clone)
+        self.eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+            .map(Arc::clone)
     }
 
     #[inline]
@@ -225,7 +229,7 @@ impl<S: BlockStorage> LockFreeOverlay<CharKey, u64, S> for PersistentVocabARTrie
 impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabARTrie<S> {
     #[inline]
     fn durability_policy(&self) -> DurabilityPolicy {
-        self.durability_policy
+        self.durability_policy.load()
     }
 
     #[inline]
@@ -427,7 +431,7 @@ impl<S: BlockStorage> PersistentVocabARTrie<S> {
             .append(record)
             .map_err(|e| PersistentARTrieError::Wal(format!("vocab WAL append failed: {e}")))?;
         self.next_lsn.fetch_max(lsn + 1, Ordering::AcqRel);
-        match self.durability_policy {
+        match self.durability_policy.load() {
             DurabilityPolicy::Immediate | DurabilityPolicy::GroupCommit => {
                 let synced = wal.sync().map_err(|e| {
                     PersistentARTrieError::Wal(format!("vocab WAL sync failed: {e}"))

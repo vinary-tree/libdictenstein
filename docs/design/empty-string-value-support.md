@@ -1,5 +1,7 @@
 # Empty-String Key (`""`) Value Support — Across ALL ARTrie Implementations
 
+**Synthesized in:** [The lock-free overlay](../persistence/lock-free-overlay.md) · [Durability, checkpoints & crash recovery](../persistence/durability-and-recovery.md). Making `""` a first-class, value-carrying key is an overlay-root + durability-round-trip concern; this record is the mechanism-detail design for the fresh-root-CAS publication discipline and the write → durable WAL → checkpoint → reopen → read path that carries the empty-term value with no loss, on byte, char, and vocab.
+
 **Status:** ✅ **IMPLEMENTED & GATED** (owner-approved 2026-06-06). Designed + 4-round-red-teamed to
 convergence (V5), then implemented phase-by-phase, the full suite + formal-correspondence + 0-new-unsafe
 green at EACH phase. The empty term "" is now a FULL first-class key carrying a value (membership /
@@ -30,7 +32,7 @@ eviction root-safety note)** → **this doc (CONVERGED, implementation-ready, ow
 
 **V5 deltas (from Round-3):** §5.4 adds the missed char `test_insert_cas_empty_term` (dict_impl_char.rs:3042)
 to the UPDATE inventory (else P3 RED); §1.1 maps the `claim_commit_seq()`/`note_cas_retry()` placeholders to
-the existing `commit_seq`/`cas_retries` fields + pins the `u64↔i64` increment seam (non-material precision).
+the existing `commit_seq`/`cas_retries` fields + pins the $u64\leftrightarrow i64$ increment seam (non-material precision).
 **V4 deltas (from Round-2):** §1.1 `overlay_increment_root` returns `(count, generation)` + claims
 `commit_seq` (closes the unranked-drop data-loss); `overlay_publish_root_value` uses always-publish
 `changed=|_,_|true` (drops the unavailable `V: PartialEq`); H1-load enumerated as 3 edit sites (iterative
@@ -82,7 +84,7 @@ value), and the `clear_owned()` erasure (the value lives on the overlay root, no
 
 ## 1. THE TRAIT DESIGN (centerpiece, revised)
 
-Fold into the EXISTING overlay trait family in `src/persistent_artrie_core/overlay/`; do NOT add a
+Fold into the EXISTING overlay trait family in `src/persistent_artrie/core/overlay/`; do NOT add a
 standalone trait (it would duplicate the `K::Unit`/`CounterValue`/owned-reader/publisher plumbing
 `LockFreeOverlay` already carries, recreating the divergence that caused V2's guard miscount).
 
@@ -179,7 +181,7 @@ the SAME `increment_publish_inner` seam (`delta as u64` in / `new_val as i64` ou
 — do NOT literally substitute the generic signature inside the inner.
 
 ### 1.2 Per-variant SEAMS shrink to almost nothing
-The only per-variant code is the `V ↔ Self::CounterValue` conversion (byte `i64`, char `u64`) inside
+The only per-variant code is the `V` $\leftrightarrow$ `Self::CounterValue` conversion (byte `i64`, char `u64`) inside
 `overlay_publish_root_value`/`overlay_increment_root` — already an existing seam
 (`bound_increment_delta`, the counter monomorph). The concrete root type is the shared
 `OverlayNode<K,V>` (post-G4), so the publishers themselves are **shared defaults**, not seams. This is
@@ -196,8 +198,8 @@ strictly more DRY than V2 (which had per-variant publisher bodies).
 | Impl | Path | `V` | Empty-term home | Production change set |
 |---|---|---|---|---|
 | **Byte** | `src/persistent_artrie/` | `()`,`i64` | overlay root | H1, H2, H3, H4 (guards→fresh-root-CAS publishers), H5, H7 |
-| **Char** | `src/persistent_artrie_char/` | `()`,`u64` | overlay root | H3 (shared default — free), H4 (guards→publishers). NO H1/H2 (char threads root value already), NO H5 (reader empty-clean) |
-| **Vocab** | `src/persistent_vocab_artrie/` | index | vocab root value + reverse index | **NONE** (verified end-to-end correct) + 1 reopen test |
+| **Char** | `src/persistent_artrie/char/` | `()`,`u64` | overlay root | H3 (shared default — free), H4 (guards→publishers). NO H1/H2 (char threads root value already), NO H5 (reader empty-clean) |
+| **Vocab** | `src/persistent_artrie/vocab/` | index | vocab root value + reverse index | **NONE** (verified end-to-end correct) + 1 reopen test |
 | other ART | — | — | — | none exist (`ARTrie` trait = {byte,char}; vocab separate) |
 
 Vocab confirmed correct end-to-end by Round-1 (insert→root value+reverse-index, save disk_io.rs:266,
@@ -332,7 +334,7 @@ its own independent (already-correct) root-value+reverse-index lifecycle.
 
 ### 5.1 The NEW loom gate (the headline — closes Round-1 proof-gap #3)
 `tests/persistent_lockfree_overlay_loom.rs`: a schedule witnessing **the root as simultaneously the
-CAS target and a concurrent path-copy target** — `insert("") ‖ insert("a") ‖ remove("")` (≤3 threads;
+CAS target and a concurrent path-copy target** — $insert("") \| insert("a") \| remove("")$ ($\le$3 threads;
 the harness already runs 3-thread `preemption_bound=Some(3)` schedules, so within budget — Round-2 C4).
 Add TWO new model fns mirroring §1.1: `publish_root_final(root)` = the POSITIVE (fresh `as_final` root via
 `ModelRootSlot::compare_exchange`, rebasing on Err) and `finalize_root_in_place(root)` = the NEGATIVE
@@ -351,7 +353,7 @@ loom gate (5.1) is the executable witness.
 
 ### 5.3 Decisive test matrix (byte + char; overlay-default + kill-switched-owned; checkpoint-reopen +
 pure-WAL-replay): valued `insert_with_value("",v)`→checkpoint→reopen→`get_value("")==Some(v)`;
-`increment("")`×N→reopen→count; upsert LWW; **membership `insert("")`→reopen→`contains("")==true`** (H3);
+`increment("")`$\times$N→reopen→count; upsert LWW; **membership `insert("")`→reopen→`contains("")==true`** (H3);
 **remove `""`→reopen→`contains("")==false`** (symmetry); back-compat (old value-less file → `""`→None);
 codec root-value round-trip + byte-identical-when-`None`; empty value WITH children; **concurrent
 root-value race** (N threads `increment("")` → count == sum) (R1); compaction-`""` (H8); vocab
@@ -371,7 +373,7 @@ behavior** (P2 byte / P3 char), or that phase goes RED — the doc's green-every
   overlay root → the assertion fails. Rewrite it to write `""` POST-flip and assert the overlay-root read.
 - `overlay_correspondence_tests.rs` `m2a_reestablish_membership_round_trip` (~:281) — does NOT insert
   `""`; re-confirm green after the H3 membership-fold change (informational).
-- `persistent_artrie_char/dict_impl_char.rs` `test_insert_cas_empty_term` (~:3042-3053) — asserts
+- `persistent_artrie/char/dict_impl_char.rs` `test_insert_cas_empty_term` (~:3042-3053) — asserts
   `assert!(!trie.insert_cas(""))`, pinning char's OLD dropped-`""` behavior (the `chars.is_empty()` guard
   at char `lockfree_cas.rs:242`). After P3 reroutes that guard to `overlay_publish_root_membership()`,
   `insert_cas("")` publishes a final root and returns `true` → this assertion flips → **UPDATE IN P3**
@@ -443,7 +445,7 @@ regression.
   last CAS winner — consistent. A `V=()` trie never calls the value publisher.
 - **Round-2 open question — CLOSED (affirmative, verified field-by-field in node.rs):** every path-copy
   mutator preserves the orthogonal fields, so empty-term root state and child structure never clobber each
-  other: `with_child` preserves `value` (:770) + `flags`/`IS_FINAL` (:769) ⇒ a concurrent child insert does
+  other: `with_child` preserves `value` (:770) + `flags`/`IS_FINAL` (:769) $\Rightarrow$ a concurrent child insert does
   NOT drop the root's empty-term counter/membership; `as_final` preserves `store`+`value` (:812-813);
   `with_value` preserves `store`+`IS_FINAL` (:869-870); `as_non_final` retains `store` (:854), drops `value`
   (:859). Publication is one atomic `arc_swap` `compare_exchange`, so no torn (final-but-value-not-visible)

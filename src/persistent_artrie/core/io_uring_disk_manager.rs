@@ -358,6 +358,12 @@ pub struct IoUringDiskManager {
     /// Eliminates per-call heap allocation in `read_blocks_batch`,
     /// `write_blocks_batch`, and `flush_dirty_cache`.
     aligned_block_pool: AlignedBlockPool,
+    /// Single-owner advisory-lock guard on the `<path>.wlock` sidecar (Tier-1). Held for the
+    /// manager's lifetime; the OS `flock` releases when the last guard for this path in the process
+    /// drops. Held purely for the lock (RAII) — never read. See
+    /// [`MmapDiskManager::acquire_exclusive_lock`].
+    #[allow(dead_code)]
+    wlock: Option<crate::persistent_artrie::core::disk_manager::WLockGuard>,
 }
 
 // SAFETY: IoUringDiskManager is Send + Sync because:
@@ -384,6 +390,13 @@ impl IoUringDiskManager {
     /// - `IoError` if file creation fails or O_DIRECT is not supported
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
+
+        // Tier-1: acquire the single-owner advisory lock before opening/initializing the data file.
+        let wlock = Some(
+            crate::persistent_artrie::core::disk_manager::MmapDiskManager::acquire_exclusive_lock(
+                &path_str,
+            )?,
+        );
 
         // Ensure parent directory exists
         if let Some(parent) = path.as_ref().parent() {
@@ -455,6 +468,7 @@ impl IoUringDiskManager {
             block_cache: Mutex::new(HashMap::new()),
             buffers_registered: AtomicBool::new(false),
             aligned_block_pool: AlignedBlockPool::new(DEFAULT_RING_ENTRIES as usize),
+            wlock,
         })
     }
 
@@ -466,6 +480,13 @@ impl IoUringDiskManager {
     /// * `path` - Path to the data file
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
+
+        // Tier-1: acquire the single-owner advisory lock before opening the data file.
+        let wlock = Some(
+            crate::persistent_artrie::core::disk_manager::MmapDiskManager::acquire_exclusive_lock(
+                &path_str,
+            )?,
+        );
 
         let file = OpenOptions::new()
             .read(true)
@@ -515,6 +536,7 @@ impl IoUringDiskManager {
             block_cache: Mutex::new(HashMap::new()),
             buffers_registered: AtomicBool::new(false),
             aligned_block_pool: AlignedBlockPool::new(DEFAULT_RING_ENTRIES as usize),
+            wlock,
         };
 
         // Validate header
@@ -535,6 +557,13 @@ impl IoUringDiskManager {
     /// Open without header validation (for custom header formats like VocabTrie).
     pub fn open_without_validation<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
+
+        // Tier-1: acquire the single-owner advisory lock before opening the data file.
+        let wlock = Some(
+            crate::persistent_artrie::core::disk_manager::MmapDiskManager::acquire_exclusive_lock(
+                &path_str,
+            )?,
+        );
 
         let file = OpenOptions::new()
             .read(true)
@@ -584,6 +613,7 @@ impl IoUringDiskManager {
             block_cache: Mutex::new(HashMap::new()),
             buffers_registered: AtomicBool::new(false),
             aligned_block_pool: AlignedBlockPool::new(DEFAULT_RING_ENTRIES as usize),
+            wlock,
         })
     }
 
@@ -1369,7 +1399,15 @@ impl BlockStorage for IoUringDiskManager {
     fn allocate_block(&self) -> Result<u32> {
         // Try free list first
         let header = BlockStorage::read_header(self)?;
-        let free_head = header.free_list_head.load(Ordering::Acquire);
+        // See `MmapDiskManager::allocate_block`: only trust the free-list for standard `FileHeader`
+        // files. A custom-header file (vocab `VOCB`, whose `checkpoint_lsn` aliases bytes 32..40)
+        // must skip it, or `allocate_block` returns a bogus `block_id` and corrupts the image.
+        let free_head =
+            if header.magic == crate::persistent_artrie::core::disk_manager::MAGIC_NUMBER {
+                header.free_list_head.load(Ordering::Acquire)
+            } else {
+                0
+            };
 
         if free_head != 0 {
             let block_id = (free_head >> 40) as u32;
@@ -1480,6 +1518,11 @@ impl BlockStorage for IoUringDiskManager {
         }
 
         let header = BlockStorage::read_header(self)?;
+        // See `allocate_block`: skip free-list maintenance for custom-header files (vocab `VOCB`),
+        // whose `free_list_head` bytes alias trie metadata — writing there would corrupt block 0.
+        if header.magic != crate::persistent_artrie::core::disk_manager::MAGIC_NUMBER {
+            return Ok(());
+        }
         let old_head = header.free_list_head.load(Ordering::SeqCst);
 
         // Write old head pointer into the freed block

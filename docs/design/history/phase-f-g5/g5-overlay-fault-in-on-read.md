@@ -9,10 +9,10 @@ later, owner-gated commit.**
 ## (1) Feasibility + the OnDisk short-circuit gap (code-cited)
 **FEASIBLE; the load+deserialize half ALREADY EXISTS (reused, not built).**
 **Read gap (terms under an evicted prefix reported ABSENT):** `find_in_lockfree_trie` (`lockfree_cas.rs:459-468`)
-+ `find_leaf_recursive` (`:534-538`) use `as_in_mem()`→`None` on OnDisk ⇒ `contains_lockfree` false / `get_lockfree`
++ `find_leaf_recursive` (`:534-538`) use `as_in_mem()`→`None` on OnDisk $\Rightarrow$ `contains_lockfree` false / `get_lockfree`
 None / `try_increment_cas` reads `cur=0` (silent counter reset).
-**Write gap (writes mis-reported/lost):** `build_path_recursive` (`:325-347`) OnDisk→`Err(())`→`AlreadyExists` ⇒
-`insert_cas`/`insert_cas_durable` of a NEW term under an evicted prefix returns false/`Ok(false)` + not cached ⇒
+**Write gap (writes mis-reported/lost):** `build_path_recursive` (`:325-347`) OnDisk→`Err(())`→`AlreadyExists` $\Rightarrow$
+`insert_cas`/`insert_cas_durable` of a NEW term under an evicted prefix returns false/`Ok(false)` + not cached $\Rightarrow$
 `merge_lockfree_to_persistent` never persists it = **silently dropped acknowledged write (data-loss-critical)**.
 `build_value_path_recursive` OnDisk→`None`→`try_increment_cas` treats as `Conflict`→**spins forever** (pre-existing
 latent liveness bug). Notes confirm fault-in deferred to the flip (`lockfree_cas.rs:1186-1189`, `:327-330`); the
@@ -48,7 +48,7 @@ fn load_overlay_node_from_disk(&self, disk_ptr: &SwizzledPtr) -> Result<Arc<Pers
 ```
 **Round-trip equivalence (NoLostWrite half):** bytes at `disk_ptr` were written by `serialize_char_node_to_disk`
 (`persist.rs:902`) from `overlay_to_inner(n)`; `load_char_node_from_disk_lazy` is its proven inverse decoder;
-`inner_to_overlay` is the structural inverse builder ⇒ `load(serialize(overlay_to_inner(n))) ≡ n` for
+`inner_to_overlay` is the structural inverse builder $\Rightarrow$ `load(serialize(overlay_to_inner(n))) ≡ n` for
 finality/value/child-set. Checked byte-for-byte by the Phase-2 unit test + OE5. **Layering preserved** (all on
 `impl PersistentARTrieChar<V,S>` in the char layer; consumes the generic node's public API only).
 
@@ -61,14 +61,14 @@ fn find_leaf_faulting(&self, root_slot: &AtomicNodePtr<V>, chars: &[u32], max_fa
     -> Result<Option<Arc<PersistentCharNode<V>>>>
 ```
 Per attempt: `enter_read()`; `old_root = root_slot.load()`; walk top-down collecting spine; at each edge:
-`None`⇒absent (`Ok(None)`); InMem⇒descend; **OnDisk⇒fault**: `loaded = load_overlay_node_from_disk(ptr)?`, rebuild
+`None`$\Rightarrow$absent (`Ok(None)`); InMem$\Rightarrow$descend; **OnDisk$\Rightarrow$fault**: `loaded = load_overlay_node_from_disk(ptr)?`, rebuild
 spine bottom-up splicing `Child::InMem(loaded)` (exactly `evict_overlay_node_at_path`'s shape, `mod.rs:1499-1518`,
 but InMem not OnDisk), `root_slot.compare_exchange(&old_root, new_root)` → Ok: rebase+continue; Err: drop `loaded`
 (refcount) + rebase. Terminal: leaf-by-`is_final` (as `find_leaf_recursive:526-531`). On retry exhaustion: one
 read-only walk of the fresh root (still-OnDisk reads absent — liveness-only, durable, later retry).
 **Idempotent:** two faulters each load their own Arc; exactly one CAS wins (`Arc::ptr_eq`, `atomic_ptr.rs:141-144`);
-loser drops + re-reads the now-InMem child. **Loser-safe:** CAS vs `old_root` ⇒ a concurrent insert that published
-makes our CAS fail ⇒ we rebase, never clobber. **Vs re-eviction:** single root slot arbitrates; every published
+loser drops + re-reads the now-InMem child. **Loser-safe:** CAS vs `old_root` $\Rightarrow$ a concurrent insert that published
+makes our CAS fail $\Rightarrow$ we rebase, never clobber. **Vs re-eviction:** single root slot arbitrates; every published
 root has the node InMem XOR OnDisk, never both. **Wiring (`&self`):** `contains_lockfree`/`get_lockfree`/
 `try_increment_cas`-read route through it; DashMap fast-path unchanged; disk I/O only when an OnDisk slot is hit
 (all-InMem walk byte-identical + one cheap discriminant/hop).
@@ -83,10 +83,10 @@ c if c.as_on_disk().map_or(false,|p| !p.is_null()) => {
 }
 ```
 **Correct, not a lost update:** `build_path_recursive` builds a NEW spine; splicing InMem(faulted+extended) at `key`
-is identical in shape to an in-mem child ⇒ **the single root CAS in `insert_lockfree_recursive` (`:407-419`) remains
-the sole arbiter.** CAS wins⇒faulted-in + new term, durable (Order-A WAL before CAS, `insert_cas_durable:214`),
-visible. CAS loses (writer/evictor)⇒`Conflict`⇒existing retry from fresh root, dropped spine (no leak/clobber); on
-retry the slot may be InMem (racer faulted) ⇒ descend without reload. **The silent-drop bug is eliminated.**
+is identical in shape to an in-mem child $\Rightarrow$ **the single root CAS in `insert_lockfree_recursive` (`:407-419`) remains
+the sole arbiter.** CAS wins$\Rightarrow$faulted-in + new term, durable (Order-A WAL before CAS, `insert_cas_durable:214`),
+visible. CAS loses (writer/evictor)$\Rightarrow$`Conflict`$\Rightarrow$existing retry from fresh root, dropped spine (no leak/clobber); on
+retry the slot may be InMem (racer faulted) $\Rightarrow$ descend without reload. **The silent-drop bug is eliminated.**
 Counter write `build_value_path_recursive`: same edit (fault then descend) — fixes the infinite-spin; its read step
 (`:657`) routes through `find_leaf_faulting` so `cur` is the faulted value not 0. **Signature impact:** thread the
 buffer-manager I/O error out — add `LockfreeInsertResult::IoError(e)` (smaller blast radius than widening the
@@ -94,12 +94,12 @@ recursive `Err`); `insert_cas_durable`→`Err(e)`, `insert_cas`→bounded retry/
 
 ## (5) No-lost-write + no-UAF + evict‖fault-in‖writer race
 **No-lost-write PRESERVED — fault-in is read-only wrt durable state:** writes nothing to disk, no watermark advance,
-no WAL truncate ⇒ `LockFreeDurableCheckpoint.tla` `NoLostWrite` unaffected; faulted node == durable image (§2) ⇒
+no WAL truncate $\Rightarrow$ `LockFreeDurableCheckpoint.tla` `NoLostWrite` unaffected; faulted node == durable image (§2) $\Rightarrow$
 can't manufacture/drop a term; write-path still commits via Order-A (WAL before CAS) regardless of faulting.
 **No-UAF (ZERO new unsafe):** only `AtomicNodePtr::{load,compare_exchange}` (arc-swap hazard-protected), pure node
 copies, Arc clone/drop, and the EXISTING lazy loader (its unsafe pre-existing, called through a safe `&self`
 boundary). Losing-CAS Arc dropped by refcount; pinned-snapshot readers keep old structure alive. New unsafe in
-changed regions = 0 ⇒ inventory gate exit-0.
+changed regions = 0 $\Rightarrow$ inventory gate exit-0.
 **Three-way race:** all three = path-copy + single root CAS on `lockfree_root` (a total order of versions; every CAS
 loser-safe by `Arc::ptr_eq`). Faulter‖Writer: one wins, other rebases (no lost write/double-link). Faulter‖Evictor
 on `n`: CAS arbitrates; `n` InMem-XOR-OnDisk at every root (`LinkedAndOnDiskDisjoint`); loser re-faults/re-evicts
@@ -112,7 +112,7 @@ clean reversible step before the flip; the flip is NOT forced to be next.** Evid
    are the OVERLAY API, reached only after `enable_lockfree()`; production still routes through the owned tree +
    `checkpoint()`. Fault-in changes overlay behavior only — `checkpoint()`/owned `self.root`/default path untouched.
 2. Testable without the flip: the already-merged reversible eviction driver (`evict_overlay_node_at_path`/
-   `evict_overlay_nodes`) produces real OnDisk overlay nodes under test ⇒ insert→checkpoint→evict→read/write-through
+   `evict_overlay_nodes`) produces real OnDisk overlay nodes under test $\Rightarrow$ insert→checkpoint→evict→read/write-through
    →assert-restored is a closed loop within the existing reversible surface (OE5-OE9).
 3. Honest scope: more reversible than the flip, less than a no-op (it changes the overlay read/write RESULT — but
    that change is strictly a correctness FIX, reachable only via the overlay API, and mechanically revertible per
@@ -124,14 +124,14 @@ clean reversible step before the flip; the flip is NOT forced to be next.** Evid
 round-trip. Re-assess the flip with both green + the TLA round-trip checked.
 
 ## (7) Formal plan
-**Extend `OverlayEvictionCas.tla` (don't fork):** add `FaultInCas(n)` (enabled iff `n∈onDisk∩durable`: `root'=root+1`,
-`linkedInMem'∪{n}`, `onDisk'\{n}`; lose=stutter) — dual of `EvictCasSucceed`; new var `durable` (=cold at Init);
+**Extend `OverlayEvictionCas.tla` (don't fork):** add `FaultInCas(n)` (enabled iff $n\in onDisk\cap durable$: `root'=root+1`,
+$linkedInMem'\cup {n}$, `onDisk'\{n}`; lose=stutter) — dual of `EvictCasSucceed`; new var `durable` (=cold at Init);
 new invariant `FaultEqualsDurable == \A n∈linkedInMem: (n∈cold => n∈durable)`; strengthen `NoLostAck` with writer
 terms through faulted prefixes. **Decisive relaxation:** with `FaultInCas` present, DROP `EvictTouchesOnlyCold` from
 safety, ADD `ReadNeverMissesCommitted == \A n∈(acked∪cold): (Reachable(n) \/ n∈durable)` (eviction may touch ANY
 node because fault-in recovers it). **Negative control** (`_Unsafe.cfg`, repurpose to `FAULT_IN_ENABLED=FALSE` +
 unrestricted evict): TLC must VIOLATE `ReadNeverMissesCommitted` (an acked node evicted with no fault-in is
-permanently unreachable) ⇒ proves fault-in REQUIRED once eviction unrestricted. CONSTANTS `Nodes={n1,n2,n3}`,
+permanently unreachable) $\Rightarrow$ proves fault-in REQUIRED once eviction unrestricted. CONSTANTS `Nodes={n1,n2,n3}`,
 `Lsns={1,2}`, `live={n1}`, `cold=durable={n2,n3}`, `CHECK_DEADLOCK FALSE`. Register in
 `scripts/verify-formal-correspondence.sh` SANY/RUN_TLC/_Unsafe (already present; cfg semantics change). Durability
 specs unchanged.
@@ -147,13 +147,13 @@ specs unchanged.
 - **OE9 `faultin_double_install_one_wins`** (loom, extend `persistent_lockfree_overlay_loom.rs`): 2 faulters + 1
   writer, one install CAS wins, loser drops, final InMem+correct.
 
-## (8) Phased migration (each GREEN: nextest ≥2480 + verify-formal-correspondence exit 0; 0 new unsafe; real-disk only)
+## (8) Phased migration (each GREEN: nextest $\ge$2480 + verify-formal-correspondence exit 0; 0 new unsafe; real-disk only)
 1. **TLA first:** extend `OverlayEvictionCas.tla` + repurpose `_Unsafe.cfg`. Gate: SANY ok, RUN_TLC holds new+retained
    invariants, `_Unsafe` FAILS, exit 0. Rollback: revert spec/cfg.
 2. **Load+converter (`cfg(any(test, bench-internals))`):** `inner_to_overlay` + `load_overlay_node_from_disk` + a
    round-trip unit test (`load(serialize(overlay_to_inner(n)))≡n`). Gate: nextest +1, verify exit 0. Rollback: delete.
 3. **Read-path:** `find_leaf_faulting`; route `contains_lockfree`/`get_lockfree`/`try_increment_cas`-read; OE5/OE8/OE9.
-   Gate: nextest +3 (≥2483), verify exit 0. Rollback: restore `as_in_mem()?` walks; delete helper+tests.
+   Gate: nextest +3 ($\ge$2483), verify exit 0. Rollback: restore `as_in_mem()?` walks; delete helper+tests.
 4. **Write-path:** patch `build_path_recursive`+`build_value_path_recursive` OnDisk arm; add `LockfreeInsertResult::
    IoError`; thread through insert/increment; OE6/OE7. Gate: nextest +2, verify exit 0; OE6 reopen-loses-nothing; OE7
    sanitizers no-UAF+complete. Rollback: restore `Err(())`/`None` arms; remove variant; delete tests.

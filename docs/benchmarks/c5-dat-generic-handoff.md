@@ -84,7 +84,7 @@ Same.
 
 ## Expected LOC reduction
 
-- 4 files × ~750 LOC average → 4 thin alias files × ~50 LOC + 1 generic
+- 4 files $\times$ ~750 LOC average → 4 thin alias files $\times$ ~50 LOC + 1 generic
   module ~1500 LOC.
 - Net: ~1200 LOC removed.
 

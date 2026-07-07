@@ -66,7 +66,7 @@ optimize durability, recovery, and bounded unsafe boundaries.
 |----------|-------------------|-----|---------------------|
 | Static byte dictionary with high lookup volume | `DoubleArrayTrie` | Contiguous `BASE`/`CHECK` arrays minimize pointer chasing. | Build depends on placement; lookup `O(m)`. |
 | Static Unicode dictionary | `DoubleArrayTrieChar` | Same cache-local layout with `char` units. | Lookup `O(m)` over Unicode scalar values. |
-| Mutable prefix dictionary | `DynamicDawg` / `DynamicDawgChar` | Lock-free edge/value publication with suffix sharing. | Lookup `O(m)`, write `O(k × c)` where `c` is CAS retry cost. |
+| Mutable prefix dictionary | `DynamicDawg` / `DynamicDawgChar` | Lock-free edge/value publication with suffix sharing. | Lookup `O(m)`, write $O(k \times c)$ where `c` is CAS retry cost. |
 | Fast in-memory trie with external `pathmap` feature | `PathMapDictionary` / `PathMapDictionaryChar` | Copy-on-write root snapshot over a mature trie engine. | Lookup `O(m)`, write clone cost depends on pathmap structural sharing. |
 | Substring lookup over dynamic text | `SuffixAutomaton` / `SuffixAutomatonChar` | Substrings are accepted by graph paths. | Query `O(m)`, states up to about `2n - 1` for one source string. |
 | Compact substring lookup over batch terms | `Scdawg` / `ScdawgChar` | Compact suffix graph shape plus left-extension support. | Query `O(m)`, better space locality after compaction. |

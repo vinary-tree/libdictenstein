@@ -2,7 +2,7 @@
 
 **Repo:** `/home/dylon/Workspace/f1r3fly.io/libdictenstein` · 2026-06-02 · implementation-ready. Prerequisite the
 owner chose before the F0-F5 lock-free flip. Reversible, gated, **ZERO new unsafe**. The decisive deliverable is
-the **LOOM/proptest/TLA RE-PROOF** that the composite (insert ∪ remove) stays linearizable once finality is no
+the **LOOM/proptest/TLA RE-PROOF** that the composite (insert $\cup$ remove) stays linearizable once finality is no
 longer monotone. Persisted from the Plan-agent design (full prose in the session transcript).
 
 ## (1) Feasibility + the monotone-final break (code-cited)
@@ -45,7 +45,7 @@ pub fn as_non_final(&self) -> Self {
 Clears `IS_FINAL`+`HAS_VALUE` on a COPY (immutability preserved), retains children/prefix (compaction = future opt,
 out of scope — matches owned remove which also leaves the node). No `without_value` (folded in). ZERO unsafe
 (same shape as `as_final`; Send/Sync unaffected). Node unit tests: clear→not-final/no-value/children-preserved/
-original-unchanged; as_non_final∘as_final round-trip; deep-child retention ("cat" cleared keeps "cats" final);
+original-unchanged; as_non_final$\circ$as_final round-trip; deep-child retention ("cat" cleared keeps "cats" final);
 both ByteKey+CharKey.
 
 ## (3) `remove_cas_durable` — Order-A mirror of insert_cas_durable
@@ -57,7 +57,7 @@ if absent. Steps:
 3. **Absent fast-path + WAL avoidance (key divergence):** walk the overlay (via `find_leaf_faulting` for OnDisk
    prefixes); if not present → `Ok(false)` with **NO WAL** (matches owned `preflight_remove_no_wal`; a no-op remove
    mustn't burn an LSN/punch a watermark hole). NOTE: the positive cache is NOT a sufficient presence oracle for
-   remove (cache-miss ≠ trie-absent after a recovery rebuild) → consult the TRIE, not just the cache.
+   remove (cache-miss $\ne$ trie-absent after a recovery rebuild) → consult the TRIE, not just the cache.
 4. **ORDER-A step 1:** `append_to_wal_returning_lsn(WalRecord::Remove{term})` append+sync DURABLE (same chokepoint
    → `invalidate_eviction_registry`); one append, never re-logged on retry.
 5. **Step 2: visibility CAS loop** (`enter_read()` pinned): `try_remove_lockfree_path`:
@@ -87,7 +87,7 @@ proves this choice is required.
 
 ## (4) THE RE-PROOF — the decisive deliverable (the GATE)
 **R-B is NOT done until loom + remove-aware proptest + TLA (with a firing negative control) are all green** (inside
-`verify-formal-correspondence.sh` + nextest ≥2489). Reviewer must NOT approve on the code diff alone.
+`verify-formal-correspondence.sh` + nextest $\ge$2489). Reviewer must NOT approve on the code diff alone.
 **Theorem (composite linearizability, no-lost-op):** for any concurrent history over {insert,remove,contains},
 published-root membership = a last-writer-wins linearization respecting the root-CAS real-time order; no op lost;
 no resurrection (a removed term reappears only via a later insert); no double-clear UAF. Monotonicity is DROPPED,
@@ -106,7 +106,7 @@ replaced by **last-writer-wins under the root-CAS total order**.
   (t∈present) <=> (t∉removed)` + `NoResurrection` + `NoLostOp`. **Negative control `_Unsafe.cfg`:**
   `USE_FRESH_COPY_CLEAR=FALSE` models the rejected in-place clear (clear `present` WITHOUT bumping root) → TLC MUST
   violate `LastWriterWins` (resurrection/lost-remove). Register in `verify-formal-correspondence.sh` SANY/RUN_TLC/
-  negative-control lists (`:251`/`:269`/`:323`). Bounded: 2 Terms, MaxRoot≈6.
+  negative-control lists (`:251`/`:269`/`:323`). Bounded: 2 Terms, MaxRoot$\approx$6.
 - **§4.5 Why the prefix-insert fix survives:** insert's path is UNCHANGED (still shares the node + `fetch_or`);
   remove never flips an existing node's bit, it swaps in a fresh node version via root-CAS. The two never write the
   same atomic; the root-CAS total order resolves them. Loom schedule #2 is the machine-checked witness.
@@ -127,7 +127,7 @@ Negative-delta `increment` STAYS the separate gap (R-B solves remove only). **Ga
 (production remove routing) lands only AFTER the flip's "un-gate fault-in to production" (flip F0), because
 remove-under-evicted-prefix needs fault-in** — flag to owner.
 
-## (7) Phased migration (each green-gated: nextest ≥2489 + verify-formal-correspondence exit 0 + unsafe-inventory exit 0; systemd 32G + real-disk)
+## (7) Phased migration (each green-gated: nextest $\ge$2489 + verify-formal-correspondence exit 0 + unsafe-inventory exit 0; systemd 32G + real-disk)
 - **RB0** — `as_non_final` + node unit tests (both keys). No callers. Rollback: delete.
 - **RB1** — `remove_cas_durable` + path helpers + `BuildPathError::AlreadyAbsent` + cache invalidation + reject test
   + single-thread durable round-trip. Behind enable_lockfree, not routed. Rollback: delete.

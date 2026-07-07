@@ -6,6 +6,71 @@ Date format is ISO-8601 (YYYY-MM-DD).
 
 ## [Unreleased]
 
+### Added
+
+- **Tier-1 single-owner file lock (multi-process safety).** Opening a persistent ARTrie (byte,
+  char, or vocab; `mmap` or `io_uring` backend) now takes an advisory `flock(LOCK_EX | LOCK_NB)` on
+  a `"<path>.wlock"` sidecar at the six `DiskManager` open chokepoints. A second OS process — or a
+  second concurrent handle to the same path — is rejected with the new
+  `PersistentARTrieError::FileLocked` instead of silently corrupting the file, closing the
+  previously unguarded open-vs-open cross-process footgun. Same-process reopen (e.g. crash-recovery
+  tests that `mem::forget` a handle) is preserved via a process-global refcounted lock registry, and
+  the lock-free read/write hot paths are untouched (the lock is taken once per open, never per
+  operation). Uses the safe `rustix::fs::flock` (no new `unsafe`). First cross-process test:
+  `tests/persistent_multiprocess_lock.rs`. Documented in `docs/design/os-level-locking.md`.
+- **Tier-2 SWMR (single-writer / multi-reader-process) design.** A complete, red-teamed design for
+  read-only reader *processes* that serve lock-free snapshots of the last durable checkpoint
+  (atomic-`rename` publication + background `ArcSwap` refresh), preserving the single-process
+  lock-free invariant. Design-only — `docs/design/swmr-multiprocess.md`.
+- **Many-thread vocab soak** (`tests/vocab_shared_lockfree_soak.rs`) — writers/readers/checkpoint/
+  eviction/snapshot+fork churners on one `Arc<PersistentVocabARTrie>` with a no-lost-write oracle
+  audited in-memory and after reopen; plus reverse-map + reopen assertions added to
+  `tests/vocab_shared_lockfree_concurrency.rs`.
+
+### Fixed
+
+- **Vocab checkpoint data-loss at scale (multi-arena images).** `PersistentVocabARTrie`
+  checkpoints silently corrupted and lost ALL data on reopen once the serialized image
+  spanned more than a few arenas (~a few thousand terms). Root cause: the generic
+  `MmapDiskManager`/`IoUringDiskManager::allocate_block` reads the free-list head from the
+  standard `FileHeader` at block-0 bytes 32..40 — which exactly aliases the vocab `VOCB`
+  header's `checkpoint_lsn` field. After the first checkpoint wrote a non-zero
+  `checkpoint_lsn`, `allocate_block` misread it as a free-list head and returned a bogus
+  `block_id` (`checkpoint_lsn >> 40`, i.e. 0), overwriting the header block. Fixed by gating
+  the free-list on the `FileHeader` magic in both backends' `allocate_block`/`free_block`
+  (custom-header files, which never free blocks, correctly skip the free-list). Regression
+  test: `tests/vocab_scale_checkpoint_repro.rs` (base checkpoint + `fork_to` at 12k terms);
+  also exercised under load by `tests/vocab_shared_lockfree_soak.rs`.
+
+### Changed
+
+- **`SharedVocabARTrie` is now lock-free (`Arc<PersistentVocabARTrie>`).** The F4
+  lock-collapse (already shipped for byte/char) now covers vocab: the alias dropped
+  its outer `parking_lot::RwLock`, so concurrent readers and writers on a shared
+  vocabulary handle no longer serialize against each other — the inner trie was
+  already `&self` + lock-free (overlay CAS, DashMap forward/reverse caches, atomic
+  counters, epoch-pinned reads). Backward-compatible `.read()`/`.write()` are
+  preserved by the no-lock `SharedTrieAccess` shim. `eviction_coordinator` moved to a
+  `std::sync::Mutex` and `durability_policy` to an `AtomicEnumCell` (both now mutated
+  through the bare `Arc` handle), and a new `checkpoint_lock` serializes concurrent
+  `checkpoint()` calls (loom- and TLA+-verified deadlock-freedom).
+- **`PersistentVocabARTrie::clone` is now a lossless in-memory snapshot.** It
+  previously produced a hollow shell (reported `len() == N` yet every lookup returned
+  `None`). It now Arc-shares the immutable overlay's frozen root (O(1), point-in-time)
+  and materializes the forward/reverse caches by walking that root, so the snapshot is
+  internally consistent even under concurrent mutation of the source. The snapshot is
+  detached from storage (read-only and Drop-safe).
+
+### Added
+
+- **`PersistentVocabARTrie::fork_to(path)`** — create a fully independent, writable,
+  on-disk copy (its own file + WAL) by replaying every `(term, id)` pair
+  id-preservingly. Preserves the exact id frontier (including burned-id gaps), start
+  index, and durability policy; refuses to clobber an existing path; and removes
+  partial files on error. Works on any backend, including a storage-less snapshot.
+- **`PersistentVocabARTrie::snapshot()`** — a named alias for the lossless snapshot
+  `clone`, for call-site intent.
+
 ## [0.2.0] - 2026-06-15
 
 ### Changed
@@ -65,7 +130,7 @@ Date format is ISO-8601 (YYYY-MM-DD).
   `TrieRefNode` / `TrieRefNodeChar` (`pathmap::core`) over a sealed `TrieRefLike`
   handle. `PathMapDictionary{,Char}::root()` takes an `𝒪(1)` copy-on-write
   snapshot and queries run **lock-free** over it (snapshot isolation), replacing
-  the former lock-per-operation, root-replay node (`𝒪(n²)` byte-steps + `n` lock
+  the former lock-per-operation, root-replay node ($𝒪(n^2)$ byte-steps + `n` lock
   round-trips to walk a term of length `n`). `PathMapZipper` is likewise reworked
   onto `TrieRefZipper`. Fields were private, so there is no downstream breakage.
 - **All dictionary families reorganized into directory submodules** —
@@ -252,7 +317,7 @@ Date format is ISO-8601 (YYYY-MM-DD).
 - **Dead Cargo features removed**: `simd`, `scdawg-bloom`, `scdawg-simd`
   (all had zero `#[cfg(feature = …)]` references in code).
 - **`group-commit`** feature relabeled EXPERIMENTAL with cross-reference
-  to `docs/persistence/group_commit_regression.md`. Behavior unchanged.
+  to `docs/persistence/group-commit.md`. Behavior unchanged.
 - **Sanitizer logs** relocated from repo root to `docs/sanitizers/`
   with date-stamped filenames + `scripts/run-sanitizers.sh` regen script.
 - **`build.rs`** emits `cargo:rerun-if-changed=proto/libdictenstein.proto`
@@ -291,7 +356,7 @@ Pre-plan: 2006 passing. Post-plan: **2288 passing** (+282).
 - **Cargo feature `group-commit`**: relabeled from "REJECTED: causes regression
   on NVMe" to "EXPERIMENTAL" with explicit benchmark cross-reference. The
   feature itself is unchanged; the description is now honest about its status.
-  See [docs/persistence/group_commit_regression.md](docs/persistence/group_commit_regression.md).
+  See [docs/persistence/group-commit.md](docs/persistence/group-commit.md).
 - **`README.md` Features section**: now lists all 11 real features
   (was: 6, with 3 referring to dropped flags).
 - **`build.rs`**: emits `cargo:rerun-if-changed=proto/libdictenstein.proto`
@@ -308,7 +373,7 @@ Pre-plan: 2006 passing. Post-plan: **2288 passing** (+282).
   cosmetic dot-prefix `.aux` files that Rocq leaves behind.
 
 ### Documentation
-- Added [docs/persistence/group_commit_regression.md](docs/persistence/group_commit_regression.md)
+- Added [docs/persistence/group-commit.md](docs/persistence/group-commit.md)
   explaining why `group-commit` regresses on NVMe and where it's still
   expected to help.
 - Added [docs/sanitizers/README.md](docs/sanitizers/README.md) explaining

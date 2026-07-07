@@ -1,8 +1,14 @@
 # F4 — The Lock Collapse: Implementation Record
 
 **Status:** IMPLEMENTED (working tree; not committed — owner reviews + commits).
-**Scope:** byte (`SharedARTrie`) + char (`SharedCharARTrie`) ONLY. `SharedVocabARTrie`
-is OUT OF SCOPE (a distinct struct with its own `RwLock`, unchanged).
+**Scope:** byte (`SharedARTrie`) + char (`SharedCharARTrie`) in this record. **UPDATE:
+`SharedVocabARTrie` was subsequently collapsed too (the "vocab F4").** Its alias is now
+`Arc<PersistentVocabARTrie>` with the same no-lock `SharedTrieAccess` shim; `eviction_coordinator`
+→ `std::sync::Mutex<Option<…>>`, `durability_policy` → `AtomicEnumCell`, and a new `checkpoint_lock`
+was added. Vocab is overlay-only, so it has NO `merge_lock` and NO owned-root (`OR`) rung, and its
+`checkpoint` does not read `EC` under `CK` (the vocab eviction callback is a no-op) — so `CK` and
+`EC` are independent (a strict subset of the byte/char hierarchy below). Verified by
+`tests/vocab_lockfree_f4_lock_hierarchy_loom.rs` and the `SharedPersistentConcurrency.tla` model.
 **Design source (CONVERGED, 5 red-team rounds):**
 `docs/design/phase-f-g5-delete-owned-tree.md` §3.5 + `phase-f-g5-v9-converged-plan.md`
 §5 / V10.4 / V11.2 / V11.3 / V11.4.
@@ -41,11 +47,11 @@ compiles unchanged, dispatching to the now-`&self` methods through the guard.
 ## 2. The complete Tier-1 / Tier-2 field disposition (the F3 obligation)
 
 Every `&mut self` inherent/trait method on both tries was classified. **Tier-2** =
-reachable on the shared handle ⇒ method becomes `&self`, field wrapped for interior
-mutability. **Tier-1** = pre-share configuration only (never on a `Shared*` API) ⇒
+reachable on the shared handle $\Rightarrow$ method becomes `&self`, field wrapped for interior
+mutability. **Tier-1** = pre-share configuration only (never on a `Shared*` API) $\Rightarrow$
 stays `&mut self`, NO wrap.
 
-### Tier-2 fields wrapped (byte = 5, char = 7; + `merge_lock` ⇒ byte=6/char=8 per V11.2)
+### Tier-2 fields wrapped (byte = 5, char = 7; + `merge_lock` $\Rightarrow$ byte=6/char=8 per V11.2)
 
 | Field | byte | char | Wrapper | Why interior-mutable |
 |-------|------|------|---------|----------------------|

@@ -65,7 +65,7 @@
 **Crate `libdictenstein`, byte `src/persistent_artrie/`. Baseline HEAD `b5ff744` (M0–M3 done: byte has the
 complete durable-overlay subsystem + routing/rejects, all opt-in behind the inert `route_overlay()`).
 DATA-LOSS-CRITICAL, IRREVERSIBLE.** M4 makes the lock-free overlay byte's production default for
-`V ∈ {(), i64}` — the byte twin of char's S5-12 EDIT 1/2/3 + the E1 reestablish-sink. Owner gave the
+$V \in {(), i64}$ — the byte twin of char's S5-12 EDIT 1/2/3 + the E1 reestablish-sink. Owner gave the
 directional GO ("full byte flip"); this lands AFTER a red-team + the full gate + the diff surfaced for an
 explicit final GO.
 

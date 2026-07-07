@@ -54,7 +54,7 @@ share logic; allow optimized, specialized operations per data type." → the des
 
 - NEW `pub(crate) mod cas_walk` (core): free generic-over-`<K,V>` COMMON fns — `find_leaf_recursive`,
   `find_in_lockfree_trie`, `create_spine` (bottom-up build w/ a leaf-maker closure), `build_value_spine`,
-  `resolve_or_fault` (the OnDisk write-path fault-in, copy-pasted ~7× today).
+  `resolve_or_fault` (the OnDisk write-path fault-in, copy-pasted ~7$\times$ today).
 - `trait OverlayCasWalk<K,V,S>: LockFreeOverlay<K,V,S>` with SPECIALIZATION HOOKS: assoc
   `InsertResult`/`RemoveResult`/`BuildErr`; `make_insert_*`/`make_remove_*` (build the per-variant result —
   WITH char's generation / WITHOUT byte's); `claim_generation` (char=`claim_commit_seq`, byte=default,
@@ -66,7 +66,7 @@ share logic; allow optimized, specialized operations per data type." → the des
   no-generation/dual-method (I/O→Conflict); char keeps generation-ranked/finalize-flag.
 - MUST stay specialized: the key-decode boundary, char generation-ranking, byte dual-method, error
   cardinality, remove terminal semantics, vocab index-alloc + bloom side-effect.
-- "Should-share" wins: `resolve_or_fault` (×7 dedup), a `drive_cas` retry-loop driver, `create_spine`.
+- "Should-share" wins: `resolve_or_fault` ($\times$7 dedup), a `drive_cas` retry-loop driver, `create_spine`.
 
 ### Phasing (each: build + nextest + --no-default + doctests + formal + unsafe + fmt + 3 loom [overlay/f4/durable] + soak; reversible until Phase 6; ZERO unsafe/format/build-order delta)
 P0 dormant scaffold · P1 lift pure find/spine helpers (delegation) · P2 char remove · P3 char insert ·
@@ -91,7 +91,7 @@ behind `fault_overlay_slot`, the batch evict driver + LRU path conversion, the c
 ## Invariants / gates (every phase)
 On-disk format byte-identical (G5.1-4 are in-memory/control-flow only). Public API + `DictionaryNode::Unit`
 (`u8`/`char`) unchanged. UNSAFE delta = the G5.1 −2 only. Gate each phase: build --all-features (0 err,
-warnings ≤ pre-existing 20) + full nextest (≥2706) + --no-default-features + doctests + formal (0) +
+warnings $\le$ pre-existing 20) + full nextest ($\ge$2706) + --no-default-features + doctests + formal (0) +
 unsafe set-equality (0) + fmt; G5.3 also loom (`--cfg loom` overlay + f4-hierarchy) + a soak run.
 
 ## Red-team focus (RT-1..7)

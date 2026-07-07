@@ -27,7 +27,7 @@ checkpoint_lsn). Do NOT commit (owner reviews).
   per-LSN regime closure, skip `loaded && ckpt>0 && lsn<=ckpt`, Owned KEEP@lsn / Overlay DROP.
 - `reconcile_lww(...)` = constant-regime wrapper.
 - `rebuild_from_wal_segments_regime_aware` (recovery.rs ~1556-1653): collects segments, has the
-  RES-3 prefix-gap guard (min_lsn>1 ⇒ fail loud), but HARDCODES `loaded_from_disk=false, ckpt=0`
+  RES-3 prefix-gap guard (min_lsn>1 $\Rightarrow$ fail loud), but HARDCODES `loaded_from_disk=false, ckpt=0`
   in its `reconcile_lww_with_regime` call (1633). DO NOT reuse for the FIX-B drain (OBL-2).
 
 ### F5 / overlay (flip.rs, the shared trait `LockFreeOverlay<K,V,S>`)
@@ -94,7 +94,7 @@ checkpoint_lsn). Do NOT commit (owner reviews).
   - Owned eligible → convert_owned_to_overlay_on_reopen.
   - ineligible V → legacy owned-loader stay-owned (cannot overlay).
 - OBL-2 image_checkpoint_lsn = the recovery `checkpoint_lsn` captured PRE-rotate (it is read
-  from the Owned active WAL Checkpoint record BEFORE the converter rotates ⇒ == image redo
+  from the Owned active WAL Checkpoint record BEFORE the converter rotates $\Rightarrow$ == image redo
   frontier). The converter receives this captured value; it never re-reads post-rotate.
 
 ## Progress
@@ -102,7 +102,7 @@ checkpoint_lsn). Do NOT commit (owner reviews).
 - [x] Step 2 rotate_and_restamp_overlay (WalWriter + AsyncWalWriter; OBL-1 sync_all)
 - [x] Step 3 WalManaged seam (wal_records_empty_on_disk / wal_rotate_and_restamp_overlay / wal_collect_segments)
 - [x] Step 4 shared FIX-B drain (drain_segments_into_overlay + reconcile_and_drain_overlay) + converter (convert_owned_to_overlay_on_reopen) + load_root_immutable_seam (byte+char)
-- [x] Step 5 wire 4 arms (byte/char × mmap/io_uring) + FIX C (watermark base = max_lsn_in_segments)
+- [x] Step 5 wire 4 arms (byte/char $\times$ mmap/io_uring) + FIX C (watermark base = max_lsn_in_segments)
 - [x] Step 6 compaction re-point (byte compact() — Self::open auto-converts via records-empty cheap path)
 - [x] Step 7 deletions (reestablish_overlay_dispatch byte+char; 3 folds + value_as_counter in flip.rs;
       char reestablish_overlay_membership_after_recovery + reestablish_overlay_after_recovery;
@@ -182,7 +182,7 @@ checkpoint_lsn). Do NOT commit (owner reviews).
 - FIX D: converter cheap-vs-rotate keys on `records_empty_on_disk` (file len), not is_empty_after_header
   (next_lsn==1) → a post-crash high-next_lsn header-only active takes the CHEAP (no-rotate) path,
   so the crash-loop never mints empty segments.
-- FIX E: `drain_segments_into_overlay` RES-3 prefix-gap guard (min_lsn > image_frontier+1 ⇒
+- FIX E: `drain_segments_into_overlay` RES-3 prefix-gap guard (min_lsn > image_frontier+1 $\Rightarrow$
   PersistentARTrieError::corrupted), using the IMAGE frontier (OBL-2).
 - Gating: production (`open`/`open_with_f5_loader`, force_f5=true OR const-keyed io_uring/open_with_depth):
   Owned-eligible → converter; Overlay-eligible → F5 + archive-aware drain; ineligible → owned stay.

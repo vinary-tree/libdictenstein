@@ -9,20 +9,20 @@ restart, increment-mixing, or the idempotent-arm race. This vindicates the multi
 1. **[CRITICAL] Only 1 of 4 recovery paths honors CommitRank.** `reconcile_lww` (`recovery.rs:253`) is the ONLY
    generation-ordered consumer. `redo_phase` (`:756`), `IncrementalRecovery` (`:932`), `rebuild_from_wal_segments`
    (`:1443`, used by the **char `recover_from_archives`** `mmap_ctor.rs:1138`) replay in raw LSN/physical order,
-   treating CommitRank as a no-op. ⇒ the s019 loss recurs on the archive-rebuild + incremental + recovery-manager
+   treating CommitRank as a no-op. $\Rightarrow$ the s019 loss recurs on the archive-rebuild + incremental + recovery-manager
    paths. (Design §3.8 said "REC-B must reuse the reconcile"; never wired.)
 2. **[CRITICAL] The generation (root `version`) is NON-DURABLE and resets to 0 every `enable_lockfree`
-   (`lockfree_cas.rs:149`), while LSNs are globally durable-monotone (`writer.rs:135`).** ⇒ cross-restart
+   (`lockfree_cas.rs:149`), while LSNs are globally durable-monotone (`writer.rs:135`).** $\Rightarrow$ cross-restart
    generation collision: S1 insert+remove (no checkpoint) → reopen (root v0) → S2 insert@gen1 → crash → reconcile
    sorts the S1 remove@gen2 AFTER the S2 insert@gen1 → **acked S2 insert lost.** Defeats EVEN the fixed
    `reconcile_lww` across a restart. The §3.6 monotonicity holds only within ONE root lifetime.
 3. **[CRITICAL] `try_increment_cas_durable` is rank-FREE** (`:1492`, by design F-3) → `generation_of=lsn` (large)
-   ⇒ a ranked insert/upsert of the same key (gen=root-version, small) sorts BEFORE a later increment regardless
-   of real commit order ⇒ value corruption (upsert(100) then increment(+1) replays as 101 ≠ visible 100). The
+   $\Rightarrow$ a ranked insert/upsert of the same key (gen=root-version, small) sorts BEFORE a later increment regardless
+   of real commit order $\Rightarrow$ value corruption (upsert(100) then increment(+1) replays as 101 $\ne$ visible 100). The
    commutative-sum argument holds ONLY among increments; ANY ranked op of the same key inverts. (= red-team #3's F3.)
 4. **[HIGH] `reconcile_lww` ignores the tx state machine.** It expands `BatchInsert`/`BatchIncrement`
    unconditionally (`:343-355`), ignoring BeginTx/CommitTx/AbortTx (`:356-370`), so an aborted/crash-incomplete
-   document-tx's ops are REPLAYED by the ctor path but DISCARDED by `redo_phase` (gates on CommitTx) ⇒ two paths,
+   document-tx's ops are REPLAYED by the ctor path but DISCARDED by `redo_phase` (gates on CommitTx) $\Rightarrow$ two paths,
    two recovered states; resurrection of uncommitted data on the ctor path. (Masked today only because overlay mode
    rejects commit_document; OwnedTree mode uses it + opens via the same ctor → reconcile_lww.)
 5. **[HIGH] Idempotent `AlreadyExists`/`AlreadyAbsent` arms read generation from a LIVE root re-walk**
@@ -46,7 +46,7 @@ R-2 generation is also a root-version → it inherits hole A.2 (non-durable, cro
 
 ## C. flip-F0 (red-team #3)
 - **[HIGH] F1: production `checkpoint()` is NOT flipped** (`mod.rs:1283` captures the OWNED tree + `next_lsn` reclaim).
-  ⇒ enabling overlay-write-mode (the kill-switch, or F5) WITHOUT flipping the checkpoint (F3) = #41 loss. **F3 is a
+  $\Rightarrow$ enabling overlay-write-mode (the kill-switch, or F5) WITHOUT flipping the checkpoint (F3) = #41 loss. **F3 is a
   hard prerequisite for F5; the `OverlayWriteMode` kill-switch is currently UNSAFE until F3.**
 - **[LOW] F4:** watermark permanently stalls on an Order-A fault-in `IoError` (liveness, no loss).
 - **SOUND:** root-CAS linearizability/loser-safety/no-ABA, Order-A ack, #41 capture-ordering (for

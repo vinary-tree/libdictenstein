@@ -1,5 +1,7 @@
 # Shared lock-free durable-overlay architecture (char + byte + future variants)
 
+**Synthesized in:** [Durability, checkpoints & crash recovery](../persistence/durability-and-recovery.md). That page presents the Order-A write protocol, the committed watermark, the checkpoint fold, and recovery at the architecture level; this record is the mechanism detail for how that data-loss-critical control flow is shared **once** (Template-Method traits + per-variant seams) across the byte, char, and future variants.
+
 **Crate `libdictenstein`. Baseline HEAD `1f120e8` (char on `LockFreeOverlay`). Pattern-driven, DRY,
 non-blocking, scalable.** This is the architecture for sharing the WHOLE overlay subsystem — not just the
 flip-layer (done) but the durable-write + checkpoint + watermark + recovery machinery — across the byte
@@ -46,22 +48,23 @@ Design owner: parent. Pattern grounding: pgmcp software-pattern catalog (`recomm
   **Feature Envy** (the owned-read seams live on the variant that owns `self.root`).
 
 ## §0 Verified code facts (the generic-vs-per-variant boundary)
-ALREADY SHARED in `persistent_artrie_core` (byte just reuses — DRY already won here):
+ALREADY SHARED in `persistent_artrie::core` (byte just reuses — DRY already won here):
 - `wal::header::RankRegime` (Owned/Overlay) — the regime enum.
 - `wal::codec::WalRecord` — the WAL record types (Insert/Increment/BatchIncrement/Checkpoint/…).
 - `recovery::{reconcile_lww, reconcile_lww_with_regime, rebuild_from_wal_segments_regime_aware}` — the A2
   regime-aware LWW recovery (char's hardest-won machinery, already generic).
 - `overlay::{OverlayNode<K,V>, AtomicNodePtr<K,V>}` + `overlay::flip::LockFreeOverlay<K,V,S>` (read engine
   + flip/route + reestablish folds — Step 1, done).
-- `committed_watermark::CommittedWatermark` — **STILL IN CHAR** (`persistent_artrie_char/committed_watermark.rs`);
-  K-agnostic (a contiguous-prefix LSN tracker) ⇒ MOVE to core (pure DRY win).
+- `committed_watermark::CommittedWatermark` — was **CHAR-LOCAL** (`persistent_artrie/char/committed_watermark.rs`);
+  K-agnostic (a contiguous-prefix LSN tracker) $\Rightarrow$ MOVE to core (pure DRY win). *[Since executed: the
+  canonical tracker now lives at `persistent_artrie/core/committed_watermark.rs`; the char path re-exports it.]*
 
 CHAR-CONCRETE (the extraction targets — push the skeleton up, keep the seam):
 - The 5 Order-A durable writes `insert_cas_durable`/`remove_cas_durable`/`try_increment_cas_durable`/
   `insert_cas_with_value_durable`/`upsert_cas_durable` (char/lockfree_cas.rs:370/556/1654/1747/1862).
 - The checkpoint route-split + `capture_snapshot_immutable` + the retaining publisher (char/persist.rs:109/383).
 - `CheckpointSnapshot` (char/persist.rs) + the on-disk serializer — GENUINELY per-variant (char arena
-  format vs byte arena format) ⇒ stays a seam.
+  format vs byte arena format) $\Rightarrow$ stays a seam.
 
 BYTE GAPS (red-team `aec7447`): byte has NONE of the durable-write/checkpoint/watermark/regime machinery;
 it has only Phase A/B (overlay node + enable_lockfree + NO-WAL CAS). So byte both REUSES the shared traits
@@ -116,7 +119,7 @@ reopen-without-checkpoint = the #41-closed witness, byte twin).
 ## Why this is excellent + reusable + scalable + DRY (the directive scorecard)
 - **DRY:** one copy of Order-A, the checkpoint route-split, the watermark, the read engine, the reestablish
   fold, A2 recovery. Per-variant code = only the genuinely divergent seams (WAL builder, serializer, value
-  bound, owned readers) ≈ the irreducible ~30%.
+  bound, owned readers) $\approx$ the irreducible ~30%.
 - **Reusable + scalable:** a new variant implements the seams; the data-loss-critical control flow is
   inherited + already proven. Open–Closed.
 - **Non-blocking / max parallelism:** RCU substrate preserved end-to-end — lock-free reads, CAS-publish

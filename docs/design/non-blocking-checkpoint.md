@@ -1,5 +1,7 @@
 # Non-Blocking Checkpoint for the Persistent Character ARTrie
 
+**Synthesized in:** [Durability, checkpoints & crash recovery](../persistence/durability-and-recovery.md) · [Concurrency model](../persistence/concurrency-model.md). This record is the mechanism detail for the **`RwLock` write→read downgrade** checkpoint of the char ARTrie; the fully lock-free-overlay checkpoint that superseded it once the outer trie `RwLock` was collapsed (F4) is presented at the architecture level in those pages.
+
 Status: **IMPLEMENTED** via the `RwLock` write→read **downgrade**; correct + formally verified; the
 mean-throughput gain is modest (see Results).
 Date: 2026-06-01
@@ -15,7 +17,7 @@ Tracking: pgmcp experiment **#11** (`l1-non-blocking-checkpoint-for-persistent-c
 
 So a checkpoint **excludes all concurrent reads** for its entire duration (two fsyncs + a full
 re-serialize). Verified: a concurrent checkpoint starved readers so hard the bench sample could not
-complete; readers-only ≈ 2.19 Melem/s. L1 is the gate, not the buffer-manager `lifecycle_lock`
+complete; readers-only $\approx$ 2.19 Melem/s. L1 is the gate, not the buffer-manager `lifecycle_lock`
 (which is below it and only on the cold node-load path). **Goal: let read traversals run during a
 checkpoint, without sacrificing crash/recovery correctness.**
 
@@ -24,7 +26,7 @@ checkpoint, without sacrificing crash/recovery correctness.**
 - **F1 — copy-on-serialize (CONFIRMED, `persist.rs:324-472`).** Every checkpoint walks the in-memory
   tree and `arena_manager.write().allocate(&data)`s a *fresh* slot for each node (the only `update`
   targets a slot just allocated this run). It never overwrites a slot a reader holds and never
-  reassigns `self.root` boxes ⇒ the captured arena image + root `SwizzledPtr` is a frozen,
+  reassigns `self.root` boxes $\Rightarrow$ the captured arena image + root `SwizzledPtr` is a frozen,
   self-consistent snapshot. (Also why a tight checkpoint loop balloons the arena.)
 - **F2 — root boxes stable.** Serialization never reassigns/frees `self.root`; `structural_generation`
   is not bumped by checkpoint. A resident reader's raw node pointer stays valid across a checkpoint.
@@ -58,8 +60,8 @@ arm) call the same phases under a held `&mut self`, i.e. blocking.
 - The downgrade admits concurrent `L1.read()` readers during the fsync-bound publish, while
   `L1.write()` **inserts stay excluded for the whole checkpoint** (write during A, read during B/C —
   read excludes write), and the downgrade is atomic (no release window).
-- Therefore **no writer can race the checkpoint** ⇒ `next_lsn` is unchanged from capture to WAL
-  publish ⇒ `checkpoint_lsn = next_lsn` (the original convention) stays exact and
+- Therefore **no writer can race the checkpoint** $\Rightarrow$ `next_lsn` is unchanged from capture to WAL
+  publish $\Rightarrow$ `checkpoint_lsn = next_lsn` (the original convention) stays exact and
   `rotate_to_archive` only ever archives covered records. There is **no GAP_LEDGER #41 data-loss
   window** and **no frontier-bounded WAL reclaim** is needed. A `debug_assert_eq!(next_lsn,
   snapshot.next_lsn_at_capture)` in `publish_durable_and_reclaim` fails loudly if that invariant is
@@ -75,7 +77,7 @@ arm) call the same phases under a held `&mut self`, i.e. blocking.
 ## Correctness verification (all green)
 
 - **TLA⁺** `ConcurrentCheckpointPublication.tla`: added `CaptureEqualsPublishFrontier`
-  (`gate="Checkpoint" ⇒ nextLsn = ckptTarget+1` — the model-level proof that the downgrade consumes
+  ($gate="Checkpoint" \Rightarrow nextLsn = ckptTarget+1$ — the model-level proof that the downgrade consumes
   no LSN during a checkpoint) and admitted reads during the checkpoint publish phase. **TLC: No error,
   312 distinct states** (no growth); SANY parse clean.
 - **`tests/persistent_nonblocking_checkpoint_correspondence.rs`**: concurrent readers + writer +
@@ -127,9 +129,9 @@ the path — it is a separate, larger work item.
 
 ## Critical files
 
-- `src/persistent_artrie_char/persist.rs` — `capture_snapshot` / `publish_snapshot` /
+- `src/persistent_artrie/char/persist.rs` — `capture_snapshot` / `publish_snapshot` /
   `publish_durable_and_reclaim` + `CheckpointSnapshot` (with `next_lsn_at_capture` self-check).
-- `src/persistent_artrie_char/mod.rs` — `ARTrie::checkpoint` wrapper (the write→read downgrade + C2
+- `src/persistent_artrie/char/mod.rs` — `ARTrie::checkpoint` wrapper (the write→read downgrade + C2
   guard).
 - `formal-verification/tla+/ConcurrentCheckpointPublication.tla` (+ `.cfg`) — `CaptureEqualsPublishFrontier`.
 - `tests/persistent_nonblocking_checkpoint_correspondence.rs` — concurrency + reopen correspondence.

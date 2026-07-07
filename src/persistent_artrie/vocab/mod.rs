@@ -339,20 +339,20 @@ impl BijectiveDictionary for PersistentVocabARTrie {
     }
 }
 
-// `PersistentVocabARTrie` does not implement `crate::artrie_trait::ARTrie`
-// directly: the trait's mutation methods (`insert`, `remove`, `checkpoint`,
-// `sync`, `upsert`, `increment`, `enable_slot_tracking`, `flush_sequential`,
-// `insert_with_value`, `remove_prefix`) all take `&self` but the underlying
-// trie semantics require `&mut self`. Use `SharedVocabARTrie`
-// (`Arc<RwLock<PersistentVocabARTrie>>`) when an `ARTrie` impl is required;
-// it satisfies the trait by acquiring the write lock per call. The
-// `SharedVocabARTrie` impl lives below.
+// F4 lock-collapse: `SharedVocabARTrie` is now a bare `Arc<PersistentVocabARTrie>`. The inner
+// trie is fully `&self` + lock-free (lock-free overlay root, DashMap forward/reverse caches,
+// atomic counters, epoch-pinned reads), so the outer `RwLock` was removed. The trait impls below
+// run against the lock-free handle; `.read()`/`.write()` are the no-lock `SharedTrieAccess` shim
+// (both hand back `&T`, no lock). The bare `PersistentVocabARTrie` still does not implement
+// `ARTrie` directly — the impl lives on the `Arc` handle, whose `Clone` satisfies the
+// `ARTrie: Clone` bound. Only concurrent `checkpoint()` needs mutual exclusion, via the internal
+// `checkpoint_lock` (never the handle).
 
 // ============================================================================
 // SharedVocabARTrie Trait Implementations
 // ============================================================================
 
-use parking_lot::RwLock;
+use crate::persistent_artrie::core::shared_access::SharedTrieAccess;
 use std::sync::Arc;
 
 impl Dictionary for SharedVocabARTrie {
@@ -457,7 +457,8 @@ impl MutableMappedDictionary for SharedVocabARTrie {
     {
         let guard = self.write();
         if let Some(existing_index) = guard.get_index(term) {
-            drop(guard);
+            // F4: `guard` is a no-lock `TrieAccessGuard` — there is no write lock to release
+            // before invoking `update_fn`, so the former `drop(guard)` (now a no-op) is gone.
             let mut proposed_index = existing_index;
             update_fn(&mut proposed_index);
             if proposed_index != existing_index {
@@ -508,23 +509,23 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
     type Value = u64;
 
     fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentVocabARTrie::create(path).map(|t| Arc::new(RwLock::new(t)))
+        PersistentVocabARTrie::create(path).map(Arc::new)
     }
 
     fn create_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentVocabARTrie::create(path).map(|t| Arc::new(RwLock::new(t)))
+        PersistentVocabARTrie::create(path).map(Arc::new)
     }
 
     fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentVocabARTrie::open(path).map(|t| Arc::new(RwLock::new(t)))
+        PersistentVocabARTrie::open(path).map(Arc::new)
     }
 
     fn open_with_slot_tracking<P: AsRef<Path>>(path: P) -> Result<Self> {
-        PersistentVocabARTrie::open(path).map(|t| Arc::new(RwLock::new(t)))
+        PersistentVocabARTrie::open(path).map(Arc::new)
     }
 
     fn open_with_recovery<P: AsRef<Path>>(path: P) -> Result<(Self, RecoveryReport)> {
-        PersistentVocabARTrie::open_with_recovery(path).map(|(t, r)| (Arc::new(RwLock::new(t)), r))
+        PersistentVocabARTrie::open_with_recovery(path).map(|(t, r)| (Arc::new(t), r))
     }
 
     fn open_with_recovery_and_slot_tracking<P: AsRef<Path>>(
@@ -532,7 +533,7 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
     ) -> Result<(Self, RecoveryReport)> {
         let (trie, report) = PersistentVocabARTrie::open_with_recovery(path)?;
         trie.enable_slot_tracking();
-        Ok((Arc::new(RwLock::new(trie)), report))
+        Ok((Arc::new(trie), report))
     }
 
     fn enable_slot_tracking(&self) {
@@ -547,10 +548,10 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
     where
         Self::Value: Default,
     {
-        let mut guard = self.write();
+        let guard = self.write();
         let old_count = guard.len();
-        // Explicitly call the struct method, not trait method
-        if let Err(error) = PersistentVocabARTrie::insert(&mut *guard, term) {
+        // Explicitly call the inherent `&self` struct method (not any trait method).
+        if let Err(error) = PersistentVocabARTrie::insert(&*guard, term) {
             log::warn!("SharedVocabARTrie::insert failed: {error}");
             return false;
         }
@@ -596,6 +597,12 @@ impl crate::artrie_trait::ARTrie for SharedVocabARTrie {
     }
 
     fn checkpoint(&self) -> Result<()> {
+        // F4: serialize concurrent checkpoints via the internal `checkpoint_lock` (the outer
+        // write lock that used to do this was removed with the `Arc<RwLock>` → `Arc` collapse).
+        // Clone the `Arc<Mutex>` out of a brief read guard so the trie handle isn't held while
+        // acquiring CK. Byte/char twin (`ConcurrentCheckpointSerialization.tla`).
+        let ckpt_lock = self.read().checkpoint_lock.clone();
+        let _ckpt_guard = ckpt_lock.lock();
         let guard = self.write();
         guard.checkpoint()
     }
@@ -687,15 +694,20 @@ impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
             .validate()
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
-        let mut guard = self.write();
-
-        // Check if eviction is already enabled
-        if guard.eviction_coordinator.is_some() {
+        // F4 (EC leaf): check under a BRIEF EC lock; the coordinator is fully built + started
+        // OUTSIDE the lock so EC is never held across a thread spawn or any other lock.
+        if self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .is_some()
+        {
             return Err(PersistentARTrieError::internal("Eviction already enabled"));
         }
 
-        // Create the epoch manager reference
-        let epoch_manager = Arc::new(crate::persistent_artrie::concurrency::EpochManager::new());
+        // Share THIS trie's own epoch manager with the coordinator (byte/char parity). The vocab
+        // callback evicts nothing, so this is honest reader accounting, not a correctness change.
+        let epoch_manager = Arc::clone(&self.epoch_manager);
 
         // Create the eviction coordinator
         let coordinator = crate::persistent_artrie::eviction::EvictionCoordinator::new(
@@ -716,8 +728,18 @@ impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
             .start_memory_monitor()
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
-        guard.eviction_coordinator = Some(coordinator);
-
+        // Install under a brief EC lock (re-check: first writer wins; a loser shuts its own
+        // coordinator down OUTSIDE EC).
+        let mut slot = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned");
+        if slot.is_some() {
+            drop(slot);
+            coordinator.shutdown();
+            return Err(PersistentARTrieError::internal("Eviction already enabled"));
+        }
+        *slot = Some(coordinator);
         Ok(())
     }
 
@@ -729,10 +751,12 @@ impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
         // across the join deadlocks (worker waits on the guard; the joining thread
         // waits on the worker). char/byte `disable_eviction` already use this
         // statement-temporary; vocab was the missed site.
-        let coordinator = {
-            let mut guard = self.write();
-            guard.eviction_coordinator.take()
-        };
+        let coordinator = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .take();
+        // EC guard dropped here (statement-temporary) — BEFORE the join in `shutdown()`.
         if let Some(coordinator) = coordinator {
             coordinator.shutdown();
         }
@@ -740,14 +764,16 @@ impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
     }
 
     fn eviction_enabled(&self) -> bool {
-        let guard = self.read();
-        guard.eviction_coordinator.is_some()
+        self.eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .is_some()
     }
 
     fn eviction_stats(&self) -> crate::persistent_artrie::eviction::EvictionStats {
-        let guard = self.read();
-        guard
-            .eviction_coordinator
+        self.eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
             .as_ref()
             .map(|c| c.stats())
             .unwrap_or_default()
@@ -757,18 +783,29 @@ impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
         &self,
         target_bytes: usize,
     ) -> crate::persistent_artrie::error::Result<(usize, usize)> {
-        let guard = self.read();
-
-        let Some(coordinator) = &guard.eviction_coordinator else {
-            return Ok((0, 0));
+        // Clone the coordinator Arc out under a BRIEF EC lock, then release EC before calling
+        // force_eviction (vocab's no-op callback evicts nothing, so no overlay reclaim needed).
+        let coordinator = {
+            match self
+                .eviction_coordinator
+                .lock()
+                .expect("eviction_coordinator mutex poisoned")
+                .as_ref()
+            {
+                Some(c) => Arc::clone(c),
+                None => return Ok((0, 0)),
+            }
         };
-
         Ok(coordinator.force_eviction(target_bytes))
     }
 
     fn touch_node(&self, path: &[Self::Unit]) {
-        let guard = self.read();
-        if let Some(coordinator) = &guard.eviction_coordinator {
+        if let Some(coordinator) = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+        {
             use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
             coordinator.lru_registry().touch_hash(hash_char_path(path));
         }
@@ -970,7 +1007,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.vocab");
 
-        let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
+        let vocab = PersistentVocabARTrie::create(&path).unwrap();
 
         // Default is Immediate
         assert_eq!(vocab.durability_policy(), DurabilityPolicy::Immediate);

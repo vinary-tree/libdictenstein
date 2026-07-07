@@ -1,6 +1,6 @@
 # Task #43 (CX) — Path-Compressing Overlay↔Dense Codec — converged design (2026-06-08)
 
-> **Status: RED-TEAMED ×2 → refining (round 3). CX.1 no-truncation core LANDED + PROVEN (Rust
+> **Status: RED-TEAMED $\times$2 → refining (round 3). CX.1 no-truncation core LANDED + PROVEN (Rust
 > exhaustive + Coq `Model/PrefixChunking.v`, 0 admits, committed 22539a8).** Pass 1: chunker SOUND;
 > 2 blocking refinements (edge↔prefix convention + faithful Rocq model) → CLOSED. Pass 2 (confirmation):
 > BLOCKING-1/2 CONFIRMED CLOSED, but found **a real architectural gap on the LOAD side (Finding 4A)** —
@@ -18,8 +18,8 @@
 >
 > **CX.1 core landed:** `src/persistent_artrie_core/overlay/codec.rs` — `chain_chunks` (the shared,
 > K-generic, PURE no-truncation splitter) + an EXHAUSTIVE property test
-> (`chain_chunks_never_truncates_exhaustive`: all chain lengths 0..=128 × all widths 0..=14 →
-> `concat(prefix ++ [edge]) == input`, prefix ≤ cap, count = `ceil`). GREEN. This is the executable
+> (`chain_chunks_never_truncates_exhaustive`: all chain lengths 0..=128 $\times$ all widths 0..=14 →
+> `concat(prefix ++ [edge]) == input`, prefix $\le$ cap, count = `ceil`). GREEN. This is the executable
 > twin of the Rocq `chunk_concat_id` (T2). Remaining: peel + emit (serialize), load/expand, density
 > gate, byte twin, Rocq proof, vocab.
 > **Owner mandate (2026-06-08): KEEP path compression, but PROVE no-truncation.** The owner is
@@ -36,7 +36,7 @@ wire them later). State map: `docs/design/cx-task43-state-mapping-2026-06-08.md`
 
 ## Ground truth (cite-anchored, verified)
 - Overlay is UNCOMPRESSED (one node per unit, `prefix_len=0` always); traversal is **prefix-UNAWARE**
-  (`OverlayNode::match_prefix`/`prefix_matches`, node.rs:994/1009, have **0 non-test callers**). ⇒ the
+  (`OverlayNode::match_prefix`/`prefix_matches`, node.rs:994/1009, have **0 non-test callers**). $\Rightarrow$ the
   in-memory overlay must STAY uncompressed; the codec compresses only ON DISK and EXPANDS on load.
 - `MAX_PREFIX_LEN` = **12 byte / 6 char** units (`key_encoding.rs:43,79`, `KeyEncoding` trait const, from
   G4/#16). The dense format already reserves `prefix_len` (`SerializedCharNodeHeader`, validated
@@ -63,7 +63,7 @@ wire them later). State map: `docs/design/cx-task43-state-mapping-2026-06-08.md`
 
 ### Collapsibility + the chunk-boundary nail (off-by-one)
 `is_prefix_link(n) ≡ n.num_children()==1 ∧ ¬n.is_final() ∧ ¬n.has_value()`. Peel down through links,
-accumulating each link's **edge unit**, until a terminus (final / valued / ≠1 child / **OnDisk sole
+accumulating each link's **edge unit**, until a terminus (final / valued / $\ne$1 child / **OnDisk sole
 child** — peel only continues while the sole child is `InMem`, so serialize NEVER faults disk). The unit
 INTO the terminus and each chunk's OUTGOING edge are **edge-labels, NOT prefix units**; only `chunk_len−1`
 units are prefix: `(pfx, out_edge) = (chunk[..len-1], chunk[len-1])`. Bottom remainder width =
@@ -100,7 +100,7 @@ empty trie · single term · branching (N4→N16→N48→Bucket + astral-plane c
 **`cx_no_truncation_deep_chain_3W_plus_1`** (term length `3·MAX_PREFIX_LEN+1`; assert membership exact +
 chunk count = `ceil((len-1)/W)` + re-serialize byte-identical) · `cx_chain_exact_multiple_of_W`
 (off-by-one) · arbitrary V incl. empty-string-value root · OnDisk child in a collapsible chain (assert no
-fault) · **`cx_density_eq_owned_serialize_root`** (CX image ≤ owned image) · back-compat (i)+(ii).
+fault) · **`cx_density_eq_owned_serialize_root`** (CX image $\le$ owned image) · back-compat (i)+(ii).
 
 ## Phasing (each compiles + suite green; dormant/reversible throughout)
 - **CX.1** char serialize-with-chunking (`is_prefix_link`, `overlay_inner_single_node_with_prefix`,
@@ -126,9 +126,9 @@ the truncating `extend_prefix`/`with_prefix` being wired later (gate/deprecate);
 ## Red-team #1 result + convergence refinements (2026-06-08)
 **Verdict: chunker SOUND (no truncation, exhaustively verified); BLOCKED on 2 design refinements,
 now closed below. Re-red-team to confirm before the serialize/load impl.** Confirmed sound: the
-`(prefix=chunk[..len-1], edge=chunk[len-1])` split for all `L ∈ {0,1,W-1,W,W+1,2W,2W+1,3W+1,100}`;
-`from_chars` cannot panic (prefix ≤ W-1); OnDisk-mid-chain (peel stops at the InMem boundary, no
-fault); density (CX is *never worse* than uncompressed — `ceil(L/W) ≤ L`, and a `w=1` chunk writes
+`(prefix=chunk[..len-1], edge=chunk[len-1])` split for all $L \in {0,1,W-1,W,W+1,2W,2W+1,3W+1,100}$;
+`from_chars` cannot panic (prefix $\le$ W-1); OnDisk-mid-chain (peel stops at the InMem boundary, no
+fault); density (CX is *never worse* than uncompressed — $ceil(L/W) \le L$, and a `w=1` chunk writes
 NO prefix block, byte-identical to uncompressed); back-compat (no existing test depends on the
 prefix-drop bug; the wire format already round-trips `prefix_len>0` per
 `tests/persistent_char_node_layout_correspondence.rs:46-65` + fail-closed `prefix_len ≤ MAX` validate).
@@ -137,7 +137,7 @@ prefix-drop bug; the wire format already round-trips `prefix_len>0` per
 off-by-one, but the *parent→chunk edge identification* was unspecified — the one place a reasonable
 impl could double-count the incoming edge (lengthening every multi-chunk key by one unit per
 boundary). FIX (now normative):
-- `expand(incoming_edge g, stored_prefix [p1..pk], out_edge e)` ⟶ the unit path `g · p1 · … · pk · e`
+- `expand(incoming_edge g, stored_prefix [p1..pk], out_edge e)` ⟶ the unit path $g \cdot p1 \cdot … \cdot pk \cdot e$
   (k+2 edges). The chunk's STORED prefix is the units **strictly between** the incoming edge and the
   out-edge — the serializer must NOT also place `g` in the prefix. (Worked example reconciled:
   `node_A` is reached from its parent `P` by edge `u1`; `node_A.prefix = [u2..u6]` (the inter-edge
@@ -164,7 +164,7 @@ boundary). FIX (now normative):
   and EITHER a wire-format round-trip lemma OR an explicit statement that the Rocq claim is scoped to
   the **tree level** with wire round-trip kept as the Rust layout-correspondence test (state the
   boundary; do not paper over it).
-- define `well_chunked` OPERATIONALLY (all-but-last chunk width = W, last ∈ [1,W], each node
+- define `well_chunked` OPERATIONALLY (all-but-last chunk width = W, last $\in$ [1,W], each node
   `is_prefix_link`-collapsed) — NOT via the non-decidable `maximally_compressed`. Termination of
   `encode`/`decode`: explicit measure = chain length (−W per chunk, −1 per expand intermediate).
 
@@ -176,7 +176,7 @@ boundary). FIX (now normative):
   `path.len()` equals the node's true logical depth — else `durable_stamp`/parent-integrity +
   relative-encoding sibling assumptions desync. Add an evict-then-refault test over a compressed chunk
   node asserting the registry path length.
-- (#7) rename the density test `cx_density_eq_owned` → `cx_density_le_owned` (the gate is `≤`, and
+- (#7) rename the density test `cx_density_eq_owned` → `cx_density_le_owned` (the gate is $\le$, and
   must be re-run if owned compression is ever enabled).
 - (#5d) make NUL (`\0`) and astral (`U+10FFFF`) prefix units EXPLICIT mandatory Rust tests (the Rocq
   alphabet is `nat`, giving zero coverage of `char::from_u32`/`unit_from_le_bytes`); decide + document
@@ -198,8 +198,8 @@ the FIRST read that faults such a (compressed) grandchild loses its prefix → k
 mis-keyed → **silent key-data loss on fault-in** (the owner's fear, displaced to the loader). **FIX
 (option i — also fixes the pre-existing prefix-drop bug + the byte twin):** make the SHARED single-node
 fault loader compressed-aware — `load_char_node_from_disk_lazy` reads `prefix_len=p` + the `p` prefix
-units off the `CharNode`, and the `inner→overlay` step EXPANDS them into the `p`-intermediate chain
-(grandchildren stay OnDisk). `p=0` (every current production image) ⇒ zero intermediates ⇒
+units off the `CharNode`, and the $inner\to overlay$ step EXPANDS them into the `p`-intermediate chain
+(grandchildren stay OnDisk). `p=0` (every current production image) $\Rightarrow$ zero intermediates $\Rightarrow$
 byte-identical to today (no-op for uncompressed; safe even though dormant). `load_overlay_root_compressed`
 then is just "fault the root ptr through this same loader." Every fault (root or grandchild) expands.
 Mirror in the byte `overlay_fault.rs`. **The round-trip/differential test MUST force full expansion
@@ -217,7 +217,7 @@ evict-after-checkpoint replaces that one node's Arc with `OnDisk(disk_ptr_j)`, d
 by refcount) AND on the re-expanded TOP intermediate at fault (so fault-then-evict works); the lower
 intermediates + the real node carry stamp 0 (internal to the fault; eviction reclaims only at the top).
 **Mandatory test: evict-then-refault a compressed chunk node — assert it evicts (not stuck
-`NotEvictable` ⇒ #39 regression) AND refaults its prefix losslessly** (not merely that the path length
+`NotEvictable` $\Rightarrow$ #39 regression) AND refaults its prefix losslessly** (not merely that the path length
 is right).
 
 **Tightenings:** (1c) differential test forces full expansion + pins the `terms` source + compares
@@ -258,19 +258,19 @@ caller; production capture = the untouched uncompressed `serialize_overlay_to_di
 overlay WRITE path never emits `prefix_len>0`, so NO chain is ever collapsed in production. The ONLY
 production-reachable edit is the fault-time top-of-span stamp; for `prefix_len==0` it is the same node +
 the same stamp the existing fault-then-evict path already requires (reconcile against the current
-loader stamping — Flag 1). An executable `no-op-for-uncompressed` test asserts the compressed registry ≡
+loader stamping — Flag 1). An executable `no-op-for-uncompressed` test asserts the compressed registry $\equiv$
 the uncompressed registry + identical durable_stamps when no chain collapses.
 
 **THE #39 SURFACE — what changes the day L2/L3 eviction-enables a COMPRESSED image (today: NOTHING):**
-1. Registry CARDINALITY drops: one entry per CHUNK (absorbing ≤7 char / ≤13 byte units) instead of one
-   per spine node ⇒ `resident_bytes()` (#45) reports LOWER for a compressed tree (fewer registered
+1. Registry CARDINALITY drops: one entry per CHUNK (absorbing $\le$7 char / $\le$13 byte units) instead of one
+   per spine node $\Rightarrow$ `resident_bytes()` (#45) reports LOWER for a compressed tree (fewer registered
    nodes — the intended compression win, NOT a leak).
 2. Eviction GRANULARITY becomes per-span: evicting one chunk reclaims the whole expanded span below it
-   in one CAS ⇒ frees more heap per eviction. `bytes_freed` (nominal 256/node) UNDER-reports the true
+   in one CAS $\Rightarrow$ frees more heap per eviction. `bytes_freed` (nominal 256/node) UNDER-reports the true
    reclaim for compressed spans (the RSS pass is the physical witness; the resident-budget loop uses the
    registry estimate, not `bytes_freed`, so convergence is unaffected).
 3. `min_eviction_depth` filtering keys on the TRUE expanded depth (because chunks register at full
-   depth) ⇒ which logical depths are evictable is UNCHANGED (only the node-count representation differs).
+   depth) $\Rightarrow$ which logical depths are evictable is UNCHANGED (only the node-count representation differs).
    The off-by-one trap (registering at the out-edge depth) is explicitly AVOIDED.
 4. Fault-in faults a whole chunk's prefix back in one decode (cheaper read amplification), still lazy at
    the chunk's out-edge.

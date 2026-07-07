@@ -39,7 +39,7 @@ no `match` on "is this byte or char?" at run time, and no duplicated source.
 | **unit** | One element of the alphabet — the label on a single edge / the key component at one trie depth. |
 | **monomorphization** | Rust's compile-time specialization of a generic function or type for each concrete type argument. One generic body → one optimized machine-code copy per alphabet, with no run-time dispatch. |
 | **marker type** | A zero-sized struct (e.g. `ByteKey`) that carries no data; it exists only to select a trait implementation at the type level. |
-| **`Unicode scalar value`** | Any code point that is not a surrogate — exactly the values `char` can hold (`0..=0xD7FF` ∪ `0xE000..=0x10FFFF`). |
+| **`Unicode scalar value`** | Any code point that is not a surrogate — exactly the values `char` can hold (`0..=0xD7FF` $\cup$ `0xE000..=0x10FFFF`). |
 
 ## `CharUnit` — the in-memory edge-label unit
 
@@ -66,7 +66,7 @@ pub trait CharUnit:
 | Impl | Bytes / edge | `from_str` semantics | Best for | Correctness note |
 |------|--------------|----------------------|----------|------------------|
 | **`u8`** | 1 | UTF-8 bytes (`s.as_bytes()`) | ASCII / Latin-1; smallest, fastest | A multi-byte UTF-8 sequence is *several* units, so an edit distance of 1 from `"a"` will **not** reach `"é"` (2 bytes). |
-| **`char`** | 4 | Unicode scalar values (`s.chars()`) | Unicode text (CJK, emoji, accents) | Character-level semantics: distance 1 from `"a"` correctly reaches `"é"` (1 char). ≈5–15% slower, 4× the per-edge memory. |
+| **`char`** | 4 | Unicode scalar values (`s.chars()`) | Unicode text (CJK, emoji, accents) | Character-level semantics: distance 1 from `"a"` correctly reaches `"é"` (1 char). $\approx$5–15% slower, 4$\times$ the per-edge memory. |
 | **`u64`** | 8 | LE 8-byte chunks (`chunks(8)`) | token sequences, hash IDs, `f64` time-series via `to_bits()` | The string path zero-pads/zero-trims; the *primary* API for `u64` backends is direct sequence ops (`insert_sequence`, …). |
 
 `to_string` is the inverse of `from_str` on the valid domain: lossy UTF-8 decode
@@ -74,7 +74,7 @@ for `u8` (invalid sequences become `` `U+FFFD` ``), lossless `char` collection,
 and LE byte unpacking with trailing-zero trim for `u64`. Concretely, for the byte
 impl `"café"` is `['c', 'a', 'f', 0xC3, 0xA9]` (5 units) while for the char impl
 it is `['c', 'a', 'f', 'é']` (4 units) — the difference that makes
-`"cafe" → "café"` a distance-`1` edit at char level but distance-`2` at byte
+$"cafe" \to "café"$ a distance-`1` edit at char level but distance-`2` at byte
 level.
 
 ### What consumes `CharUnit`

@@ -2,13 +2,13 @@
 
 **Crate `libdictenstein`, byte variant `src/persistent_artrie/`. Baseline HEAD `1f120e8` (char on the
 shared `LockFreeOverlay` trait). READ-ONLY audit by agent `a9132d79` + parent.** This is the data-loss
-prerequisite for Step 2 (the byte flip): when byte's `create()` create-flips (V ∈ {(), i64}) and an
+prerequisite for Step 2 (the byte flip): when byte's `create()` create-flips (V $\in$ {(), i64}) and an
 Overlay-regime reopen clears the owned tree, which INTERNAL byte reads become reachable under
 `route_overlay()` and would silently read the empty owned tree? The char twin of this audit found two
 data-loss bugs; the byte audit finds the byte set + THREE char-absent hazards.
 
 ## Ground truth
-- Byte has NO flip today (`route_overlay`/`OverlayWriteMode`/`LockFreeOverlay` appear 0× in
+- Byte has NO flip today (`route_overlay`/`OverlayWriteMode`/`LockFreeOverlay` appear 0$\times$ in
   `src/persistent_artrie/`). `enable_lockfree` (lockfree_cas.rs:93) does NOT stamp the WAL regime (the
   generic `flip_to_overlay` `current_lsn()==1` restamp must cover byte). Predictive audit.
 - Byte's un-routed owned read layer = the `_impl` methods: `get_value_impl` (query_impl.rs:70),
@@ -16,8 +16,8 @@ data-loss bugs; the byte audit finds the byte set + THREE char-absent hazards.
   `owned_*`. Byte internal code reads through `_impl`, so byte's recovery RMW is ALREADY structurally
   owned-safe where char's pre-fix code was not.
 - Byte counter overlay = `impl<S> PersistentARTrie<i64,S>`; `get_lockfree(&[u8])->Option<u64>`,
-  `increment_cas(&[u8],u64)->u64` (no-WAL publisher, lockfree_cas.rs:595). ⇒ seam `CounterValue = i64`
-  with an i64↔u64 conversion at the overlay boundary (the leaf stores i64, bounded ≥0 by
+  `increment_cas(&[u8],u64)->u64` (no-WAL publisher, lockfree_cas.rs:595). $\Rightarrow$ seam `CounterValue = i64`
+  with an i64↔u64 conversion at the overlay boundary (the leaf stores i64, bounded $\ge$0 by
   LOCKFREE_COUNTER_MAX, widened to u64 losslessly).
 
 ## A. NEEDS-OWNED-READER — already satisfied, must PROTECT (not change)
@@ -69,7 +69,7 @@ The flip MUST add `if route_overlay() { <overlay CAS> } else { <owned body> }` t
 read/write — a miss = silent under-count/lost write:
 - `increment_bytes` (atomic_ops.rs:40) → byte `increment_cas`/`try_increment_cas`.
 - `upsert_bytes` (atomic_ops.rs:125) → byte overlay upsert.
-- `compare_and_swap_bytes` (atomic_ops.rs:162) → **NO overlay CAS-with-expected exists on byte today** ⇒
+- `compare_and_swap_bytes` (atomic_ops.rs:162) → **NO overlay CAS-with-expected exists on byte today** $\Rightarrow$
   REJECT under overlay (or build the primitive).
 - `get_or_insert_bytes` (atomic_ops.rs:224) → overlay get-or-insert.
 - `insert`/`insert_with_value` (mutation_api.rs:27/32) → `insert_cas` membership/value-CAS.

@@ -38,7 +38,7 @@ read the header regime, never call `reconcile_lww`, replay every record in raw `
 `crate::persistent_artrie::recovery::rebuild_from_wal_segments(&segments, |op| …apply_core_recovered_operation_no_wal(op)…)`.
 Core `rebuild_from_wal_segments` (recovery.rs:1469-1513) is `(segments: &[PathBuf], apply_fn: F)` — **NO
 `rank_regime` param**; body applies every `recovered_operations_from_record(lsn, record)` in raw order.
-No header read, no rank map, no Overlay drop ⟹ post-flip Overlay archive rebuild RESURRECTS every
+No header read, no rank map, no Overlay drop $\implies$ post-flip Overlay archive rebuild RESURRECTS every
 dropped-at-merge / two-append-window orphan.
 
 ### 1.3 LIVE regime-blind path #2 — `open_with_recovery_config` corruption branch
@@ -111,7 +111,7 @@ Each names its production entry point. Land all GREEN before owner GO; only S5-1
     a `None` route ⟹ `Err`, not fall-through. `fetch_add` (atomic_ops.rs:247-250) delegates ⟹ inherits.
   - `insert_batch_bytes` (batch_insert.rs:148): `append_to_wal(BatchInsert)` (:185-186) with NO route guard;
     `_sorted` (:289)/`_grouped` (:388) delegate (:302/:405) ⟹ covered. FIX: overlay prologue (route or reject).
-  - `enable_lockfree` refuses Overlay stamp for `V ∉ {(),u64}` (TypeId). See §RES-1 for the full producer set.
+  - `enable_lockfree` refuses Overlay stamp for $V \notin {(),u64}$ (TypeId). See §RES-1 for the full producer set.
 - **S5-6 (merge reject, was S5-7).** Entry: `merge_lockfree_values_to_persistent` (lockfree_cas.rs:2002)
   appends UNRANKED `BatchIncrement` (:2029) then drains to owned; `merge_lockfree_to_persistent`
   (lockfree_cas.rs:1115) analogous. FIX: hard-`Err` under Overlay (post-flip every increment is already
@@ -120,14 +120,14 @@ Each names its production entry point. Land all GREEN before owner GO; only S5-1
   NO route guard. FIX: `Err` under `route_overlay()` (symmetry with `commit_document`). Severity downgraded
   (§RES-2).
 - **S5-8 (promote asserts).** `debug_assert*`→`assert*` at persist.rs:140 (next_lsn-unchanged #41 guard), the
-  watermark≤synced_frontier guard, the moved `lockfree_root.is_none` owned-arm assert. Entry:
-  `publish_durable_and_reclaim` (persist.rs:108). Order-A ⟹ no spurious panic.
+  watermark$\le$synced_frontier guard, the moved `lockfree_root.is_none` owned-arm assert. Entry:
+  `publish_durable_and_reclaim` (persist.rs:108). Order-A $\implies$ no spurious panic.
 - **S5-9 (cfg un-gate + checkpoint route-split).** Entry: `checkpoint()` (persist.rs:86). Production
   `checkpoint()`→`capture_snapshot()` (persist.rs:255) serializes from `self.root` (OWNED tree) ONLY — no
-  overlay branch. Post-flip the owned tree is cleared ⟹ would checkpoint an EMPTY tree. The overlay-checkpoint
+  overlay branch. Post-flip the owned tree is cleared $\implies$ would checkpoint an EMPTY tree. The overlay-checkpoint
   fns (`capture_snapshot_immutable` persist.rs:343, `publish_immutable_snapshot_retaining_wal[_with_eviction]`
   :548/:655, `overlay_to_inner` :1143, `count_overlay_finals` :1251) are `#[cfg(any(test, feature="bench-internals"))]`,
-  reached only from bench/tests ⟹ DORMANT today. S5-9 = (a) remove the cfg gate; (b) route-split `checkpoint()`
+  reached only from bench/tests $\implies$ DORMANT today. S5-9 = (a) remove the cfg gate; (b) route-split `checkpoint()`
   so Overlay captures from the immutable overlay, Owned keeps `capture_snapshot()`. A genuine flip
   PREREQUISITE (the flip is incorrect without it), NOT a live-bug-fix, labeled dormant-until-wired. Re-run
   unsafe-inventory gate (no new `unsafe`).
@@ -140,7 +140,7 @@ Each names its production entry point. Land all GREEN before owner GO; only S5-1
 - **S5-11 (gate tests).** §4 below.
 
 ### 3.1 S5-12 — THE FLIP (IRREVERSIBLE, ~6 lines) — PRESERVED
-The `V ∈ {(),u64}` ctors call `flip_to_overlay` (create) / `reestablish` handles open. Arbitrary-V
+The $V \in {(),u64}$ ctors call `flip_to_overlay` (create) / `reestablish` handles open. Arbitrary-V
 UNCHANGED. **Owner GO only**, consumed BETWEEN a full green gate and committing S5-12. Irreversibility
 boundary = existence of any Overlay archive segment (v2 RA-10).
 
@@ -177,7 +177,7 @@ wasted §4. Red-team MUST close each.
 - **RES-4 (S5-9 flip actually routes checkpoint to the immutable path).** Prove the route-split predicate is
   consulted INSIDE `checkpoint()` post-flip, and `capture_snapshot_immutable`'s on-disk image is
   equivalent-by-construction to owned `capture_snapshot` at production scale. (LIVE risk: post-flip checkpoint
-  of an empty owned tree ⟹ total loss on next reopen.)
+  of an empty owned tree $\implies$ total loss on next reopen.)
 - **RES-5 (io_uring archive rebuild).** Only the **mmap** ctor's two rebuilds were traced. Grep
   `io_uring_ctor.rs` for `rebuild_from_wal_segments`/`recover_from_archives`/a corruption arm; if present,
   apply Fix-A2 there too. (LIVE risk: same A2 resurrection on the io_uring backend.)

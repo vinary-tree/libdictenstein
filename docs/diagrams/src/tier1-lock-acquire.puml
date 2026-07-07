@@ -1,0 +1,49 @@
+@startuml tier1-lock-acquire
+' Tier-1 single-owner advisory-lock acquisition at a DiskManager open/create chokepoint.
+' Rendered by scripts/render-diagrams.sh → ../tier1-lock-acquire.svg
+skinparam backgroundColor #FDFDFD
+skinparam shadowing false
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #5F6368
+skinparam activity {
+  BackgroundColor #E8F0FE
+  BorderColor #5F6368
+  DiamondBackgroundColor #FEF7E0
+  DiamondBorderColor #E0C060
+  StartColor #5F6368
+  EndColor #5F6368
+}
+title Tier-1 — acquire_exclusive_lock (once per OPEN, never per operation)
+
+start
+:DiskManager::{create|open|open_without_validation};
+:key ← canonicalize(path)\n(parent dir + filename if the file does not exist yet);
+
+partition "process-global lock registry (Mutex<HashMap>)" {
+  if (key already present?\n(same process already owns it)) then (yes)
+    :entry.refs += 1;
+    #CEEAD6:return WLockGuard\n(SHARES the existing flock — e.g. reopen\nor a crash-sim mem::forget'd owner);
+    kill
+  else (no)
+    :open "<path>.wlock" sidecar;
+    if (flock(LOCK_EX | LOCK_NB)) then (EWOULDBLOCK\n— another PROCESS holds it)
+      #F6AEA9:return Err(FileLocked { path });
+      kill
+    else (Ok)
+      :registry.insert(key → { file, refs = 1 });
+      #CEEAD6:return WLockGuard (new flock);
+      kill
+    endif
+  endif
+}
+
+note right
+  The returned guard is stored in the DiskManager for its whole lifetime.
+  Dropping the LAST guard for a path removes the registry entry, which drops
+  the `.wlock` File and releases the OS `flock`. A `mem::forget` leaks a
+  refcount, so the lock stays held until the process exits — exactly a crash.
+
+  This runs ONCE per open. The lock-free CAS write path and wait-free read
+  path take NO lock — the single-process non-blocking invariant is preserved.
+end note
+@enduml

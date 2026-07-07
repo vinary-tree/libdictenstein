@@ -177,7 +177,7 @@ noted in the entry's `Setup:` field.
 - **Disable turbo if measuring tail-latency stability**: `echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo`.
   Note in `Setup:` whether turbo was on/off.
 - **Output capture**: pipe with `tee`; never re-run a command to recover a different field of the output.
-- **Multiple iterations**: criterion's default is fine for throughput; for tail-latency record `--measurement-time 60` and confirm sample size ≥ 100.
+- **Multiple iterations**: criterion's default is fine for throughput; for tail-latency record `--measurement-time 60` and confirm sample size $\ge$ 100.
 - **`perf record --call-graph lbr`** for CPU profiles; flamegraphs saved under `docs/benchmarks/artifacts/`.
 - **`valgrind --tool=massif`** for memory profiles where relevant.
 

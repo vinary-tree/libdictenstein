@@ -11,7 +11,7 @@ Supersedes slice3-f5-f7-execution-plan.md for the done-state + ordering. The pla
   recovery ctors → reestablish_overlay_from_owned (831ab51). Owned→Overlay rotation-on-reopen DONE (e909eab,
   crash proptest 11/11). F5's data-loss-critical WAL path = `drain_segments_into_overlay`/`reconcile_and_drain_overlay`
   (archive-aware, per-segment regime) — `replay_records_lww_overlay` is SUPERSEDED-by-drain (dead).
-- **overlay_eligible_v()→true** (8b5023f, was listed under S9) ⇒ NO ineligible-V owned production path left.
+- **overlay_eligible_v()→true** (8b5023f, was listed under S9) $\Rightarrow$ NO ineligible-V owned production path left.
 - **Eviction (a46d9c1):** route_overlay-gated swap with owned `else` arms RETAINED (S9 must delete them).
 
 ## REMAINING (the actual Slice-3 work)

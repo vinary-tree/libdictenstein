@@ -22,10 +22,10 @@ via a reversible `bench-internals` accessor.
   (`Arc<RwLock>` `insert_with_value` + downgrade checkpoint), in the disjoint-prefix workload.
 - **H0:** μ_T − μ_C = 0.
 - **Two-sided** Welch's t (must detect TREATMENT *losing* — per-op fsync / Arc-refcount contention are
-  real risks, §9). H1 "supported" only if effect is positive AND significant AND meets the d≥0.8 floor.
+  real risks, §9). H1 "supported" only if effect is positive AND significant AND meets the d$\ge$0.8 floor.
 
 **Secondary (descriptive regression VETOES, not confirmatory tests → no multiplicity correction):**
-- **S1 — checkpoint pause** (writer-observable stall): TREATMENT ≤ CONTROL.
+- **S1 — checkpoint pause** (writer-observable stall): TREATMENT $\le$ CONTROL.
 - **S2 — write tail** p50/p99/p999: TREATMENT not materially worse.
 - **S3 — peak RSS**: TREATMENT not materially worse (overlay holds a 2nd in-memory Arc tree).
 - **S4 — contended-prefix throughput** (2nd workload variant): TREATMENT not significantly worse.
@@ -100,12 +100,12 @@ Flipping WITH eviction on is not yet measurable; ledger says so.
 
 ## 4. Workload spec (FROZEN)
 
-**Hardware:** AMD Threadripper PRO 5975WX, 32 physical cores, SMT OFF, 4 CCD×8, 32 MiB L3/CCD, governor
+**Hardware:** AMD Threadripper PRO 5975WX, 32 physical cores, SMT OFF, 4 CCD$\times$8, 32 MiB L3/CCD, governor
 `performance` (live; no sudo), NVMe `/dev/nvme0n1p4` 66 GB free (97% full). (Execution agent: confirm against
 `/home/dylon/.claude/hardware-specifications.md` + live `lscpu`/`nproc`; record any delta in RESULTS.)
 
 **Topology:** W=8 writers, R=4 readers, 1 checkpointer (+1 driver) = 14 OS threads, pinned `taskset -c 0-15`
-(CCD0+CCD1; ≤16 avoids oversubscription, leaves CCD2/3 for OS + WAL bg-sync). W=8 stresses the write path;
+(CCD0+CCD1; $\le$16 avoids oversubscription, leaves CCD2/3 for OS + WAL bg-sync). W=8 stresses the write path;
 not wider because per-op fsync saturates the NVMe queue before 32 threads.
 
 **Variant A — DISJOINT prefixes (overlay best case; PRIMARY):** each writer owns a disjoint range; CONTROL
@@ -122,7 +122,7 @@ CAS livelock / Arc-refcount ping-pong). `writer_key_hot(t,i)=format!("hot-prefix
 **Readers (LOAD, not primary):** R readers loop `contains`/`contains_lockfree` on early-inserted keys; read
 throughput logged, NOT gating (experiment #11 already decided reads).
 
-**Cadence:** FIXED op-count `WRITES_PER_ROUND=2000` ×8 = 16000 writer ops/round (per-round throughput =
+**Cadence:** FIXED op-count `WRITES_PER_ROUND=2000` $\times$8 = 16000 writer ops/round (per-round throughput =
 16000/wall-sec, directly comparable). Checkpointer loops `checkpoint + sleep(20ms)` across the whole writer
 window, capped `MAX_CHECKPOINTS_PER_ROUND=40`. `WARMUP_ROUNDS=2` discarded. Timed region = post-barrier until
 all writers join.
@@ -146,7 +146,7 @@ checked pre+post each round (abort if exceeded); `MemoryMax=32G` bounds page-cac
 | C1 | Durability mismatch | Both `Immediate`; proven same fsync (§2) | None (proven) |
 | C2 | I/O backend | Both `MmapDiskManager`+`StdFsync`; `bench-internals` doesn't swap (§2.3) | None (verified) |
 | C3 | WAL/buffer cfg | Both `no_archive()`, 256-page pool, same AsyncWalConfig | TREATMENT WAL-retain vs CONTROL truncate (logged) |
-| C4 | CPU pin/migration | `taskset -c 0-15`; 14≤16 threads | OS schedules within cpuset; symmetric |
+| C4 | CPU pin/migration | `taskset -c 0-15`; 14$\le$16 threads | OS schedules within cpuset; symmetric |
 | C5 | Governor/boost | `performance` live (no sudo for `cpupower`); boost on | Boost freq variance → absorbed by interleave + K + Welch; record observed freq |
 | C6 | Real-disk scratch | NVMe `target/bench-scratch`; never tmpfs; ceiling+cleanup | 97%-full → SSD GC noise; symmetric; ceiling stops ENOSPC |
 | C7 | Page-cache carryover | Fresh cold file/round both arms; 2 warmup discarded; interleaved | No `drop_caches` (root); symmetric |
@@ -165,7 +165,7 @@ checked pre+post each round (abort if exceeded); `MemoryMax=32G` bounds page-cac
   windows (a checkpoint that stalls no writer is fine for TREATMENT; CONTROL's downgrade excludes writers during
   capture → SHOULD stall — exactly S1's hypothesis). ALSO checkpointer-side per-call duration (mean/p99).
   Per-thread `Vec<u64>` histograms merged post-join (zero timed-region contention).
-- **S2 latency p50/p99/p999:** merge all W×WRITES_PER_ROUND per-op latencies post-join (`hdrhistogram` dev-dep
+- **S2 latency p50/p99/p999:** merge all W$\times$WRITES_PER_ROUND per-op latencies post-join (`hdrhistogram` dev-dep
   available, or sort-Vec at 16k/round).
 - **S3 peak RSS:** `/proc/self/status` `VmHWM` in the single-arm-per-process pass (C10).
 - **Secondary (non-gating):** `cas_retries`/TREATMENT round, `round_dir_bytes`, read_ops, checkpoint count.
@@ -193,21 +193,21 @@ ceiling guard/per-round cleanup kept verbatim from v1.
 
 ## 8. Statistical + pre-registration plan (anti-p-hacking)
 
-- **K = 30 measured rounds/arm** (after 2 warmup). Justification: exp #11 needed 57 replicates for d≈0.345;
+- **K = 30 measured rounds/arm** (after 2 warmup). Justification: exp #11 needed 57 replicates for d$\approx$0.345;
   expected effect here is SMALLER (durability equalized). Power for two-sided Welch α=0.05 to detect the
-  pre-registered floor **d=0.8** at ≈0.9 power needs ≈27/arm → K=30 margin. We deliberately do NOT chase a
-  small d≈0.3 effect (not decision-relevant for an IRREVERSIBLE flip). K=30 fixed before data.
+  pre-registered floor **d=0.8** at $\approx$0.9 power needs $\approx$27/arm → K=30 margin. We deliberately do NOT chase a
+  small d$\approx$0.3 effect (not decision-relevant for an IRREVERSIBLE flip). K=30 fixed before data.
 - **Primary test:** two-sample **Welch's t** on the K throughput vectors (variant A, Immediate). Report per-arm
   mean±sd; difference (T−C) + 95% Welch CI; t, Welch–Satterthwaite df, two-sided p; Cohen's d (pooled). Also
   **Mann–Whitney U** (distribution-free corroboration). Decision keys on Welch + CI + d.
 - **Effect-size floor (pre-registered):** because the flip is IRREVERSIBLE + deletes the owned tree, require
-  **d ≥ 0.8** (large) for an unconditional "flip wins on throughput" (exp #11 used d≥0.5 for a *reversible*
-  change; irreversible warrants higher). 0.5≤d<0.8 = "modest, flip-neutral on throughput — decide on S1/S2".
+  **d $\ge$ 0.8** (large) for an unconditional "flip wins on throughput" (exp #11 used d$\ge$0.5 for a *reversible*
+  change; irreversible warrants higher). 0.5$\le$d<0.8 = "modest, flip-neutral on throughput — decide on S1/S2".
 - **α=0.05.** Secondaries are descriptive vetoes (can only BLOCK, not justify).
 - **STOPPING RULE:** exactly K=30/arm/variant. NO peeking, NO early stop, NO adding rounds. Launch once, tee,
   analyze offline. Analysis script written + committed BEFORE the run, run once on the frozen CSV.
 - **DECISION RULE → flip recommendation (frozen, exhaustive):**
-  1. **PROCEED:** Welch p<0.05 AND diff>0 AND d≥0.8 (variant A throughput) AND no regression: S1 T≤C, S2
+  1. **PROCEED:** Welch p<0.05 AND diff>0 AND d$\ge$0.8 (variant A throughput) AND no regression: S1 T$\le$C, S2
      p99/p999 T≤1.10×C, S3 RSS T≤1.25×C, S4 contended T not sig worse (p≥0.05 or diff≥0).
   2. **PROCEED-WITH-CAVEAT (tail/pause, not throughput):** throughput null/modest (d<0.8) BUT S1 clear pause/
      tail improvement AND no S2/S3/S4 regression → "flip buys bounded tail latency, not mean throughput."
@@ -321,7 +321,7 @@ No production source change beyond the already-present reversible `bench-interna
 
 - **diff (T−C) = +14,231.3 ops/s (+312.05%)**, **95% Welch CI [13,931.8, 14,530.8]** (excludes 0, strictly positive).
 - **Welch t = 96.9467, df = 30.72, p(two-sided) = 9.10e-40.**
-- **Cohen's d = 25.03** (pooled) — vastly exceeds the pre-registered d≥0.8 floor.
+- **Cohen's d = 25.03** (pooled) — vastly exceeds the pre-registered d$\ge$0.8 floor.
 - **Mann–Whitney U = 900.0, p = 3.02e-11** (complete separation; corroborates Welch).
 
 <img src="../benchmarks/artifacts/lockfree-flip-throughput.svg" alt="Clustered bar chart of write throughput in ops/sec, CONTROL (Arc<RwLock> owned tree, red) versus TREATMENT (lock-free overlay, blue), across six regime-and-variant pairs. TREATMENT is 3-6.5x higher in every pair: eviction-OFF disjoint 4561 vs 18792 (+312%), eviction-OFF contended 5800 vs 15486 (+167%), eviction-ON disjoint 2720 vs 17235 (+534%), eviction-ON contended 3799 vs 15205 (+300%), evict+reclaim disjoint 1987 vs 14970 (+653%), evict+reclaim contended 2439 vs 14806 (+507%)." width="860"/>
@@ -331,7 +331,7 @@ No production source change beyond the already-present reversible `bench-interna
 ### Secondary descriptive vetoes
 - **S1 — checkpoint pause.** FROZEN S1 = the **writer-observable** stall (§6: "measured AT THE WRITER as the
   upper tail of per-op write latency during checkpoint windows"; §1: "writer-observable stall"). Writer-observed
-  p999: **control 126,374 µs vs treatment 4,533 µs → treatment 96.4 % better (T≤C, no regression — a large S1
+  p999: **control 126,374 µs vs treatment 4,533 µs → treatment 96.4 % better (T$\le$C, no regression — a large S1
   improvement).** Secondary "ALSO" diagnostic (checkpointer-side per-call, §6): mean control 67,625 / treatment
   59,532 µs; **p99 control 132,144 / treatment 185,414 µs** — the per-call checkpoint is *longer* for TREATMENT
   (its immutable snapshot still walks the overlay to serialize, §9 item 5) but does so WITHOUT stalling writers,
@@ -339,23 +339,23 @@ No production source change beyond the already-present reversible `bench-interna
   hypothesis quantity and does not gate the verdict.
 - **S2 — write tail.** p50: control 58.2 / treatment 305.8 µs (ratio 5.25 — TREATMENT's per-op floor is higher,
   the WAL-append-then-CAS critical path; NOT vetoed — §8 only vetoes on p99/p999). **p99: 67,406 → 1,955 µs
-  (ratio 0.029).** **p999: 126,374 → 4,533 µs (ratio 0.036).** Both tail ratios far below the 1.10× veto → no
-  S2 regression; TREATMENT's tail is ~28–34× tighter.
+  (ratio 0.029).** **p999: 126,374 → 4,533 µs (ratio 0.036).** Both tail ratios far below the 1.10$\times$ veto → no
+  S2 regression; TREATMENT's tail is ~28–34$\times$ tighter.
 - **S3 — peak RSS** (single-arm-per-process pass, fixes v1 VmHWM C10): **control 484,160 / treatment 425,088 KiB,
-  ratio 0.878** (≤1.25× veto) — TREATMENT actually used LESS peak RSS (the owned-tree arena vs overlay+cache
+  ratio 0.878** ($\le$1.25$\times$ veto) — TREATMENT actually used LESS peak RSS (the owned-tree arena vs overlay+cache
   net out in TREATMENT's favor at this 16k-key scale). No S3 regression.
 - **S4 — contended variant B** (write_ops_per_sec, n=30/arm): control 5,799.6±191.3 / treatment 15,486.1±835.0;
   **diff = +9,686.5 ops/s (+167.02%), 95% CI [9,368.0, 10,005.1], Welch t = 61.94, df = 32.04, p = 6.32e-35,
   d = 15.99, Mann–Whitney U = 900, p = 3.02e-11.** TREATMENT is significantly BETTER, not worse → no S4
   regression / no CAS-livelock. **`cas_retries` (TREATMENT): disjoint mean 136.9 max 392; contended mean 140.1
-  max 258** — bounded, low (≈0.9 % of the 16k ops), no livelock even on the hot prefix.
+  max 258** — bounded, low ($\approx$0.9 % of the 16k ops), no livelock even on the hot prefix.
 
 ### Supporting (non-gating)
 - `round_dir_bytes` (the honest §2.2 WAL-retain asymmetry): TREATMENT retains WAL → ~57 MB/round (disjoint),
   CONTROL truncates but re-serializes the tree into fresh arenas each checkpoint → ~303 MB/round. The
   copy-on-serialize CONTROL data file is the larger disk cost here; TREATMENT's retained WAL is the smaller.
-- `read_ops` (LOAD, non-gating): disjoint treatment ≈14.4 M/round via `contains_lockfree` (readers run freely);
-  CONTROL disjoint ≈8.2 k (readers starved by the write lock); contended CONTROL = 0 (readers never completed a
+- `read_ops` (LOAD, non-gating): disjoint treatment $\approx$14.4 M/round via `contains_lockfree` (readers run freely);
+  CONTROL disjoint $\approx$8.2 k (readers starved by the write lock); contended CONTROL = 0 (readers never completed a
   2000-iter pass under maximal lock contention — an honest artifact, readers are non-gating per §4).
 
 ### perf attribution — SKIPPED (permitted, §10 step 6 / §E)
@@ -380,11 +380,11 @@ hypothesis text pre-states "CONTROL's downgrade excludes writers during capture 
 hypothesis"), making the writer-observed p999 the S1 quantity by construction.
 
 ### §8 DECISION-RULE VERDICT → **BRANCH 1: PROCEED**
-All Branch-1 conditions met: Welch p = 9.10e-40 < 0.05 AND diff = +14,231 ops/s > 0 AND d = 25.03 ≥ 0.8
-(variant A throughput), with **no regression** — S1 writer-observed pause T≤C (4.5 ms ≤ 126 ms, a 96 %
-improvement), S2 p99/p999 ratios 0.029/0.036 ≤ 1.10×, S3 RSS ratio 0.878 ≤ 1.25×, S4 contended diff +9,687
+All Branch-1 conditions met: Welch p = 9.10e-40 < 0.05 AND diff = +14,231 ops/s > 0 AND d = 25.03 $\ge$ 0.8
+(variant A throughput), with **no regression** — S1 writer-observed pause T$\le$C (4.5 ms $\le$ 126 ms, a 96 %
+improvement), S2 p99/p999 ratios 0.029/0.036 $\le$ 1.10$\times$, S3 RSS ratio 0.878 $\le$ 1.25$\times$, S4 contended diff +9,687
 (positive, p = 6.3e-35, not worse). **One-line flip recommendation:** the lock-free overlay write+immutable-
-checkpoint path beats the owned `Arc<RwLock>` tree on throughput by ~3–4× AND collapses the writer-observed
+checkpoint path beats the owned `Arc<RwLock>` tree on throughput by ~3–4$\times$ AND collapses the writer-observed
 checkpoint stall from ~126 ms to ~4.5 ms with lower RSS and bounded CAS retries even under a hot prefix —
 **PROCEED with the flip (Task #14, eviction-off membership trie V=()).**
 
@@ -392,7 +392,7 @@ checkpoint stall from ~126 ms to ~4.5 ms with lower RSS and bounded CAS retries 
 pre-registered prior expected (§1 predicted small-or-null throughput, win in S1/S2). Two reasons this is
 credible rather than a measurement error: (1) CONTROL's checkpoint is the write→read-DOWNGRADE path that holds
 the write guard across the O(tree) `serialize_char_node_to_disk` re-walk, so on a ~16k-key trie under a tight
-20 ms checkpoint loop the writers are blocked for most of the window (writer-observed p999 ≈126 ms confirms
+20 ms checkpoint loop the writers are blocked for most of the window (writer-observed p999 $\approx$126 ms confirms
 multi-checkpoint stalls), whereas TREATMENT's immutable snapshot never excludes writers; (2) the checkpointer-
 side per-call number (TREATMENT longer) is exactly the §9-item-5 prediction and shows the serialize cost did
 NOT vanish — it simply stopped blocking writers. The flip's faithfulness limits (§3) still hold: this measures
@@ -428,7 +428,7 @@ become their registry-publishing variants:
 ### §E.1 Hypotheses + decision (FROZEN)
 
 - **HE1 (primary):** Immediate + eviction-ON, TREATMENT write throughput > CONTROL (variant A disjoint).
-  Two-sided Welch; **supported iff diff > 0 AND p < 0.05 AND Cohen's d ≥ 0.8** (the same irreversible-flip floor
+  Two-sided Welch; **supported iff diff > 0 AND p < 0.05 AND Cohen's d $\ge$ 0.8** (the same irreversible-flip floor
   as the eviction-OFF H1). **HE0:** μ_T − μ_C = 0.
 - **Pre-registered expectation (anti-hindsight):** registry publication is OFF the timed writer path (the
   checkpointer's `update_disk_registry` is one `RwLock::write` swap, ZERO fsync) and the registry is BUILT in
@@ -436,10 +436,10 @@ become their registry-publishing variants:
   should TRACK the eviction-OFF result (+312% throughput, writer-observed pause collapse). The realistic prior is
   therefore a LARGE positive TREATMENT effect, mirroring the eviction-OFF run, NOT a new regression.
 - **Secondary descriptive VETOES (can only BLOCK, gated FIRST by SE5):**
-  - **SE1 — checkpoint pause** (writer-observable stall, §6 definition = `write_p999`): TREATMENT ≤ CONTROL.
-  - **SE2 — write tail** p99/p999: TREATMENT ≤ 1.10× CONTROL.
-  - **SE3 — peak RSS** (single-arm-per-process, C10): TREATMENT ≤ 1.25× CONTROL.
-  - **SE4 — contended variant B throughput:** TREATMENT not significantly worse (p ≥ 0.05 or diff ≥ 0).
+  - **SE1 — checkpoint pause** (writer-observable stall, §6 definition = `write_p999`): TREATMENT $\le$ CONTROL.
+  - **SE2 — write tail** p99/p999: TREATMENT $\le$ 1.10$\times$ CONTROL.
+  - **SE3 — peak RSS** (single-arm-per-process, C10): TREATMENT $\le$ 1.25$\times$ CONTROL.
+  - **SE4 — contended variant B throughput:** TREATMENT not significantly worse (p $\ge$ 0.05 or diff $\ge$ 0).
   - **SE5 — NEW CORRECTNESS VETO (gates first):** post-checkpoint `force_eviction` + reopen returns the EXACT
     acknowledged set on BOTH arms. **A failure is a BUG, not a perf signal → ABORT, do not emit a verdict.**
     Enforced in the bench's `--eviction` smoke (`se5_correctness_check`, panics on mismatch) AND by the in-crate
@@ -464,7 +464,7 @@ become their registry-publishing variants:
 
 ### §E.3 Rigor inherited (verbatim from §3–§8)
 
-K = 30 measured rounds/arm/variant, 2 warmup discarded; two-sided Welch + 95% CI + Cohen's d (≥0.8 floor) +
+K = 30 measured rounds/arm/variant, 2 warmup discarded; two-sided Welch + 95% CI + Cohen's d ($\ge$0.8 floor) +
 Mann–Whitney U; arms interleaved per round with fixed-seed-coin within-round order (C9); single-arm-per-process
 RSS pass (C10); real-disk `target/bench-scratch` NEVER tmpfs; 5 GiB scratch ceiling + per-round cleanup;
 `systemd-run --user --scope -p MemoryMax=32G` + `taskset -c 0-15`; both arms `Immediate` +
@@ -534,22 +534,22 @@ analysis `lockfree-flip-evict-analysis.txt`; smoke `lockfree-flip-evict-smoke.lo
 
 - **diff (T−C) = +14,514.7 ops/s (+533.61%)**, **95% Welch CI [13,631.2, 15,398.1]** (excludes 0, strictly positive).
 - **Welch t = 33.5213, df = 30.71, p(two-sided) = 9.40e-26.**
-- **Cohen's d = 8.6552 (pooled)** — far exceeds the pre-registered d ≥ 0.8 floor.
+- **Cohen's d = 8.6552 (pooled)** — far exceeds the pre-registered d $\ge$ 0.8 floor.
 - **Mann–Whitney U = 900.0, p = 3.02e-11** (complete separation; corroborates Welch).
 
 ### Secondary descriptive vetoes (all PASS; gated first by SE5 = PASS)
 - **SE1 — checkpoint pause** (writer-observed p999, the §6/§1 S1 quantity): **control 262,004.7 µs vs treatment
-  7,147.1 µs → treatment 97.3 % better (T ≤ C, large improvement, NO regression).** Secondary "ALSO" diagnostic
+  7,147.1 µs → treatment 97.3 % better (T $\le$ C, large improvement, NO regression).** Secondary "ALSO" diagnostic
   (checkpointer-side per-call, §6): mean control 127,497 / treatment 89,704 µs; p99 control 272,912 / treatment
   305,765 µs — the per-call checkpoint is *longer* for TREATMENT (its immutable snapshot still walks the overlay
   to serialize + now also builds+publishes the registry, §9 item 5) but WITHOUT stalling writers; per §6 this is
   NOT the S1 hypothesis quantity and does not gate the verdict.
 - **SE2 — write tail.** p50: control 77.7 / treatment 342.2 µs (ratio 4.40 — TREATMENT's per-op floor is higher,
   the WAL-append-then-CAS critical path; NOT vetoed — §8 vetoes only p99/p999). **p99: 118,552.8 → 2,395.2 µs
-  (ratio 0.020).** **p999: 262,004.7 → 7,147.1 µs (ratio 0.027).** Both tail ratios far below the 1.10× veto → no
-  SE2 regression (TREATMENT's tail ~37–50× tighter).
+  (ratio 0.020).** **p999: 262,004.7 → 7,147.1 µs (ratio 0.027).** Both tail ratios far below the 1.10$\times$ veto → no
+  SE2 regression (TREATMENT's tail ~37–50$\times$ tighter).
 - **SE3 — peak RSS** (single-arm-per-process, C10): **control 3,178,396 / treatment 1,318,888 KiB, ratio 0.415**
-  (≤ 1.25× veto) — TREATMENT used ~2.4× LESS peak RSS even with the eviction coordinator + registry. No SE3
+  ($\le$ 1.25$\times$ veto) — TREATMENT used ~2.4$\times$ LESS peak RSS even with the eviction coordinator + registry. No SE3
   regression. (CONTROL's owned-tree copy-on-serialize arena churn dominates the eviction-ON RSS.)
 - **SE4 — contended variant B** (write_ops_per_sec, n=30/arm): control 3,799.2±115.2 / treatment 15,204.5±582.3;
   **diff = +11,405.3 ops/s (+300.20%), 95% CI [11,184.4, 11,626.3], Welch t = 105.24, df = 31.27, p = 1.90e-41,
@@ -558,10 +558,10 @@ analysis `lockfree-flip-evict-analysis.txt`; smoke `lockfree-flip-evict-smoke.lo
 
 ### Supporting (non-gating)
 - **`evictable_node_count`** (the published registry size, the eviction-ON instrumentation; col 19, disjoint):
-  control mean ≈ 285,152 / treatment mean ≈ 265,193 — BOTH arms publish a NON-EMPTY registry every round (the
+  control mean $\approx$ 285,152 / treatment mean $\approx$ 265,193 — BOTH arms publish a NON-EMPTY registry every round (the
   registry GAP the eviction-OFF run could not exercise is exercised here; confirms `update_disk_registry` ran).
-- **`round_dir_bytes`** (the §E.2 / §2.2 WAL-retain asymmetry, disjoint): TREATMENT retains WAL ≈ 45.0 MB/round;
-  CONTROL re-serializes the tree into fresh arenas + truncates the WAL ≈ 288.3 MB/round. As in the eviction-OFF
+- **`round_dir_bytes`** (the §E.2 / §2.2 WAL-retain asymmetry, disjoint): TREATMENT retains WAL $\approx$ 45.0 MB/round;
+  CONTROL re-serializes the tree into fresh arenas + truncates the WAL $\approx$ 288.3 MB/round. As in the eviction-OFF
   run, CONTROL's copy-on-serialize data file is the larger disk cost; the per-checkpoint fsync COUNT is identical
   (§E.2 — `update_disk_registry` adds zero fsync to either arm), so this is a disk-space, not throughput, effect.
 - **perf attribution — not run** (environment: `kernel.perf_event_paranoid` / no CAP_PERFMON, as recorded for the
@@ -569,14 +569,14 @@ analysis `lockfree-flip-evict-analysis.txt`; smoke `lockfree-flip-evict-smoke.lo
 
 ### §8 DECISION-RULE VERDICT (eviction-ON) → **BRANCH 1: PROCEED**
 SE5 correctness veto PASSED (gates first). All Branch-1 conditions met: Welch p = 9.40e-26 < 0.05 AND diff =
-+14,515 ops/s > 0 AND d = 8.66 ≥ 0.8 (variant A throughput), with **no regression** — SE1 writer-observed pause
-T ≤ C (7.1 ms ≤ 262 ms, a 97 % improvement), SE2 p99/p999 ratios 0.020/0.027 ≤ 1.10×, SE3 RSS ratio 0.415 ≤
-1.25×, SE4 contended diff +11,405 (positive, p = 1.9e-41, not worse).
++14,515 ops/s > 0 AND d = 8.66 $\ge$ 0.8 (variant A throughput), with **no regression** — SE1 writer-observed pause
+T $\le$ C (7.1 ms $\le$ 262 ms, a 97 % improvement), SE2 p99/p999 ratios 0.020/0.027 $\le$ 1.10$\times$, SE3 RSS ratio 0.415 $\le$
+1.25$\times$, SE4 contended diff +11,405 (positive, p = 1.9e-41, not worse).
 
 **Flip recommendation (eviction-ON):** the eviction-ON immutable-snapshot checkpoint
 (`bench_immutable_checkpoint_with_eviction` = retain-WAL watermark reclaim + registry publication) beats the
-owned `Arc<RwLock>` eviction-ON checkpoint (`publish_durable_and_reclaim`) on write throughput by ~5–6× on
-disjoint and ~4× on contended, collapses the writer-observed checkpoint stall from ~262 ms to ~7 ms, uses ~2.4×
+owned `Arc<RwLock>` eviction-ON checkpoint (`publish_durable_and_reclaim`) on write throughput by ~5–6$\times$ on
+disjoint and ~4$\times$ on contended, collapses the writer-observed checkpoint stall from ~262 ms to ~7 ms, uses ~2.4$\times$
 less peak RSS, and keeps CAS retries bounded under a hot prefix — **PROCEED with the eviction-ON flip, with the
 same caveats as the eviction-OFF run (§3) PLUS:** (1) over a pure overlay trie `force_eviction` is a structural
 no-op (owned `self.root` is `Empty`); wiring the overlay into the owned eviction *reclaim* walk so in-memory
@@ -616,15 +616,15 @@ truncation is introduced; recovery is unaffected (the registry is never recovery
   + 95% CI + Cohen's d. **Expectation: the §E +533% NARROWS** — TREATMENT now pays the real reclaim cost CONTROL
   already paid. A narrowing is EXPECTED, NOT a regression; the question is whether T STILL wins AND frees memory.
 - **HF2 (the now-meaningful metric):** (a) TREATMENT §F peak RSS < TREATMENT §E peak RSS (§E was **1,318,888
-  KiB**, NO reclaim — §F must beat it by > noise); (b) TREATMENT RSS ≤ CONTROL RSS. Supported iff BOTH.
-- **HF3 (reclamation effectiveness):** `overlay_reclaimed_nodes` > 0 (no silent no-op) AND ≈ matched to CONTROL's
+  KiB**, NO reclaim — §F must beat it by > noise); (b) TREATMENT RSS $\le$ CONTROL RSS. Supported iff BOTH.
+- **HF3 (reclamation effectiveness):** `overlay_reclaimed_nodes` > 0 (no silent no-op) AND $\approx$ matched to CONTROL's
   reclaimed count under the same budget/cadence (fairness witness; the registry-invalidation contract may make the
   two diverge — reported honestly, see §F.5).
 - **SF5 CORRECTNESS (ABORT on fail, gated FIRST):** (i) reopen-exact BOTH arms; (ii) `faultin_count == 0` (cold-
   only held); (iii) TREATMENT `overlay_reclaimed_nodes > 0`. Enforced by the `--evict-real` smoke `sf5_correctness_check`
   + the in-crate OE1–OE4 correspondence tests. A failure is a BUG, not a perf signal → STOP and report.
-- **Secondary vetoes (gated by SF5 first):** SF1 writer-observed pause T ≤ C; SF2 p99/p999 ≤ 1.10×; SF3 RSS ≤
-  1.25×; SF4 contended not significantly worse.
+- **Secondary vetoes (gated by SF5 first):** SF1 writer-observed pause T $\le$ C; SF2 p99/p999 $\le$ 1.10$\times$; SF3 RSS $\le$
+  1.25$\times$; SF4 contended not significantly worse.
 
 ### §F.3 Fairness (matched budget + cadence)
 Both arms perform ONE eviction call per checkpoint round AFTER the registry publishes, with the SAME
@@ -645,13 +645,13 @@ invalidation contract, reported under HF3, NOT a fairness defect in the driver.
 - **col21 `evict_bytes_nominal`** — nominal bytes freed (~256 B/node; the single-arm peak-RSS pass is the
   physical witness, HF2).
 - **col22 `faultin_count`** — fault-in operation count; identically 0 (the overlay has NO fault-in path; the
-  cold-only invariant). Any non-zero value ⇒ a hot node was wrongly evicted ⇒ ABORT.
+  cold-only invariant). Any non-zero value $\Rightarrow$ a hot node was wrongly evicted $\Rightarrow$ ABORT.
 - `peak_rss_kib` (col16) = physical witness via the single-arm-per-process RSS pass. `cas_retries` now includes
   the evictor's root-CAS rebases.
 
 ### §F.5 Decision rule (SF5-gated, then)
-**1 PROCEED:** T throughput ≥ C ∧ HF2 ∧ HF3 ∧ no SF1–4 veto. **2 PROCEED-WITH-CAVEAT:** throughput narrows but ≥ 0
-∧ HF2 holds. **3 DON'T-FLIP (no benefit):** T ties/loses ∧/∨ HF2 fails — overlay doesn't free memory ⇒ the §E
+**1 PROCEED:** T throughput $\ge$ C $\land$ HF2 $\land$ HF3 $\land$ no SF1–4 veto. **2 PROCEED-WITH-CAVEAT:** throughput narrows but $\ge$ 0
+$\land$ HF2 holds. **3 DON'T-FLIP (no benefit):** T ties/loses $\land$/$\lor$ HF2 fails — overlay doesn't free memory $\Rightarrow$ the §E
 +533% was the no-op artifact. **4 DON'T-FLIP (regression):** SF1/2/4 veto fires.
 
 ### §F.6 Runbook (`--evict-real`; mirrors §10/§E.5; all wrapped systemd 32G + `taskset -c 0-15` + tee; real-disk
@@ -703,7 +703,7 @@ append-only.
 ## RESULTS (§F real-reclamation) — appended AFTER the frozen K-round `--evict-real` run
 
 ### Provenance / environment
-- Date 2026-06-02; git HEAD `549957a`; governor `performance`; observed freq cpu0/4/8/12 ≈ 3.48 / 3.88 / 4.25 /
+- Date 2026-06-02; git HEAD `549957a`; governor `performance`; observed freq cpu0/4/8/12 $\approx$ 3.48 / 3.88 / 4.25 /
   3.46 GHz; `taskset -c 0-15`; `systemd-run --user --scope -p MemoryMax=32G`; real-disk `target/bench-scratch`
   (5 GiB ceiling, per-round cleanup; NO ABORT fired); Immediate durability + `without_memory_monitor`, BOTH arms.
 - Raw CSVs (teed ONCE): `lockfree-flip-evictreal-raw-{disjoint,contended}.csv` (K=30 + 2 warmup, interleaved with
@@ -716,7 +716,7 @@ append-only.
   + `_Unsafe.cfg` negative control fired).
 
 ### SF5 — CORRECTNESS veto (gated FIRST; ABORT on fail) → **PASS**
-- (i) reopen-exact BOTH arms: smoke `SF5(control)` + `SF5(treatment)` reopen the exact acknowledged COLD ∪ LIVE
+- (i) reopen-exact BOTH arms: smoke `SF5(control)` + `SF5(treatment)` reopen the exact acknowledged COLD $\cup$ LIVE
   set; OE1/OE3/OE4 reopen-exact in-crate. PASS.
 - (ii) `faultin_count == 0`: **max faultin == 0 across ALL rows in ALL four CSVs** (the cold-only invariant held;
   no hot node was ever evicted). PASS.
@@ -726,7 +726,7 @@ append-only.
 ### HF1 — Primary throughput (variant A DISJOINT, Immediate + eviction-ON + REAL reclaim, n=30/arm, warmup dropped)
 - CONTROL mean = 1,986.9 ops/s (sd 201.6); TREATMENT mean = 14,969.7 ops/s (sd 3,109.7).
 - **diff (T−C) = +12,982.8 ops/s (+653.42%)**, 95% Welch CI [11,819.6, 14,146.0]; Welch t = 22.82, df = 29.24,
-  **p = 3.50e-20**; Cohen's d = **5.89** (≥ 0.8 floor); Mann-Whitney U = 900, p = 3.02e-11.
+  **p = 3.50e-20**; Cohen's d = **5.89** ($\ge$ 0.8 floor); Mann-Whitney U = 900, p = 3.02e-11.
 - **Anti-hindsight check:** §F (+653%) vs §E (+533%) — the pre-registered NARROWING did NOT materialize at the
   mean (it WIDENED slightly). Honest reading: the §F real-reclamation cost is small relative to CONTROL's
   unchanged O(tree) write→read-downgrade serialize stall, and §F's run is independently seeded (different writer
@@ -737,47 +737,47 @@ append-only.
   (bounded — incl. the evictor's root-CAS rebases).
 
 ### HF2 — peak RSS (THE now-meaningful metric; single-arm-per-process, C10) → **SUPPORTED (both)**
-- **(a) TREATMENT §F 1,018,664 KiB  <  TREATMENT §E 1,318,888 KiB** — a drop of **300,224 KiB (≈ 22.8%)**, far
+- **(a) TREATMENT §F 1,018,664 KiB  <  TREATMENT §E 1,318,888 KiB** — a drop of **300,224 KiB ($\approx$ 22.8%)**, far
   above noise (RSS was rock-steady across all 30 single-arm rounds). REAL overlay reclamation actually freed
   memory: the §E peak was inflated by the structural no-op holding every cold overlay subtree resident. **HF2a
   holds.**
-- **(b) TREATMENT §F 1,018,664 KiB  ≤  CONTROL 3,471,144 KiB**, ratio **0.293** (≤ 1.25× S3 veto) — TREATMENT uses
-  ≈ 3.4× LESS peak RSS than CONTROL even while doing matched real reclamation. **HF2b holds.**
-- ⇒ **HF2 SUPPORTED** (both conditions). RSS-as-truth caveat (§8 risk 5): HF2a compares §F vs §E under the SAME
+- **(b) TREATMENT §F 1,018,664 KiB  $\le$  CONTROL 3,471,144 KiB**, ratio **0.293** ($\le$ 1.25$\times$ S3 veto) — TREATMENT uses
+  $\approx$ 3.4$\times$ LESS peak RSS than CONTROL even while doing matched real reclamation. **HF2b holds.**
+- $\Rightarrow$ **HF2 SUPPORTED** (both conditions). RSS-as-truth caveat (§8 risk 5): HF2a compares §F vs §E under the SAME
   allocator/workload (isolating the delta) and HF3 reports the allocator-independent logical reclaim count.
 
 ### HF3 — reclamation effectiveness (col `overlay_reclaimed_nodes`, n=30/arm measured)
 - Disjoint: CONTROL mean 8.4/round (min 0, max 251); TREATMENT mean **59.8/round** (min 50, max 79).
 - Contended: CONTROL mean **0.0**/round; TREATMENT mean **80.7/round** (min 69, max 93).
-- TREATMENT reclaims > 0 every round (HF3 first clause holds). The CONTROL-reclaims-≪-TREATMENT asymmetry is the
+- TREATMENT reclaims > 0 every round (HF3 first clause holds). The CONTROL-reclaims-$\ll$-TREATMENT asymmetry is the
   PRE-REGISTERED registry-invalidation contract (§F.3): CONTROL's owned tree shares ONE `DiskLocationRegistry`
   that EVERY live write dirties (A1 fix → `is_valid()` false → 0 evictions), so under the hot contended writers it
   is invalidated essentially every checkpoint; TREATMENT's cold subtree is seeded+checkpointed BEFORE the disjoint
-  writers and its cold registry entries survive longer. So the "≈ matched count" fairness sub-clause does NOT hold
+  writers and its cold registry entries survive longer. So the "$\approx$ matched count" fairness sub-clause does NOT hold
   — reported honestly: it reflects the invalidation contract, not a driver defect (the driver reclaims whatever
   the coordinator hands it; the coordinator hands CONTROL nothing once a write dirties the shared registry).
 
 ### Secondary descriptive vetoes (gated first by SF5 = PASS) — all PASS
 - **SF1 — writer-observed checkpoint pause** (S1 PRIMARY = writer p999): control 258,737.6 us / treatment
-  10,269.4 us — **T ≪ C** (a 96 % reduction). PASS. (Checkpointer-side mean/p99 is higher for T, as in §E — the
+  10,269.4 us — **T $\ll$ C** (a 96 % reduction). PASS. (Checkpointer-side mean/p99 is higher for T, as in §E — the
   secondary 'ALSO' line — because T checkpoints overlap the whole window; the writer-OBSERVED stall is the veto.)
-- **SF2 — write tail p99/p999** (veto T ≤ 1.10×C): p99 ratio 0.025, p999 ratio 0.040 — PASS. (p50 ratio 2.401 >
+- **SF2 — write tail p99/p999** (veto T $\le$ 1.10$\times$C): p99 ratio 0.025, p999 ratio 0.040 — PASS. (p50 ratio 2.401 >
   1, expected: the Order-A durable fsync per `insert_cas_durable` dominates the cheap median, exactly as §E; the
-  veto is on the tail, where T is ~25–40× better.)
-- **SF3 — peak RSS** (veto T ≤ 1.25×C): ratio 0.293 — PASS.
+  veto is on the tail, where T is ~25–40$\times$ better.)
+- **SF3 — peak RSS** (veto T $\le$ 1.25$\times$C): ratio 0.293 — PASS.
 - **SF4 — contended not significantly worse**: diff +12,366.9 (positive), p = 1.06e-38, d = 23.26 — PASS.
 
 ### §F.5 DECISION RULE → **BRANCH 1: PROCEED**
 SF5 correctness veto PASSED (gates first: reopen-exact both arms, faultin == 0, treatment reclaim > 0). All
-Branch-1 conditions met: T throughput ≥ C (diff +12,982.8 ops/s, p = 3.50e-20, d = 5.89 ≥ 0.8) ∧ HF2 holds
-(TREATMENT §F RSS 1,018,664 < §E 1,318,888 AND ≤ CONTROL) ∧ HF3 (treatment reclaim > 0 every round) ∧ no SF1–4
+Branch-1 conditions met: T throughput $\ge$ C (diff +12,982.8 ops/s, p = 3.50e-20, d = 5.89 $\ge$ 0.8) $\land$ HF2 holds
+(TREATMENT §F RSS 1,018,664 < §E 1,318,888 AND $\le$ CONTROL) $\land$ HF3 (treatment reclaim > 0 every round) $\land$ no SF1–4
 veto. The pre-registered narrowing (HF1) did not lower the win, and the now-meaningful peak-RSS metric is
 SUPPORTED — so the §E +533% was NOT merely a no-op artifact: TREATMENT both wins on throughput AND frees memory.
 
 **Flip recommendation (eviction-ON + REAL reclamation):** the overlay-eviction driver makes the eviction-ON
 immutable-snapshot checkpoint reclaim real in-memory COLD overlay subtrees while keeping every §E advantage —
-~6.5× (disjoint) / ~5× (contended) higher write throughput, a 96 % smaller writer-observed checkpoint stall,
-~25–40× better write tails, and now **≈ 23 % lower peak RSS than the §E no-op and ≈ 3.4× lower than CONTROL** —
+~6.5$\times$ (disjoint) / ~5$\times$ (contended) higher write throughput, a 96 % smaller writer-observed checkpoint stall,
+~25–40$\times$ better write tails, and now **$\approx$ 23 % lower peak RSS than the §E no-op and $\approx$ 3.4$\times$ lower than CONTROL** —
 with bounded CAS retries under a hot prefix and zero new `unsafe`. **PROCEED with the eviction-ON flip**, with the
 same §3/§E caveats PLUS: (1) this driver is COLD-ONLY (no fault-in); a production flip that evicts re-touchable
 nodes MUST first add a correct fault-in-on-read path (the owner-gated Phase-E work) — the SF5(ii) faultin == 0

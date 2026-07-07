@@ -139,12 +139,12 @@ impl<T: ?Sized> Deref for TrieAccessGuard<'_, T> {
 /// inherent `parking_lot::RwLock::{read,write}` reachable through an
 /// `Arc<RwLock<…>>` (a no-deref trait method beats a one-deref inherent method),
 /// hijacking EVERY `arc_of_rwlock.write()` in the crate (e.g. the
-/// `Arc<RwLock<ArenaManager>>` / `Arc<RwLock<BufferManager>>` handles, and the
-/// still-`RwLock`-wrapped `SharedVocabARTrie`). The impls therefore live in the
-/// byte / char trie modules on the CONCRETE `Arc<PersistentARTrie<V,S>>` /
-/// `Arc<PersistentARTrieChar<V,S>>` types (see
-/// `impl_shared_trie_access!`), keeping core free of any upward dependency on the
-/// variant crates while scoping the shim to exactly the two trie handles.
+/// `Arc<RwLock<ArenaManager>>` / `Arc<RwLock<BufferManager>>` storage handles).
+/// The impls therefore live in the byte / char / vocab trie modules on the
+/// CONCRETE `Arc<PersistentARTrie<V,S>>` / `Arc<PersistentARTrieChar<V,S>>` /
+/// `Arc<PersistentVocabARTrie<S>>` types (see `impl_shared_trie_access!` and the
+/// vocab impl), keeping core free of any upward dependency on the variant modules
+/// while scoping the shim to exactly those three trie handles.
 pub trait SharedTrieAccess {
     /// The wrapped trie type (`PersistentARTrie<V,S>` / `PersistentARTrieChar<V,S>`).
     type Target: ?Sized;

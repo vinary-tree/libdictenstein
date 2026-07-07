@@ -1,10 +1,12 @@
-Confirmed. `KeyEncoding` is defined but barely adopted (only `key_encoding.rs` + two `arena.rs` magic-constant assertions). `SwizzledPtr` is canonically in `persistent_artrie_core::swizzled_ptr` and re-exported through `persistent_artrie::swizzled_ptr` — so the shared overlay node in `core` can import `crate::persistent_artrie_core::swizzled_ptr::SwizzledPtr` with zero layering violation. The Inline filler is `[0u8;4]`/`[0u32;4]` — dead padding, needs only a `zero()` provider on the key trait. Byte does not reference char/vocab (layering clean).
+Confirmed. `KeyEncoding` is defined but barely adopted (only `key_encoding.rs` + two `arena.rs` magic-constant assertions). `SwizzledPtr` is canonically in `persistent_artrie::core::swizzled_ptr` and re-exported through `persistent_artrie::swizzled_ptr` — so the shared overlay node in `core` can import `crate::persistent_artrie::core::swizzled_ptr::SwizzledPtr` with zero layering violation. The Inline filler is `[0u8;4]`/`[0u32;4]` — dead padding, needs only a `zero()` provider on the key trait. Byte does not reference char/vocab (layering clean).
 
 I have exhaustively verified the codebase. Here is the complete design.
 
 ---
 
 # G4 — Unify the Lock-Free Overlay Node into a Single Generic `OverlayNode<U, V>`
+
+**Synthesized in:** [The lock-free overlay — the live representation](../persistence/lock-free-overlay.md). That page presents the unified `OverlayNode<K, V>` and the "one node, three alphabets" model at the architecture level; this record is the mechanism-detail design for the G4 unification itself — collapsing the token-for-token-identical byte and char overlay nodes into one generic over `K: KeyEncoding`. *(This design has since landed; the shared node lives at `persistent_artrie/core/overlay/node.rs`.)*
 
 **Status:** implementation-ready design (reversible G4; G5 production flip is out of scope).
 **Audience:** the engineer who will execute this. Persist to `docs/design/g4-unify-overlay-node.md`.
@@ -14,7 +16,7 @@ I have exhaustively verified the codebase. Here is the complete design.
 
 ## 0. Executive summary / the shape of the answer
 
-The byte overlay node (`persistent_artrie/nodes/persistent_node.rs`) and the char overlay node (`persistent_artrie_char/nodes/persistent_node.rs`) are, after G1–G3, **token-for-token identical except for four things**:
+The byte overlay node (`persistent_artrie/nodes/persistent_node.rs`) and the char overlay node (`persistent_artrie/char/nodes/persistent_node.rs`) are, after G1–G3, **token-for-token identical except for four things**:
 
 | # | Difference | byte | char | Absorbed by |
 |---|-----------|------|------|-------------|
@@ -23,18 +25,18 @@ The byte overlay node (`persistent_artrie/nodes/persistent_node.rs`) and the cha
 | 3 | Inline-array zero filler | `[0u8; 4]` | `[0u32; 4]` | `U::ZERO` (trait const) |
 | 4 | Doc text / module headers | "bytes" | "chars" | prose only |
 
-Everything else — `Child<V>`, `ChildStore<V>` (Inline `[U;4]`/Heap `Vec<U>`, linear-scan ≤4 / binary-search ≥5, promotion/demotion at 4↔5), the `Option<V>` immutable value, the `AtomicU8` flags + `try_set_final` two-phase, `version: AtomicU64`, `prefix: Arc<[U]>`, the manual `Debug`, `impl<V: Clone>` blocks, auto-derived `Send`/`Sync`, the commented-out atomic mutators — is **already byte-identical between the two files** (I diffed them line by line; the only token deltas are exactly rows 1–4 above).
+Everything else — `Child<V>`, `ChildStore<V>` (Inline `[U;4]`/Heap `Vec<U>`, linear-scan $\le$4 / binary-search $\ge$5, promotion/demotion at 4↔5), the `Option<V>` immutable value, the `AtomicU8` flags + `try_set_final` two-phase, `version: AtomicU64`, `prefix: Arc<[U]>`, the manual `Debug`, `impl<V: Clone>` blocks, auto-derived `Send`/`Sync`, the commented-out atomic mutators — is **already byte-identical between the two files** (I diffed them line by line; the only token deltas are exactly rows 1–4 above).
 
 **There is NO key-specialized SIMD, tier-threshold, or sorted-search divergence in the overlay node.** The AVX2 SIMD `find_child` lives only in the *owned* ART nodes (`node16_char.rs`), which are out of scope. The overlay `ChildStore::find_child` is plain linear/binary on both sides (`persistent_node.rs:297-322` byte and char are identical modulo `u8`/`u32`). **Feasibility verdict: fully unifiable; zero fallback components.**
 
 The single piece of *real algorithmic work* is unrelated to the node struct: **byte's increment is still pre-G1**. `persistent_artrie/lockfree_cas.rs:540-577` calls `leaf.try_increment_value(delta, MAX)` (the in-place `AtomicU64` mutator) and `leaf.get_value()` expecting `u64`. But the byte *node file* is already at the G4 target shape (`value: Option<V>`, mutators commented out at `persistent_node.rs:717-740`). **These two files are mutually inconsistent as committed** — the node is post-G1, the increment caller is pre-G1. The plan's Phase 1 reconciles them by porting char's proven path-copy increment (`build_value_path_recursive`, `lockfree_cas.rs:813-848`) to byte *before* any unification, so byte is brought to behavioral parity with char first; then the node merges trivially.
 
-The shared node lands in **`persistent_artrie_core/overlay/`** (new sub-module), parameterized `OverlayNode<U, V>`. The three variants alias it:
+The shared node lands in **`persistent_artrie/core/overlay/`** (new sub-module), parameterized `OverlayNode<U, V>`. The three variants alias it:
 - byte: `pub type PersistentNode<V = ()> = OverlayNode<ByteUnit, V>;`
 - char: `pub type PersistentCharNode<V = ()> = OverlayNode<CharUnit32, V>;`
 - vocab: consumes the char alias at `<u64>` exactly as today (its alias block is unchanged).
 
-This satisfies the layering invariant (core has zero upward refs; `SwizzledPtr` is already canonically in `persistent_artrie_core::swizzled_ptr`, verified at `core/mod.rs` + `persistent_artrie/mod.rs:131`).
+This satisfies the layering invariant (core has zero upward refs; `SwizzledPtr` is already canonically in `persistent_artrie::core::swizzled_ptr`, verified at `core/mod.rs` + `persistent_artrie/mod.rs:131`).
 
 ---
 
@@ -46,7 +48,7 @@ I read both `persistent_node.rs` files completely. Here is **every** difference,
 
 **(D1) Key-unit type `u8` vs `u32`.** Appears in: `ChildStore::Inline.keys: [u8;4]`/`[u32;4]`, `Heap.keys: Vec<u8>`/`Vec<u32>`, every `find_child(key: u8)`/`(key: u32)`, `child_at -> (&u8,..)`/`(&u32,..)`, `slices -> (&[u8],..)`, `with_child`/`without_child` key params, `prefix: Arc<[u8]>`/`Arc<[u32]>`, `match_prefix(&[u8])`/`(&[u32])`. → **Absorbed by a single type parameter** carrying `Copy+Ord+Eq+...`. This is exactly what `SuffixNode<U,V>` (`suffix_automaton_core/node.rs:38`), `ScdawgNode<U,V>`, and `DATCoreShared<U,V>` already do with `U: CharUnit` over `u8`/`char`.
 
-**(D2) `MAX_PREFIX_LEN` = 12 (byte) vs 6 (char).** Used in `with_prefix`, `with_prefix_replaced` (`.min(MAX_PREFIX_LEN)`). → **Absorbed by an associated const** `<K>::MAX_PREFIX_LEN` on the key trait. (Char caps at 6 `u32`s = 24 bytes; byte at 12 `u8`s = 12 bytes — both ≤ a small fixed budget; differing values are fine as a const.)
+**(D2) `MAX_PREFIX_LEN` = 12 (byte) vs 6 (char).** Used in `with_prefix`, `with_prefix_replaced` (`.min(MAX_PREFIX_LEN)`). → **Absorbed by an associated const** `<K>::MAX_PREFIX_LEN` on the key trait. (Char caps at 6 `u32`s = 24 bytes; byte at 12 `u8`s = 12 bytes — both $\le$ a small fixed budget; differing values are fine as a const.)
 
 **(D3) Inline filler `[0u8;4]` vs `[0u32;4]`** (`persistent_node.rs:247,503` byte; `:267,523` char). These slots are **dead padding** — only `keys[..count]` are ever read (documented at both files' `Inline` doc and confirmed by `find_child`/`slices`/`child_at` all slicing `[..count]`). → **Absorbed by `U::ZERO`** (a trait const) OR by `U: Default` + `U::default()`. I recommend an explicit `ZERO` const (see §1.2) to avoid coupling to `Default`.
 
@@ -65,14 +67,14 @@ This is the one genuine design choice. Three candidates, evaluated against the a
 
 Candidate A — **reuse `crate::CharUnit`** (the C3/C4/C5 choice, `char_unit.rs:30`). Bounds: `Copy+Clone+Default+Eq+Ord+Hash+Debug+Send+Sync+'static` plus `from_str/to_string/iter_str/to_dat_offset`. **Fatal problem:** `CharUnit` is impl'd for `u8`, `char`, `u64` — **not `u32`** (`char_unit.rs:84,110,151`). The overlay's char key is genuinely `u32` (Unicode scalar as `u32`, per `keys: [u32;4]` and every `key as u32`), *not* `char`. C3/C4/C5 chose `char` for their edge labels; the overlay deliberately uses `u32` (it stores raw code points, including in the on-disk format `[len][u32...]`). Switching the overlay to `char` would be an on-disk-format and API change (violates Constraint 3) and a much larger blast radius. `CharUnit` also drags `from_str`/`to_dat_offset` the node doesn't want. **Reject A.**
 
-Candidate B — **reuse `KeyEncoding`** (`persistent_artrie_core/key_encoding.rs:121`). It already has `ByteKey{Unit=u8}` and `CharKey{Unit=u32}` — exactly the overlay's unit types — and lives in `persistent_artrie_core` (correct layer). Bounds on `Unit`: `Copy+Eq+Ord+Hash+Send+Sync+'static+Debug` — **precisely what the node needs**, no surplus. It is purpose-built ("the seam that lets shared modules be generic over the key-unit width") and currently barely adopted (only `key_encoding.rs` + two arena magic-const assertions — verified). **Two small gaps:** (i) no `MAX_PREFIX_LEN` const; (ii) no `Unit` zero-filler. Both are trivial additive extensions.
+Candidate B — **reuse `KeyEncoding`** (`persistent_artrie/core/key_encoding.rs:121`). It already has `ByteKey{Unit=u8}` and `CharKey{Unit=u32}` — exactly the overlay's unit types — and lives in `persistent_artrie::core` (correct layer). Bounds on `Unit`: `Copy+Eq+Ord+Hash+Send+Sync+'static+Debug` — **precisely what the node needs**, no surplus. It is purpose-built ("the seam that lets shared modules be generic over the key-unit width") and currently barely adopted (only `key_encoding.rs` + two arena magic-const assertions — verified). **Two small gaps:** (i) no `MAX_PREFIX_LEN` const; (ii) no `Unit` zero-filler. Both are trivial additive extensions.
 
 Candidate C — a brand-new bespoke trait. Redundant with `KeyEncoding`, which already exists for this exact purpose. **Reject C** (violates DRY against the in-repo seam).
 
 **Decision: extend `KeyEncoding` (Candidate B).** Add to the trait:
 
 ```rust
-// persistent_artrie_core/key_encoding.rs — additive extension to the existing trait
+// persistent_artrie/core/key_encoding.rs — additive extension to the existing trait
 pub trait KeyEncoding: 'static + Copy + Send + Sync + Debug {
     type Unit: Copy + Eq + Ord + Hash + Send + Sync + 'static + Debug;
     // ... existing: KEY_BYTES, ARENA_MAGIC, ARENA_MAGIC_V2, FILE_MAGIC, NAME,
@@ -92,25 +94,25 @@ Then `impl KeyEncoding for ByteKey { ...; const MAX_PREFIX_LEN = 12; const UNIT_
 
 **Why a const, not `U: Default`:** `Default::default()` for `u8`/`u32` is `0`, so `U: Default` + `Default::default()` also works and would let us drop `UNIT_ZERO`. But `KeyEncoding::Unit` does not currently bound `Default`, and adding `Default` to the associated-type bound is a wider change than adding one const; the explicit `UNIT_ZERO` keeps the filler's intent self-documenting ("this is dead padding"). Either is defensible — `UNIT_ZERO` is the lower-risk additive change. (Naming note: I use the marker type `ByteKey`/`CharKey` as the bound `K`, matching `KeyEncoding`'s existing markers; the unit is `K::Unit`.)
 
-**Layering check:** `KeyEncoding` and the new `OverlayNode` both live in `persistent_artrie_core`. `SwizzledPtr` is canonically `persistent_artrie_core::swizzled_ptr` (verified `core/mod.rs:swizzled_ptr` + `persistent_artrie/mod.rs:131 pub use crate::persistent_artrie_core::swizzled_ptr`). So `OverlayNode` imports `crate::persistent_artrie_core::swizzled_ptr::SwizzledPtr` — **no upward reference**. Byte/char/vocab depend on core; core depends on nothing upward. Invariant preserved.
+**Layering check:** `KeyEncoding` and the new `OverlayNode` both live in `persistent_artrie::core`. `SwizzledPtr` is canonically `persistent_artrie::core::swizzled_ptr` (verified `core/mod.rs:swizzled_ptr` + `persistent_artrie/mod.rs:131 pub use crate::persistent_artrie::core::swizzled_ptr`). So `OverlayNode` imports `crate::persistent_artrie::core::swizzled_ptr::SwizzledPtr` — **no upward reference**. Byte/char/vocab depend on core; core depends on nothing upward. Invariant preserved.
 
 ---
 
 ## 2. The unified types (precise Rust signatures + module locations)
 
-**Location:** new module `src/persistent_artrie_core/overlay/` with:
+**Location:** new module `src/persistent_artrie/core/overlay/` with:
 - `overlay/mod.rs` — re-exports `OverlayNode`, `Child`, `AtomicNodePtr` (and `flags`).
 - `overlay/node.rs` — `OverlayNode<K, V>`, `Child<K, V>`, `ChildStore<K, V>`, `flags`.
 - `overlay/atomic_ptr.rs` — `AtomicNodePtr<K, V>`.
 
-Register in `persistent_artrie_core/mod.rs`: `pub mod overlay;`.
+Register in `persistent_artrie/core/mod.rs`: `pub mod overlay;`.
 
 ### 2.1 `Child<K, V>`
 
 ```rust
-// persistent_artrie_core/overlay/node.rs
-use crate::persistent_artrie_core::key_encoding::KeyEncoding;
-use crate::persistent_artrie_core::swizzled_ptr::SwizzledPtr;
+// persistent_artrie/core/overlay/node.rs
+use crate::persistent_artrie::core::key_encoding::KeyEncoding;
+use crate::persistent_artrie::core::swizzled_ptr::SwizzledPtr;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
@@ -243,7 +245,7 @@ impl<K: KeyEncoding, V: Clone> Clone   for OverlayNode<K, V> { /* verbatim field
 ### 2.4 `AtomicNodePtr<K, V>`
 
 ```rust
-// persistent_artrie_core/overlay/atomic_ptr.rs
+// persistent_artrie/core/overlay/atomic_ptr.rs
 use arc_swap::ArcSwapOption;
 pub struct AtomicNodePtr<K: KeyEncoding, V = ()> {
     ptr: ArcSwapOption<OverlayNode<K, V>>,
@@ -325,44 +327,44 @@ This would collapse the membership recursion to a single copy. **But** it (i) is
 
 ### 4.1 CHAR migration — pure re-export, zero behavior change
 
-`persistent_artrie_char/nodes/persistent_node.rs` shrinks to:
+`persistent_artrie/char/nodes/persistent_node.rs` shrinks to:
 
 ```rust
 //! Char overlay node: a `<CharKey>` instantiation of the shared `OverlayNode`.
-pub use crate::persistent_artrie_core::overlay::{flags, AtomicNodePtr as _, Child as ChildGeneric, OverlayNode};
-use crate::persistent_artrie_core::key_encoding::CharKey;
+pub use crate::persistent_artrie::core::overlay::{flags, AtomicNodePtr as _, Child as ChildGeneric, OverlayNode};
+use crate::persistent_artrie::core::key_encoding::CharKey;
 
 /// The char overlay node (Unicode code-point keys). Now an alias of the shared generic.
 pub type PersistentCharNode<V = ()> = OverlayNode<CharKey, V>;
 /// The char child slot.
-pub type Child<V = ()> = crate::persistent_artrie_core::overlay::Child<CharKey, V>;
-pub const MAX_PREFIX_LEN: usize = <CharKey as crate::persistent_artrie_core::key_encoding::KeyEncoding>::MAX_PREFIX_LEN; // 6, for any external referent
+pub type Child<V = ()> = crate::persistent_artrie::core::overlay::Child<CharKey, V>;
+pub const MAX_PREFIX_LEN: usize = <CharKey as crate::persistent_artrie::core::key_encoding::KeyEncoding>::MAX_PREFIX_LEN; // 6, for any external referent
 
 #[cfg(test)] mod tests { /* the existing char tests move here unchanged: they already
    alias `type PersistentCharNode = super::PersistentCharNode<()>` etc. — they exercise
    the alias and PASS verbatim, proving behavioral identity. */ }
 ```
 
-`persistent_artrie_char/nodes/atomic_ptr.rs` shrinks to `pub type AtomicNodePtr<V = ()> = crate::persistent_artrie_core::overlay::AtomicNodePtr<CharKey, V>;` (plus moving its tests, which alias `<()>` and pass verbatim).
+`persistent_artrie/char/nodes/atomic_ptr.rs` shrinks to `pub type AtomicNodePtr<V = ()> = crate::persistent_artrie::core::overlay::AtomicNodePtr<CharKey, V>;` (plus moving its tests, which alias `<()>` and pass verbatim).
 
-`persistent_artrie_char/nodes/mod.rs` keeps its `pub use persistent_node::PersistentCharNode;` and `pub use atomic_ptr::AtomicNodePtr;` — call-sites (`lockfree_cas.rs`, vocab, `mvcc.rs`, `persist.rs::overlay_to_inner`) **do not change** because the names resolve identically. `overlay_to_inner<V>(node: &PersistentCharNode<V>) -> CharTrieNodeInner<V>` (`persist.rs:966`) reads only `is_final()/get_value()/prefix()/iter_children()/as_in_mem()` — all preserved on the alias — so the serializer and on-disk format are untouched (Constraint 3 ✓).
+`persistent_artrie/char/nodes/mod.rs` keeps its `pub use persistent_node::PersistentCharNode;` and `pub use atomic_ptr::AtomicNodePtr;` — call-sites (`lockfree_cas.rs`, vocab, `mvcc.rs`, `persist.rs::overlay_to_inner`) **do not change** because the names resolve identically. `overlay_to_inner<V>(node: &PersistentCharNode<V>) -> CharTrieNodeInner<V>` (`persist.rs:966`) reads only `is_final()/get_value()/prefix()/iter_children()/as_in_mem()` — all preserved on the alias — so the serializer and on-disk format are untouched (Constraint 3 ✓).
 
-`persistent_artrie_char/mvcc.rs` (`impl<V: Clone+Send+Sync+'static> TrieRoot for PersistentCharNode<V>`, `mvcc.rs:13`): because `PersistentCharNode<V>` is now `OverlayNode<CharKey, V>`, this `impl` is on a type alias = an `impl` on `OverlayNode<CharKey, V>`. **Coherence:** `TrieRoot` is defined in `persistent_artrie_core::mvcc`; `OverlayNode` is in `persistent_artrie_core::overlay`. The `impl TrieRoot for OverlayNode<CharKey, V>` can live **either** in `persistent_artrie_char/mvcc.rs` (as now — the alias makes it `impl ... for OverlayNode<CharKey,V>`, allowed because the variant crate is downstream of both) **or** be unified (see 4.4). Keep it in char `mvcc.rs` for the minimal diff; it compiles unchanged.
+`persistent_artrie/char/mvcc.rs` (`impl<V: Clone+Send+Sync+'static> TrieRoot for PersistentCharNode<V>`, `mvcc.rs:13`): because `PersistentCharNode<V>` is now `OverlayNode<CharKey, V>`, this `impl` is on a type alias = an `impl` on `OverlayNode<CharKey, V>`. **Coherence:** `TrieRoot` is defined in `persistent_artrie::core::mvcc`; `OverlayNode` is in `persistent_artrie::core::overlay`. The `impl TrieRoot for OverlayNode<CharKey, V>` can live **either** in `persistent_artrie/char/mvcc.rs` (as now — the alias makes it `impl ... for OverlayNode<CharKey,V>`, allowed because the variant crate is downstream of both) **or** be unified (see 4.4). Keep it in char `mvcc.rs` for the minimal diff; it compiles unchanged.
 
 ### 4.2 VOCAB migration — the alias block is already correct; verify and leave
 
 Both vocab consumers already use the generic char node through aliases:
-- `persistent_vocab_artrie/lockfree.rs:68-79`: `type PersistentCharNode = PersistentCharNodeGeneric<u64>;` etc.
-- `persistent_vocab_artrie/lockfree_cas.rs:19-28`: same.
-- `persistent_vocab_artrie/dict_impl.rs:193`: `lockfree_root: Option<AtomicNodePtr<u64>>`.
+- `persistent_artrie/vocab/lockfree_cas.rs`: `type PersistentCharNode = PersistentCharNodeGeneric<u64>;` etc.
+- `persistent_artrie/vocab/lockfree_cas.rs:19-28`: same.
+- `persistent_artrie/vocab/dict_impl.rs:193`: `lockfree_root: Option<AtomicNodePtr<u64>>`.
 
-Because `PersistentCharNodeGeneric` = `persistent_artrie_char::nodes::PersistentCharNode` = (now) `OverlayNode<CharKey, _>`, the vocab aliases transparently become `OverlayNode<CharKey, u64>`. **Nothing in vocab changes.** Specifically:
+Because `PersistentCharNodeGeneric` = `persistent_artrie::char::nodes::PersistentCharNode` = (now) `OverlayNode<CharKey, _>`, the vocab aliases transparently become `OverlayNode<CharKey, u64>`. **Nothing in vocab changes.** Specifically:
 - The **reverse index** (`index_term_storage: RwLock<Vec<Option<String>>>` in `lockfree.rs:149`, and `reverse_index.rs`/`reverse_cache.rs`) lives entirely *outside* the node — untouched (Constraint: "vocab's reverse-index lives OUTSIDE the node and is untouched" ✓).
 - The **`unreachable!` on-disk branch** (`lockfree.rs:272-278` in `get_index`) keys on `child.as_in_mem()` returning `None` — that method is preserved verbatim on the alias, so the `unreachable!` semantics are identical.
 - Vocab uses `as_final().with_value(index)`, `find_child`, `is_null`, `get_value` — all preserved.
 - `LockFreeVocab`'s `unsafe impl Send/Sync` (`lockfree.rs:597-598`) is on `LockFreeVocab` itself (a wrapper struct), **not** on the node — it is unrelated to G4 and stays as-is (it's already in the unsafe inventory; G4 adds/removes nothing there).
 
-**Verification action:** after the char alias lands, `cargo build` the vocab crate; expect zero edits. (If the `Child`/`AtomicNodePtr`/`PersistentCharNode` generic aliases in vocab were importing `...::Child as ChildGeneric` etc., confirm those import paths still resolve — they import from `persistent_artrie_char::nodes::{...}`, which re-exports the aliases. ✓)
+**Verification action:** after the char alias lands, `cargo build` the vocab crate; expect zero edits. (If the `Child`/`AtomicNodePtr`/`PersistentCharNode` generic aliases in vocab were importing `...::Child as ChildGeneric` etc., confirm those import paths still resolve — they import from `persistent_artrie::char::nodes::{...}`, which re-exports the aliases. ✓)
 
 ### 4.3 BYTE migration — two sub-steps (the only real work)
 
@@ -374,16 +376,16 @@ Because `PersistentCharNodeGeneric` = `persistent_artrie_char::nodes::Persistent
 
 ```rust
 // persistent_artrie/nodes/persistent_node.rs
-pub use crate::persistent_artrie_core::overlay::{flags, OverlayNode};
-use crate::persistent_artrie_core::key_encoding::ByteKey;
+pub use crate::persistent_artrie::core::overlay::{flags, OverlayNode};
+use crate::persistent_artrie::core::key_encoding::ByteKey;
 pub type PersistentNode<V = ()> = OverlayNode<ByteKey, V>;
-pub type Child<V = ()> = crate::persistent_artrie_core::overlay::Child<ByteKey, V>;
+pub type Child<V = ()> = crate::persistent_artrie::core::overlay::Child<ByteKey, V>;
 pub const MAX_PREFIX_LEN: usize = <ByteKey as ...::KeyEncoding>::MAX_PREFIX_LEN; // 12
 #[cfg(test)] mod tests { /* byte node tests move here unchanged — they alias <()>/`<u64>` (persistent_node.rs:942-943) and pass verbatim */ }
 ```
 ```rust
 // persistent_artrie/nodes/atomic_ptr.rs
-pub type AtomicNodePtr<V = ()> = crate::persistent_artrie_core::overlay::AtomicNodePtr<ByteKey, V>;
+pub type AtomicNodePtr<V = ()> = crate::persistent_artrie::core::overlay::AtomicNodePtr<ByteKey, V>;
 ```
 
 Byte `dict_impl.rs` fields: today `lockfree_root: Option<super::nodes::AtomicNodePtr>` (non-generic, `dict_impl.rs:321`) and `lockfree_cache: Option<DashMap<Vec<u8>, bool>>`. Since the byte overlay is exercised at `V=i64`/`V=()` (counter domain `i64` per the constraints, membership `()`), set `lockfree_root: Option<AtomicNodePtr<u64>>` to match char's counter value domain used by `try_increment_cas` — **decision point:** the byte counter accumulates in `u64` (`LOCKFREE_COUNTER_MAX = i64::MAX as u64`, byte:26; node value read as `Option<u64>`). So byte's overlay value type is `u64` (the in-overlay counter), persisted as `i64`. Set `lockfree_root: Option<AtomicNodePtr<u64>>` and `LockfreeInsertResult<u64>` for the counter path, `<()>` for membership — **but** byte currently has ONE non-generic `lockfree_root` shared by both membership (`insert_cas`) and counter (`try_increment_cas`). char solved this by making `lockfree_root: AtomicNodePtr<V>` on the generic `PersistentARTrieChar<V,S>` and putting counter methods in the `<u64>` impl. **Mirror char exactly:** make byte `lockfree_root: Option<AtomicNodePtr<V>>` on `PersistentARTrie<V,S>`, membership in `<V: DictionaryValue, S>`, counter in `<u64, S>`. This is the cleanest parity and is what G4 ("genericize byte over V mirroring char") intends.
@@ -392,10 +394,10 @@ This means byte sub-step A and B are really one coherent change: **genericize by
 
 ### 4.4 Unify the `TrieRoot` impls?
 
-Currently two near-identical impls: byte (`persistent_artrie/mvcc.rs:19`, `Key=u8, Value=u64`) and char (`persistent_artrie_char/mvcc.rs:13`, `Key=u32, Value=V`). With `OverlayNode<K,V>` you *can* write one blanket:
+Currently two near-identical impls: byte (`persistent_artrie/mvcc.rs:19`, `Key=u8, Value=u64`) and char (`persistent_artrie/char/mvcc.rs:13`, `Key=u32, Value=V`). With `OverlayNode<K,V>` you *can* write one blanket:
 
 ```rust
-// Could live in persistent_artrie_core/overlay/mod.rs (downstream of core::mvcc — same crate, OK):
+// Could live in persistent_artrie/core/overlay/mod.rs (downstream of core::mvcc — same crate, OK):
 impl<K: KeyEncoding, V: Clone + Send + Sync + 'static> TrieRoot for OverlayNode<K, V> {
     type Key = K::Unit;
     type Value = V;
@@ -413,27 +415,27 @@ impl<K: KeyEncoding, V: Clone + Send + Sync + 'static> TrieRoot for OverlayNode<
 
 ## 5. Phased, reversible migration sequence
 
-Each phase ships green (`cargo nextest run --features persistent-artrie` ≥ 2474) and is independently revertible. **Every build/test wrapped** `systemd-run --user --scope -p MemoryMax=32G --quiet env TMPDIR=$PWD/target/test-tmp <cmd>`.
+Each phase ships green (`cargo nextest run --features persistent-artrie` $\ge$ 2474) and is independently revertible. **Every build/test wrapped** `systemd-run --user --scope -p MemoryMax=32G --quiet env TMPDIR=$PWD/target/test-tmp <cmd>`.
 
 > Ordering principle: introduce the shared types *additively* first (no variant touches them), then migrate char (pure alias, lowest risk, proves the generic), then bring byte to char's proven model, then migrate byte, then optionally unify `TrieRoot`. Vocab is validated as a no-op after char.
 
 ### Phase 0 — Extend `KeyEncoding` (additive, no behavior)
-- **Files:** `persistent_artrie_core/key_encoding.rs` (add `MAX_PREFIX_LEN`, `UNIT_ZERO` to trait + both impls).
+- **Files:** `persistent_artrie/core/key_encoding.rs` (add `MAX_PREFIX_LEN`, `UNIT_ZERO` to trait + both impls).
 - **Green gate:** full suite (the two new consts are unused yet → no behavior change). Unsafe inventory unchanged.
 - **Rollback:** delete the two consts.
 
 ### Phase 1 — Land `OverlayNode<K,V>` / `Child` / `ChildStore` / `AtomicNodePtr` in `core::overlay` (additive, unconsumed)
-- **Files:** new `persistent_artrie_core/overlay/{mod.rs,node.rs,atomic_ptr.rs}`; register `pub mod overlay;` in `core/mod.rs`. Port the char node verbatim with the 4 key-typed substitutions; **move the char node's unit tests into `overlay/node.rs`** parameterized for both `ByteKey` and `CharKey` (the existing char tests + the existing byte tests become `<CharKey>`/`<ByteKey>` smoke tests — this is where the byte-instantiation coverage comes from "for free", see §6).
+- **Files:** new `persistent_artrie/core/overlay/{mod.rs,node.rs,atomic_ptr.rs}`; register `pub mod overlay;` in `core/mod.rs`. Port the char node verbatim with the 4 key-typed substitutions; **move the char node's unit tests into `overlay/node.rs`** parameterized for both `ByteKey` and `CharKey` (the existing char tests + the existing byte tests become `<CharKey>`/`<ByteKey>` smoke tests — this is where the byte-instantiation coverage comes from "for free", see §6).
 - **Green gate:** suite passes (new module compiled + its tests run; nothing else references it). `verify-formal-correspondence.sh` exit 0. Unsafe inventory: **must stay set-equal** — the new module has zero `unsafe` (Send/Sync auto-derive), so no inventory rows added.
 - **Rollback:** delete `overlay/`, unregister.
 
 ### Phase 2 — Migrate CHAR to alias (pure re-export)
-- **Files:** `persistent_artrie_char/nodes/persistent_node.rs` → alias + moved tests; `…/nodes/atomic_ptr.rs` → alias; `…/nodes/mod.rs` re-exports unchanged. char `lockfree_cas.rs`, `dict_impl_char.rs` (`LockfreeInsertResult<V>` now holds `OverlayNode<CharKey,V>`), `persist.rs`, `mvcc.rs` — **no edits** (names resolve identically).
+- **Files:** `persistent_artrie/char/nodes/persistent_node.rs` → alias + moved tests; `…/nodes/atomic_ptr.rs` → alias; `…/nodes/mod.rs` re-exports unchanged. char `lockfree_cas.rs`, `dict_impl_char.rs` (`LockfreeInsertResult<V>` now holds `OverlayNode<CharKey,V>`), `persist.rs`, `mvcc.rs` — **no edits** (names resolve identically).
 - **Green gate:** **the entire char + vocab + overlay loom/proptest suite is the proof of behavioral identity.** Specifically these must stay green (they exercise the now-aliased node): `persistent_lockfree_overlay_loom`, `persistent_lockfree_overlay_proptest` (BTreeSet oracle), `persistent_lockfree_durable_loom`, `persistent_artrie_loom_correspondence`, `persistent_lockfree_merge_correspondence`, `persistent_char_node_layout_correspondence`, `persistent_char_ebr_correspondence`, `persistent_char_eviction_*`, plus the in-crate `reclaim_tests`/`eviction_primitive_tests`/`durable_write_tests` in char `lockfree_cas.rs`. `verify-formal-correspondence.sh` exit 0; unsafe inventory set-equal.
 - **Rollback:** restore the two char node files from git (alias → inline). Self-contained.
 
 ### Phase 3 — Validate VOCAB is a no-op
-- **Files:** none expected. Build `persistent_vocab_artrie`; confirm `lockfree.rs`/`lockfree_cas.rs`/`dict_impl.rs` aliases resolve to `OverlayNode<CharKey,u64>`.
+- **Files:** none expected. Build `persistent_artrie::vocab`; confirm the `lockfree_cas.rs`/`dict_impl.rs` aliases resolve to `OverlayNode<CharKey,u64>`.
 - **Green gate:** `persistent_vocab_*` correspondence + `concurrent` tests green. If any import path needs a tweak (none anticipated), it is a one-line `use`.
 - **Rollback:** trivial (revert any stray `use`).
 
@@ -482,7 +484,7 @@ For the **node-alias phases (2, 5)** specifically: **no new test is needed** —
 ### 6.3 Green gate at each phase (the checklist)
 
 At **every** phase boundary, all three must hold:
-1. `systemd-run --user --scope -p MemoryMax=32G --quiet env TMPDIR=$PWD/target/test-tmp cargo nextest run --features persistent-artrie` → **≥ 2474 passing, 0 failing.**
+1. `systemd-run --user --scope -p MemoryMax=32G --quiet env TMPDIR=$PWD/target/test-tmp cargo nextest run --features persistent-artrie` → **$\ge$ 2474 passing, 0 failing.**
 2. `systemd-run … scripts/verify-formal-correspondence.sh` → **exit 0** (compiles both feature profiles + all correspondence tests, incl. `persistent_lockfree_overlay_proptest`, `persistent_char_ebr_correspondence`, `persistent_public_durability_policy_correspondence`).
 3. `systemd-run … scripts/verify-unsafe-boundary-inventory.sh` (invoked by #2) → **set-equality** between `formal-verification/UNSAFE_INVENTORY.tsv` and the live `rg`-scanned `unsafe` sites. Since G4 adds **zero** `unsafe` (Send/Sync auto-derive throughout; the only `unsafe impl` touched are the already-deleted-and-commented ones in the node files, which vanish entirely when those files become aliases), the inventory should need **no edits** — but if removing the byte/char node files drops any ledger rows that referenced their paths, update the ledger in the same commit (Constraint 2).
 
@@ -522,7 +524,7 @@ All method *bodies* (recursion, CAS, `try_set_final`, sorted insert/shift, promo
 ## Appendix B — Decision summary (for the impl engineer)
 
 - **Trait bound:** `K: KeyEncoding` (extended with `MAX_PREFIX_LEN` + `UNIT_ZERO`); unit is `K::Unit` (`u8`/`u32`). Not `CharUnit` (wrong unit type, surplus methods), not bespoke (redundant).
-- **Home:** `persistent_artrie_core::overlay` (`node.rs`, `atomic_ptr.rs`, `mod.rs`).
+- **Home:** `persistent_artrie::core::overlay` (`node.rs`, `atomic_ptr.rs`, `mod.rs`).
 - **Types:** `OverlayNode<K,V>`, `Child<K,V>`, `ChildStore<K,V>`, `AtomicNodePtr<K,V>` — all with hand-written `Clone`(bound `V:Clone`)/`Debug`(K-free), auto-`Send`/`Sync`, zero `unsafe`.
 - **`LockfreeInsertResult`:** stays per-variant (over the variant's concrete `K`).
 - **Algorithms:** stay per-variant in G4 (DRY at the node; §3b algorithm-sharing is a later follow-up).
@@ -533,8 +535,8 @@ All method *bodies* (recursion, CAS, `try_set_final`, sorted insert/shift, promo
 ---
 
 ### Critical Files for Implementation
-- `/home/dylon/Workspace/f1r3fly.io/libdictenstein/src/persistent_artrie_core/key_encoding.rs` — extend `KeyEncoding` with `MAX_PREFIX_LEN` + `UNIT_ZERO`; the chosen bound for the unified node.
-- `/home/dylon/Workspace/f1r3fly.io/libdictenstein/src/persistent_artrie_char/nodes/persistent_node.rs` — the verbatim source for `OverlayNode<K,V>` (port into new `persistent_artrie_core/overlay/node.rs`); becomes a `CharKey` alias.
+- `/home/dylon/Workspace/f1r3fly.io/libdictenstein/src/persistent_artrie/core/key_encoding.rs` — extend `KeyEncoding` with `MAX_PREFIX_LEN` + `UNIT_ZERO`; the chosen bound for the unified node.
+- `/home/dylon/Workspace/f1r3fly.io/libdictenstein/src/persistent_artrie/char/nodes/persistent_node.rs` — the verbatim source for `OverlayNode<K,V>` (port into new `persistent_artrie/core/overlay/node.rs`); becomes a `CharKey` alias.
 - `/home/dylon/Workspace/f1r3fly.io/libdictenstein/src/persistent_artrie/nodes/persistent_node.rs` — byte node; becomes a `ByteKey` alias (its tests move to `core::overlay` as `<ByteKey>` coverage).
 - `/home/dylon/Workspace/f1r3fly.io/libdictenstein/src/persistent_artrie/lockfree_cas.rs` — Phase 4 hotspot: port char's path-copy increment (`build_value_path_recursive`) here, genericize `lockfree_root` over `V` (byte is pre-G1).
-- `/home/dylon/Workspace/f1r3fly.io/libdictenstein/src/persistent_artrie_char/lockfree_cas.rs` — the proven reference implementation (`build_value_path_recursive`, two-phase `try_set_final`, Order-A durable paths) to mirror for byte and to keep green as the behavioral-identity oracle.
+- `/home/dylon/Workspace/f1r3fly.io/libdictenstein/src/persistent_artrie/char/lockfree_cas.rs` — the proven reference implementation (`build_value_path_recursive`, two-phase `try_set_final`, Order-A durable paths) to mirror for byte and to keep green as the behavioral-identity oracle.

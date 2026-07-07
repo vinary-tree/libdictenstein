@@ -10,7 +10,7 @@
 > u64-only overlay delta applier NO-OPS for i64 (the bug masking the bug). The generic-V applier fix unmasks
 > it, AND a `u64` diagnostic CONFIRMED the double-apply is real in production (`Some(8)` for a recovered `+4`).
 > So **L1.4 (a watermark fix) IS genuinely required** — but the naive `mark_committed(max_lsn_in_segments)`
-> seed violates the #41 capture-ordering invariant (`watermark ≤ synced frontier`; fresh-WAL frontier=0 →
+> seed violates the #41 capture-ordering invariant ($watermark \le synced frontier$; fresh-WAL frontier=0 →
 > panic at overlay_checkpoint.rs:295), so the real fix is the deep #41-aware change in the bug doc.
 >
 > **⛔ REDIRECT BLOCKER (2026-06-08, TDD-caught — the agent's "parity" claim was empirically FALSE):** the
@@ -25,7 +25,7 @@
 > `reestablish_overlay_from_owned`/`build_overlay_root_from_owned`) was generic over V, masking this; the
 > redirect's PER-OP overlay counter applier is u64-only. (Normal non-recovery i64 increments work — they use
 > the generic `increment_cas` directly; only the RECOVERY/reestablish per-op counter path is u64-specialized.)
-> **⇒ PRECONDITION:** make `apply_recovered_operation_overlay`'s Increment-delta (and the absolute arm's
+> **$\Rightarrow$ PRECONDITION:** make `apply_recovered_operation_overlay`'s Increment-delta (and the absolute arm's
 > `overlay_publish_counter` use) GENERIC over V — read the current leaf value generically (0 if absent), add
 > the delta via the i128 `counter_codec`, publish via `overlay_publish_value` (generic). This touches the
 > i128 counter codec (a DOCUMENTED past BLOCKER — see memory `counter-u64-restoration-done`) AND the SHARED
@@ -47,7 +47,7 @@
 > seed), but the post-recovery `checkpoint()` captures every recovered record into the image at a HIGHER
 > reconcile GENERATION, so the older archived segment loses the LWW reconcile on reopen → no re-drain, no
 > double-apply. (FIX-C is needed for the open_inner CONVERSION path because its committed tail is an
-> un-checkpointed rotated segment; the recovery path's records are fully checkpoint-subsumed.) **⇒ DROP L1.4**
+> un-checkpointed rotated segment; the recovery path's records are fully checkpoint-subsumed.) **$\Rightarrow$ DROP L1.4**
 > (no watermark seed). The GREEN test is retained as the regression guard that the property holds across the
 > L1 applier-redirect. Binding conditions reduce to R2 + R1 (below).
 >
@@ -60,7 +60,7 @@
 > `max_lsn_in_segments(collect_retained_wal_segments_for_rebuild(...))` spans the FULL drained range
 > (collect_retained… renames the active into archive_dir, recovery.rs:1433, so its segment set =
 > renamed-active + archives), exactly mirroring the proven FIX-C template at open_inner:507-514.
-> ⇒ binding condition #2 (L1.4) is validated; implement L1 by hand.
+> $\Rightarrow$ binding condition #2 (L1.4) is validated; implement L1 by hand.
 > Source: Plan-agent design+red-team pass. Carries the L0.2 lesson (verify every
 > `route_overlay()` regime assumption). Plan: `slice3-level3-converged-plan-2026-06-08.md`
 > L1 section (lines 100-116). Retrospective that motivated the rigor:
@@ -74,7 +74,7 @@ normal reopen). Trace (byte, char identical): `open_with_recovery_config` →
 **THEN** the apply loop runs (:935-988). So `route_overlay()==true` with an empty overlay
 installed at the apply loop. `overlay_eligible_v()==true` for ALL V (byte
 overlay_write_mode.rs:487, char :131). The redirect target `apply_recovered_operation_overlay`
-(flip.rs:1031) early-returns only when `lockfree_root==None` — unreachable here. ⇒ redirecting
+(flip.rs:1031) early-returns only when `lockfree_root==None` — unreachable here. $\Rightarrow$ redirecting
 the apply closure is regime-correct as-is.
 
 ## (B) Converged per-site design — SHAPE = surgical applier-swap (NOT drain-swap)
@@ -136,7 +136,7 @@ today) — see R4. Do NOT do that.
   Mitigation: L1.3 commit must cite both ==true facts, migrate the oracle atomically, and add a
   guard/note so a future eligible_v change can't silently resurrect a broken owned applier.
 - **R3 (silent, data-corruption):** watermark hole — closed by L1.4. The one axis where
-  recover-via-drain ≢ recover-via-owned-then-convert (post-checkpoint-reopen × rotated-archive ×
+  recover-via-drain ≢ recover-via-owned-then-convert (post-checkpoint-reopen $\times$ rotated-archive $\times$
   u64 BatchIncrement deltas).
 - **R4 (parity-on-shape):** tx-filter parity HOLDS for the applier-swap shape (both per-op, no
   tx-filter on the corruption path today); it would BREAK if "upgraded" to drain_segments_into_overlay.
@@ -146,8 +146,8 @@ today) — see R4. Do NOT do that.
   recovery_replay_completeness_correspondence.rs:241.
 
 ## New TLA obligation — RecoveryRebuildOverlay
-1. Sink-completeness (lockfree_root≠None at every apply). 2. tx-filter parity (no new filtering —
-applier-swap not drain-swap). 3. **Watermark coverage** (∀ visible LSN ℓ: ℓ≤watermark() after the
+1. Sink-completeness (lockfree_root$\ne$None at every apply). 2. tx-filter parity (no new filtering —
+applier-swap not drain-swap). 3. **Watermark coverage** ($\forall$ visible LSN ℓ: ℓ$\le$watermark() after the
 seed — #41 invariant; the `_Unsafe.cfg` must still exhibit loss when the seed is omitted). 4.
 No-relog (0 WAL records appended). + a Rust regression test: corruption-rebuild/recover_from_archives
 with a BatchIncrement delta → checkpoint() → drop → reopen → counter NOT double-applied (does not

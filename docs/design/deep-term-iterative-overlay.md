@@ -1,5 +1,7 @@
 # Deep-term safety: making the lock-free overlay's recursions iterative (flag-1)
 
+**Synthesized in:** [The lock-free overlay — the live representation](../persistence/lock-free-overlay.md). That page describes the un-path-compressed, one-node-per-key-unit overlay spine; this record is the mechanism detail for why that deep spine forced insert, checkpoint-serialize, and `Drop` to be made **iterative** so very long (500-char) terms cannot overflow the thread stack.
+
 ## Problem
 
 The lock-free overlay (`OverlayNode<K,V>`) stores its spine **un-path-compressed** — one
@@ -20,14 +22,14 @@ Three operations walked that spine **recursively**, so a long term (the stress t
 
 ## Site A — iterative `Drop` for the shared `OverlayNode` (commit 289401f)
 
-`src/persistent_artrie_core/overlay/node.rs`. One custom `Drop` on the **shared** node
+`src/persistent_artrie/core/overlay/node.rs`. One custom `Drop` on the **shared** node
 fixes byte + char + vocab. It flattens the descent onto a heap worklist via the safe
 `Arc::try_unwrap` pattern:
 
-- Sole owner of a child `Arc` ⇒ `try_unwrap` yields the node by value; drain ITS children
+- Sole owner of a child `Arc` $\Rightarrow$ `try_unwrap` yields the node by value; drain ITS children
   onto the worklist; the node drops with an empty store (re-entrant `drop` finds nothing →
   at most one extra frame, never a chain).
-- Shared `Arc` ⇒ it just drops (refcount−−); the eventual last owner dismantles it.
+- Shared `Arc` $\Rightarrow$ it just drops (refcount−−); the eventual last owner dismantles it.
 
 No node freed while referenced (no UAF), none twice, none leaked — driven purely by `Arc`
 refcounting. **Zero `unsafe`.** The `Drop` must be `impl<K, V>` (E0367: a `Drop` impl
@@ -40,7 +42,7 @@ on). Validated by `reclaim_tests` (`strong_count == 1` after drop;
 
 ## Site B — iterative overlay-checkpoint serialize (commit 78fa6d2)
 
-`src/persistent_artrie/overlay_checkpoint.rs` (byte) and `src/persistent_artrie_char/persist.rs`
+`src/persistent_artrie/overlay_checkpoint.rs` (byte) and `src/persistent_artrie/char/persist.rs`
 (char). **Option (i):** serialize the overlay DIRECTLY, iteratively, never materializing the
 deep intermediate owned tree (`overlay_root_to_owned` byte / `overlay_to_inner` char) — which
 killed the conversion recursion, the intermediate-tree drop, AND the serializer recursion at

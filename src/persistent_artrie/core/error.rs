@@ -65,6 +65,15 @@ pub enum PersistentARTrieError {
         reason: String,
     },
 
+    /// The backing file is already owned by another process or live handle (Tier-1 single-owner
+    /// advisory lock). Multi-process access to one file is unsupported; see
+    /// `docs/design/os-level-locking.md`.
+    #[error("File '{path}' is already opened/locked by another process or handle")]
+    FileLocked {
+        /// Path to the locked file
+        path: String,
+    },
+
     /// Checksum verification failed
     #[error(
         "Checksum mismatch in block {block_id}: expected 0x{expected:016X}, found 0x{found:016X}"

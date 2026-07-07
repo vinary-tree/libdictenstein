@@ -54,12 +54,12 @@ let cseq = match rank.get(&lsn).copied() {
     },
 };
 ```
-`Owned⇒KEEP@lsn` = byte-for-byte today's `unwrap_or(lsn)` (no regression). R3 ack-after-rank ⇒ acked⟹ranked⟹never
+$Owned\Rightarrow KEEP@lsn$ = byte-for-byte today's `unwrap_or(lsn)` (no regression). R3 ack-after-rank $\Rightarrow$ acked$\implies$ranked$\implies$never
 dropped. R6 tx-gating folded into this single body so every caller gets it.
 
 ### 1.3 How each entry obtains `regime_of`
-Clean-open ×3: records all from the single ACTIVE file ⇒ `regime_of = |_| active_header.rank_regime` (read at the
-seed scan `mmap_ctor.rs:292`). Archive/rebuild: records span segments ⇒ build `segment_regime` by reading each
+Clean-open $\times$3: records all from the single ACTIVE file $\Rightarrow$ `regime_of = |_| active_header.rank_regime` (read at the
+seed scan `mmap_ctor.rs:292`). Archive/rebuild: records span segments $\Rightarrow$ build `segment_regime` by reading each
 segment's `WalReader::read_header(seg).rank_regime` (`reader.rs:103`); `regime_of(lsn)` resolves via the originating
 segment (D2.7 §3.2, now the choke-point's contract).
 
@@ -104,7 +104,7 @@ let regime = match magic { MAGIC=>Owned, MAGIC_OVERLAY=>Overlay, _=>return Err(C
 // regime here must AGREE with the byte-28 rank_regime field; mismatch ⇒ corrupt.
 ```
 `from_bytes` is the single magic gate (only `WalWriter::open:116`+`read_header:108` reach it). VERSION stays 2 (no
-bump ⇒ F1/F1b stay closed). The widen is ADDITIVE (accepts `MAGIC` exactly as before).
+bump $\Rightarrow$ F1/F1b stay closed). The widen is ADDITIVE (accepts `MAGIC` exactly as before).
 ### 2.2 Where the flip writes the overlay magic
 `ensure_overlay_wal_regime`'s fresh-file create (`recreate_active_overlay`/`create_overlay`) writes
 `WalHeader{magic:MAGIC_OVERLAY, version:2, rank_regime:Overlay,..}`. Owned producers keep `WalWriter::create:87`
@@ -114,12 +114,12 @@ OLD binary opening an Overlay file via `WalWriter::open`/`read_header` → magic
 backup/monitoring/mixed-deploy/rollback readers — a NORMAL-ops vector). NEW binary (recovery/migrate) → `from_bytes`
 accepts `MAGIC_OVERLAY` → reads freely (both `read_header` + `open` route through the same `from_bytes`). **Residual:
 `WalReader::new:28` seeks past the header (no magic check)**, so an OLD binary's clean-open RECORD SCAN of an Overlay
-file is not magic-fail-closed (relies on the byte-28 rank_regime backstop, which an old binary reads as Owned ⇒ keeps
+file is not magic-fail-closed (relies on the byte-28 rank_regime backstop, which an old binary reads as Owned $\Rightarrow$ keeps
 orphans). **§B addendum: in the NEW binary, make `WalReader::new` validate the magic set too** — this closes the
 NEW-binary side entirely (new tools using `WalReader::new` on an Overlay file get a clean regime/error). The OLD-binary
 `WalReader::new` path is irreducible (can't retro-teach old binaries) and is the documented mixed-deploy constraint —
 now strictly smaller than D2.7's (was: every path; now: only an OLD binary's raw `WalReader::new` scan, since the main
-ctor opens `WalWriter` first ⇒ magic-checks first). NOTE: the main trie open opens `WalWriter` (magic-checked) BEFORE
+ctor opens `WalWriter` first $\Rightarrow$ magic-checks first). NOTE: the main trie open opens `WalWriter` (magic-checked) BEFORE
 the `WalReader::new` scan, so the principal clean-open path IS fail-closed for old binaries; the residual is only a
 read-only tool that uses `WalReader::new` without `WalWriter::open`/`read_header`.
 ### 2.4 Cross-codebase
@@ -146,13 +146,13 @@ let lsn = self.append_to_wal_returning_lsn(WalRecord::Insert{..})?;   // :329, n
 ```
 The CAS-loop `AlreadyExists` arm `:375` is retained ONLY for the genuine RACE (a concurrent op finalized `t` between
 our read and our CAS); per §A it must NOT rank — change `:388` to `mark_committed(lsn)` (watermark liveness) but OMIT
-`append_commit_rank` ⇒ its already-appended data record is UNRANKED ⇒ Overlay-dropped. Same for `remove_cas_durable`'s
+`append_commit_rank` $\Rightarrow$ its already-appended data record is UNRANKED $\Rightarrow$ Overlay-dropped. Same for `remove_cas_durable`'s
 `AlreadyAbsent` arm `:572` (drop the rank, keep mark). The 4 real producers (`Inserted:367`, `Removed:551`, increments
 `:1665/:1763`) keep loop-top-claim+rank.
 ### 3.2 Linearization soundness (red-team VALIDATED)
 `Ok(false)` from `present_before` asserts "`t` present at the read's LP" — not a lost insert (idempotent no-op), exactly
 as the existing `remove_cas_durable:498` absent-fast-path. Because the no-op appends NOTHING, there is no commit_seq /
-record for it ⇒ the §A resurrection trace is structurally impossible. TOCTOU handled §7-C.
+record for it $\Rightarrow$ the §A resurrection trace is structurally impossible. TOCTOU handled §7-C.
 
 ---
 
@@ -160,7 +160,7 @@ record for it ⇒ the §A resurrection trace is structurally impossible. TOCTOU 
 migrate (Owned→Overlay; greenfield) reads a source Owned file that may have LEGACY root-version `CommitRank`s
 (cf1f80c-era) whose `generation` would COLLIDE with the fresh Overlay commit_seq space. The re-rank pass: (1) read
 source via `WalReader`; (2) `reconcile_core(records, |_|Owned, cp)` → materialized winner set (legacy `CommitRank`
-markers consumed in Pass 1, emit no op `recovery.rs:370` ⇒ never leak); (3) write a FRESH Overlay WAL
+markers consumed in Pass 1, emit no op `recovery.rs:370` $\Rightarrow$ never leak); (3) write a FRESH Overlay WAL
 (`magic=MAGIC_OVERLAY, rank_regime=Overlay`): for each winner append the data record + a FRESH
 `CommitRank{data_lsn, generation=next_commit_seq()}` from the new global counter; (4) set the Overlay header's
 `commit_seq_floor` to the max migrated commit_seq. Output has ZERO legacy generations; no collision. Source Owned
@@ -183,13 +183,13 @@ Hazard: `rotate_to_archive:458` recreates a fresh active via `WalHeader::new()` 
 and step2 leaves an Owned-tail active while `route_overlay()` is true. **Crash recovery (D2.7 §1.3 made EXACT):** the
 ctor calls `ensure_overlay_wal_regime` BEFORE any overlay producer (char `mmap_ctor.rs:327`); the `match` is the
 idempotency — `Owned ∧ route_overlay() ⇒ rotate-again-then-recreate` (double-rotate is safe; the empty Owned segment
-is harmless+pruned); `Overlay ⇒ no-op`; mid-rotate ⇒ F5 (rotate is the trusted primitive, rename atomic). The
-`open_with_regime(expected)` guard: an overlay producer threads `expected=Overlay`; opening an Owned tail ⇒ Err ⇒
+is harmless+pruned); $Overlay \Rightarrow no-op$; mid-rotate $\Rightarrow$ F5 (rotate is the trusted primitive, rename atomic). The
+`open_with_regime(expected)` guard: an overlay producer threads `expected=Overlay`; opening an Owned tail $\Rightarrow$ Err $\Rightarrow$
 forces the flip. base/vocab/owned thread `expected=Owned` (default `open_or_create_async_wal:490`).
-### TLA (extends LockFreeOverlayDurableReplay.tla): actions `CrashMidFlip` (crash between Rotate+Recreate ⇒
-active_regime=Owned ∧ route_overlay), `ReopenReRunsFlip`; invariants `FlipConverges` (re-run reaches Overlay),
-`NoOverlayProducerOnOwnedTail`; control `_UnsafeNoReRotate` (disable re-run ⇒ fires). Soak
-`flip_crash_between_rotate_and_recreate` ≥50× (kill -9 between rotate+recreate; reopen asserts Overlay active + pinned
+### TLA (extends LockFreeOverlayDurableReplay.tla): actions `CrashMidFlip` (crash between Rotate+Recreate $\Rightarrow$
+active_regime=Owned $\land$ route_overlay), `ReopenReRunsFlip`; invariants `FlipConverges` (re-run reaches Overlay),
+`NoOverlayProducerOnOwnedTail`; control `_UnsafeNoReRotate` (disable re-run $\Rightarrow$ fires). Soak
+`flip_crash_between_rotate_and_recreate` $\ge$50$\times$ (kill -9 between rotate+recreate; reopen asserts Overlay active + pinned
 Owned tail + no resurrection + idempotent reopen).
 
 ---
@@ -197,7 +197,7 @@ Owned tail + no resurrection + idempotent reopen).
 ## §6. Carry-over + EXTENDED cross-codebase proof
 Carried: (1a)+CommitSeqMonotone+C1′; §A idempotent-NO-RANK (D8-3 precise); §1 rank_regime byte 28 (V2); §1.4 regime
 guard; §1.5 regime-keyed drop; §2 reconcile apply-ALL-in-order; R3 ack-after-rank + B#3a increment gen-threading; R6
-tx (now in reconcile_core); D4 floor (bytes 20..28; "marked-but-unranked has no commit_seq ⇒ excluded from floor max"
+tx (now in reconcile_core); D4 floor (bytes 20..28; "marked-but-unranked has no commit_seq $\Rightarrow$ excluded from floor max"
 TLA invariant); D5 migrate (§4 re-rank); D6 sentinel; F3 Owned-pin prune; R7 errata.
 **EXTENDED proof (choke-point + dual-magic base/vocab-unaffected):** the choke-point is char-`pub(super)`; base/vocab
 recover via their own paths, never call it (grep empty). Dual-magic widen is ADDITIVE (`from_bytes` still accepts
@@ -221,7 +221,7 @@ irreducible documented constraint, now smaller (the main ctor opens `WalWriter` 
 **C — §A hoist TOCTOU?** Window exists (read T1, CAS T2). (1) absent→absent: real insert, ranks, correct. (2)
 absent→present (raced): CAS `AlreadyExists` → NO-RANK arm → data record dropped, the concurrent insert's rank wins,
 correct. (3) present at T1: `Ok(false)` appends nothing; a later remove is the live truth, correct. No idempotent
-record ever carries a commit_seq ⇒ the §A resurrection is impossible in ALL interleavings. **TOCTOU benign** (the hoist
+record ever carries a commit_seq $\Rightarrow$ the §A resurrection is impossible in ALL interleavings. **TOCTOU benign** (the hoist
 ALONE without §A NO-RANK would reintroduce F4 — they are paired).
 
 ---
@@ -233,7 +233,7 @@ NoUncommittedTxReplay, IncrementOutcomeDistinct, OwnedKeepsUnranked, OverlayDrop
 OwnedPinSurvivesPrune, IdempotentNoInversion, FlipCreatesFreshOverlay. NEW/sharpened: **`NoUngatedV3Recovery`**
 (REDEFINED structural — every recovery action applies ONLY via the single `ApplyRecoveredRecords` choke-point);
 **`MarkedUnrankedHasNoCommitSeq`** (floor excludes the §A race-arm lsn); **`FlipConverges`** +
-**`NoOverlayProducerOnOwnedTail`**; **`DualMagicFailsClosed`** (Owned-magic reader on an Overlay file ⇒ Err).
+**`NoOverlayProducerOnOwnedTail`**; **`DualMagicFailsClosed`** (Owned-magic reader on an Overlay file $\Rightarrow$ Err).
 **Controls (each MUST fire):** `_UnsafeUngatedRecovery` (REDEF: a recovery action bypasses the choke-point),
 `_UnsafeOldBinaryReadsOverlay` (NEW: Owned-magic reader accepts Overlay), `_UnsafeIdempotentRanked` (§A),
 `_UnsafeNoReRotate` (D8-5); carried `_UnsafeKeepOverlayOrphan`, `_UnsafeDropOwnedUnranked`, `_UnsafeBaseVocabDropped`,
@@ -269,7 +269,7 @@ DG-SOAK   ≥50× real-disk + idempotent-no-op-vs-remove (§A) + flip_crash_betw
           old-binary-reads-overlay tripwire (D8-2)                                                  [reversible until flip flag]
 ```
 Reversibility: DG0–DG2 code-reversible (fields→0=Owned; VERSION never moves; §A hoist regress-tested vs RB3
-`Contains` proptest `:446`). DG-RECON irreversible ONLY per char-Overlay file. No global VERSION bump ⇒ base/vocab +
+`Contains` proptest `:446`). DG-RECON irreversible ONLY per char-Overlay file. No global VERSION bump $\Rightarrow$ base/vocab +
 un-flipped char readable by any binary forever; the one-way boundary is per-file (Overlay-magic).
 
 ---

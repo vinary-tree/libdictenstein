@@ -218,6 +218,6 @@ libdictenstein = { version = "0.1", features = ["persistent-artrie"] }
 ## Related Documentation
 
 - [README persistent section](../../README.md#persistent-artrie--lock-free--durable)
-- [Persistence architecture](../persistence/mmap-architecture.md)
+- [Persistence architecture](../persistence/README.md)
 - [Persistent ARTrie theory](../theory/disk-tries/06-persistent-artrie-design.md)
 - [Benchmark ledgers](../experiments/)

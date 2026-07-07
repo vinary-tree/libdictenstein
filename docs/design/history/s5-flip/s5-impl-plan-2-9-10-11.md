@@ -41,7 +41,7 @@ recovery.rs:330-332).
 - **2.3** `capture_snapshot_immutable`: AFTER the watermark load (@408)/synced_frontier (@419-423), BEFORE root load
   (@425): `let commit_seq_at_capture = self.commit_seq.load(Acquire);` and in the returned struct (@509):
   `commit_seq_at_capture: Some(commit_seq_at_capture)`. (Same window as watermark; claims monotone in CAS order
-  ⇒ floor ≤ every in-snapshot survivor generation.)
+  $\Rightarrow$ floor $\le$ every in-snapshot survivor generation.)
 - **2.4** BOTH `publish_immutable_snapshot_retaining_wal` (after Checkpoint append+sync, in the wal_writer block)
   AND `_with_eviction`: `if let Some(floor)=snapshot.commit_seq_at_capture { wal_writer.set_commit_seq_floor(floor)?; }`.
   Monotone (raise-only), carried across rotate. Owned path unaffected (None guard).
@@ -56,18 +56,18 @@ recovery.rs:330-332).
 - **(b)** route-split `checkpoint()` (:86, the body @94-95): `if self.route_overlay() { let s = self.capture_snapshot_immutable()?;
   if eviction_coordinator.is_some() { publish_immutable_..._with_eviction(s) } else { publish_immutable_...retaining_wal(&s) } }
   else { assert!(!route_overlay()); let s = self.capture_snapshot()?; self.publish_durable_and_reclaim(s) }`.
-- **S5-8 third assert:** use `assert!(!(uses_overlay() && lockfree_root.is_some()))` (≡ `!route_overlay()`), NOT the
+- **S5-8 third assert:** use `assert!(!(uses_overlay() && lockfree_root.is_some()))` ($\equiv$ `!route_overlay()`), NOT the
   literal `assert!(lockfree_root.is_none())` — the latter would PANIC the legit kill-switch owned checkpoint
   (overlay root present + OwnedTree mode). **Confirm intent with owner.**
 - **RES-4 (HIGHEST):** `SharedCharARTrie::checkpoint` is a SEPARATE capture site (captures under a write guard then
   calls `publish_durable_and_reclaim` directly — persist.rs:88-93 doc; caller in mod.rs). The `checkpoint()`
-  route-split does NOT cover it ⇒ identical post-flip total-loss bug. **MUST find + route-split it too (or prove
+  route-split does NOT cover it $\Rightarrow$ identical post-flip total-loss bug. **MUST find + route-split it too (or prove
   production never uses it post-flip) BEFORE coding S5-9.**
 
 ## S5-10 — overlay reestablish + flip plumbing (NOT wired into prod ctors)
 - **(a)** `insert_cas_with_value_nodurable(&self, term, value:u64) -> Result<bool>` in `impl<u64,S>` (@1371): reuse
   `build_value_path_recursive` + root CAS, ZERO append_*/sync/CommitRank/mark_committed (asserted by absence; gate
-  test checks synced_lsn + watermark UNCHANGED). OnDisk child during reestablish ⇒ Err (overlay is in-memory).
+  test checks synced_lsn + watermark UNCHANGED). OnDisk child during reestablish $\Rightarrow$ Err (overlay is in-memory).
   **Membership twin REQUIRED:** `insert_cas_nodurable(&self, term)` in the generic `impl<V,S>` (@138) via
   `build_path_recursive(..., finalize=true)` + root CAS.
 - **(b)** `reestablish_overlay_after_recovery` (streaming-fallible, v3 §3): per first-code-point partition (disjoint

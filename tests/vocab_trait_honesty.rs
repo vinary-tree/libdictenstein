@@ -9,9 +9,9 @@
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::artrie_trait::ARTrie;
+use libdictenstein::persistent_artrie::core::shared_access::SharedTrieAccess;
 use libdictenstein::persistent_artrie::vocab::{PersistentVocabARTrie, SharedVocabARTrie};
 use libdictenstein::{MappedDictionary, MutableMappedDictionary};
-use parking_lot::RwLock;
 use std::sync::Arc;
 use tempfile::tempdir;
 
@@ -20,7 +20,7 @@ fn fresh_persistent(path: &std::path::Path) -> PersistentVocabARTrie {
 }
 
 fn fresh_shared(path: &std::path::Path) -> SharedVocabARTrie {
-    Arc::new(RwLock::new(fresh_persistent(path)))
+    Arc::new(fresh_persistent(path))
 }
 
 // =============================================================================

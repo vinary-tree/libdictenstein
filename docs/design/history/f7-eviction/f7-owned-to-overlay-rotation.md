@@ -74,11 +74,11 @@ FULL deletion of clear_owned + the owned archive-rebuild appliers = a SUBSEQUENT
 replay_records_lww and replay_records_lww_overlay call the SAME reconcile_lww (regime-aware:
 recovery.rs:328-334 Owned KEEP @ lsn / Overlay DROP); only the apply target differs. The
 F5 both-loaders correspondence already proves the overlay applier reproduces the owned
-final state (byte+char × V incl. "" and term-only members). So converted-reopen == old
+final state (byte+char $\times$ V incl. "" and term-only members). So converted-reopen == old
 owned-reopen, incl. unranked Owned entries (orphan-KEEP).
 
 ### Verification
-- crash-safety proptest (5 crash points × byte/char × V∈{(),u64,String} × empty/non-empty
+- crash-safety proptest (5 crash points $\times$ byte/char $\times$ V$\in${(),u64,String} $\times$ empty/non-empty
   WAL/image): inject drop at each step, reopen, assert every committed term+value + "" +
   unranked Owned entries survive + final regime Overlay; idempotence on double reopen.
 - TLA+: extend (5-state conversion machine {Owned,Archived,OverlayStamped,OverlayBuilt,
@@ -128,7 +128,7 @@ The drain of archived segments is a SINGLE shared archive-aware overlay reconcil
 own regime: the converted Owned tail -> KEEP; overlay-written archived tails -> DROP) ->
 apply winners via the overlay publishers. Promote `replay_records_lww_overlay` to accept the
 per-segment regime closure (or add a sibling `replay_segments_lww_overlay`). WIRE IT INTO ALL
-FOUR reopen arms (byte+char × mmap+io_uring) — the Overlay F5 arm AND the new converter's S4
+FOUR reopen arms (byte+char $\times$ mmap+io_uring) — the Overlay F5 arm AND the new converter's S4
 both go through it (the converter is just "Owned active -> rotate -> Overlay file whose tail
 is the just-archived segment", so after S2 it IS the Overlay arm draining the archive). This
 unifies S4 with the Overlay arm: convert = rotate+stamp+(the shared archive-aware F5 reopen).
@@ -202,7 +202,7 @@ All 3 BLOCKERs closed, no new BLOCKER (code-verified): #1 FIX B (reconcile_lww_w
 #3 FIX C base-seed (CommittedWatermark::new sets contiguous=base directly; AsyncWalWriter::open
 ALREADY seeds next_lsn/synced_lsn = max_lsn_in_segments(all)+1 at async_writer.rs:452, so the
 capture-ordering assert watermark<=synced_frontier holds). Over-advance to a dropped-orphan
-LSN is PRE-EXISTING (active-only base has it today) + benign (orphan ∉ snapshot; no acked
+LSN is PRE-EXISTING (active-only base has it today) + benign (orphan $\notin$ snapshot; no acked
 write reclaimed — #41 invariant). FIX A precision NIT: the load-bearing gate is
 `set_overlay_regime`'s `is_empty_after_header()==(next_lsn==1)` (writer.rs:383 / async :612),
 which `records_empty_on_disk()` targets; the convert path's `install_prebuilt_overlay_root`

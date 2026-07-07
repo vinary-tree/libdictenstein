@@ -1,16 +1,16 @@
 # The Vocabulary Trie — a durable term ↔ id bijection
 
-**Navigation**: [↑ Dictionary layer](README.md) · [Crate README → persistent ARTrie](../../README.md#persistent-artrie--lock-free--durable) · [Native u64 / CX →](native-u64-and-cx.md) · [Persistence architecture →](../persistence/mmap-architecture.md)
+**Navigation**: [↑ Dictionary layer](README.md) · [Crate README → persistent ARTrie](../../README.md#persistent-artrie--lock-free--durable) · [Native u64 / CX →](native-u64-and-cx.md) · [Persistence architecture →](../persistence/README.md)
 
 > **Scope.** This document describes `PersistentVocabARTrie` (re-exported as
 > `IndexedVocabularyPersistent`): a durable, lock-free **bijection** between
 > string terms and dense `u64` ids. It explains the two directions —
-> **forward** (`term → id`, served by the lock-free char overlay, durable) and
-> **reverse** (`id → term`, served by an in-memory map that is **rebuilt from the
+> **forward** ($term \to id$, served by the lock-free char overlay, durable) and
+> **reverse** ($id \to term$, served by an in-memory map that is **rebuilt from the
 > recovered forward entries on reopen** rather than separately persisted) — *what*
 > each is, *how* recovery reconstructs them, and *why* the asymmetry is the right
 > design. The shared persistence substrate is documented under
-> [`../persistence/`](../persistence/mmap-architecture.md).
+> [`../persistence/`](../persistence/README.md).
 
 ---
 
@@ -18,7 +18,7 @@
 
 A **vocabulary** maps a stream of distinct strings to **dense, sequential `u64`
 ids**: the first term interned gets id `0`, the next new term `1`, and so on, with
-duplicates returning the existing id. This `term ↔ id` bijection is the backbone of:
+duplicates returning the existing id. This $term \leftrightarrow id$ bijection is the backbone of:
 
 - **Tokenizers / embeddings** — map tokens to contiguous ids for table lookup.
 - **Dictionary encoding** — replace repeated strings in a column store with small
@@ -43,12 +43,12 @@ insert("hello") → 0      get_index("absent") → None        get_term(99) → 
 A bijection has two directions, but they are **not equally expensive to persist**,
 and exploiting that asymmetry is the central design choice.
 
-- The **forward** direction, `term → id`, is a **trie**: walk the term's characters
+- The **forward** direction, $term \to id$, is a **trie**: walk the term's characters
   from the root to a leaf whose stored value is the id. This is the natural,
   prefix-shareable representation, and it is what `get_index` and membership
   (`contains`) need. It is the **source of truth** and the only thing written to
   disk.
-- The **reverse** direction, `id → term`, is just a **flat map** from each id back
+- The **reverse** direction, $id \to term$, is just a **flat map** from each id back
   to its string. Crucially, **every (id, term) reverse entry is already implied by
   a forward leaf**: the reverse map is a pure *function of* the forward trie. So it
   does **not** need its own durable copy — it can be **reconstructed by scanning
@@ -68,7 +68,7 @@ The forward map is a **lock-free char overlay trie** whose leaf **value is the
 `u64` id**. It is the same immutable, copy-on-write, CAS-published overlay node
 used by `PersistentARTrieChar` — instantiated here at `V = u64`:
 
-- **Insert** (`insert(term) → id`) claims the next id (`next_index`), builds a
+- **Insert** ($insert(term) \to id$) claims the next id (`next_index`), builds a
   copy-on-write path that marks the term's leaf final with that id as its value,
   and publishes the new root by compare-and-swap. A duplicate term short-circuits
   and returns the existing leaf's id without consuming a new id. This is the same
@@ -76,8 +76,11 @@ used by `PersistentARTrieChar` — instantiated here at `V = u64`:
   insert is appended to the WAL and made durable, then the overlay root is
   published.
 - **Forward lookup** (`get_index(term)`) walks the overlay character-by-character
-  in `O(∣term∣)` and reads the leaf value. Membership (`contains`) is the same walk
-  without reading the value. Reads take **no lock**.
+  in $O(\mid term\mid )$ and reads the leaf value. Membership (`contains`) is the same walk
+  without reading the value. Reads take **no lock** — the lock-free
+  CAS-publish/snapshot-read discipline the forward direction inherits is specified in
+  [`../persistence/lock-free-overlay.md`](../persistence/lock-free-overlay.md) and
+  [`../persistence/concurrency-model.md`](../persistence/concurrency-model.md).
 - A lock-free `lockfree_cache: DashMap<String, u64>` accelerates repeated forward
   lookups; like the reverse map, it is a derived accelerator over the overlay.
 
@@ -108,7 +111,7 @@ is the source of truth; this is a rebuildable accelerator."*
   sharded lookup with no lock.
 - On **reopen**, it is **not read from disk**. It is **rebuilt by scanning the
   recovered forward entries**: for each `(term, id)` leaf in the reconstructed
-  forward overlay, insert `id → term` into a fresh `DashMap`. Because it is derived
+  forward overlay, insert $id \to term$ into a fresh `DashMap`. Because it is derived
   from the authoritative forward image, it is exactly consistent with the forward
   direction by construction.
 - A **`clone()`** of the trie likewise carries no reverse map (`reverse_term_map:
@@ -145,7 +148,7 @@ touches disk:
    committed-visible state at crash time.
 4. **Rebuild the reverse map from the recovered forward entries** — allocate a
    fresh `reverse_term_map` and scan the forward overlay's `(term, id)` leaves into
-   it. Nothing on disk stored `id → term`; it is materialized here.
+   it. Nothing on disk stored $id \to term$; it is materialized here.
 5. **Resume serving** — `get_index` / `contains` walk the overlay; `get_term` reads
    the rebuilt reverse map; both answer the same bijection.
 
@@ -226,12 +229,12 @@ reverse-map root branch), as do long strings, embedded nulls, and full Unicode
 
 ## 7. Properties at a glance
 
-| Property | Forward `term → id` | Reverse `id → term` |
+| Property | Forward $term \to id$ | Reverse $id \to term$ |
 |----------|---------------------|---------------------|
 | **Representation** | lock-free char overlay trie (leaf value = id) | `DashMap<u64, String>` |
 | **Persisted?** | **yes** — dense overlay image + WAL tail | **no** — derived |
 | **Reconstructed on reopen by** | loading the image + replaying the WAL | **scanning the recovered forward entries** |
-| **Lookup cost** | `O(∣term∣)` overlay walk | `O(1)` sharded |
+| **Lookup cost** | $O(\mid term\mid )$ overlay walk | `O(1)` sharded |
 | **Concurrency** | lock-free CAS-published root | lock-free `DashMap` |
 | **Consistency after crash** | committed-visible at crash time | consistent *by construction* (rebuilt from forward) |
 | **Source of truth?** | **yes** | no — a rebuildable accelerator |
@@ -243,11 +246,17 @@ reverse-map root branch), as do long strings, embedded nulls, and full Unicode
 - **Built on** the persistent char ARTrie overlay (the forward direction is that
   overlay at `V = u64`) and the shared persistence substrate — WAL, Order-A writes,
   checkpoint/recovery, `mmap`/`io_uring` storage:
-  [`../persistence/mmap-architecture.md`](../persistence/mmap-architecture.md) and
+  [`../persistence/README.md`](../persistence/README.md) and
   [`../persistence/wal-format.md`](../persistence/wal-format.md).
-- **Compared with** the native-`u64` profile, which stores `&[u64] → V` with native
+- **Catalogued** as the `PersistentVocabARTrie` row of the ARTrie family — its place
+  among the byte/char/`u64` profiles, and the forward/reverse cost model, are
+  tabulated in [`../persistence/families.md#profiles`](../persistence/families.md#profiles);
+  the shared lock-free concurrency contract (snapshot reads, CAS publication, the F4
+  lock hierarchy) is in
+  [`../persistence/concurrency-model.md`](../persistence/concurrency-model.md).
+- **Compared with** the native-`u64` profile, which stores $&[u64] \to V$ with native
   64-bit edge labels: [`native-u64-and-cx.md`](native-u64-and-cx.md). The vocab trie
-  goes the *other* way — `String → u64` — and is keyed on characters, not `u64`
+  goes the *other* way — $String \to u64$ — and is keyed on characters, not `u64`
   words.
 - **Sibling** durable substring indexes:
   [`persistent-suffix-graphs.md`](persistent-suffix-graphs.md).
@@ -271,4 +280,4 @@ reverse-map root branch), as do long strings, embedded nulls, and full Unicode
 
 ---
 
-**Navigation**: [↑ Dictionary layer](README.md) · [Crate README → persistent ARTrie](../../README.md#persistent-artrie--lock-free--durable) · [Native u64 / CX →](native-u64-and-cx.md) · [Persistence architecture →](../persistence/mmap-architecture.md)
+**Navigation**: [↑ Dictionary layer](README.md) · [Crate README → persistent ARTrie](../../README.md#persistent-artrie--lock-free--durable) · [Native u64 / CX →](native-u64-and-cx.md) · [Persistence architecture →](../persistence/README.md)

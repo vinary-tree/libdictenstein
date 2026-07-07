@@ -51,7 +51,7 @@ So the fix must reconcile the watermark with the recovery ctor's fresh-WAL model
 - **(A) Archive-lifecycle:** after the recovery's checkpoint is durable, PRUNE the rebuild archive
   segments so the next reopen has nothing to re-drain (must be crash-safe: prune only post-durable-checkpoint).
 - **(B) Frontier reconciliation:** advance the fresh WAL's synced frontier to cover the drained LSNs
-  (so `watermark = max ≤ frontier` holds), or re-stamp the recovered records into the new WAL so the
+  (so $watermark = max \le frontier$ holds), or re-stamp the recovered records into the new WAL so the
   frontier legitimately reflects them.
 - **(C) checkpoint-lsn source:** record `checkpoint_lsn` from the drained-segment max (decoupled from
   the watermark) so the reopen skip works without claiming the watermark is durable — but this splits

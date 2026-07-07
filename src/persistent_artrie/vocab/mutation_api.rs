@@ -8,6 +8,7 @@
 //! the owned tree and its WAL helpers are deleted. The public `&mut self` mutators (the
 //! `MutableMappedDictionary` contract) are thin wrappers over the `&self` overlay inserts.
 
+use std::path::Path;
 use std::sync::atomic::Ordering;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
@@ -124,5 +125,85 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
             self.dirty.store(true, Ordering::Release);
         }
         Ok(newly)
+    }
+
+    /// Fork this vocabulary into a NEW, fully independent on-disk copy at `path`.
+    ///
+    /// Unlike [`Clone`](Self::clone) (a read-only in-memory snapshot that shares the immutable
+    /// overlay and is detached from storage), `fork_to` creates a fresh mmap-backed trie with its
+    /// OWN file, WAL, arena, and buffer manager, then replays every `(term, id)` pair — so the
+    /// fork is independently writable and separately persistable, and shares NOTHING with `self`
+    /// (either can be mutated and dropped without affecting the other). It works on any backend
+    /// `S`, including a storage-less snapshot.
+    ///
+    /// The exact id assignment is preserved (including burned-id gaps), as is the durability
+    /// policy (adopted AFTER replay, so a `Periodic`/`None` source still replays under the fork's
+    /// default `Immediate`). On any error mid-replay the partial fork files are removed, so a
+    /// failed fork leaves nothing behind. `path` must not already exist.
+    pub fn fork_to<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> Result<super::dict_impl::PersistentVocabARTrie> {
+        // Fresh independent storage + WAL at the new path (errors if `path` exists — no clobber).
+        let fork = super::dict_impl::PersistentVocabARTrie::create_with_start_index(
+            path.as_ref(),
+            self.start_index,
+        )?;
+
+        // Replay + finalize; on any error, clean up the partial fork below.
+        let outcome = (|| -> Result<()> {
+            // Point-in-time consistent capture of the source overlay's `(term-units, id)` pairs
+            // (a single DFS over the immutable root snapshot).
+            let pairs = <Self as crate::persistent_artrie::core::overlay::flip::LockFreeOverlay<
+                crate::persistent_artrie::core::key_encoding::CharKey,
+                u64,
+                S,
+            >>::overlay_collect_units_with_values(self, &[])
+            .unwrap_or_default();
+
+            for (units, id) in pairs {
+                let term: String = units.iter().filter_map(|&c| char::from_u32(c)).collect();
+                // Id-preserving insert (validates the bijection; each is a distinct new term).
+                fork.insert_with_index(&term, id)?;
+            }
+
+            // Preserve the exact next-id frontier (replay only raised it to max(id)+1; a source
+            // that burned ids past its highest term keeps its higher frontier).
+            fork.next_index
+                .fetch_max(self.next_index.load(Ordering::Acquire), Ordering::AcqRel);
+
+            // Adopt the source's durability policy AFTER replay.
+            fork.set_durability_policy(self.durability_policy());
+
+            // Publish an independent, reopenable checkpoint image to the fork's own file.
+            fork.checkpoint()
+        })();
+
+        match outcome {
+            Ok(()) => {
+                debug_assert_eq!(
+                    fork.entry_count.load(Ordering::Acquire),
+                    fork.reverse_term_map.as_ref().map_or(0, |m| m.len()),
+                    "fork entry_count must equal its reverse-map size"
+                );
+                Ok(fork)
+            }
+            Err(error) => {
+                // Remove the partial fork so a mid-replay failure leaves nothing behind. Drop the
+                // fork first (releases the file + WAL handles), then unlink the image + WAL.
+                let fork_path = fork.path.clone();
+                drop(fork);
+                let _ = std::fs::remove_file(&fork_path);
+                let _ = std::fs::remove_file(fork_path.with_extension("vocab.wal"));
+                Err(error)
+            }
+        }
+    }
+
+    /// Take a lossless in-memory read-only snapshot — an alias for [`Clone::clone`] that names the
+    /// intent. The snapshot shares the immutable overlay and is detached from storage; use
+    /// [`Self::fork_to`] for an independent, writable, separately-persistable copy.
+    pub fn snapshot(&self) -> Self {
+        self.clone()
     }
 }

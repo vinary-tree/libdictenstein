@@ -89,8 +89,8 @@ mod persistent_vocab {
 mod shared_vocab {
     use super::*;
 
+    use libdictenstein::persistent_artrie::core::shared_access::SharedTrieAccess;
     use libdictenstein::persistent_artrie::vocab::{PersistentVocabARTrie, SharedVocabARTrie};
-    use parking_lot::RwLock;
     use std::sync::Arc;
     use tempfile::tempdir;
 
@@ -100,7 +100,7 @@ mod shared_vocab {
         let path = dir.path().join("vocab.dict");
 
         let vocab = PersistentVocabARTrie::create(&path).expect("create persistent vocab");
-        let shared: SharedVocabARTrie = Arc::new(RwLock::new(vocab));
+        let shared: SharedVocabARTrie = Arc::new(vocab);
         let terms = ["one", "two", "three"];
         {
             let g = shared.write();

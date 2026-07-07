@@ -333,7 +333,7 @@ Key features:
 | 500 | 110.85 µs | 8.94 Melem/s | ~2 |
 | 1000 | 96.58 µs | 10.20 Melem/s | ~1 |
 
-**Key Finding:** Fewer epoch transitions = higher throughput. Optimal is max_ops ≥ 500.
+**Key Finding:** Fewer epoch transitions = higher throughput. Optimal is max_ops $\ge$ 500.
 
 #### Recovery Time (from checkpoint)
 | Operations | Recovery Time | Throughput |
@@ -799,7 +799,7 @@ Created `src/persistent_artrie/per_node_log.rs` with:
 
 **Recovery Time Improvement:**
 - Speedup scales inversely with dirty ratio: 100x at 1%, 10x at 10%
-- Formula: `speedup ≈ 1 / dirty_ratio`
+- Formula: $\text{speedup} \approx 1 / \text{dirty\_ratio}$
 - Effect size: Very Large (Cohen's d >> 2.0)
 
 **Overhead Assessment:**
@@ -809,7 +809,7 @@ Created `src/persistent_artrie/per_node_log.rs` with:
 
 **Memory Overhead:**
 - Inline log: 64 bytes per node (configurable)
-- Dirty tracker: HashSet<u64> ≈ 8 bytes per dirty node
+- Dirty tracker: HashSet<u64> $\approx$ 8 bytes per dirty node
 - Stats: 64 bytes (fixed, shared)
 
 ### Decision
@@ -929,7 +929,7 @@ Added to `src/persistent_artrie/dict_impl.rs`:
 | Varied prefix | +5-20% | **-12.7%** | O(n log n) sort > cache benefit |
 
 **Analysis:**
-1. The sorting overhead is O(n log n) = O(10000 × 13.3) ≈ 133K comparisons
+1. The sorting overhead is O(n log n) = O(10000 $\times$ 13.3) $\approx$ 133K comparisons
 2. Each comparison involves string comparison (up to 13 bytes for "term_XXXXXXXX")
 3. The ART trie already has excellent cache locality via node compression
 4. NVMe storage latency (~1µs) means I/O is not the bottleneck

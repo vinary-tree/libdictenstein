@@ -48,10 +48,12 @@
 //!
 //! # Thread Safety
 //!
-//! `BijectiveMap` is thread-safe:
-//! - Multiple concurrent reads are allowed
-//! - Writes use locks for synchronization
-//! - The bijection invariant is maintained across concurrent operations
+//! `BijectiveMap` is thread-safe and lock-free:
+//! - Reads are wait-free: an atomic `ArcSwap` load of the reverse index plus the lock-free
+//!   forward `DynamicDawgChar`. Concurrent reads never block each other or writers.
+//! - Writes are lock-free (no mutex): the reverse index is published by a copy-on-write
+//!   `compare_and_swap` retry loop, and the forward DAWG uses per-node CAS.
+//! - The bijection invariant is maintained across concurrent operations.
 
 mod bijective_map;
 

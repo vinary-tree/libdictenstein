@@ -1,0 +1,50 @@
+@startuml swmr-publish-refresh
+' SWMR Option-A publication (writer, cold path) + non-blocking reader refresh.
+' Rendered by scripts/render-diagrams.sh → ../swmr-publish-refresh.svg
+skinparam backgroundColor #FDFDFD
+skinparam shadowing false
+skinparam defaultFontName "DejaVu Sans"
+skinparam sequenceArrowThickness 1
+skinparam ParticipantBackgroundColor #E8F0FE
+skinparam ParticipantBorderColor #5F6368
+skinparam noteBackgroundColor #FFF8E1
+skinparam noteBorderColor #E0C060
+
+title SWMR — reader-safe publish (atomic rename) ∥ non-blocking reader refresh
+
+participant "Writer\n(hot: lock-free\noverlay CAS)" as W
+participant "checkpoint_overlay\n(cold, under CK)" as CK
+database "filesystem" as FS
+participant "Reader.refresh\nthread" as RR
+participant "Reader.snapshot\nArcSwap" as RS
+actor "Reader.get_index\n(hot)" as RG
+
+== Writer publish (cold path only — hot writes untouched) ==
+W -> CK : checkpoint()
+CK -> FS : write full image →\n<temp inode>
+CK -> FS : fsync(temp)   // durability point
+CK -> FS : **rename(temp, canonical)**\n// atomic publication (new inode)
+CK -> FS : fsync(dir)
+note right of CK
+  checkpoint_lsn (monotonic) advances in the new inode's header.
+  The writer's WAL + in-heap overlay are unchanged.
+end note
+
+== Reader refresh (background — off the read path) ==
+loop every poll interval
+  RR -> FS : stat / pread checkpoint_lsn
+  alt checkpoint_lsn bumped
+    RR -> FS : open NEW canonical inode (read-only)
+    RR -> RR : rebuild ReaderSnapshot\n(enumerate image → overlay + reverse map)
+    RR -> RS : store(Arc::new(new snapshot))
+    note right of RS : lock-free swap;\nold snapshot freed when last reader Arc drops
+  else unchanged
+    RR -> RR : skip (no committed change)
+  end
+end
+
+== Reader read (hot — never blocks, never rebuilds) ==
+RG -> RS : load()   // lock-free Arc load
+RS --> RG : &ReaderSnapshot
+RG -> RG : walk frozen overlay + reverse-map get\n(byte-identical to writer reads)
+@enduml

@@ -1,22 +1,24 @@
 # Overlay-Flip Genericization — share the char flip with byte (+ why vocab is excluded)
 
+**Synthesized in:** [The lock-free overlay](../persistence/lock-free-overlay.md) · [Concurrency model](../persistence/concurrency-model.md). The overlay read engine and its "the overlay *is* the production structure" status are presented there; this record is the mechanism-detail design for extracting the char lock-free-overlay **flip** into a shared generic layer over `K: KeyEncoding` (so the byte trie reuses it), plus the correctness argument for why vocab is excluded (its overlay value is an allocator-assigned index).
+
 **Crate `libdictenstein`. Baseline HEAD `7cc9984` (char flip shipped). Data-loss-critical.**
 Design by a Plan agent (`af63b7a0`) + parent red-team (the 4 load-bearing claims below are
-code-verified). Source spec: `docs/design/s5-12-e1-readflip-design.md`. This designs the extraction of
+code-verified). Source spec: `docs/design/history/s5-flip/s5-12-e1-readflip-design.md`. This designs the extraction of
 the char lock-free-overlay flip into a SHARED GENERIC layer over `K: KeyEncoding`, so byte reuses it
 rather than copy-pasting; vocab is excluded by correctness.
 
 ## 0. Verified ground truth (the 4 load-bearing facts)
 1. **Byte's counter overlay is `V = i64`** (`impl<S: BlockStorage> PersistentARTrie<i64, S>`,
    `src/persistent_artrie/lockfree_cas.rs:425`; `get_lockfree(&[u8]) -> Option<u64>` :434). Char's is
-   `u64`. ⇒ the eligible counter monomorph is per-variant (char `{(),u64}`, byte `{(),i64}`).
+   `u64`. $\Rightarrow$ the eligible counter monomorph is per-variant (char `{(),u64}`, byte `{(),i64}`).
 2. **Vocab's overlay value is an allocator-assigned index** (`next_index.fetch_add(1, AcqRel)` INSIDE
-   `insert_cas`, `src/persistent_vocab_artrie/lockfree_cas.rs:131`). Replaying inserts during a
+   the vocab overlay insert, `src/persistent_artrie/vocab/mutation_api.rs`). Replaying inserts during a
    reestablish would allocate FRESH indices, corrupting the durable term↔index bijection + the `.idx`
-   reverse index. ⇒ vocab CANNOT use the flip/reestablish; it is flip-safe by never flipping.
+   reverse index. $\Rightarrow$ vocab CANNOT use the flip/reestablish; it is flip-safe by never flipping.
 3. **Byte's `enable_lockfree` does NOT stamp the WAL regime** (`src/persistent_artrie/lockfree_cas.rs:93`
-   sets `lockfree_root` but no `set_overlay_regime`); char's does (`persistent_artrie_char/lockfree_cas.rs:186`).
-   ⇒ the generic `flip_to_overlay`'s `current_lsn()==1` Overlay-restamp must cover byte.
+   sets `lockfree_root` but no `set_overlay_regime`); char's does (`persistent_artrie/char/lockfree_cas.rs:210`).
+   $\Rightarrow$ the generic `flip_to_overlay`'s `current_lsn()==1` Overlay-restamp must cover byte.
 4. **Byte's public iter API is shaped differently** (`iter_prefix(&[u8]) -> Option<impl Iterator<Item=
    Vec<u8>>>`, `src/persistent_artrie/public_iter.rs:64`), vs char's `Result<Option<Vec<String>>>`. ⇒
    the public-method routing glue is irreducibly per-variant.
@@ -40,7 +42,7 @@ Decision: a **seam trait with default-provided generic methods + variant-supplie
 blanket impl (three distinct trie structs, no single type to blanket), NOT a wrapper struct (reestablish
 mutates `&mut self` trie state while reading the owned tree via `&self`; a wrapper re-creates the seam as
 constructor args with a lifetime mess across the `&self`-iter-before-`&mut`-clear ordering). Lives in
-`persistent_artrie_core::overlay::flip`; each variant writes one thin `impl` providing only the seam.
+`persistent_artrie::core::overlay::flip`; each variant writes one thin `impl` providing only the seam.
 - **`type CounterValue: 'static + Copy`** — the per-variant counter monomorph (`u64`/`i64`). THE
   divergence that makes the value-route a seam, not a blanket.
 - **Required seam (~18 small methods):** `lockfree_root()`, `overlay_write_mode()`/`set_…`,
@@ -56,7 +58,7 @@ constructor args with a lifetime mess across the `&self`-iter-before-`&mut`-clea
   `reestablish_overlay_membership`/`_counter`, `reject_under_overlay`.
 - The public-method routing (`if route_overlay() { adapt(overlay_collect_units) } else { owned_* }`)
   stays per-variant + thin (the adapter is the per-variant skin).
-- Coherence: trait in core, impls in variant modules, **one crate** ⇒ no orphan-rule problem (same as
+- Coherence: trait in core, impls in variant modules, **one crate** $\Rightarrow$ no orphan-rule problem (same as
   the existing `TrieRoot for OverlayNode` blanket).
 
 ## 3. `KeyEncoding` additions (reverse conversion)
@@ -70,7 +72,7 @@ direction (`units_from_str`) already exists.
 
 ## 4. Value-route `Any`/`TypeId` genericity across `K`
 - **Composes cleanly:** `Any` needs `Self: 'static`; `K: 'static` is guaranteed by `KeyEncoding:
-  'static`, `V`/`S` already `'static` ⇒ no new bound. `K` is never a separate downcast target — it's
+  'static`, `V`/`S` already `'static$\Rightarrow no new bound.$K` is never a separate downcast target — it's
   baked into the concrete monomorph (`PersistentARTrie{Char}<CounterValue, S>`), so `TypeId` can't
   collide across variants; zero `unsafe`.
 - **The u64-vs-i64 divergence:** the generic `route_get_value` driver branches on

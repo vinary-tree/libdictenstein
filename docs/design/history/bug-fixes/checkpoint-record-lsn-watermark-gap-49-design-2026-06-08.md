@@ -15,7 +15,7 @@ A dedicated adversarial pass attacked all 7 mandated vectors and could construct
    Phase C, retroactively inert for the current checkpoint, correcting only the NEXT. K is always above
    any concurrently-committing write's LSN, and contiguity blocks the prefix at any unmarked lower LSN.
 2. **#41 preserved** — K is `sync`'d before marked, so `synced_lsn() ≥ K` when the next capture reads
-   it ⇒ `watermark ≤ synced_frontier` holds; no mark-before-sync inversion.
+   it $\Rightarrow$ `watermark ≤ synced_frontier` holds; no mark-before-sync inversion.
 3. **Thread-safe** — reuses the existing `Mutex<BTreeSet>`-guarded `mark_committed`; `contiguous` is
    load/stored only under that lock.
 4. **Completeness** — `Checkpoint` was the SOLE unmarked-LSN steady-state hole (data/CommitRank are
@@ -125,19 +125,19 @@ fix **restores the model assumption** (control-record LSNs become transparent), 
 again applies — it does not weaken it.
 
 - **No write is skipped that is not in the image.** `mark_committed` advances `contiguous` only over a
-  contiguous run of marked LSNs. A not-yet-committed write's LSN is unmarked ⇒ blocks the prefix ⇒ the
-  watermark can never pass it. A committed write is marked only AFTER its visibility CAS (Order-A) ⇒ it
-  is in any snapshot captured after the mark. So everything ≤ watermark is, for writes, in the image;
-  for the (now-marked) checkpoint records, vacuous (a control record is nothing to lose). ⇒ skipping
-  `≤ coverage` loses no write.
+  contiguous run of marked LSNs. A not-yet-committed write's LSN is unmarked $\Rightarrow$ blocks the prefix $\Rightarrow$ the
+  watermark can never pass it. A committed write is marked only AFTER its visibility CAS (Order-A) $\Rightarrow$ it
+  is in any snapshot captured after the mark. So everything $\le$ watermark is, for writes, in the image;
+  for the (now-marked) checkpoint records, vacuous (a control record is nothing to lose). $\Rightarrow$ skipping
+  $\le coverage$ loses no write.
 - **`watermark ≤ synced_frontier` (the #41 capture assert) still holds.** The checkpoint record is
-  `sync`'d BEFORE it is marked, so its LSN ≤ the synced frontier when marked. The CK lock serializes
+  `sync`'d BEFORE it is marked, so its LSN $\le$ the synced frontier when marked. The CK lock serializes
   checkpoints; writes do not capture. So the mark cannot push the watermark past the synced frontier.
 - **Concurrent writers (lock-free overlay).** Between an overlay capture and the Phase-C checkpoint
   append, a concurrent write at LSN `X` (capture-frontier < X < K) may commit. Marking `K` cannot
   advance `contiguous` past `X` until `X` itself is marked (contiguity). When both are marked, the
   watermark reaches `K`; this affects only the NEXT checkpoint, whose image already includes the
-  committed `X`. So coverage ≥ X is correct then (X is in that image). No retroactive effect on the
+  committed `X`. So coverage $\ge$ X is correct then (X is in that image). No retroactive effect on the
   current checkpoint (its coverage was already captured pre-append).
 
 ## Self-red-team (4 passes — all resolved)
@@ -155,5 +155,5 @@ again applies — it does not weaken it.
 
 ## Regression test (already RED, will GREEN)
 `l48_char_u64_double_checkpoint_no_capture_order_panic` (T5): live +4 → checkpoint → +5 → checkpoint →
-reopen ⇒ MUST be `Some(9)` (pre-fix `Some(14)`). Plus a byte mirror. Plus an N-checkpoint variant
-(+1 each across K checkpoints ⇒ K) to prove the prefix keeps closing, not just once.
+reopen $\Rightarrow$ MUST be `Some(9)` (pre-fix `Some(14)`). Plus a byte mirror. Plus an N-checkpoint variant
+(+1 each across K checkpoints $\Rightarrow$ K) to prove the prefix keeps closing, not just once.

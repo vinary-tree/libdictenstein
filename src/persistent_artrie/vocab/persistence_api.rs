@@ -50,6 +50,13 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
             return Ok(());
         }
 
+        // B2: a storage-less instance (e.g. a `Clone` snapshot — arena/buffer/WAL detached) has
+        // nothing to persist. Return `Ok` cleanly instead of erroring at the buffer-manager unwrap
+        // below, so a detached snapshot's `Drop`-checkpoint is a genuine no-op.
+        if self.buffer_manager.is_none() {
+            return Ok(());
+        }
+
         // (0) Capture watermark + commit_seq floor BEFORE the root load (Order-A safe lsn).
         let checkpoint_lsn = self
             .committed_watermark
@@ -219,13 +226,14 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// Get the durability policy.
     #[inline]
     pub fn durability_policy(&self) -> DurabilityPolicy {
-        self.durability_policy
+        self.durability_policy.load()
     }
 
-    /// Set the durability policy.
+    /// Set the durability policy. F4: `&self` (the field is an `AtomicEnumCell`), so it works on
+    /// a shared `Arc<PersistentVocabARTrie>` handle without the removed outer `RwLock`.
     #[inline]
-    pub fn set_durability_policy(&mut self, policy: DurabilityPolicy) {
-        self.durability_policy = policy;
+    pub fn set_durability_policy(&self, policy: DurabilityPolicy) {
+        self.durability_policy.store(policy);
     }
 
     /// Enable slot-level dirty tracking for reduced checkpoint I/O. Idempotent.

@@ -319,6 +319,71 @@ pub struct MmapDiskManager {
     block_count: AtomicU32,
     /// Path to the file (for error messages)
     path: String,
+    /// Single-owner advisory-lock guard on the `<path>.wlock` sidecar (Tier-1). Held for the
+    /// manager's lifetime; the OS `flock` releases when the LAST guard for this path in the process
+    /// drops (same-process reopens share one refcounted `flock` — see [`WLockGuard`]). Held purely
+    /// for the lock (RAII) — intentionally never read.
+    #[allow(dead_code)]
+    wlock: Option<WLockGuard>,
+}
+
+/// Process-global registry of held single-owner file locks, keyed by canonical path. It lets a
+/// SECOND open of the same file WITHIN ONE PROCESS succeed (sharing one refcounted OS `flock`)
+/// while a DIFFERENT process is still rejected by the underlying `flock`. This restores the
+/// pre-lock same-process behavior — e.g. crash-recovery tests that `mem::forget` a handle then
+/// reopen the same path — without weakening the cross-process guarantee. (Create-vs-create in one
+/// process still fails at the WAL's `O_EXCL`, independently of this lock.) See
+/// `docs/design/os-level-locking.md`.
+struct LockEntry {
+    /// Owns the `flock`'d `.wlock` fd; the OS lock releases when this entry is removed (below).
+    #[allow(dead_code)]
+    file: File,
+    /// Number of live [`WLockGuard`]s for this path in THIS process.
+    refs: usize,
+}
+
+fn lock_registry() -> &'static std::sync::Mutex<std::collections::HashMap<String, LockEntry>> {
+    static REGISTRY: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, LockEntry>>,
+    > = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Canonical registry key for `path_str`: canonicalizes the path (or its parent + filename when the
+/// file does not exist yet, e.g. on create) so different spellings of one file map to a single key;
+/// falls back to the raw string if canonicalization is impossible.
+fn lock_key(path_str: &str) -> String {
+    let p = Path::new(path_str);
+    if let Ok(canonical) = p.canonicalize() {
+        return canonical.to_string_lossy().into_owned();
+    }
+    if let (Some(parent), Some(name)) = (p.parent(), p.file_name()) {
+        if let Ok(canonical_parent) = parent.canonicalize() {
+            return canonical_parent.join(name).to_string_lossy().into_owned();
+        }
+    }
+    path_str.to_string()
+}
+
+/// RAII guard for a held single-owner lock. Same-process reopens share one refcounted OS `flock`;
+/// dropping the LAST guard for a path releases it. A `mem::forget` of the owner (crash simulation)
+/// leaks a refcount, so the lock stays held until the process exits — matching a real crash, where
+/// the OS releases the fd on process death.
+pub(crate) struct WLockGuard {
+    key: String,
+}
+
+impl Drop for WLockGuard {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = lock_registry().lock() {
+            if let Some(entry) = registry.get_mut(&self.key) {
+                entry.refs = entry.refs.saturating_sub(1);
+                if entry.refs == 0 {
+                    registry.remove(&self.key); // release the OS flock (drops the .wlock File)
+                }
+            }
+        }
+    }
 }
 
 impl MmapDiskManager {
@@ -509,6 +574,11 @@ impl MmapDiskManager {
             }
         }
 
+        // Tier-1: acquire the single-owner advisory lock BEFORE opening/initializing the data file,
+        // so a second process/handle is rejected before any file mutation (this also closes the
+        // create-vs-create double-init race the old TOCTOU note below wrongly dismissed).
+        let wlock = Some(Self::acquire_exclusive_lock(&path_str)?);
+
         // Open or create file atomically
         // Using create(true) (not create_new) because this method intentionally
         // supports both creating new files and opening existing ones
@@ -581,12 +651,16 @@ impl MmapDiskManager {
             file_size: AtomicU64::new(file_size),
             block_count: AtomicU32::new(block_count),
             path: path_str,
+            wlock,
         })
     }
 
     /// Open an existing disk manager (file must exist)
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
+
+        // Tier-1: acquire the single-owner advisory lock before opening the data file.
+        let wlock = Some(Self::acquire_exclusive_lock(&path_str)?);
 
         let file = OpenOptions::new()
             .read(true)
@@ -638,6 +712,7 @@ impl MmapDiskManager {
             file_size: AtomicU64::new(file_size),
             block_count: AtomicU32::new(block_count),
             path: path_str,
+            wlock,
         };
 
         // Validate header
@@ -668,6 +743,9 @@ impl MmapDiskManager {
     /// * `Err(PersistentARTrieError)` - I/O error
     pub fn open_without_validation<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
+
+        // Tier-1: acquire the single-owner advisory lock before opening the data file.
+        let wlock = Some(Self::acquire_exclusive_lock(&path_str)?);
 
         let file = OpenOptions::new()
             .read(true)
@@ -719,7 +797,68 @@ impl MmapDiskManager {
             file_size: AtomicU64::new(file_size),
             block_count: AtomicU32::new(block_count),
             path: path_str,
+            wlock,
         })
+    }
+
+    /// Acquire an exclusive advisory lock (`flock(LOCK_EX | LOCK_NB)`) on the `<path>.wlock`
+    /// sidecar, enforcing single-owner (single-process) access to the backing file. Returns the
+    /// held lock `File` (the lock releases when it drops), or [`PersistentARTrieError::FileLocked`]
+    /// if another process or live handle already owns it.
+    ///
+    /// A stable SIDECAR — not the data inode — is locked, so the lock composes with the future SWMR
+    /// atomic-rename publication (which replaces the data inode each checkpoint). All persistent
+    /// tries (byte, char, vocab) route through these `DiskManager` ctors, so one lock per open
+    /// covers the whole family uniformly. See `docs/design/os-level-locking.md`.
+    pub(crate) fn acquire_exclusive_lock(path_str: &str) -> Result<WLockGuard> {
+        let key = lock_key(path_str);
+        let mut registry = lock_registry()
+            .lock()
+            .map_err(|_| PersistentARTrieError::internal("lock registry mutex poisoned"))?;
+
+        // Already held by THIS process (a reopen, or a crash-sim `mem::forget`'d owner) → share the
+        // existing refcounted flock rather than self-conflict on a second `flock` of the same file.
+        if let Some(entry) = registry.get_mut(&key) {
+            entry.refs += 1;
+            return Ok(WLockGuard { key });
+        }
+
+        // Not held here — take the OS lock, which is what actually excludes OTHER processes.
+        let lock_path = format!("{path_str}.wlock");
+        let lock_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .map_err(|e| PersistentARTrieError::IoError {
+                operation: "open .wlock sidecar".to_string(),
+                path: lock_path.clone(),
+                source: e,
+            })?;
+        match rustix::fs::flock(
+            &lock_file,
+            rustix::fs::FlockOperation::NonBlockingLockExclusive,
+        ) {
+            Ok(()) => {}
+            Err(e) if e == rustix::io::Errno::WOULDBLOCK => {
+                return Err(PersistentARTrieError::FileLocked {
+                    path: path_str.to_string(),
+                })
+            }
+            Err(e) => {
+                return Err(PersistentARTrieError::internal(&format!(
+                    "flock on '{lock_path}' failed: {e:?}"
+                )))
+            }
+        }
+        registry.insert(
+            key.clone(),
+            LockEntry {
+                file: lock_file,
+                refs: 1,
+            },
+        );
+        Ok(WLockGuard { key })
     }
 
     /// Initialize a new file with header block
@@ -844,7 +983,18 @@ impl MmapDiskManager {
         // Note: Free list access could also race, but this is a best-effort optimization.
         // If we miss a free block, we just extend the file instead.
         let header = self.read_header()?;
-        let free_head = header.free_list_head.load(Ordering::Acquire);
+        // The free-list head lives in the standard `FileHeader` (bytes 32..40). ONLY consult it
+        // when block 0 actually IS a `FileHeader` (magic match). A custom-header file — vocab's
+        // `VOCB` header, whose `checkpoint_lsn` aliases bytes 32..40 — MUST NOT have that value
+        // interpreted as a free-list head: after the first checkpoint writes a non-zero
+        // `checkpoint_lsn`, doing so returns a bogus `block_id` (`checkpoint_lsn >> 40`, i.e. 0 for
+        // realistic LSNs) and CORRUPTS the image (overwrites the header block). Such tries never
+        // free blocks, so an empty free-list is the correct interpretation.
+        let free_head = if header.magic == MAGIC_NUMBER {
+            header.free_list_head.load(Ordering::Acquire)
+        } else {
+            0
+        };
 
         if free_head != 0 {
             // Pop from free list
@@ -1101,6 +1251,14 @@ impl MmapDiskManager {
                 block_id,
                 reason: format!("Block ID {} >= block count {}", block_id, block_count),
             });
+        }
+
+        // Only maintain the free-list for standard `FileHeader` files (see `allocate_block`). For a
+        // custom header (vocab `VOCB`), `free_list_head`'s bytes alias trie metadata
+        // (`checkpoint_lsn`), so writing a free-list head there would corrupt block 0. Such tries
+        // never reclaim blocks; leave the block allocated (a benign, bounded leak) instead.
+        if header.magic != MAGIC_NUMBER {
+            return Ok(());
         }
 
         // Get current free list head

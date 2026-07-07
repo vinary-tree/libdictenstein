@@ -70,7 +70,7 @@ replay it INTO THE OVERLAY. We add the overlay twin **`replay_records_lww_overla
    (byte) — the SAME call the owned replay makes — to compute the per-term last-writer
    winners as representation-agnostic `Vec<RecoveredOperation>` (`(term: Vec<u8>, op)`).
    The **Overlay-regime unranked-orphan DROP is INHERITED** from `reconcile_lww`
-   (`rank_regime = Overlay` ⇒ unranked two-append-window orphans are dropped); we do NOT
+   (`rank_regime = Overlay` $\Rightarrow$ unranked two-append-window orphans are dropped); we do NOT
    re-derive it. The checkpoint-subsumed skip (`lsn <= checkpoint_lsn`) is likewise
    inherited.
    - Byte note: byte's owned `replay_records_lww` takes BOTH `tx_filtered_ops` and
@@ -123,7 +123,7 @@ negative control).
 ## (c) The gate mechanism
 
 F5 selection is a `const USE_F5_REOPEN_LOADER: bool` on the `LockFreeOverlay` trait
-(no struct field ⇒ zero ctor churn). **Current state: `true` (S3 — switched ON).** Every
+(no struct field $\Rightarrow$ zero ctor churn). **Current state: `true` (S3 — switched ON).** Every
 reopen ctor (char `open`/`open_with_depth`/`open_with_io_uring`, byte `open`/
 `open_with_io_uring`) reads it and branches its Overlay-regime arm:
 

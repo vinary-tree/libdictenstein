@@ -17,7 +17,7 @@ types / loaders* remain (deleted at L3.3b/L3.3c).
   `mod write_mode;` removed). The `U8Enum`/`AtomicEnumCell` infra stays (durability still uses it).
 - **`kill_switch_to_owned`** (flip.rs default + byte/char inherent delegators) + **`wal_stamp_owned_regime`**
   (trait decl + byte/char impls): **deleted**. `flip_to_overlay`/`install_prebuilt_overlay_root` dropped
-  their `set_overlay_write_mode(LockFreeOverlay)` (now redundant — overlay-install ⇒ routed).
+  their `set_overlay_write_mode(LockFreeOverlay)` (now redundant — overlay-install $\Rightarrow$ routed).
 - **`overlay_write_mode()` / `set_overlay_write_mode()`** seams (trait decls + byte/char impls + byte/char
   inherent) + the **`overlay_write_mode` field** (byte `dict_impl.rs`, char `mod.rs`) + **all ~13 ctor
   inits** (byte/char mmap_ctor + io_uring_ctor) + the **`::new()` mode-set** (byte/char mmap_ctor):

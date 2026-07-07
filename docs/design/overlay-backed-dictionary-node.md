@@ -1,9 +1,11 @@
 # Overlay-backed `DictionaryNode` traversal (F7 BLOCKER-1)
 
+**Synthesized in:** [The lock-free overlay — the live representation](../persistence/lock-free-overlay.md). The overlay node model and lock-free read path are presented there at the architecture level; this record is the mechanism detail for exposing that overlay through the `DictionaryNode` traversal surface, so the zipper / Levenshtein transducer / fuzzy search walk the overlay (not the emptied owned tree) under `route_overlay()`.
+
 ## Problem
 
 The persistent ART tries have a lock-free **overlay** representation
-(`OverlayNode<K, V>`, `src/persistent_artrie_core/overlay/node.rs`). When
+(`OverlayNode<K, V>`, `src/persistent_artrie/core/overlay/node.rs`). When
 `route_overlay()` is `true` the overlay serves all reads and the **owned tree is
 empty** (it is cleared at reestablish on reopen / create-flip).
 
@@ -122,7 +124,7 @@ A faulter requires an *owned* handle to the trie (to call
   owned (non-`Shared`) trie eviction is impossible, so the overlay is fully InMem
   and no faulter is needed (`faulter = None`).
 
-`None` faulter ⇒ an encountered non-null OnDisk slot maps to "no transition" / is
+`None` faulter $\Rightarrow$ an encountered non-null OnDisk slot maps to "no transition" / is
 skipped in `edges()` — but this is **unreachable** on these paths (proven by the
 correspondence test, which checks the overlay walk equals `iter_prefix("")` /
 the owned twin EXACTLY). It is the same conservative degrade the production
@@ -140,10 +142,10 @@ directly onto the overlay node API:
   `MappedDictionaryNode` contract returns `None` there, matching the owned node
   (whose `value` is also `None` for membership).
 - `transition(unit)` → `node.find_child(unit)`:
-  - `Child::InMem(arc)` ⇒ `Some(Overlay { node: arc.clone(), faulter })`.
-  - `Child::OnDisk(ptr)` (non-null) ⇒ fault via `faulter` ⇒
+  - `Child::InMem(arc)` $\Rightarrow$ `Some(Overlay { node: arc.clone(), faulter })`.
+  - `Child::OnDisk(ptr)` (non-null) $\Rightarrow$ fault via `faulter` $\Rightarrow$
     `Some(Overlay { node: loaded, faulter })`; if no faulter / load fails ⇒ `None`.
-  - null / absent ⇒ `None`.
+  - null / absent $\Rightarrow$ `None`.
   - char converts the `char` label to `u32` (overlay keys are `u32`); byte uses the
     `u8` directly.
 - `edges()` → iterate `node.iter_children()`, mapping each non-null child (InMem
@@ -184,7 +186,7 @@ directly onto the overlay node API:
    `transition()` + `is_final()` + `value()`, collecting `(term, is_final, value)`
    for ALL reachable terms, and assert the overlay traversal yields EXACTLY the
    same set as the owned twin AND as `iter_prefix("")`. Gold-standard proof that
-   overlay traversal ≡ owned traversal.
+   overlay traversal $\equiv$ owned traversal.
 2. Existing transducer / fuzzy / zipper / reopen-traversal tests.
 3. Full suite with arbitrary-V overlay routing (historically `--features
    "persistent-artrie overlay-arbitrary-v parallel-merge"`; since the F2-default-on
@@ -196,9 +198,9 @@ directly onto the overlay node API:
 
 ## Files changed
 
-- `src/persistent_artrie_core/overlay/faulter.rs` (NEW): the safe `OverlayFaulter`
+- `src/persistent_artrie/core/overlay/faulter.rs` (NEW): the safe `OverlayFaulter`
   trait (generic over `K`, `V`).
-- `src/persistent_artrie_core/overlay/mod.rs`: register + re-export the trait.
+- `src/persistent_artrie/core/overlay/mod.rs`: register + re-export the trait.
 - `src/persistent_artrie/node_impl.rs`: add the byte `Overlay` `NodeInner` variant
   + its method arms.
 - `src/persistent_artrie/dictionary_traits.rs`: byte `root()` returns the Overlay
@@ -206,14 +208,14 @@ directly onto the overlay node API:
 - `src/persistent_artrie/overlay_fault.rs` (NEW): byte `load_overlay_node_from_disk`
   fault-in primitive + `impl OverlayFaulter for PersistentARTrie`.
 - `src/persistent_artrie/mod.rs`: register the new byte module.
-- `src/persistent_artrie_char/mod.rs`: add the char `Overlay` arm to
+- `src/persistent_artrie/char/mod.rs`: add the char `Overlay` arm to
   `PersistentARTrieCharNode` (new safe `overlay` + `overlay_faulter` fields) + its
   method arms; `root()` (inherent + `Shared`) returns the Overlay node under
   `route_overlay()`.
-- `src/persistent_artrie_char/overlay_fault.rs` (NEW): `impl OverlayFaulter for
+- `src/persistent_artrie/char/overlay_fault.rs` (NEW): `impl OverlayFaulter for
   PersistentARTrieChar` (delegates to the existing `load_overlay_node_from_disk`) +
   the `SharedOverlayFaulter` newtype for the `Arc<RwLock<..>>` form.
-- `src/persistent_artrie_char/overlay_dictionary_node_faulting_tests.rs` (NEW,
+- `src/persistent_artrie/char/overlay_dictionary_node_faulting_tests.rs` (NEW,
   `#[cfg(test)]`): in-crate proof the overlay `DictionaryNode` faults evicted OnDisk
   children in (in-crate because the overlay-eviction driver is `pub(crate)`).
 
@@ -226,7 +228,7 @@ directly onto the overlay node API:
   final, and empty-dictionary; == owned-twin walk for char (see the byte asymmetry
   below); `edge_count()` == `edges().len()`.
 - **In-crate OnDisk-fault test**
-  `persistent_artrie_char::overlay_dictionary_node_faulting_tests` (1 test): PASS
+  `persistent_artrie::char::overlay_dictionary_node_faulting_tests` (1 test): PASS
   feature-on AND feature-off. After real cold overlay eviction to `Child::OnDisk`,
   the faulting overlay `DictionaryNode` walk recovers EVERY term (cold faulted in +
   live resident); the no-faulter walk degrades to the resident subset (no fabricated
@@ -261,7 +263,7 @@ byte walk of `{a, ab, abc, b, cat, cats}` yields only `{a, b, cat}` (and its `va
 returns `None` for owned nodes — the value codec is unavailable at that layer). The
 CHAR owned walk is complete (bucketless trie + the `549b068` faulter). The new OVERLAY
 byte walk is complete and correct — it is in fact a strict superset of the deficient
-owned byte walk. Because of this, the byte owned-twin comparison in the test is `⊇`
+owned byte walk. Because of this, the byte owned-twin comparison in the test is $\supseteq$
 (term-set superset) with the authoritative equivalence asserted against
 `iter()`/`iter_with_values()`; the char owned-twin comparison is `==`. Fixing the
 byte owned `DictionaryNode` walk is a separate follow-up, out of scope for F7

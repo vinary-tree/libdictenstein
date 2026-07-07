@@ -21,7 +21,7 @@ Two write/recovery regimes share one WAL format and one recovery substrate:
   `wal/writer.rs:append_batch:226`, single `append`), then `CommitTx`. Recovery is `RecoveryManager::recover` →
   `redo_phase:756` (raw LSN order, ignores `_checkpoint_lsn`/`_transactions` for filtering) and the archive
   rebuild at `mmap_ctor.rs:649` (raw `recovered_operations_from_record`). **This path NEVER emits a `CommitRank`**
-  (verified: `rg CommitRank src/persistent_artrie/` is empty). It is `&mut self`-serialized ⇒ append order ==
+  (verified: `rg CommitRank src/persistent_artrie/` is empty). It is `&mut self`-serialized $\Rightarrow$ append order ==
   apply order == a total in-order log.
 - **Char/vocab overlay path** (`src/persistent_artrie_char/`): the Order-A lock-free producers
   `insert_cas_durable:291`, `remove_cas_durable:454`, `insert_cas_with_value_durable:1576`,
@@ -90,10 +90,10 @@ D2 §3.2's pseudocode dropped BOTH `None` arms (the B#1 total-loss bug). The pri
 because the two regimes have categorically different "unranked" meanings:
 - **v3 (overlay-produced), record in the overlay rank-regime** (1.3 decides regime): every confirmed overlay op
   IS ranked (Order-A appends the CommitRank before ack). An unranked v3-overlay record is a two-append-window
-  orphan NEVER acked ⇒ **DROP**.
+  orphan NEVER acked $\Rightarrow$ **DROP**.
 - **v1/v2 (legacy), and v3-OWNED-regime records**: NO ranks exist (owned path never emits CommitRank). Every such
-  record is a confirmed in-order append ⇒ **KEEP**, ordered by LSN (the `generation_of=lsn` legacy behavior).
-  Exactly today's `recovery.rs:273 .unwrap_or(lsn)` ⇒ no loss.
+  record is a confirmed in-order append $\Rightarrow$ **KEEP**, ordered by LSN (the `generation_of=lsn` legacy behavior).
+  Exactly today's `recovery.rs:273 .unwrap_or(lsn)` $\Rightarrow$ no loss.
 
 The drop is **version-and-regime gated, NOT watermark-gated** (resolves B#3). Signature:
 ```
@@ -175,8 +175,8 @@ reconstruction (two-pass, marker-LSN-precise — closes B#3/A#6):
    advance `watermark = next`; else stop. Marker-LSNs are SKIPPED (not data), so the walk never stalls at a
    rank-LSN.
 
-This watermark is liveness-conservative (wrong ⇒ drops MORE, never resurrects); acked records are protected by R3
-(acked ⇒ ranked ⇒ contiguous-covered). For robustness D2.5 ALSO persists the overlay watermark durably:
+This watermark is liveness-conservative (wrong $\Rightarrow$ drops MORE, never resurrects); acked records are protected by R3
+(acked $\Rightarrow$ ranked $\Rightarrow$ contiguous-covered). For robustness D2.5 ALSO persists the overlay watermark durably:
 `committed_watermark_floor: u64` at header byte 28..36 (inside D2's `reserved[8..44]`), written by the overlay
 checkpoint publisher (`persist.rs:579`, where `checkpoint_lsn == watermark`). Recovery seeds reconstruction from
 `max(checkpoint_lsn, header.committed_watermark_floor)`. So neither reconstruction nor persistence is alone
@@ -199,15 +199,15 @@ reconcile/rank/drop. An orphan `Insert("k")@lsn11` archived after `Remove("k")@l
 2. **`checkpoint_lsn = 0`** for the archive reconcile (no base image; `recover_from_archives` deleted it). Nothing
    skipped; segment set must be self-complete (segment 1 is the first-ever WAL, covering history from LSN 1).
 3. **Apply the v3 drop** (1.2/1.3): regime determined the same way (segment header version + CommitRank above
-   `checkpoint_lsn=0`, or per-Checkpoint stamp). Overlay-regime archive ⇒ orphans DROP; Owned-regime ⇒ KEEP@lsn.
+   `checkpoint_lsn=0`, or per-Checkpoint stamp). Overlay-regime archive $\Rightarrow$ orphans DROP; Owned-regime $\Rightarrow$ KEEP@lsn.
 
 **Self-completeness + base requirement.** Self-complete iff segment 1 present AND segments contiguous in LSN.
 `prune_segments_if_needed` (`writer.rs:469`) can delete old segments. **If pruned, the set is NOT self-complete and
 `recover_from_archives` MUST refuse.** Precondition (S#3-hardened): first segment's first LSN == 1 AND each
 segment's last-LSN+1 == next segment's first-LSN (NO interior gap), else
 `RecoveryError("archive set non-contiguous; pruned segments require a base image — use the main-file open path")`.
-Fail-closed, not silent resurrection. Orphans don't resurrect: union-reconcile + Overlay-drop ⇒ the orphan
-Insert@lsn11 is unranked-above-regime ⇒ dropped; only ranked Remove@lsn9 survives ⇒ absent. ∎
+Fail-closed, not silent resurrection. Orphans don't resurrect: union-reconcile + Overlay-drop $\Rightarrow$ the orphan
+Insert@lsn11 is unranked-above-regime $\Rightarrow$ dropped; only ranked Remove@lsn9 survives $\Rightarrow$ absent. ∎
 
 ---
 
@@ -216,14 +216,14 @@ Insert@lsn11 is unranked-above-regime ⇒ dropped; only ranked Remove@lsn9 survi
 **Defect (B#4c/C#12).** D2 §2.5 set `floor = max_durable_commit_seq` (global, bumped by every producer incl.
 overlay). The two checkpoint paths use different `checkpoint_lsn` domains: owned `next_lsn` (`persist.rs:153`),
 overlay `committed_watermark` (`persist.rs:568`). If overlay writes bump the global max but the OWNED checkpoint
-runs (image lacks those writes), the floor claims subsumed seqs not in the image ⇒ a replayed overlay write can
-sort below a stale owned-image value ⇒ loss.
+runs (image lacks those writes), the floor claims subsumed seqs not in the image $\Rightarrow$ a replayed overlay write can
+sort below a stale owned-image value $\Rightarrow$ loss.
 
 **Fix.** `floor = max { commit_seq(r) : r is a CommitRank with data_lsn ≤ checkpoint_lsn }` (0 if none) — tied to
 the reclaim boundary, domain-correct for both:
-- **Owned checkpoint** (`checkpoint_lsn = next_lsn`): owned records unranked ⇒ rank-max 0 unless overlay ranks ≤
-  `next_lsn` exist; by regime homogeneity (§1.3 C1) the owned window has no overlay writes ⇒ floor=0=correct. Any
-  overlay ranks present are from a PRIOR overlay window already in the image (`data_lsn ≤ checkpoint_lsn`) ⇒
+- **Owned checkpoint** (`checkpoint_lsn = next_lsn`): owned records unranked $\Rightarrow$ rank-max 0 unless overlay ranks $\le$
+  `next_lsn` exist; by regime homogeneity (§1.3 C1) the owned window has no overlay writes $\Rightarrow$ floor=0=correct. Any
+  overlay ranks present are from a PRIOR overlay window already in the image (`data_lsn ≤ checkpoint_lsn`) $\Rightarrow$
   correctly subsumed.
 - **Overlay checkpoint** (`checkpoint_lsn = committed_watermark`): reclaimed set = contiguous-confirmed prefix; its
   rank-max = the max commit_seq folded into the image. Un-reclaimed overlay writes (`data_lsn > checkpoint_lsn`)
@@ -231,7 +231,7 @@ the reclaim boundary, domain-correct for both:
 
 **Computation.** Maintain `commit_seq_by_data_lsn: BTreeMap<Lsn, u64>` updated by `append_commit_rank`. At
 checkpoint, `floor = commit_seq_by_data_lsn.range(..=checkpoint_lsn).map(|(_,s)| *s).max().unwrap_or(0)`. After the
-checkpoint reclaims `≤ checkpoint_lsn`, prune that range. Owned path: map empty ⇒ floor 0, no scan. Replaces D2
+checkpoint reclaims `≤ checkpoint_lsn`, prune that range. Owned path: map empty $\Rightarrow$ floor 0, no scan. Replaces D2
 §2.5's global `fetch_max` with a bounded range-max — eliminating the §6.3 deferral (the floor depends only on what
 `data_lsn ≤ checkpoint_lsn` was reclaimed = what the image contains). Wire: `persist.rs:147` (owned) + `:579`
 (overlay). Monotone `set_commit_seq_floor` guards against a lower-domain checkpoint lowering the floor.
@@ -241,7 +241,7 @@ checkpoint reclaims `≤ checkpoint_lsn`, prune that range. Owned path: map empt
 ## §3. R3 — ack-after-rank-sync invariant (B#2)
 
 **Invariant ACK-AFTER-RANK:** *a durable producer ACKs the caller ONLY AFTER the CommitRank is appended AND
-synced.* Then `acked ⟹ ranked-and-durable ⟹ never the trailing-rank case ⟹ never dropped`.
+synced.* Then $acked \implies ranked-and-durable \implies never the trailing-rank case \implies never dropped$.
 
 **Already-satisfied (verified):** insert returns at `lockfree_cas.rs:373` AFTER `append_commit_rank(:367)`; remove
 `:551/572`; insert-value `:1665`; upsert `:1763`. `append_commit_rank` → `append_to_wal_inner` (`wal_helpers.rs:101`)
@@ -249,11 +249,11 @@ syncs per policy (`sync_wal_after_append:170`, verifying `synced_lsn ≥ appende
 non-sync policies (`lockfree_cas.rs:1500`). ✔ (docstring `wal_helpers.rs:80-83` states it; D2.5 elevates to a named
 invariant.)
 
-**The ONE violator: `try_increment_cas_durable`** (`:1547-1553`) acks WITHOUT a CommitRank ⇒ an acked increment is
-unranked ⇒ Overlay-regime DROP ⇒ delta lost ⇒ violates `ReplayEqualsCommittedValue`. **Fix (also R1a/DG1):** add
+**The ONE violator: `try_increment_cas_durable`** (`:1547-1553`) acks WITHOUT a CommitRank $\Rightarrow$ an acked increment is
+unranked $\Rightarrow$ Overlay-regime DROP $\Rightarrow$ delta lost $\Rightarrow$ violates `ReplayEqualsCommittedValue`. **Fix (also R1a/DG1):** add
 `let rank_lsn = self.append_commit_rank(lsn, key.as_bytes(), generation)?;` after the CAS (`:1547`) +
 `mark_committed(rank_lsn)` before return, mirroring insert. commit_seq claimed before the CAS (value-path is
-single-LP). Confirmed increments become ranked ⇒ summed ⇒ never dropped. Ack sites: insert `:373`, remove
+single-LP). Confirmed increments become ranked $\Rightarrow$ summed $\Rightarrow$ never dropped. Ack sites: insert `:373`, remove
 `:551/572`, insert-value/upsert returns, increment (NEW) after `:1547`. Base owned acks at `commit_document` return
 (`document_tx.rs:252`) — Owned regime (KEEP, no drop), so vacuous (durability = the BatchInsert+CommitTx sync).
 
@@ -263,11 +263,11 @@ single-LP). Confirmed increments become ranked ⇒ summed ⇒ never dropped. Ack
 
 **Defects.** (B#5/C#5a) D2's DG1 bumped header + stamped commit_seq, but the gated reader landed at DG3 — between
 deploys a v3 WAL is recovered by the ungated reconcile (orphans WIN = the loss class). (C#6) the bump is one-way
-(`from_bytes:82` refuses `version > VERSION`), so a reverted v2 binary refuses a v3 file ⇒ stranding; D2 mis-filed
+(`from_bytes:82` refuses `version > VERSION`), so a reverted v2 binary refuses a v3 file $\Rightarrow$ stranding; D2 mis-filed
 it as reversible.
 
 **Fix — the WRITER-side commit_seq stamp and the READER-side gate land in ONE atomic gate, header bump honestly
-one-way.** The version `2→3` bump, the commit_seq stamp meaning-change, AND the version+regime-gated reader land in
+one-way.** The version $2\to 3$ bump, the commit_seq stamp meaning-change, AND the version+regime-gated reader land in
 the SAME phase (DG-RECON, §10). Before it, NO v3 record exists; after, the v3-gating reader is deployed. DG band
 split: DG0–DG2 code-reversible (no v3 record, no bump); DG-RECON+ crosses the one-way bump; `migrate_v2_to_v3` is
 the only cross-version path. Stop claiming DG0–DG5 reversible across the bump.
@@ -288,7 +288,7 @@ if header.version < WalHeader::VERSION {
 ```
 `WalReader` (recovery) never goes through `WalWriter::open`, so READ stays permissive `[MIN_SUPPORTED..=VERSION]`
 (migration reads v2). Both `AsyncWalWriter::open` and `::create` funnel through `WalWriter::{open,create}`, and
-every ctor in both codebases reaches an `AsyncWalWriter` ctor ⇒ the guard covers base (`mmap_ctor.rs:378`,
+every ctor in both codebases reaches an `AsyncWalWriter` ctor $\Rightarrow$ the guard covers base (`mmap_ctor.rs:378`,
 `io_uring_ctor.rs:66`), char (`:327`), io_uring twins. `create` writes a fresh `VERSION=3` header. v2→v3 in-place
 mix impossible at the single chokepoint (closes C#7, subsumes D2 §6.7).
 
@@ -308,7 +308,7 @@ checkpoint sets floor, post-reopen overlay gets `floor+1`). **Tx-gating (closes 
 DROPs every data record whose tx is not `Committed`. `recovered_operations_from_record` already maps
 Begin/Commit/AbortTx → `vec![]` (`recovery.rs:356-358`); gating lives in the expansion so both the ctor path AND
 `redo_phase` consult `tx_states` and agree. Torn-mid-batch (one BatchInsert is one record — atomic; a partial fsync
-truncates at the boundary, CRC-detected `recovery.rs:776`) ⇒ no strict-subset (RT-D2 §4.3 confirmed). Abandon the
+truncates at the boundary, CRC-detected `recovery.rs:776`) $\Rightarrow$ no strict-subset (RT-D2 §4.3 confirmed). Abandon the
 per-op-in-tx scheme.
 
 ---
@@ -337,29 +337,29 @@ per-op-in-tx scheme.
 
 **S#1 (R1c, crux) — REGIME-CHECKPOINT relies on operator discipline; a future hot toggle breaks it.** The proof
 hinges on `set_overlay_write_mode` being restart-time AND gated by a pre-switch checkpoint. A future hot toggle
-interleaves regimes above one `checkpoint_lsn` ⇒ mis-classification (loss). **Hardening (ADOPT): record regime
+interleaves regimes above one `checkpoint_lsn` $\Rightarrow$ mis-classification (loss). **Hardening (ADOPT): record regime
 per-CHECKPOINT** — add `regime: u8` to `WalRecord::Checkpoint` (or the header), so each window's regime is READ
 from its bounding checkpoint, not inferred. Upgrades C2 from operator-gated to self-describing bytes. **The seam
 most likely attacked; the per-checkpoint stamp is the airtight version.**
 
-**S#2 (R1c) — the "any CommitRank above checkpoint_lsn ⇒ Overlay" inference is fooled by a dangling rank** whose
+**S#2 (R1c) — the "any CommitRank above checkpoint_lsn $\Rightarrow$ Overlay" inference is fooled by a dangling rank** whose
 `data_lsn ≤ checkpoint_lsn` but whose MARKER LSN is `> checkpoint_lsn`. **Mitigation:** key the inference on a
 CommitRank whose DATA_LSN > `checkpoint_lsn`, AND/OR adopt S#1's per-checkpoint stamp (moots the inference).
 
 **S#3 (archive, R1d) — the contiguity check `first==1` is satisfiable by a pruned set that starts at 1 with an
-interior gap.** **Fix:** verify each segment's last-LSN+1 == next's first-LSN (contiguous coverage); any gap ⇒
+interior gap.** **Fix:** verify each segment's last-LSN+1 == next's first-LSN (contiguous coverage); any gap $\Rightarrow$
 refuse. (Folded into §1.4.) Also: the corrupt-record `break 'segments` (`recovery.rs:1467`) truncates the union;
 since we collect-then-reconcile, stop collection AT the corrupt point and reconcile the prefix; a rank in a later
 segment for a truncated-tail data record is dangling-and-ignored (safe — beyond the durable prefix).
 
 **S#4 (R2) — the incremental map vs the overlay watermark.** A ranked record with `data_lsn ≤ watermark` but rank
 MARKER above it: its data IS in the image (`data_lsn ≤ watermark ⇒ committed ⇒ in snapshot`), and the map is keyed
-by data_lsn ⇒ `range(..=watermark)` includes it ⇒ contributes to the floor. ✔ **Residual:** prune the map range
-`≤ checkpoint_lsn` ONLY after rotate/truncate succeeds+syncs; a crash between floor-set and rotate ⇒ reopen
+by data_lsn $\Rightarrow$ `range(..=watermark)` includes it $\Rightarrow$ contributes to the floor. ✔ **Residual:** prune the map range
+`≤ checkpoint_lsn` ONLY after rotate/truncate succeeds+syncs; a crash between floor-set and rotate $\Rightarrow$ reopen
 recomputes the map from the WAL scan (the map is a cache, the ranks are truth). Add a test.
 
 **S#5 (R1a) — increment + remove on one term.** Within one overlay window, `Increment@cseq5` then `Remove@cseq7`:
-sort ⇒ increment then remove ⇒ remove wins ⇒ absent (the increment delta "lost" but correctly superseded). The R1a
+sort $\Rightarrow$ increment then remove $\Rightarrow$ remove wins $\Rightarrow$ absent (the increment delta "lost" but correctly superseded). The R1a
 rule must be scoped "summed among increments NOT superseded by a later LWW reset (remove/insert-value)" — §1.1
 states this (reset points). Load-bearing; confirmed consistent.
 
@@ -370,8 +370,8 @@ semantics, no stronger.
 
 **S#7 (R3) — group-commit batches the rank into a later un-synced batch.** Under GroupCommit, `append_commit_rank`
 → `gc.append_with_sync` (`wal_helpers.rs:117`) BLOCKS on the batch fsync + `verify_full_policy_sync_coverage`
-checks `synced_lsn ≥ rank_lsn` (`:198-210`) ⇒ the rank IS synced before return. ✔ If the rank batch's fsync is
-interrupted, `append_commit_rank` returns Err ⇒ NOT acked ⇒ the unranked data is a two-window orphan ⇒ dropped
+checks `synced_lsn ≥ rank_lsn` (`:198-210`) $\Rightarrow$ the rank IS synced before return. ✔ If the rank batch's fsync is
+interrupted, `append_commit_rank` returns Err $\Rightarrow$ NOT acked $\Rightarrow$ the unranked data is a two-window orphan $\Rightarrow$ dropped
 (correct). GroupCommit twin must be in the soak.
 
 **S#8 (R1c watermark) — byte-budget bookkeeping** for `committed_watermark_floor` at 28..36, leaving
@@ -382,10 +382,10 @@ interrupted, `append_commit_rank` returns Err ⇒ NOT acked ⇒ the unranked dat
 ## §9. Updated TLA invariants + negative controls
 
 Extend `formal-verification/tla+/LockFreeOverlayDurableReplay.tla` → `DurableGlobalOrderD25.tla`. Carry D2 §7.1's
-model and ADD: per-op-type effect (increment accumulator vs LWW), a `regime ∈ {Owned, Overlay}` per checkpoint
+model and ADD: per-op-type effect (increment accumulator vs LWW), a $regime \in {Owned, Overlay}$ per checkpoint
 window, the reclaimed-set floor, the archive union-reconcile. Model additions: `value: [Terms -> Int]` (counter
 sum) alongside `present`; `ReplayValue(t)` sums all kept increment deltas after the last reset; `regime` stamped at
-`Checkpoint`, `CrashRecover` reads it per window; drop = `Overlay ∧ ¬ranked ⇒ drop`, `Owned ∨ v≤2 ⇒ keep@lsn`;
+`Checkpoint`, `CrashRecover` reads it per window; drop = $Overlay \land \neg ranked \Rightarrow drop$, $Owned \lor v\le 2 \Rightarrow keep@lsn$;
 `floor' = Max({gen : rec ∈ committedOps, rec.lsn ≤ checkpoint_lsn})`; `Restart` seeds `nextGen' = Max(floor,
 scanMax)`; an `Archive` action (union all segments, reconcile with `checkpoint_lsn=0` + window regime).
 
@@ -396,14 +396,14 @@ scanMax)`; an `Archive` action (union all segments, reconcile with `checkpoint_l
 `NoUncommittedTxReplay` (R6); `NoVersionMix` (R5).
 
 **Negative controls (`_Unsafe*.cfg`, each MUST fire; register in `scripts/verify-formal-correspondence.sh`):**
-- `_UnsafeLwwIncrement.cfg`: reconcile LWW-collapses increments ⇒ violates `ReplayEqualsCommittedValue`.
-- `_UnsafeUngatedDrop.cfg`: both-None-arms drop (B#1) ⇒ violates `NoLostNetWrite` for Owned/v1/v2.
-- `_UnsafeKeepOverlayOrphan.cfg`: Overlay unranked KEPT@lsn ⇒ violates `NoUnconfirmedWins`/`NoResurrectionOnReplay`.
-- `_UnsafeMixedRegimeWindow.cfg`: a checkpoint window has BOTH regimes ⇒ violates `RegimeHomogeneousPerWindow`.
-- `_UnsafeArchiveRawLsn.cfg`: archive raw per-segment replay, no union/drop ⇒ violates `ArchiveNoResurrection`.
-- `_UnsafeGlobalFloor.cfg`: floor = global max_durable under owned-checkpoint-after-overlay-write ⇒ violates
+- `_UnsafeLwwIncrement.cfg`: reconcile LWW-collapses increments $\Rightarrow$ violates `ReplayEqualsCommittedValue`.
+- `_UnsafeUngatedDrop.cfg`: both-None-arms drop (B#1) $\Rightarrow$ violates `NoLostNetWrite` for Owned/v1/v2.
+- `_UnsafeKeepOverlayOrphan.cfg`: Overlay unranked KEPT@lsn $\Rightarrow$ violates `NoUnconfirmedWins`/`NoResurrectionOnReplay`.
+- `_UnsafeMixedRegimeWindow.cfg`: a checkpoint window has BOTH regimes $\Rightarrow$ violates `RegimeHomogeneousPerWindow`.
+- `_UnsafeArchiveRawLsn.cfg`: archive raw per-segment replay, no union/drop $\Rightarrow$ violates `ArchiveNoResurrection`.
+- `_UnsafeGlobalFloor.cfg`: floor = global max_durable under owned-checkpoint-after-overlay-write $\Rightarrow$ violates
   `FloorDominatesSubsumed`/`SeedAboveDurable`.
-- `_UnsafeAckBeforeRank.cfg`: ack after data but before rank ⇒ violates `AckImpliesRanked` ∧
+- `_UnsafeAckBeforeRank.cfg`: ack after data but before rank $\Rightarrow$ violates `AckImpliesRanked` $\land$
   `ReplayEqualsCommittedVisible`.
 - `_UnsafeTxIgnored.cfg`, `_UnsafeVersionMix.cfg`, `_UnsafeNoFloor.cfg`, `_UnsafeSplitLP.cfg`,
   `_UnsafeRawLsnPaths.cfg` (carried for `NoUncommittedTxReplay`, `NoVersionMix`, `SeedAboveDurable`,
@@ -413,9 +413,9 @@ scanMax)`; an `Archive` action (union all segments, reconcile with `checkpoint_l
 
 ## §10. Re-authored DG phases — atomic header+reader gate, honest reversibility
 
-Each gate: `nextest` ≥ current + `scripts/verify-formal-correspondence.sh` exit 0 + unsafe-inventory exit 0;
+Each gate: `nextest` $\ge$ current + `scripts/verify-formal-correspondence.sh` exit 0 + unsafe-inventory exit 0;
 systemd real-disk; `RUN_TLC=1` at the formal gate. **DG0–DG2 revert by code (NO v3 record, NO bump). DG-RECON
-crosses the ONE-WAY `2→3` bump; everything from DG-RECON on is forward-only, `migrate_v2_to_v3` the sole
+crosses the ONE-WAY $2\to 3$ bump; everything from DG-RECON on is forward-only, `migrate_v2_to_v3` the sole
 cross-version path.**
 
 - **DG0 — `commit_seq` field + floor plumbing (no behavior change, NO bump).** Add `commit_seq` + the
@@ -436,11 +436,11 @@ cross-version path.**
   the overlay retain-publisher (`:579`); set `committed_watermark_floor = checkpoint_lsn` at the overlay path.
   Seed-from-floor active. **No §6.3 deferral** (reclaimed-set floor is domain-correct). **Rollback:** stop setting
   floors. **Gate:** post-checkpoint-reseed PASSES; `FloorDominatesSubsumed`/`SeedAboveDurable`.
-- **DG-RECON — THE ATOMIC GATE: header `2→3` + commit_seq-stamp-meaning + version+regime-gated reader, together
-  (ONE-WAY).** (a) bump `header.rs:38` `VERSION 2→3`; (b) add the per-checkpoint `regime` stamp (S#1); (c) the new
+- **DG-RECON — THE ATOMIC GATE: header $2\to 3$ + commit_seq-stamp-meaning + version+regime-gated reader, together
+  (ONE-WAY).** (a) bump `header.rs:38` $VERSION 2\to 3$; (b) add the per-checkpoint `regime` stamp (S#1); (c) the new
   `reconcile_lww` signature + version+regime drop (§1.2/1.3) + per-op-type merge (§1.1) + two-pass
   reconstructed-AND-persisted overlay watermark + C1′ bail-claim at the read instant (D2 §1.7); (d) the R5 guard in
-  `WalWriter::open` (`:116`). (a)+(c) ship together ⇒ the moment a v3 record can exist, the gating reader is
+  `WalWriter::open` (`:116`). (a)+(c) ship together $\Rightarrow$ the moment a v3 record can exist, the gating reader is
   deployed (closes B#5/C#5a). **One-way.** **Rollback:** NOT code-reversible past here (documented, pre-flip,
   opt-in, fail-closed). **Gate:** two-window + torn-window + mixed-file-refusal PASS; `NoUnconfirmedWins`,
   `RegimeHomogeneousPerWindow`, `AckImpliesRanked`, `_UnsafeUngatedDrop`/`_UnsafeKeepOverlayOrphan`/
@@ -456,9 +456,9 @@ cross-version path.**
   aborted-tx PASS; `NoUncommittedTxReplay`.
 - **DG-FORMAL (HARD GATE).** Extend TLA to `DurableGlobalOrderD25` with ALL §9 invariants + controls. **If ANY
   `_Unsafe*.cfg` PASSES → STOP.**
-- **DG-SOAK.** All D2 §7.2 scenarios ≥50× (Immediate+GroupCommit, real-disk) PLUS: regime-switch-across-restart
+- **DG-SOAK.** All D2 §7.2 scenarios $\ge$50$\times$ (Immediate+GroupCommit, real-disk) PLUS: regime-switch-across-restart
   (set Owned→checkpoint→reopen-Overlay, verify homogeneity), archive-orphan-drop (idempotent Insert after Remove,
-  both archived, reopen ⇒ absent), increment-summed-across-crash, the A#4-residual non-durable/durable-mix loom.
+  both archived, reopen $\Rightarrow$ absent), increment-summed-across-crash, the A#4-residual non-durable/durable-mix loom.
   Plus deterministic regressions (`stage_prefix_split`, `stage_post_checkpoint_reseed`, `stage_archive_orphan_drop`,
   `stage_increment_sum`). Verification-only; reversible until the flip flag flips.
 
@@ -472,7 +472,7 @@ cross-version path.**
   ack-after-rank sites `:373,:551,:572,:1665,:1763`; (1a) builder split carried from D2.
 - `src/persistent_artrie_core/wal/writer.rs` — R5/R2/DG0: version-refuse guard in `open:116`;
   `set/get_commit_seq_floor`; carry floors across `rotate_to_archive:458`/`truncate:353`.
-- `src/persistent_artrie_core/wal/header.rs` — R4/R1c/DG-RECON: `VERSION 2→3` at `:38` (atomic gate);
+- `src/persistent_artrie_core/wal/header.rs` — R4/R1c/DG-RECON: $VERSION 2\to 3$ at `:38` (atomic gate);
   `commit_seq_floor` 20..28, `committed_watermark_floor` 28..36; `Checkpoint.regime` stamp.
 - `src/persistent_artrie_char/persist.rs` — R2: reclaimed-set floor at owned `:147` + overlay `:579`; and
   `src/persistent_artrie_char/overlay_write_mode.rs:83` — REGIME-CHECKPOINT assert in `set_overlay_write_mode`.

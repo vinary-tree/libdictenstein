@@ -23,32 +23,32 @@ Membership-insert has a **split linearization point**:
   prefix-reuse arbiter — comment `:787` "`try_set_final` is the SINGLE atomic arbiter"), so the
   finalized node can be **reachable and shared**, not a fresh path-copy.
 
-⇒ For inserts, **commit_seq order ≠ visibility order**. Value-ops (upsert `:1659`, increment `:1441`)
+$\Rightarrow$ For inserts, **commit_seq order $\ne$ visibility order**. Value-ops (upsert `:1659`, increment `:1441`)
 are SOUND — they stamp at an atomic-final root CAS (`build_value_path_recursive` bakes
 `as_final().with_value`, `:1781`) that IS their visibility point. The asymmetry is the bug.
 
 **F2 — [CRITICAL] Cross-op-type inversion: insert ‖ increment/upsert on one term.** Insert's deferred
-`try_set_final` vs the value-op's atomic root CAS ⇒ same-term insert(seq=lo) ‖ increment(seq=hi) can
+`try_set_final` vs the value-op's atomic root CAS $\Rightarrow$ same-term insert(seq=lo) ‖ increment(seq=hi) can
 have visibility order = increment-then-insert while seq order = insert-then-increment. The
-"claim-before-CAS ⇒ winner has lower claim" bracket assumes ONE linearization point per op; insert has two.
+"claim-before-CAS $\Rightarrow$ winner has lower claim" bracket assumes ONE linearization point per op; insert has two.
 
 **Concrete data-loss trace (orchestrator-constructed, flows through the prefix-reuse path):**
-`"cats"` present ⇒ `"cat"` node_A exists non-final. (1) `I=insert("cat")` claims seq=5, reuses node_A
+`"cats"` present $\Rightarrow$ `"cat"` node_A exists non-final. (1) `I=insert("cat")` claims seq=5, reuses node_A
 (`:801`), root-CAS publishes spine to node_A (still non-final), **pauses before `try_set_final`**.
-(2) `R=remove("cat")` claims seq=6, observes node_A **non-final ⇒ AlreadyAbsent no-op**; under the A.5
-fix it appends a `Remove` record + rank(6). (3) `I` resumes `try_set_final(node_A)` ⇒ `"cat"` now
-**visible present**. Replay sorts `I(5) Insert` before `R(6) Remove` ⇒ `"cat"` **absent ≠ visible
+(2) `R=remove("cat")` claims seq=6, observes node_A **non-final $\Rightarrow$ AlreadyAbsent no-op**; under the A.5
+fix it appends a `Remove` record + rank(6). (3) `I` resumes `try_set_final(node_A)` $\Rightarrow$ `"cat"` now
+**visible present**. Replay sorts `I(5) Insert` before `R(6) Remove` $\Rightarrow$ `"cat"` **absent $\ne$ visible
 present = DATA LOSS**. (Note: pure-F1 where I's `try_set_final` lands on a *dead* node → no loss; the
 exploit requires the **shared-reachable node_A** prefix path + a higher-seq competitor; for the remove
 case it also requires the A.5 idempotent-rank. Narrow but real, and it falsifies the theorem.)
 
 **F3 — [HIGH] A.6 frontier "no same-term out-orderer" fails with TWO concurrent same-term ops in their
-two-append windows simultaneously** — both data-durable, both rank-pending ⇒ both fall back to
+two-append windows simultaneously** — both data-durable, both rank-pending $\Rightarrow$ both fall back to
 `generation_of=lsn` (LARGE) and can out-sort a third ranked op or each other.
 
 **F4 — [HIGH] Torn multi-op document-tx batch defeats single-rank-at-CommitTx.** Order-A + group-commit
 does not guarantee atomic all-or-nothing durability of the per-op data appends vs the CommitTx append;
-a partial fsync can leave op-k's data missing while CommitTx is present ⇒ replay applies a strict
+a partial fsync can leave op-k's data missing while CommitTx is present $\Rightarrow$ replay applies a strict
 subset of the committed batch.
 
 **F5 — [MED/HIGH] C1′ bail-rank strict-inequality not guaranteed: the claim is taken at APPEND, after
@@ -76,14 +76,14 @@ visibility at the later `try_set_final` (`node.rs:725`), which does not bump the
 (`persist.rs:108-165` → `rotate_to_archive` → `wal.truncate()` then `set_min_lsn(cp+1)`) resets the
 active WAL to empty. The **LSN domain survives via a durable FLOOR** (`set_min_lsn`/header
 `checkpoint_lsn`); **commit_seq has NO floor** and is NOT in the header's unused `reserved[20..64]`
-(`header.rs:22`). ⇒ After a checkpoint the seed restarts at 0 ⇒ a new op gets commit_seq=1 while a
-pre-checkpoint same-term op survives on-disk at commit_seq=300 ⇒ later reconcile mis-sorts the NEW op
-BELOW the old ⇒ acked write lost. **The exact A.2 class the redesign exists to kill, reborn.**
+(`header.rs:22`). $\Rightarrow$ After a checkpoint the seed restarts at 0 $\Rightarrow$ a new op gets commit_seq=1 while a
+pre-checkpoint same-term op survives on-disk at commit_seq=300 $\Rightarrow$ later reconcile mis-sorts the NEW op
+BELOW the old $\Rightarrow$ acked write lost. **The exact A.2 class the redesign exists to kill, reborn.**
 
 **F2 — [CRITICAL] `recover_from_archives` neither reconciles NOR seeds.** `mmap_ctor.rs:1137` →
 `rebuild_from_wal_segments` (`recovery.rs:1443`) replays each segment in raw per-record order
-(CommitRank → `vec![]` at `:370`), never `reconcile_lww` ⇒ s019 recurs on the archive path; and it
-returns only `(records, terms)` with **no channel** to report a `max_commit_seq` ⇒ zero seed.
+(CommitRank → `vec![]` at `:370`), never `reconcile_lww` $\Rightarrow$ s019 recurs on the archive path; and it
+returns only `(records, terms)` with **no channel** to report a `max_commit_seq` $\Rightarrow$ zero seed.
 
 **F3 — [HIGH] Mixed v2/v3 file: one header byte, two key-domains, no enforced clean break.** A v3 binary
 opens & APPENDS to a `cf1f80c` v2 file (`from_bytes` accepts `[MIN_SUPPORTED=1 ..= VERSION]`,
@@ -95,17 +95,17 @@ v2 root-version (2) and a small early v3 commit_seq (2) on one term tie-break by
 **F4 — [HIGH] reconcile replays the unranked frontier and it can WIN.** `reconcile_lww` replays EVERY
 in-scope record and assigns unranked records `generation_of=lsn` (LARGE, `:273`); it ignores the
 watermark (no watermark param). A torn batch where op_A(T) ranked at seq=10 and a later same-term op_B's
-data is durable but its rank crashed ⇒ op_B replays at `lsn≫10` ⇒ **op_B wins** over op_A. The
+data is durable but its rank crashed $\Rightarrow$ op_B replays at $lsn\gg 10$ $\Rightarrow$ **op_B wins** over op_A. The
 watermark-stall argument is about ACK, not REPLAY.
 
 **F5 — [HIGH] single-CommitRank-at-CommitTx widens A.6 to whole-batch granularity; tx-gating is
 unimplemented.** `reconcile_lww` expands batches unconditionally and treats Begin/Commit/AbortTx as
-no-ops (`:343-370`) — A.4 entirely unfixed. A committed tx whose single CommitRank append crashes ⇒ the
-ENTIRE batch unranked ⇒ every entry mis-sorts.
+no-ops (`:343-370`) — A.4 entirely unfixed. A committed tx whose single CommitRank append crashes $\Rightarrow$ the
+ENTIRE batch unranked $\Rightarrow$ every entry mis-sorts.
 
 **F6 — [MED] IncrementalRecovery per-window buffering can't preserve cross-window order.**
 `process_record` (`:932`) uses a single `pending_ops` and `BeginTx` does `pending_ops.clear()` (`:940`)
-— tx-unsafe today. Never-checkpoint+v3 ⇒ one unbounded window ⇒ unbounded buffer (OOM) or fail-closed
+— tx-unsafe today. Never-checkpoint+v3 $\Rightarrow$ one unbounded window $\Rightarrow$ unbounded buffer (OOM) or fail-closed
 (streaming v3 recovery unavailable, not merely restricted).
 
 **F7 — [SOUND] Codec sharing does not cross-contaminate the counter** — `commit_seq` is a per-instance
@@ -133,7 +133,7 @@ single-phase and correct):
   ops linearize at the root CAS and claim-before-CAS is correct universally. RISK: must not reintroduce
   the proper-prefix data-loss bug (the Phase-A fix). This is the cleanest if the rebase-merge is proven.
 - **(1b) Stamp the seq AT `try_set_final`** (when `newly==true`, the unique finalizer), append the
-  CommitRank after. RISK: a node finalized then made unreachable by a concurrent parent-edge remove ⇒
+  CommitRank after. RISK: a node finalized then made unreachable by a concurrent parent-edge remove $\Rightarrow$
   phantom rank; needs a reachability/abort argument that is hard in a lock-free tree. Likely inferior.
 - Increment ‖ insert (F2) is subsumed: once insert linearizes at a single point consistent with the
   value path, the cross-op inversion closes.

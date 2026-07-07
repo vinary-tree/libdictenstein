@@ -6,7 +6,7 @@ BLOCKING cross-codebase findings (F1/F1b, F2, F3, F4) from the DG-RECON red-team
 D2.5 R3 ack-after-rank, R5 chokepoint (relocated), R6 tx, R7 errata; D2.6 §1 spine, §2 reconcile-apply-all,
 §4 floor, §5 migrate, §6 sentinel, §7.1 char enumeration — all carried UNCHANGED.
 
-**The single break repaired:** D2.6's "regime ≡ WAL VERSION" fails because `WalHeader::VERSION` is GLOBAL (shared
+**The single break repaired:** D2.6's "regime $\equiv$ WAL VERSION" fails because `WalHeader::VERSION` is GLOBAL (shared
 by base `persistent_artrie/mmap_ctor.rs:378`, vocab `persistent_vocab_artrie/mmap_ctor.rs:238`, char — all funnel
 through `WalWriter::{open,create}` `writer.rs:101/54`). Bumping it bricks v2 base/vocab files. **D2.7 replaces it
 with a dedicated, durable, per-FILE `rank_regime: u8` header field, and does NOT bump VERSION.**
@@ -30,10 +30,10 @@ chokepoint is `WalWriter::open`/`create`.
 ```rust
 #[repr(u8)] enum RankRegime { Owned = 0, Overlay = 1 }   // default 0 == Owned
 ```
-`WalHeader::new()` sets `rank_regime = Owned`. `to_bytes` writes `buf[28]`; `from_bytes` reads it (unknown byte ⇒
+`WalHeader::new()` sets `rank_regime = Owned`. `to_bytes` writes `buf[28]`; `from_bytes` reads it (unknown byte $\Rightarrow$
 Owned = fail-safe "keep everything"). **VERSION stays 2** (`header.rs:38` UNCHANGED); `version > VERSION` refusal
 (`:82`) UNCHANGED — never fires for legit files (none bump past 2). **F1/F1b closed at root:** regime is an
-intrinsic per-file reserved-byte property; old readers ignore it (⇒ Owned); no global bump ⇒ no brick; a fresh
+intrinsic per-file reserved-byte property; old readers ignore it ($\Rightarrow$ Owned); no global bump $\Rightarrow$ no brick; a fresh
 base/vocab WAL is `version=2, rank_regime=Owned` and its unranked records are KEPT.
 
 ### 1.2 CommitRank.generation disambiguation keys on rank_regime, not VERSION
@@ -46,7 +46,7 @@ An Owned file's records are all KEPT regardless, so its `rank.unwrap_or(lsn)` so
 after `open_or_create_async_wal` (char `mmap_ctor.rs:327`) BEFORE any overlay producer: if `route_overlay() ∧
 rank_regime==Owned` → `rotate_to_archive` the tail (preserving Owned+floor+version into the archived segment) then
 re-create the active file with `rank_regime: Overlay`; if already Overlay → no-op (idempotent across restart,
-closes S-A). Owned path never enters this ⇒ its file stays Owned. STRUCTURAL invariant: an Overlay WAL exists only
+closes S-A). Owned path never enters this $\Rightarrow$ its file stays Owned. STRUCTURAL invariant: an Overlay WAL exists only
 at/after the flip. (Greenfield: production `enable_lockfree` is `#[cfg(test)]`-only today.)
 
 ### 1.4 The R5 guard keys on regime (closes F1/C7)
@@ -74,13 +74,13 @@ New sig: `reconcile_lww(recovered_ops, loaded_from_disk, checkpoint_lsn, rank_re
 archive path threads a per-record regime via an internal `reconcile_core` taking `regime_of: Fn(Lsn)->RankRegime`
 (clean-open: `|_| rank_regime`; archive: per-segment lookup §3.2) — ONE body. Three char `replay_records_lww`
 callers (`mmap_ctor.rs:403,597`, `io_uring_ctor.rs:227`) thread `rank_regime` from the active file header (read at
-the seed scan `mmap_ctor.rs:292`). `Owned ⇒ KEEP@lsn` = today's `unwrap_or(lsn)` in-order replay (base/vocab/legacy
-safe). `Overlay ∧ unranked ⇒ DROP`; R3 ack-after-rank ⇒ `acked ⟹ ranked ⟹ never dropped`.
+the seed scan `mmap_ctor.rs:292`). $Owned \Rightarrow KEEP@lsn$ = today's `unwrap_or(lsn)` in-order replay (base/vocab/legacy
+safe). $Overlay \land unranked \Rightarrow DROP$; R3 ack-after-rank $\Rightarrow$ $acked \implies ranked \implies never dropped$.
 
 ### 1.6 Validation (the three D7-1 mandates)
 (a) base+vocab default Owned, never bricked/dropped: base open `:378`→Owned-guard-permit; base recovery
 `redo_phase:756` raw in-order (no reconcile); vocab open `:238`→permit; vocab no rank/reconcile surface. (b) vocab's
-no-CommitRank overlay + `merge_lockfree_to_persistent:322` unranked Inserts land in the Owned vocab WAL ⇒ KEEP. (c)
+no-CommitRank overlay + `merge_lockfree_to_persistent:322` unranked Inserts land in the Owned vocab WAL $\Rightarrow$ KEEP. (c)
 archive per-segment regime reads each segment's `rank_regime` header (§3.2).
 
 ---
@@ -89,14 +89,14 @@ archive per-segment regime reads each segment's `rank_regime` header (§3.2).
 F2 verified: torn-tail `rebuild_from_wal` (char `recovery.rs:503-571`, reached at `:458` on a NORMAL torn-tail
 crash) + `IncrementalRecovery` (`core/recovery.rs:959`) + `recover_from_archives`/`rebuild_from_wal_segments` apply
 RAW (no reconcile/rank/regime). In an Overlay WAL each resurrects a removed term via an unranked orphan. D2.6
-deferred fixing them to DG-PATHS ⇒ a DG-RECON→DG-PATHS crash-window.
+deferred fixing them to DG-PATHS $\Rightarrow$ a DG-RECON→DG-PATHS crash-window.
 **Decision: ALL char recovery paths that can see an Overlay record route through the regime-gated reconcile IN
 DG-RECON, not later.**
 1. **`rebuild_from_wal` (char `:503`):** union-collect all segments' records, tag each with its segment's
    `rank_regime`, run `reconcile_core` ONCE with `checkpoint_lsn=0`, then apply winners.
 2. **`IncrementalRecovery` (core `:856`):** gate per-checkpoint-window through the filtered reconcile; never-
    checkpoint-Overlay (one unbounded window) FAIL-CLOSED → caller falls back to whole-file `replay_records_lww`.
-   Shared with base, but base never opens an Overlay file ⇒ for an Owned file it degenerates to KEEP-all-in-order =
+   Shared with base, but base never opens an Overlay file $\Rightarrow$ for an Owned file it degenerates to KEEP-all-in-order =
    today (no regression).
 3. **`recover_from_archives` (char `:1138`) → reconciled sibling** (per-segment regime, cp=0, contiguity §3.2).
    `rebuild_from_wal_segments` is shared with base, so add a `_reconciled` sibling char uses; base's inline archive
@@ -108,12 +108,12 @@ DG-RECON, not later.**
 
 ## §3. D7-3 — regime-aware pruning PINS pre-flip Owned archives (closes F3)
 F3: `prune_segments_if_needed` (`writer.rs:510`, called every `rotate_to_archive:469`) blindly removes oldest
-segments, regime-unaware ⇒ deletes the pre-flip Owned archives the §5 rollback needs.
-**Decision: pin Owned segments only when the archive is MIXED (≥1 Overlay segment present).** Read each segment's
+segments, regime-unaware $\Rightarrow$ deletes the pre-flip Owned archives the §5 rollback needs.
+**Decision: pin Owned segments only when the archive is MIXED ($\ge$1 Overlay segment present).** Read each segment's
 `rank_regime` (`reader.rs:103`) when building the prune list (`:518`); partition into `owned`/`overlay`; if mixed,
 PIN all `owned` (never prune) and run size/count pruning ONLY over `overlay` (preserving the `remaining<=1` guard
-within the overlay set). A pure-Owned archive (base/vocab/pre-flip char) has no boundary ⇒ prunes exactly as today
-(no regression). The whole Owned prefix is pinned (not just oldest) ⇒ the rollback chain's contiguity is preserved.
+within the overlay set). A pure-Owned archive (base/vocab/pre-flip char) has no boundary $\Rightarrow$ prunes exactly as today
+(no regression). The whole Owned prefix is pinned (not just oldest) $\Rightarrow$ the rollback chain's contiguity is preserved.
 
 ---
 
@@ -126,13 +126,13 @@ The real producers' loop-top-claim+rank is RETAINED (correct for them); the idem
 ---
 
 ## §5. D7-5 — CROSS-CODEBASE proof: base + vocab UNAFFECTED
-**Base (`persistent_artrie/`):** opens `mmap_ctor.rs:121,208,378` + io_uring `:66` — all Owned-default ⇒ guard
+**Base (`persistent_artrie/`):** opens `mmap_ctor.rs:121,208,378` + io_uring `:66` — all Owned-default $\Rightarrow$ guard
 permits; appends plain unranked Insert/Remove/Increment/BatchInsert (no `append_commit_rank` — rg empty) to its
-Owned file ⇒ KEEP@lsn; recovers `RecoveryManager::recover:645`→`redo_phase:756` raw + inline archive loop
+Owned file $\Rightarrow$ KEEP@lsn; recovers `RecoveryManager::recover:645`→`redo_phase:756` raw + inline archive loop
 `mmap_ctor.rs:627` — NEVER calls `reconcile_lww` (rg empty). Only shared fn it touches that D2.7 changes is
 `recovered_operations_from_record` (D6 sentinel only, additive). **Unaffected.** ∎
 **Vocab (`persistent_vocab_artrie/`):** opens `mmap_ctor.rs:238`→Owned; appends unranked Insert/BatchInsert
-(`mutation_api.rs:32,49`) + `merge_lockfree_to_persistent:322`→unranked Insert to its Owned WAL ⇒ KEEP; `insert_cas`
+(`mutation_api.rs:32,49`) + `merge_lockfree_to_persistent:322`→unranked Insert to its Owned WAL $\Rightarrow$ KEEP; `insert_cas`
 (`lockfree_cas.rs:98`) is a pure in-memory cache (NO WAL); ZERO rank/reconcile/CommitRank surface (rg empty).
 **The no-Overlay proof:** vocab `enable_lockfree:44-55` sets only `lockfree_root`/`lockfree_cache` — NO fresh WAL,
 NO `overlay_write_mode`, NO `route_overlay`/`set_overlay_write_mode`/`ensure_overlay_wal_regime` (rg empty). So
@@ -153,7 +153,7 @@ source, map bounded 1<<20 + scan-fallback; floor lives ONLY in Overlay files); D
 transition, not a VERSION bump — the old Owned image+archives stay readable by any binary; sole forward bridge);
 D6 sentinel (`IncrementOutcome{Delta|Absolute(i64)}`, no codec change, DG-DECODE); §7.1 char enumeration +
 merge-bridge overlay-reject + `OverlayWalImpliesOverlayLive` asserts; R7 errata.
-**REPLACED from D2.6:** regime≡version → dedicated `rank_regime` field (VERSION stays 2); R5 version-guard →
+**REPLACED from D2.6:** regime$\equiv$version → dedicated `rank_regime` field (VERSION stays 2); R5 version-guard →
 regime-mismatch guard; split DG-RECON→DG-PATHS → recovery-gating folded into DG-RECON; version-unaware prune →
 mixed-archive Owned-pin; [unspecified idempotent claim → §A idempotent-NO-RANK].
 
@@ -176,7 +176,7 @@ Model: `rank_regime: [Files->{Owned,Overlay}]` (immutable per file; flip creates
 always Owned); NO global version regime-carrier; `commit_seq: Nat` global fetch_add; drop = `ranked⇒keep@cseq ;
 (¬ranked∧Overlay)⇒drop ; (¬ranked∧Owned)⇒keep@lsn`; `floor'=Max{cseq(r):data_lsn≤cp}`; Archive unions
 per-segment-regime-tagged segments (cp=0); Prune removes only Overlay when mixed; a `BaseVocab` actor producing
-only Owned-unranked records recovering in-order; `IncrementOutcome∈{Delta,Absolute}`.
+only Owned-unranked records recovering in-order; $IncrementOutcome\in {Delta,Absolute}$.
 **Invariants (carried + new):** carried `ReplayEqualsCommittedVisible`, `NoLostNetWrite`, `NoResurrectionOnReplay`,
 `CommitSeqMonotone`, `ReplayEqualsCommittedValue`, `FloorDominatesSubsumed`, `SeedAboveDurable`, `NoUnconfirmedWins`,
 `ArchiveNoResurrection`, `AckImpliesRanked`, `NoUncommittedTxReplay`, `IncrementOutcomeDistinct`. NEW:
@@ -184,7 +184,7 @@ only Owned-unranked records recovering in-order; `IncrementOutcome∈{Delta,Abso
 `FlipCreatesFreshOverlay`, `OwnedPinSurvivesPrune` (F3), `IdempotentNoInversion` (F4/§A headline).
 **Negative controls (each MUST fire):** `_UnsafeKeepOverlayOrphan`, `_UnsafeDropOwnedUnranked` (F1b base/vocab loss),
 `_UnsafeBaseVocabDropped` (F1 — proves the regime field load-bearing), `_UnsafeUngatedRecovery` (F2),
-`_UnsafePruneOwned` (F3), `_UnsafeIdempotentRanked` (§A — idempotent ranking ⇒ resurrection), `_UnsafeRegimeMix`;
+`_UnsafePruneOwned` (F3), `_UnsafeIdempotentRanked` (§A — idempotent ranking $\Rightarrow$ resurrection), `_UnsafeRegimeMix`;
 carried `_UnsafeIncrementSentinel`, `_UnsafeUnrankedIncrement`, `_UnsafeGlobalFloor`, `_UnsafeNoFloorCarry`,
 `_UnsafeAckBeforeRank`, `_UnsafeTxIgnored`, `_UnsafeSplitLP`.
 
@@ -211,7 +211,7 @@ DG-FORMAL TLA + all controls                                                    
 DG-SOAK   ≥50× real-disk + new scenarios incl. idempotent-no-op-vs-concurrent-remove (§A)       [reversible until flip flag]
 ```
 Reversibility: DG0-DG2 code-reversible (fields→0=Owned; VERSION never moves). DG-RECON irreversible ONLY per
-char-Overlay file. **Unlike D2.6, no global VERSION bump ⇒ base/vocab + un-flipped char readable by any binary
+char-Overlay file. **Unlike D2.6, no global VERSION bump $\Rightarrow$ base/vocab + un-flipped char readable by any binary
 forever**; the one-way boundary is per-file (Overlay), not global.
 
 ### Critical Files
@@ -232,7 +232,7 @@ resurrection: term `t` present; idempotent `Insert(t)` (I) ‖ real `Remove(t)` 
 starts building. (2) I claims `cI > cR`, observes `t` final in root0 → `AlreadyExists` → **NO root CAS**
 (`build_final_path_recursive` returns `Err(AlreadyExists)` before constructing a root; confirmed "no spine
 published" at `lockfree_cas.rs:105`). (3) R's CAS root0→root1 wins (root unchanged by I), removing `t`, with
-`cR < cI`. Real-time: `t` absent (R last). Replay sorts `(cseq,lsn)`: `Remove(cR)` then `Insert(cI)` ⇒ `t` PRESENT
+`cR < cI`. Real-time: `t` absent (R last). Replay sorts `(cseq,lsn)`: `Remove(cR)` then `Insert(cI)` $\Rightarrow$ `t` PRESENT
 = **resurrection; acked remove lost.** The loop-top claim does NOT prevent it because the no-op leaves the root
 unchanged, so a lower-`commit_seq` remove can still win its CAS AFTER the no-op. (Under the OLD `root.version()` the
 idempotent generation was read AFTER observing present, causally tracking the observed root, so a later remove's
@@ -240,13 +240,13 @@ bumped version correctly won — `:381-384` "harmless" was valid there; the GLOB
 causality.)
 
 **The fix.** The idempotent `AlreadyExists`/`AlreadyAbsent` arms do **NOT** append a `CommitRank` and do NOT claim
-a `commit_seq`. Their pre-appended data record (`Insert`@`:329` / `Remove`@`:520`) is then UNRANKED ⇒ in an Overlay
-file it is DROPPED by §1.5 ⇒ zero replay effect ⇒ matches the real-time no-op. Preferred implementation:
+a `commit_seq`. Their pre-appended data record (`Insert`@`:329` / `Remove`@`:520`) is then UNRANKED $\Rightarrow$ in an Overlay
+file it is DROPPED by §1.5 $\Rightarrow$ zero replay effect $\Rightarrow$ matches the real-time no-op. Preferred implementation:
 **read-before-append** — check membership BEFORE the WAL append (a lock-free `find_leaf` read); if the op is a no-op
 (present-for-insert / absent-for-remove), return `Ok(false)` WITHOUT appending any record (no spurious record, no
 watermark gap). If read-before-append is not adopted, the fallback is **mark-but-no-rank**: keep the pre-appended
 record, `mark_committed(lsn)` for watermark liveness (so the contiguous prefix doesn't stall), but DO NOT
-`append_commit_rank` ⇒ the record drops at replay. (D2.6 §3.4's "no rank, no mark_committed" was slightly wrong —
+`append_commit_rank` $\Rightarrow$ the record drops at replay. (D2.6 §3.4's "no rank, no mark_committed" was slightly wrong —
 no-mark stalls the watermark; the correct combo is mark-yes, rank-no, OR read-before-append.)
 
 **Why this is correct + closes F4.** A no-op asserts STATE, not a MUTATION; it must not durably record a mutation.
@@ -255,7 +255,7 @@ impossible — there is no idempotent commit_seq to mis-order). The real produce
 loop-top-claim+rank (correct — their CAS is the single LP, `CommitSeqMonotone` holds). `IdempotentNoInversion`
 (§8) becomes trivially true. Negative control `_UnsafeIdempotentRanked` (rank the idempotent arm) MUST fire
 `NoResurrectionOnReplay` via the trace above. New soak scenario: idempotent-no-op-of-`t` ‖ concurrent-real-remove-
-of-`t`, crash, reopen ⇒ `t` absent (not resurrected).
+of-`t`, crash, reopen $\Rightarrow$ `t` absent (not resurrected).
 
 **Cross-check vs the current code (`:375-391`, `:556-580`):** today both arms rank with `root.version()` + mark.
 DG1 changes them to NO-RANK (read-before-append or mark-but-no-rank). This is a behavior change gated by DG1

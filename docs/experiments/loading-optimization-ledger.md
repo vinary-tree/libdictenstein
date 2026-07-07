@@ -71,7 +71,7 @@ Establish baseline performance metrics for the current eager loading implementat
    - 100K terms: 718 ms (119x for 100x more terms)
    - 1M terms: 8,350 ms (11.6x for 10x more terms)
 
-2. **First lookup ≈ open time** due to eager loading:
+2. **First lookup $\approx$ open time** due to eager loading:
    - All nodes are loaded at open time, so first lookup is fast after open completes
    - The "first_lookup" metric includes re-opening in each iteration
 
@@ -115,7 +115,7 @@ Lazy loading will significantly reduce open_time_ms (expecting >50% reduction) b
 ### Raw Results
 
 #### 1,000 Terms
-| Metric | Baseline | Lazy | Δ% |
+| Metric | Baseline | Lazy | $\Delta$% |
 |--------|----------|------|----|
 | open_time_ms | 6.01 ± 0.017 | 0.705 ± 0.004 | **-88.3%** |
 | first_lookup_ms | 10.14 ± 0.021 | 4.10 ± 0.025 | **-59.6%** |
@@ -123,7 +123,7 @@ Lazy loading will significantly reduce open_time_ms (expecting >50% reduction) b
 | memory_mb | ~50 | ~50 | ~0% |
 
 #### 100,000 Terms
-| Metric | Baseline | Lazy | Δ% |
+| Metric | Baseline | Lazy | $\Delta$% |
 |--------|----------|------|----|
 | open_time_ms | 718.4 ± 3.4 | 32.0 ± 0.26 | **-95.5%** |
 | first_lookup_ms | 714.1 ± 4.2 | 22.2 ± 0.20 | **-96.9%** |
@@ -131,7 +131,7 @@ Lazy loading will significantly reduce open_time_ms (expecting >50% reduction) b
 | memory_mb | ~350 | ~350 | ~0% |
 
 #### 1,000,000 Terms
-| Metric | Baseline | Lazy | Δ% |
+| Metric | Baseline | Lazy | $\Delta$% |
 |--------|----------|------|----|
 | open_time_ms | 8,349.5 ± 27.1 | 169.6 ± 0.85 | **-98.0%** |
 | first_lookup_ms | 8,550.4 ± 25.7 | 178.0 ± 2.27 | **-97.9%** |
@@ -145,14 +145,14 @@ Lazy loading will significantly reduce open_time_ms (expecting >50% reduction) b
 ### Statistical Analysis (1M terms - primary metric: open_time)
 
 **Welch's t-test:**
-- Baseline: μ = 8349.5 ms, σ ≈ 148.4 ms (SE × √30), n = 30
+- Baseline: μ = 8349.5 ms, σ $\approx$ 148.4 ms (SE $\times$ $\sqrt$30), n = 30
 - Lazy: μ = 169.6 ms, σ = 4.75 ms, n = 30
-- t-statistic: t = (8349.5 - 169.6) / √(148.4²/30 + 4.75²/30) = **301.8**
+- t-statistic: t = (8349.5 - 169.6) / $\sqrt$(148.4²/30 + 4.75²/30) = **301.8**
 - Degrees of freedom: ~29 (Welch-Satterthwaite)
 - **p-value: < 0.0001** (highly significant)
 
 **Cohen's d (Effect Size):**
-- Pooled std = √(((29 × 148.4²) + (29 × 4.75²)) / 58) ≈ 105.0 ms
+- Pooled std = $\sqrt$(((29 $\times$ 148.4²) + (29 $\times$ 4.75²)) / 58) $\approx$ 105.0 ms
 - d = (8349.5 - 169.6) / 105.0 = **77.9** (extremely large)
 - Interpretation: Effect size > 0.8 is "large"; d = 77.9 represents a **massive** improvement
 
@@ -231,7 +231,7 @@ Depth-limited loading (e.g., 5 levels) will provide a balance: faster open than 
 
 **Key Observations:**
 
-1. **Depth 3-5 ≈ Lazy Loading**: Loading 3-5 levels provides no meaningful improvement over lazy loading:
+1. **Depth 3-5 $\approx$ Lazy Loading**: Loading 3-5 levels provides no meaningful improvement over lazy loading:
    - Open time: ~182ms vs 170ms (7% slower)
    - First lookup: ~181-209ms vs 178ms (similar or worse)
    - Bulk lookup: ~1.04ms vs 0.99ms (5% slower)
@@ -251,13 +251,13 @@ Depth-limited loading (e.g., 5 levels) will provide a balance: faster open than 
 **Open Time:**
 - Lazy: μ = 169.6 ms, σ = 4.75 ms
 - Depth=5: μ = 181.3 ms, σ = 19.1 ms
-- Δ = +11.7 ms (+6.9%)
+- $\Delta$ = +11.7 ms (+6.9%)
 - Conclusion: Depth-5 is **slower** than lazy
 
 **Bulk Lookup:**
 - Lazy: μ = 0.99 ms
 - Depth=5: μ = 1.04 ms
-- Δ = +0.05 ms (+5.1%)
+- $\Delta$ = +0.05 ms (+5.1%)
 - Conclusion: Depth-5 is **slower** than lazy
 
 ### Decision
@@ -315,17 +315,17 @@ Parallel loading of child subtrees will reduce open_time_ms for eager loading sc
 ### Statistical Analysis
 
 **Parallel (threads=0) vs Eager Baseline:**
-- Eager: μ = 8349.5 ms, σ ≈ 148 ms, n = 30
-- Parallel: μ = 5532 ms, σ ≈ 77 ms, n = 30
-- t-statistic: t = (8349.5 - 5532) / √(148²/30 + 77²/30) = **91.1**
+- Eager: μ = 8349.5 ms, σ $\approx$ 148 ms, n = 30
+- Parallel: μ = 5532 ms, σ $\approx$ 77 ms, n = 30
+- t-statistic: t = (8349.5 - 5532) / $\sqrt$(148²/30 + 77²/30) = **91.1**
 - **p-value: < 0.0001** (significant)
 - **Cohen's d** = (8349.5 - 5532) / 119 = **23.7** (large effect)
 - Improvement: 33.8%
 
 **Parallel (threads=0) vs Lazy Loading:**
-- Lazy: μ = 169.6 ms, σ ≈ 4.75 ms, n = 30
-- Parallel: μ = 5532 ms, σ ≈ 77 ms, n = 30
-- t-statistic: t = (5532 - 169.6) / √(77²/30 + 4.75²/30) = **380.8**
+- Lazy: μ = 169.6 ms, σ $\approx$ 4.75 ms, n = 30
+- Parallel: μ = 5532 ms, σ $\approx$ 77 ms, n = 30
+- t-statistic: t = (5532 - 169.6) / $\sqrt$(77²/30 + 4.75²/30) = **380.8**
 - **p-value: < 0.0001** (significant)
 - **Cohen's d** = (5532 - 169.6) / 54.5 = **98.4** (massive effect)
 - **Regression: 32x SLOWER than lazy loading**

@@ -51,6 +51,9 @@ use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::buffer_manager::BufferManager;
 use crate::persistent_artrie::char::arena_manager::ArenaManager;
 use crate::persistent_artrie::char::nodes::AtomicNodePtr;
+use crate::persistent_artrie::core::shared_access::{
+    AtomicEnumCell, SharedTrieAccess, TrieAccessGuard,
+};
 use crate::persistent_artrie::dict_impl::DurabilityPolicy;
 use crate::persistent_artrie::disk_manager::MmapDiskManager;
 use crate::persistent_artrie::wal::AsyncWalWriter;
@@ -68,11 +71,22 @@ pub use super::sync_handle::VocabSyncHandle;
 /// WAL-based crash recovery and durability. Forward lookups walk the overlay;
 /// reverse lookups read the derived `reverse_term_map`.
 ///
-/// # Thread Safety
+/// # Concurrency
 ///
-/// The overlay, caches, WAL frontiers, and storage handles are internally
-/// synchronized for `&self` operations. Use [`SharedVocabARTrie`] when an
-/// `Arc<RwLock<...>>` handle is needed for trait compatibility.
+/// **Thread-safe within ONE process, and lock-free.** The overlay, caches, WAL frontiers, and
+/// storage handles are internally synchronized for `&self` operations; after the F4 lock-collapse,
+/// [`SharedVocabARTrie`] is a bare `Arc<PersistentVocabARTrie>` (no outer `RwLock`), so concurrent
+/// readers and writers on one shared handle never block each other (overlay CAS + `DashMap` +
+/// epoch-pinned reads).
+///
+/// **NOT safe across OS processes.** Exactly one process may own a given backing file: the
+/// concurrency primitives are process-local heap and the WAL / `mmap` / checkpoint are
+/// uncoordinated across processes, so concurrent multi-process *writers* corrupt the file. A second
+/// process (or a second concurrent handle) opening the same file is rejected with
+/// [`PersistentARTrieError::FileLocked`](crate::persistent_artrie::PersistentARTrieError) by the
+/// Tier-1 advisory lock. For genuine multi-reader-process access see the Tier-2 SWMR design
+/// (`docs/design/swmr-multiprocess.md`); the lock itself is documented in
+/// `docs/design/os-level-locking.md`.
 ///
 /// # Example
 ///
@@ -133,8 +147,9 @@ pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
     /// Last synced LSN (atomic for lock-free access)
     pub(super) synced_lsn: AtomicU64,
 
-    /// Durability policy for WAL synchronization
-    pub(super) durability_policy: DurabilityPolicy,
+    /// Durability policy for WAL synchronization. F4: `AtomicEnumCell` so the lifecycle setter
+    /// is `&self` (no outer trie lock) and hot-path reads are a single relaxed atomic load.
+    pub(super) durability_policy: AtomicEnumCell<DurabilityPolicy>,
 
     // === Storage layer for disk-backed persistence ===
     /// Arena manager for node storage (shared with buffer manager)
@@ -144,9 +159,12 @@ pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
     pub(super) buffer_manager: Option<Arc<RwLock<BufferManager<S>>>>,
 
     // === Eviction Support ===
-    /// Eviction coordinator for memory pressure-driven eviction
+    /// Eviction coordinator for memory pressure-driven eviction. F4: wrapped in a
+    /// `std::sync::Mutex` (the EC leaf lock) so `enable/disable_eviction` mutate it through the
+    /// bare `Arc<T>` handle without the outer trie `RwLock`. Never held across CK/arena/buffer or
+    /// a worker `.join()` (drop-before-join discipline in `disable_eviction`).
     pub(crate) eviction_coordinator:
-        Option<Arc<crate::persistent_artrie::eviction::EvictionCoordinator>>,
+        std::sync::Mutex<Option<Arc<crate::persistent_artrie::eviction::EvictionCoordinator>>>,
 
     // === Lock-free overlay (the SOLE representation — V6) ===
     /// The lock-free overlay root (`PersistentCharNode` with structural sharing). The insert
@@ -183,6 +201,13 @@ pub struct PersistentVocabARTrie<S: BlockStorage = MmapDiskManager> {
     /// insert path fully non-blocking. `Some` once the overlay is enabled. Written by the
     /// lock-free `insert_overlay`, read by `get_term` under `route_overlay()` (V4).
     pub(super) reverse_term_map: Option<DashMap<u64, String>>,
+
+    /// F4: serializes concurrent `checkpoint()` publications on shared handles (the outer
+    /// `RwLock` that used to serialize checkpoint‖checkpoint was removed with the collapse to
+    /// `Arc<T>`). Cold-path only — never touched by reads or non-durable writes; a fresh lock
+    /// per `Clone` (independent instance). Byte/char twin; TLA-verified
+    /// (`ConcurrentCheckpointSerialization.tla`).
+    pub(crate) checkpoint_lock: Arc<parking_lot::Mutex<()>>,
 }
 
 // ============================================================================
@@ -205,7 +230,31 @@ unsafe impl<S: BlockStorage> Sync for PersistentVocabARTrie<S> {}
 /// Thread-safe shared vocabulary ARTrie.
 ///
 /// This is the recommended type for concurrent access to the vocabulary trie.
-pub type SharedVocabARTrie<S = MmapDiskManager> = Arc<RwLock<PersistentVocabARTrie<S>>>;
+///
+/// F4: collapsed from `Arc<RwLock<PersistentVocabARTrie<S>>>` to a bare `Arc<T>` — the inner
+/// trie is already fully `&self` + lock-free (lock-free overlay root, DashMap forward/reverse
+/// caches, atomic counters, epoch-pinned reads), so the outer `RwLock` was pure redundant
+/// serialization. The backward-compatible `.read()`/`.write()` API is preserved by
+/// [`SharedTrieAccess`] (both return a transparent guard that derefs to `&T`; there is no lock).
+pub type SharedVocabARTrie<S = MmapDiskManager> = Arc<PersistentVocabARTrie<S>>;
+
+// F4: the concrete `.read()/.write()` shim impl on the collapsed vocab handle.
+// CONCRETE (not a blanket `Arc<T>`) so it never shadows the inherent `RwLock::{read,write}`
+// on the crate's `Arc<RwLock<ArenaManager/BufferManager>>` manager handles (see the
+// `SharedTrieAccess` doc in `core/shared_access.rs`). Mirrors byte `persistent_artrie/mod.rs`.
+impl<S: BlockStorage> SharedTrieAccess for Arc<PersistentVocabARTrie<S>> {
+    type Target = PersistentVocabARTrie<S>;
+
+    #[inline]
+    fn read(&self) -> TrieAccessGuard<'_, PersistentVocabARTrie<S>> {
+        TrieAccessGuard::from_ref(self.as_ref())
+    }
+
+    #[inline]
+    fn write(&self) -> TrieAccessGuard<'_, PersistentVocabARTrie<S>> {
+        TrieAccessGuard::from_ref(self.as_ref())
+    }
+}
 
 // `load_trie_from_disk` and related disk-loading + persistence helpers
 // moved to sibling `disk_io.rs` in Phase-6 decomposition.
@@ -217,27 +266,62 @@ impl<S: BlockStorage> Drop for PersistentVocabARTrie<S> {
     }
 }
 
+/// B1 debug tripwire: recursively verify a frozen overlay subtree is fully in-memory (no
+/// `Child::OnDisk`). The vocab overlay never evicts, so this always holds — but if a future change
+/// enables overlay eviction, the snapshot `Clone` (share-root + detach-storage) would silently
+/// drop evicted paths; this assertion fails loudly instead of returning a lossy snapshot.
+#[cfg(debug_assertions)]
+fn overlay_subtree_all_in_mem<
+    K: crate::persistent_artrie::core::key_encoding::KeyEncoding,
+    V: Clone,
+>(
+    node: &Arc<crate::persistent_artrie::core::overlay::node::OverlayNode<K, V>>,
+) -> bool {
+    node.iter_children()
+        .all(|(_, child)| match child.as_in_mem() {
+            Some(child_node) => overlay_subtree_all_in_mem(child_node),
+            None => false,
+        })
+}
+
 impl<S: BlockStorage> Clone for PersistentVocabARTrie<S> {
+    /// Lossless in-memory **snapshot** clone.
+    ///
+    /// The overlay is an immutable, structurally-shared persistent tree, so the clone Arc-shares
+    /// the source's *frozen* root in O(1) — a point-in-time view: it never sees the source's later
+    /// writes (they CAS a fresh root into the source's own slot), and, being read-only, never
+    /// affects the source. The forward (`term → id`) and reverse (`id → term`) caches and
+    /// `entry_count` are then MATERIALIZED by a single DFS over that frozen root, so the snapshot
+    /// is internally self-consistent even under concurrent mutation of the source (no "clone at a
+    /// quiescent point" caveat).
+    ///
+    /// The clone is DETACHED from storage (`arena_manager`/`buffer_manager`/`wal_writer` = `None`)
+    /// and is therefore read-only (the only insert path is durable and needs a WAL) and Drop-safe
+    /// (`checkpoint` no-ops with no buffer manager — see `checkpoint_overlay`'s B2 guard). For an
+    /// independent, *writable*, separately-persistable copy, use [`Self::fork_to`].
     fn clone(&self) -> Self {
-        // The overlay (lockfree_root/cache/reverse_term_map) + storage handles are NOT
-        // deep-cloned — they are re-established by the clone's own ctor/recovery on first use
-        // (mirrors byte/char `clone`). Only the scalar/atomic state is carried.
-        Self {
+        // The frozen root — an immutable Arc; the snapshot's own slot holds a fresh pointer to it.
+        let frozen_root = self.lockfree_root.as_ref().and_then(|r| r.load());
+
+        let snapshot = Self {
             path: self.path.clone(),
-            entry_count: AtomicUsize::new(self.entry_count.load(Ordering::Acquire)),
+            entry_count: AtomicUsize::new(0), // materialized from the frozen root below
             start_index: self.start_index,
             next_index: AtomicU64::new(self.next_index.load(Ordering::Acquire)),
-            dirty: AtomicBool::new(self.dirty.load(Ordering::Acquire)),
-            wal_writer: self.wal_writer.clone(),
+            dirty: AtomicBool::new(false),
+            wal_writer: None, // detached ⇒ read-only + no shared/double WAL
             wal_config: self.wal_config.clone(),
             next_lsn: AtomicU64::new(self.next_lsn.load(Ordering::Acquire)),
             synced_lsn: AtomicU64::new(self.synced_lsn.load(Ordering::Acquire)),
-            durability_policy: self.durability_policy,
-            arena_manager: None,        // Cannot clone arena manager
-            buffer_manager: None,       // Cannot clone buffer manager
-            eviction_coordinator: None, // Cannot clone eviction coordinator
-            lockfree_root: None,        // Cannot clone lock-free root
-            lockfree_cache: None,       // Cannot clone lock-free cache
+            durability_policy: AtomicEnumCell::new(self.durability_policy.load()),
+            arena_manager: None,  // detached from the backing file
+            buffer_manager: None, // ⇒ checkpoint/Drop is a clean no-op (B2 guard)
+            eviction_coordinator: std::sync::Mutex::new(None),
+            lockfree_root: Some(match &frozen_root {
+                Some(root) => AtomicNodePtr::new(Arc::clone(root)),
+                None => AtomicNodePtr::null(),
+            }),
+            lockfree_cache: Some(DashMap::new()),
             cas_retries: AtomicU64::new(0),
             commit_seq: AtomicU64::new(self.commit_seq.load(Ordering::Acquire)),
             committed_watermark:
@@ -245,8 +329,49 @@ impl<S: BlockStorage> Clone for PersistentVocabARTrie<S> {
             epoch_manager: Arc::new(
                 crate::persistent_artrie::core::concurrency::EpochManager::new(),
             ),
-            reverse_term_map: None, // rebuilt from the overlay on the clone's first use
+            reverse_term_map: Some(DashMap::new()),
+            checkpoint_lock: Arc::new(parking_lot::Mutex::new(())),
+        };
+
+        // Debug tripwire: vocab never evicts, so the frozen overlay must be fully in-memory. If a
+        // future change enables overlay eviction, share-root + detach-storage would silently drop
+        // OnDisk paths — fail loudly here instead of returning a lossy snapshot.
+        #[cfg(debug_assertions)]
+        if let Some(root) = &frozen_root {
+            assert!(
+                overlay_subtree_all_in_mem(root),
+                "vocab snapshot Clone: overlay root has an OnDisk child — the never-evict \
+                 invariant was violated; snapshot must switch to fault-in-then-detach or \
+                 share-storage-read-only"
+            );
         }
+
+        // Materialize the forward + reverse caches and the entry count from the frozen root in a
+        // single consistent DFS over its `(term-units, id)` pairs. `char::from_u32` never fails
+        // here — the units were produced from valid `char`s on insert.
+        let pairs = <Self as crate::persistent_artrie::core::overlay::flip::LockFreeOverlay<
+            crate::persistent_artrie::core::key_encoding::CharKey,
+            u64,
+            S,
+        >>::overlay_collect_units_with_values(&snapshot, &[])
+        .unwrap_or_default();
+
+        let cache = snapshot
+            .lockfree_cache
+            .as_ref()
+            .expect("snapshot forward cache present");
+        let reverse = snapshot
+            .reverse_term_map
+            .as_ref()
+            .expect("snapshot reverse map present");
+        for (units, id) in pairs {
+            let term: String = units.iter().filter_map(|&c| char::from_u32(c)).collect();
+            cache.insert(term.clone(), id);
+            reverse.insert(id, term);
+        }
+        snapshot.entry_count.store(cache.len(), Ordering::Release);
+
+        snapshot
     }
 }
 
@@ -260,7 +385,7 @@ impl<S: BlockStorage> std::fmt::Debug for PersistentVocabARTrie<S> {
             .field("is_dirty", &self.dirty)
             .field("next_lsn", &self.next_lsn)
             .field("synced_lsn", &self.synced_lsn)
-            .field("durability_policy", &self.durability_policy)
+            .field("durability_policy", &self.durability_policy.load())
             .field("has_arena_manager", &self.arena_manager.is_some())
             .field("has_buffer_manager", &self.buffer_manager.is_some())
             .finish()
@@ -460,7 +585,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.vocab");
 
-        let mut vocab = PersistentVocabARTrie::create(&path).unwrap();
+        let vocab = PersistentVocabARTrie::create(&path).unwrap();
 
         // Default is Immediate
         assert_eq!(vocab.durability_policy(), DurabilityPolicy::Immediate);

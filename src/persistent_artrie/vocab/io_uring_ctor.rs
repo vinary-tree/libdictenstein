@@ -14,6 +14,7 @@ use parking_lot::RwLock;
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::buffer_manager::BufferManager;
 use crate::persistent_artrie::char::arena_manager::ArenaManager;
+use crate::persistent_artrie::core::shared_access::AtomicEnumCell;
 use crate::persistent_artrie::dict_impl::DurabilityPolicy;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::wal::WalConfig;
@@ -81,10 +82,10 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
             wal_config,
             next_lsn: AtomicU64::new(1),
             synced_lsn: AtomicU64::new(0),
-            durability_policy: DurabilityPolicy::default(),
+            durability_policy: AtomicEnumCell::new(DurabilityPolicy::default()),
             arena_manager: Some(arena_manager),
             buffer_manager: Some(buffer_manager),
-            eviction_coordinator: None,
+            eviction_coordinator: std::sync::Mutex::new(None),
             lockfree_root: None,
             lockfree_cache: None,
             cas_retries: AtomicU64::new(0),
@@ -95,6 +96,7 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
                 crate::persistent_artrie::core::concurrency::EpochManager::new(),
             ),
             reverse_term_map: None,
+            checkpoint_lock: Arc::new(parking_lot::Mutex::new(())),
         };
         // FLIP (io_uring): overlay is the LIVE rep from construction (mirror mmap).
         <Self as crate::persistent_artrie::core::overlay::flip::LockFreeOverlay<
@@ -176,10 +178,10 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
             wal_config,
             next_lsn: AtomicU64::new(next_lsn),
             synced_lsn: AtomicU64::new(header.checkpoint_lsn),
-            durability_policy: DurabilityPolicy::default(),
+            durability_policy: AtomicEnumCell::new(DurabilityPolicy::default()),
             arena_manager: Some(arena_manager),
             buffer_manager: Some(buffer_manager),
-            eviction_coordinator: None,
+            eviction_coordinator: std::sync::Mutex::new(None),
             lockfree_root: None,
             lockfree_cache: None,
             cas_retries: AtomicU64::new(0),
@@ -190,6 +192,7 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
                 crate::persistent_artrie::core::concurrency::EpochManager::new(),
             ),
             reverse_term_map: None,
+            checkpoint_lock: Arc::new(parking_lot::Mutex::new(())),
         };
 
         // Reestablish the overlay from the v2 image + drain the WAL tail rank-aware (crash-safe).

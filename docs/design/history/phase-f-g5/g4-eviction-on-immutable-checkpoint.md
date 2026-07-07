@@ -26,7 +26,7 @@ additive (publish the eviction registry that capture already builds).
 4. **Reclaim-correct publisher already exists:** `publish_immutable_snapshot_retaining_wal` writes
    `Checkpoint{checkpoint_lsn = committed_watermark_at_capture}` (`:567-598`), no truncate (retain-WAL); no-lost-
    write proven (`:524-536` doc + the multi-writer soak `:1407-1494`).
-**⇒ the new component is ONE new publisher = retain-WAL publisher + registry publication, via a sibling bench
+**$\Rightarrow$ the new component is ONE new publisher = retain-WAL publisher + registry publication, via a sibling bench
 shim. Destructive truncation stays owner-gated.** Stale-comment note: `:557-558` claims the registry "is not
 `Clone`" — FALSE (`disk_registry.rs` derives `Clone`); design moves the registry, doesn't need `Clone`; don't
 repeat the claim.
@@ -72,15 +72,15 @@ it.**
 
 Proof sketch: let `w = committed_watermark_at_capture` (captured `Acquire` STRICTLY before the root load —
 `persist.rs:403`<`:420`, "DO NOT REORDER" `:351-402`); `S` = terms in the captured snapshot; recovery yields
-`image(S) ⊕ replay{lsn > w}` (the `Checkpoint{checkpoint_lsn=w}` gates replay to tail >w; TLA `RecoveredSet`
+$image(S) \oplus replay{lsn > w}$ (the `Checkpoint{checkpoint_lsn=w}` gates replay to tail >w; TLA `RecoveredSet`
 `LockFreeDurableCheckpoint.tla:164-165`). For any visible write LSN `ℓ`:
-- **ℓ ≤ w:** watermark contract ⇒ ℓ committed ⇒ (Order A) WAL-synced-durable before its visibility CAS, which
-  linearized ≤ the snapshot root load (watermark read first ⇒ loaded root ⊇ all ℓ≤w) ⇒ `ℓ ∈ S ⊆ image(S)`. Preserved in image.
-- **ℓ > w:** `ℓ > checkpoint_lsn` ⇒ recovery replays its (durable, retained) WAL record. Preserved via replay.
+- **ℓ $\le$ w:** watermark contract $\Rightarrow$ ℓ committed $\Rightarrow$ (Order A) WAL-synced-durable before its visibility CAS, which
+  linearized $\le$ the snapshot root load (watermark read first $\Rightarrow$ loaded root $\supseteq$ all ℓ$\le$w) $\Rightarrow$ $ℓ \in S \subseteq image(S)$. Preserved in image.
+- **ℓ > w:** `ℓ > checkpoint_lsn` $\Rightarrow$ recovery replays its (durable, retained) WAL record. Preserved via replay.
 Exhaustive on `ℓ ⪋ w`; no double-count (membership idempotent; counter deltas: `Checkpoint{=w}` makes recovery
-SKIP image-folded ≤w, SUM only retained tail >w — the c0=115-vs-60 bug `:524-530`). **Registry is invisible to
+SKIP image-folded $\le$w, SUM only retained tail >w — the c0=115-vs-60 bug `:524-530`). **Registry is invisible to
 recovery** (`EvictionRegistryPublication.tla` `JustRecoveredMatchesDurable`; `recovery_independent_of_registry`
-test `persistent_char_eviction_registry_correspondence.rs:133-159`) ⇒ eviction-ON cannot change the conclusion.
+test `persistent_char_eviction_registry_correspondence.rs:133-159`) $\Rightarrow$ eviction-ON cannot change the conclusion.
 Capture-ordering assert `debug_assert!(watermark ≤ synced_frontier)` (`:464-471`) inherited verbatim.
 
 ## (4) Reversible bench-internals exposure + rollback
@@ -97,7 +97,7 @@ enabler `#[cfg(feature="bench-internals")] pub fn bench_enable_eviction(&mut sel
 (`mod.rs:1452-1507`). (TREATMENT can't run over `SharedCharARTrie` because `bench_immutable_checkpoint*` are
 `PersistentARTrieChar` methods.) **Rollback (one edit each):** delete the 2 shims; remove the `bench-internals`
 disjunct from the publisher (→ `cfg(test)`-only); revert ledger §E + bench arm. `checkpoint()` + production
-untouched. ZERO new `unsafe` (only safe APIs) ⇒ `verify-unsafe-boundary-inventory.sh` stays exit-0.
+untouched. ZERO new `unsafe` (only safe APIs) $\Rightarrow$ `verify-unsafe-boundary-inventory.sh` stays exit-0.
 
 ## (5) Formal-verification plan
 **Reclaim under lock-free commit ALREADY covered:** `LockFreeDurableCheckpoint.tla` has `ReclaimWal` (`:152-160`)
@@ -108,7 +108,7 @@ interaction. **Minimal NEW spec `LockFreeDurableCheckpointEviction.tla`** (do NO
 reusing the base + adding: `registryDurableUpTo: Nat`, `registryValid: BOOLEAN`; `PublishCheckpoint` also sets
 `registryDurableUpTo'=ckptTarget`, `registryValid'=TRUE` (after Verified→Publish); `Commit(w)` sets
 `registryValid'=FALSE` (invalidation under lock-free writers); `EvictUnderRegistry` enabled only when
-`registryValid`, evicts only entries `≤ registryDurableUpTo`. **Invariants:** `NoLostWriteUnderLockFreeCommit`
+`registryValid`, evicts only entries $\le registryDurableUpTo$. **Invariants:** `NoLostWriteUnderLockFreeCommit`
 (re-derived under reclaim+eviction — headline); `RegistryPointsAtDurableWatermark == registryValid =>
 registryDurableUpTo <= Watermark`; `EvictionTouchesOnlyDurable` (evicted ⊆ durableCkpt); keep
 `CaptureEqualsPublishFrontier`/`RecoveredNeverInventsState`/`ImmutableSnapshotIsClosed`/`DurablePrefix`.
@@ -124,24 +124,24 @@ registryDurableUpTo <= Watermark`; `EvictionTouchesOnlyDurable` (evicted ⊆ dur
   `evictable_node_count() > 0`); force an eviction (every term still resolves); drop WITHOUT destructive reclaim;
   reopen; assert EVERY acknowledged term present.
 - **T2 `writers_concurrent_with_eviction_checkpointer_all_survive_reopen`:** N insert_cas_durable writers ‖ a
-  checkpointer looping capture + `publish_*_with_eviction` (retain) + a racing force_eviction; reopen ⇒ exact
+  checkpointer looping capture + `publish_*_with_eviction` (retain) + a racing force_eviction; reopen $\Rightarrow$ exact
   acknowledged set survives (counters CAPTURE-only like `:1516`).
 
 ## (6) Benchmark §E (NEW appended ledger section, frozen at its own persist time; do NOT edit §1-§11/RESULTS)
 Both arms eviction ENABLED. CONTROL = owned tree + `publish_durable_and_reclaim` (publishes registry `:123-127`);
 TREATMENT = overlay + `bench_immutable_checkpoint_with_eviction`.
 - **HE1:** Immediate + eviction-ON, TREATMENT throughput > CONTROL (disjoint); two-sided Welch; supported iff
-  positive ∧ significant ∧ d≥0.8. **Expectation:** eviction publication is OFF the timed writer path (checkpointer's
+  positive $\land$ significant $\land$ d$\ge$0.8. **Expectation:** eviction publication is OFF the timed writer path (checkpointer's
   `update_disk_registry` = one `RwLock::write` swap), so track the eviction-OFF result (+312%); registry build cost
-  is in BOTH arms (same serializer). **Secondaries (vetoes):** SE1 pause T≤C; SE2 tails ≤1.10×; SE3 RSS ≤1.25×;
+  is in BOTH arms (same serializer). **Secondaries (vetoes):** SE1 pause T$\le$C; SE2 tails $\le$1.10$\times$; SE3 RSS $\le$1.25$\times$;
   SE4 contended not sig worse; **SE5 (NEW correctness veto): post-checkpoint force_eviction + reload returns exact
-  values in BOTH arms — fail ⇒ ABORT (bug, not perf).**
+  values in BOTH arms — fail $\Rightarrow$ ABORT (bug, not perf).**
 - **§E.2 durability-parity-under-eviction:** per-write fsync unchanged+equal (ledger §2; invalidate is a flag bump,
   no fsync). Per-checkpoint: CONTROL = 1 data sync + 1 WAL sync + rotate(TRUNCATE); TREATMENT = 1 data sync + 1 WAL
-  sync + NO rotate(RETAIN). `update_disk_registry` adds ZERO fsync to either ⇒ **per-checkpoint fsync count
+  sync + NO rotate(RETAIN). `update_disk_registry` adds ZERO fsync to either $\Rightarrow$ **per-checkpoint fsync count
   identical; no NEW asymmetry** (only the truncate-vs-retain already logged §2.2/C3). Record `round_dir_bytes` +
   `evictable_node_count()` per round.
-- **§E.3 rigor inherited:** K=30/arm/variant, 2 warmup, Welch+CI+d(≥0.8)+Mann-Whitney, interleave+randomize (C9),
+- **§E.3 rigor inherited:** K=30/arm/variant, 2 warmup, Welch+CI+d($\ge$0.8)+Mann-Whitney, interleave+randomize (C9),
   single-arm-per-process RSS (C10), real-disk `target/bench-scratch` never tmpfs, 5 GiB ceiling,
   systemd 32G + `taskset -c 0-15`, both arms `EvictionConfig::without_memory_monitor()` (deterministic). §8 rule
   1-4 verbatim, gated first by SE5.
@@ -149,14 +149,14 @@ TREATMENT = overlay + `bench_immutable_checkpoint_with_eviction`.
   `bench_immutable_checkpoint_with_eviction`; emit `evictable_node_count`. No Cargo change (`[[bench]]` already has
   the features).
 
-## (7) Phased reversible migration (each ends GREEN: nextest ≥2474 + verify-formal-correspondence exit 0)
+## (7) Phased reversible migration (each ends GREEN: nextest $\ge$2474 + verify-formal-correspondence exit 0)
 - **Phase 1 — TLA first:** add `LockFreeDurableCheckpointEviction.tla`+`.cfg`+`_Unsafe.cfg`; register in the verify
   script. Gate: SANY passes, RUN_TLC holds invariants, exit 0. Rollback: delete 3 files + 4 script lines.
 - **Phase 2 — publisher (in-crate `cfg(test)`):** add `publish_immutable_snapshot_retaining_wal_with_eviction`
-  (`cfg(any(test, bench-internals))`) + T1/T2 in a `#[cfg(test)] mod`. Gate: nextest ≥2476; verify exit 0; T1
+  (`cfg(any(test, bench-internals))`) + T1/T2 in a `#[cfg(test)] mod`. Gate: nextest $\ge$2476; verify exit 0; T1
   asserts registry char_len>0 + reopen-loses-nothing. Rollback: delete method + test mod.
 - **Phase 3 — bench shims (`bench-internals`):** add `bench_immutable_checkpoint_with_eviction` +
-  `bench_enable_eviction`; add the `bench-internals` disjunct to Phase-2 publisher. Gate: default nextest ≥2474
+  `bench_enable_eviction`; add the `bench-internals` disjunct to Phase-2 publisher. Gate: default nextest $\ge$2474
   (shims compiled out) + `cargo build --benches --features persistent-artrie,bench-internals` OK + verify exit 0.
   Rollback: delete 2 shims + the disjunct.
 - **Phase 4 — bench arm + ledger §E:** extend `benches/lockfree_flip_benchmark.rs` (`--eviction` arm); append
@@ -168,10 +168,10 @@ TREATMENT = overlay + `bench_immutable_checkpoint_with_eviction`.
    `RecoveredSet`; the watermark/synced_lsn-domain bug is caught by the inherited `debug_assert!` (`:464-471`).
    Lowest residual (dangerous line unmoved).
 2. **Registry staleness vs CAS writers:** BY DESIGN — every durable write invalidates before its visibility CAS;
-   eviction gates on `is_valid()` ⇒ a dirtied registry yields zero evictions (liveness, not safety).
+   eviction gates on `is_valid()` $\Rightarrow$ a dirtied registry yields zero evictions (liveness, not safety).
 3. **Eviction-vs-CAS-writer race:** overlay eviction primitive proven leak/UAF-free (`eviction_primitive_tests`
    `lockfree_cas.rs:1168-1260`, `EvictionWalkEBR.tla`); the new publisher only publishes the registry. NEW combo
-   (force_eviction ‖ live insert_cas_durable) ⇒ **T2 is the runtime witness**; if it flakes, surface it.
+   (force_eviction ‖ live insert_cas_durable) $\Rightarrow$ **T2 is the runtime witness**; if it flakes, surface it.
 4. **fsync-count asymmetry:** §E.2 — `update_disk_registry` adds zero fsync; per-checkpoint count identical;
    only truncate-vs-retain (already logged). Neutralized.
 5. **`bench_enable_eviction` coupling:** duplicates `SharedCharARTrie::enable_eviction` construction — maintenance

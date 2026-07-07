@@ -379,7 +379,7 @@ load_overlay_root_compressed() → PersistentCharNode directly
 
 **Location:** `/home/dylon/Workspace/f1r3fly.io/libdictenstein/tests/persistent_artrie_formal_correspondence.rs` (and scripts/verify-formal-correspondence.sh)
 
-- Tests like `immutable_checkpoint_correspondence` (persist.rs:1712–1890) prove overlay checkpoint ≡ owned checkpoint on reopen.
+- Tests like `immutable_checkpoint_correspondence` (persist.rs:1712–1890) prove overlay checkpoint $\equiv$ owned checkpoint on reopen.
 - Tests like `overlay_faultin_load_roundtrip` (persist.rs:1891+) prove `load(serialize(overlay_to_inner(n))) ≡ n`.
 
 ### Proof Obligations for CX Codec
@@ -389,11 +389,11 @@ From plan (line 188–191):
 **CX correspondence proof structure:**
 1. **`load(serialize(overlay))` round-trip:** Prove the new `load_overlay_root_compressed()` is the inverse of `serialize_overlay_snapshot_compressed()`.
    - Input: overlay root with arbitrary `V`, valued/empty-string/membership terms, deep key-path.
-   - Output: reloaded overlay ≡ input overlay (finality, value, child-set identical).
+   - Output: reloaded overlay $\equiv$ input overlay (finality, value, child-set identical).
 
 2. **Back-compat load:** Prove the new loader can read legacy owned-tree checkpoints (uncompressed or with path compression from the old `serialize_root`).
    - Input: on-disk image produced by the current `serialize_root()` or new `serialize_overlay_snapshot_compressed()`.
-   - Output: reloaded overlay ≡ the snapshot that produced it.
+   - Output: reloaded overlay $\equiv$ the snapshot that produced it.
 
 3. **Byte-identity / density:** Prove the new serializer produces the SAME bytes as the old `serialize_root()` when both compress the same uncompressed tree.
    - **Risk:** If owned `serialize_root` adds path compression but current overlay→owned→serialize does not, the new codec MUST collapse the single-child chains to match owned's density.

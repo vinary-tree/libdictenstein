@@ -20,7 +20,7 @@ acked new value lost until WAL replay. Naive Arc-identity FAILS: leaf-first evic
 Evict X to disk_ptr ONLY IF the live node at X's path STRUCTURALLY EQUALS the durable image disk_ptr
 names. By the immutable path-copy invariant, overwriting ANY descendant D of X path-copies ALL of D's
 ancestors INCLUDING X → a fresh X Arc. So "neither X nor any descendant overwritten since the
-checkpoint that registered X" ⟺ "X is the exact Arc stamped at that checkpoint" ⟺ "X.serial_disk_ptr
+checkpoint that registered X" $\iff$ "X is the exact Arc stamped at that checkpoint" $\iff$ "X.serial_disk_ptr
 == registry.disk_ptr". The eviction's own ancestor rebuilds get stamp 0 (write/evict copy clears it) →
 correctly non-evictable until re-serialized. This is why A keys on the STAMP, not on Arc identity, and
 why it avoids the false-reject that motivated the (rejected) batch-CAS mechanism B.
@@ -62,12 +62,12 @@ liveVersion+1, acked. New `Checkpoint(n)`: durableVersion := liveVersion (re-sta
 `EvictCasSucceed(n)` requires `durableVersion[n] = liveVersion[n]`. New invariant `NoStaleEvict` (an
 acked node is reachable-at-acked-version OR onDisk-evictedToVersion==acked OR durable-version==acked).
 Negative control `USE_1C_GUARD=FALSE` drops the conjunct → WriterCas then unguarded evict →
-evictedToVersion(1) ≠ acked(2) → NoStaleEvict VIOLATED (the lost update). Keep USE_FAULT_IN=FALSE
-control. MaxRoot≈8. Gate the new `_StaleEvict_Unsafe.cfg` in verify-formal-correspondence.sh (251/305/360).
+evictedToVersion(1) $\ne$ acked(2) → NoStaleEvict VIOLATED (the lost update). Keep USE_FAULT_IN=FALSE
+control. MaxRoot$\approx$8. Gate the new `_StaleEvict_Unsafe.cfg` in verify-formal-correspondence.sh (251/305/360).
 loom (NOT TLA): the stamp Release/Acquire vs with_child reconstruction + checkpoint-tail ‖ writer.
 
 ## 2. BUDGET (revert v3 over-correction) — APPROXIMATE on-disk + overhead
-resident_estimate(node) ≈ on_disk_data_len (INCLUDES serialized Option<V>) + STRUCT_OVERHEAD
+resident_estimate(node) $\approx$ on_disk_data_len (INCLUDES serialized Option<V>) + STRUCT_OVERHEAD
 (massif-calibrated per-variant const: Arc cb + node struct + serial_disk_ptr + ChildStore inline arrays
 + Arc<[Unit]> prefix + amortized superseded slack). Keep registry `size_bytes` = on-disk data.len()
 (do NOT add v3's in_mem_size tier field). Add variant-split `char_resident_estimate_bytes` /
@@ -104,11 +104,11 @@ separate). Swap callbacks evict_char_nodes(owned no-op)→evict_overlay_nodes (c
 byte shared_trait_impl.rs:267).
 
 ## 5. VERIFICATION
-Data-loss-proof (byte+char × {(),u64,String}): THE 1c overwrite-during-evict centerpiece test (writer
+Data-loss-proof (byte+char $\times$ {(),u64,String}): THE 1c overwrite-during-evict centerpiece test (writer
 overwrites cold X v1→v2; evict(X.path,disk_ptr_v1) → NotEvictable; read=v2; reopen=v2; + loom racing
 variant); evict-all root-survives + "" root; counter both-halves (no 0+delta reset); remove-arm (no
 lost remove); no-double-count-on-reopen; fault==durable round-trip. massif heap-bound bench (real disk
-target/, NEVER tmpfs; calibrates STRUCT_OVERHEAD; libgrammstein proxy ≤16GB). loom checkpoint-tail ‖
+target/, NEVER tmpfs; calibrates STRUCT_OVERHEAD; libgrammstein proxy $\le$16GB). loom checkpoint-tail ‖
 writer + evictor‖writer‖faulter. TLA extension + _StaleEvict_Unsafe + USE_FAULT_IN=FALSE controls.
 unsafe-inventory set-equality (ZERO new unsafe — all Arc/atomic/CAS). vocab stays OUT (do-not-enable).
 
@@ -130,7 +130,7 @@ guard-read). Fallback if loom finds a window: mechanism B (batch CAS), accepting
 R2 STRUCT_OVERHEAD instability (budget-accuracy not correctness; massif calibrates + margin).
 R3 byte registration is NEW code (largest byte delta; gate behind byte OE + reopen before callback flip).
 R4 liveness under continuous writes (stamp skips overwritten nodes → only cold reclaimed = correct, but
-convergence bench must confirm steady-state reclaim ≥ growth under libgrammstein write mix).
+convergence bench must confirm steady-state reclaim $\ge$ growth under libgrammstein write mix).
 R5 DRY lift blast radius (touches both variants' hot paths; stage Phase 4 before 5; loaders variant-specific).
 
 ## 8. ROUND-4 RESULT — NO BLOCKERs (mechanism A verified sound); 5 MAJORs = implementation obligations
@@ -159,7 +159,7 @@ implementation obligations folded into the phases:
   precondition makes the violating trace UNREACHABLE → would vacuously pass] + guarded EvictCasSucceed
   recording evictedToVersion:=durableVersion + NoStaleEvict). RUN TLC: confirm (a) safe cfg passes AND
   (b) _StaleEvict_Unsafe (USE_1C_GUARD=FALSE) ACTUALLY FIRES NoStaleEvict within MaxRoot (verify the
-  bound by running, don't assert ≈8). Extend the EXISTING spec (keep USE_FAULT_IN=FALSE control too);
+  bound by running, don't assert $\approx$8). Extend the EXISTING spec (keep USE_FAULT_IN=FALSE control too);
   gate both cfgs in verify-formal-correspondence.sh.
 - **M-5a (Phase 5/6):** byte serialize_overlay_subtree_iterative needs char's FULL path push/pop
   machinery (persist.rs:1351/1376/1411), not just "thread path"; byte CheckpointSnapshot gains
@@ -169,7 +169,7 @@ implementation obligations folded into the phases:
   set — the 1c guard correctly REFUSES to evict hot (overwritten-since-checkpoint) nodes, so a hot
   working set continuously rewritten and LARGER than budget cannot be bounded (inherent: you can't
   safely evict a node being concurrently overwritten). DOCUMENT this; the convergence bench must measure
-  libgrammstein's n-gram counter hot-set size vs budget (NOT just steady-state reclaim≥growth). NOTE:
+  libgrammstein's n-gram counter hot-set size vs budget (NOT just steady-state reclaim$\ge$growth). NOTE:
   checkpoint-tail eviction just-stamped ~all nodes → cold set evictable there; the limit bites the async
   pressure loop / pathological all-hot workloads. libgrammstein's STREAMING import has a bounded recent
   hot window << cold imported set → eviction works; the limit is for hot-set>budget steady-state.
