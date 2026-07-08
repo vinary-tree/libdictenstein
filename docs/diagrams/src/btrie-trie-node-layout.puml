@@ -2,7 +2,10 @@
 ' ============================================================================
 ' btrie-trie-node-layout.puml — the B-trie trie node (512 bytes = 128 × 4-byte ptrs).
 ' Source: docs/theory/disk-tries/02-b-trie.md (Askitis & Zobel 2009), § Page Layout.
-' Replaces the ASCII byte-layout box with a compact, colored, viewBox'd byte-field.
+' Drawn as a CONTIGUOUS colored byte table (offset column + field column) hosted in
+' a floating note; rows share borders (no gaps). The 124 middle pointers are elided
+' in one grey row; the pointer encoding is preserved as a text block below the table.
+' Full-cell color via Creole |<#hex>| cells.
 ' Color key:  blue #BBDEFB  child pointers (one per ASCII char)
 '             grey #ECEFF1  elision of the 124 middle pointers
 ' ============================================================================
@@ -10,28 +13,30 @@ skinparam defaultFontSize 14
 skinparam shadowing false
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
-skinparam rectangle {
-  BorderColor #37474F
-  FontColor #212121
-  BorderThickness 1.2
-}
-skinparam noteFontSize 13
 skinparam TitleFontSize 15
+skinparam noteFontSize 14
+skinparam note {
+  BackgroundColor #FFFFFF
+  BorderColor #37474F
+}
 
 title B-trie trie node — 512 bytes = 128 × 4-byte pointers
 
-rectangle "bytes **0..3**    Pointer[0] — child for char 0 (NUL)" as R0 #BBDEFB
-rectangle "bytes **4..7**    Pointer[1] — child for char 1" as R1 #BBDEFB
-rectangle "        ⋮        Pointer[2 .. 126]  (124 more)" as R2 #ECEFF1
-rectangle "bytes **508..511**    Pointer[127] — child for char 127 (DEL)" as R3 #BBDEFB
+note as TN
+|= bytes |= field |
+|<#BBDEFB> 0..3 |<#BBDEFB> Pointer[0] — child for char 0 (NUL) |
+|<#BBDEFB> 4..7 |<#BBDEFB> Pointer[1] — child for char 1 |
+|<#ECEFF1> ⋮ |<#ECEFF1> Pointer[2 .. 126]  (124 more) |
+|<#BBDEFB> 508..511 |<#BBDEFB> Pointer[127] — child for char 127 (DEL) |
 
-R0 -[hidden]down- R1
-R1 -[hidden]down- R2
-R2 -[hidden]down- R3
-
-note bottom
-  **Pointer encoding** (4 bytes each):
-  MSB = 0 → bucket (block number) · MSB = 1 → trie node (block number, MSB set)
-  all zeros → null pointer.  16 trie nodes fit in one 8 KB block.
+**Pointer encoding** (4 bytes each):
+MSB = 0 → bucket (block number) · MSB = 1 → trie node (block number, MSB set)
+all zeros → null pointer.  16 trie nodes fit in one 8 KB block.
 end note
+
+legend bottom
+| Color | Field |
+|<#BBDEFB>| child pointer (one per ASCII char) |
+|<#ECEFF1>| elision of the 124 middle pointers |
+endlegend
 @enduml

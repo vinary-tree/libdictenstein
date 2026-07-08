@@ -2,33 +2,42 @@
 ' ============================================================================
 ' node-layouts.puml — the adaptive ART node tiers (byte keys), grow with fan-out.
 ' Source of truth: src/persistent_artrie/nodes/{node4,node16,node48,node256}.rs.
-' Replaces the no-viewBox svgbob SVG. Color: a light→dark blue progression per tier.
+' Drawn as a CONTIGUOUS per-tier comparison table (tier · fan-out · layout columns)
+' hosted in a floating note; rows share borders (no gaps). These are four DISTINCT
+' node types compared by fan-out (named by tier, not byte offsets), so the table
+' reads as a comparison — not a single contiguous structure. Full-cell color via
+' Creole |<#hex>| cells, a light→dark blue progression per tier.
+' Color key:  #E3F2FD Node4 · #BBDEFB Node16 · #90CAF9 Node48 · #64B5F6 Node256
 ' ============================================================================
 skinparam defaultFontSize 14
 skinparam shadowing false
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
-skinparam rectangle {
-  BorderColor #1565C0
-  FontColor #0D47A1
-  BorderThickness 1.2
-}
-skinparam noteFontSize 13
 skinparam TitleFontSize 15
+skinparam noteFontSize 14
+skinparam note {
+  BackgroundColor #FFFFFF
+  BorderColor #37474F
+}
 
 title Adaptive ART node tiers (byte keys) — the layout grows with fan-out
 
-rectangle "**Node4**    1..4 children\nparallel key[4] + child[4] arrays · linear scan" as N4 #E3F2FD
-rectangle "**Node16**    5..16 children\nkey[16] + child[16] · SSE4.1 SIMD key compare" as N16 #BBDEFB
-rectangle "**Node48**    17..48 children\n256-byte index → 48 child slots (2 loads)" as N48 #90CAF9
-rectangle "**Node256**    49..256 children\ndirect 256-slot child array (O(1) index)" as N256 #64B5F6
+note as NL
+|= tier |= fan-out |= layout · scan |
+|<#E3F2FD> Node4 |<#E3F2FD> 1..4 |<#E3F2FD> parallel key[4] + child[4] · linear scan |
+|<#BBDEFB> Node16 |<#BBDEFB> 5..16 |<#BBDEFB> key[16] + child[16] · SSE4.1 SIMD compare |
+|<#90CAF9> Node48 |<#90CAF9> 17..48 |<#90CAF9> 256-byte index → 48 child slots (2 loads) |
+|<#64B5F6> Node256 |<#64B5F6> 49..256 |<#64B5F6> direct 256-slot child array (O(1) index) |
 
-N4 -[hidden]down- N16
-N16 -[hidden]down- N48
-N48 -[hidden]down- N256
-
-note bottom of N256
-  Char / u64 keys keep native labels: inline → sorted → sparse-indexed,
-  and CharBucket at high fan-out (no 4 GB Node256 over u32).
+Char / u64 keys keep native labels: inline → sorted → sparse-indexed,
+and CharBucket at high fan-out (no 4 GB Node256 over u32).
 end note
+
+legend bottom
+| Color | Tier |
+|<#E3F2FD>| Node4 — inline keys, linear scan |
+|<#BBDEFB>| Node16 — sorted keys, SIMD compare |
+|<#90CAF9>| Node48 — byte→slot index |
+|<#64B5F6>| Node256 — direct child array |
+endlegend
 @enduml

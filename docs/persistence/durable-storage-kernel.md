@@ -52,7 +52,10 @@ over (`S: BlockStorage`). It abstracts a file as an array of fixed-size **blocks
 - Block $0$ holds a 64-byte `FileHeader` (magic, version, root pointer, entry count,
   free-list head, checksum, and the image-coverage frontier `image_checkpoint_lsn`).
 - Blocks $1..N$ each hold `BLOCK_SIZE` = $256\text{ KB}$ of data.
-- Block IDs are 24-bit, so a single file addresses up to $2^{24}$ blocks $= 4\text{ TB}$.
+- Block IDs are 24-bit (`MAX_BLOCK_COUNT = 2^{24}`), so a single file addresses up to
+  $2^{24}$ blocks $= 4\text{ TB}$. (A *swizzled* child pointer packs `block_id` in only
+  23 bits, so nodes reached through swizzled links occupy the first $2^{23} = 8\text{ M}$
+  blocks, $2\text{ TB}$ — see [storage-backends.md](storage-backends.md#pointer-swizzling).)
 
 The trait is `Send + Sync + 'static` (backends own their resources and carry no borrowed
 lifetime, so a whole structure can be erased behind a `dyn` object). Its surface:

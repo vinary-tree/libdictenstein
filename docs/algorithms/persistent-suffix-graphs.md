@@ -48,8 +48,8 @@ crate walks the persistent graph exactly as it would an in-memory one).
 The whole design rests on one idea: **separate the thing readers traverse from
 the thing a writer is building.**
 
-- The **live graph** is an *immutable* value held behind an atomic pointer
-  (`arc_swap::ArcSwap<NativeSuffixGraph>`). A reader takes a reference-counted
+- The **live graph** is an *immutable* value held behind an atomic pointer (an
+  `arc_swap::ArcSwap` over the family's native graph). A reader takes a reference-counted
   **snapshot** (`load_full()`) and traverses it with **no lock** — the snapshot
   it holds can never change underneath it.
 - A **writer** never mutates the live graph in place. It clones the current
@@ -79,12 +79,16 @@ is always recoverable.
 Each persistent suffix graph on disk is **two artifacts**:
 
 ```
-<path>            ← the snapshot image: a serialized NativeSuffixGraph
-                    (magic "PSUFU8N1" for bytes, "PSUFCHR1" for chars;
-                     SNAPSHOT_VERSION = 3, with older versions accepted)
-<path>.wal-seg/   ← the operation-segment WAL directory: one durably-appended
-                    segment file per Prepare / Commit record since the last
-                    checkpoint
+<path>              ← the snapshot image: a serialized native suffix graph. Each
+                      family stamps its own 8-byte magic (byte / char): "PSUFU8N1" /
+                      "PSUFCHR1" (suffix automaton), "PSTREEB1" / "PSTREEC1" (suffix
+                      tree), "PSCDAWG8" / "PSCDAWGC" (SCDAWG) — each with its own
+                      SNAPSHOT_VERSION (3 for the automaton, 2 for the tree and the
+                      SCDAWG), with older versions accepted.
+<path>.<fam>wal.d/  ← the operation-segment WAL directory (its extension is derived
+                      from the image path — suffixwal.d / streewal.d / scdawgwal.d):
+                      one durably-appended segment file per Prepare / Commit record
+                      since the last checkpoint
 ```
 
 ### 3.1 The operation WAL — Prepare / Commit, by `op_id`
@@ -114,12 +118,12 @@ with no durable `Commit` is dropped. This is why a torn or un-`fsync`'d tail can
 never resurrect a write no caller ever saw succeed.
 
 > **Why one segment file per record?** Appending each Prepare/Commit as its own
-> small file in `<path>.wal-seg/` makes a write **atomic at the filesystem level**
-> (the file either exists in full or not at all) and lets a checkpoint prune the
-> entire directory in one sweep once those ops are folded into the image. This is
-> the *segment* WAL. For backward compatibility, recovery **also** reads a
-> historical **length-prefixed monolithic WAL** format (a single `<path>.wal`
-> stream of length-framed records) — older files still open.
+> small file in the WAL segment directory (`…wal.d/`) makes a write **atomic at the
+> filesystem level** (the file either exists in full or not at all) and lets a
+> checkpoint prune the entire directory in one sweep once those ops are folded into
+> the image. This is the *segment* WAL. For backward compatibility, recovery
+> **also** reads a historical **length-prefixed monolithic WAL** format (a single
+> `…wal` file of length-framed records) — older files still open.
 
 ### 3.2 The snapshot image — the folded base
 
@@ -133,9 +137,10 @@ image, then replays only the durable committed tail — `O(image) + O(tail)`, no
 
 ## 4. How a write works — rebuild, log, CAS-publish
 
-The published mechanism (`NativeSuffixIndex::mutate_retryable`, shared verbatim by
-all three families) is a CAS-retry loop with the WAL append on the *outside* of
-the publish:
+The published mechanism (`mutate_retryable` — one implementation per family, on
+`NativeSuffixIndex` / `NativeSuffixTreeIndex` / `NativeScdawgIndex`, all following
+the same protocol) is a CAS-retry loop with the WAL append on the *outside* of the
+publish:
 
 ```text
 mutate_retryable(op):
@@ -197,12 +202,14 @@ live snapshot.
 
 On `open_with_recovery(path)`:
 
-1. **Load the snapshot image** at `<path>` (dense `NativeSuffixGraph`) as the base.
-   The accepted magics are `PSUFU8N1` (byte) / `PSUFCHR1` (char); the loader
-   handles `SNAPSHOT_VERSION = 3` and the older compact/legacy versions.
-2. **Scan the durable WAL tail.** Read `<path>.wal-seg/` segments (and, for legacy
-   files, the monolithic `<path>.wal`), collecting `Prepare` ops into a pending map
-   and recording which `op_id`s have a durable `Commit`.
+1. **Load the snapshot image** at `<path>` (a dense native suffix graph) as the
+   base. The accepted magic and `SNAPSHOT_VERSION` are the family's own (e.g.
+   `PSUFU8N1` / `PSUFCHR1` at version 3 for the suffix automaton; `PSTREEB1` /
+   `PSTREEC1` and `PSCDAWG8` / `PSCDAWGC` at version 2 for the tree and the SCDAWG);
+   the loader also handles each family's older compact/legacy versions.
+2. **Scan the durable WAL tail.** Read the segment directory (`…wal.d/`) segments
+   (and, for legacy files, the monolithic `…wal` file), collecting `Prepare` ops
+   into a pending map and recording which `op_id`s have a durable `Commit`.
 3. **Replay committed ops in `op_id` order.** Only ops whose `op_id` exceeds the
    image's checkpoint and whose `Commit` is durable are applied, sorted by `op_id`
    (= the CAS/commit order). Legacy monolithic records are folded first when the
@@ -217,8 +224,9 @@ a clean image load or a WAL rebuild.
 
 ## 6. The three families — same engine, different graph
 
-All three share `NativeSuffixIndex`'s snapshot+WAL+CAS engine; they differ only in
-the `apply_op`/traversal semantics of the underlying graph.
+All three implement the same snapshot+WAL+CAS engine — one index type per family
+(`NativeSuffixIndex` / `NativeSuffixTreeIndex` / `NativeScdawgIndex`); they differ
+only in the `apply_op`/traversal semantics of the underlying graph.
 
 | Type (byte / char) | Underlying graph | Headline query API | Returns |
 |--------------------|------------------|--------------------|---------|
@@ -314,7 +322,7 @@ let (index, report) = PersistentSuffixTreeChar::<()>::open_with_recovery("docs.p
 | **Acknowledged $\implies$ durable** | survives crash up to last `Commit` | `Prepare` `fsync`'d before publish; replay needs durable `Commit` |
 | **Bounded reopen cost** | `O(image) + O(committed tail)` | checkpoint folds ops into a dense image, prunes segments |
 | **Backward-compatible recovery** | old files still open | also replays the historical monolithic WAL format |
-| **One native graph, two encodings** | byte (`u8`) and Unicode (`char`) | `PersistentSuffixUnit` trait selects suffix splitting + magic |
+| **One native graph, two encodings** | byte (`u8`) and Unicode (`char`) | each family's unit trait (`PersistentSuffixUnit` / `PersistentSuffixTreeUnit` / `PersistentScdawgUnit`) selects suffix splitting + magic |
 
 ---
 

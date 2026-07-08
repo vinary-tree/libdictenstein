@@ -18,10 +18,11 @@
 //! │                     NodeHeader (16 bytes)                  │
 //! ├───────────────────────────────────────────────────────────┤
 //! │ node_type: u8        │ Node type discriminant             │
-//! │ num_children: u8     │ Current number of children         │
 //! │ prefix_len: u8       │ Compressed prefix length (0-12)    │
 //! │ flags: u8            │ Flags (is_final, dirty, etc.)      │
-//! │ _padding: [u8; 4]    │ Alignment padding                  │
+//! │ _padding: u8         │ Alignment padding                  │
+//! │ num_children: u16    │ Current number of children         │
+//! │ _padding2: [u8; 2]   │ Alignment padding                  │
 //! │ version: u64         │ Version for optimistic locking     │
 //! └───────────────────────────────────────────────────────────┘
 //! ```

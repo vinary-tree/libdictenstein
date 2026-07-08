@@ -30,6 +30,9 @@ rectangle "**B-trie**" as BT #F5F5F5 {
 }
 
 legend bottom
-  blue index nodes · green leaf buckets · amber consumed-string hash
+| Color | Component |
+|<#BBDEFB>| trie nodes (the index layer) |
+|<#C8E6C9>| buckets (disk-resident leaf storage) |
+|<#FFE0B2>| hash table (fully-consumed strings) |
 endlegend
 @enduml

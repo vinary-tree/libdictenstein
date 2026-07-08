@@ -22,16 +22,16 @@ start
 partition "process-global lock registry (Mutex<HashMap>)" {
   if (key already present?\n(same process already owns it)) then (yes)
     :entry.refs += 1;
-    #CEEAD6:return WLockGuard\n(SHARES the existing flock — e.g. reopen\nor a crash-sim mem::forget'd owner);
+    :return WLockGuard\n(SHARES the existing flock — e.g. reopen\nor a crash-sim mem::forget'd owner);<<#CEEAD6>>
     kill
   else (no)
     :open "<path>.wlock" sidecar;
     if (flock(LOCK_EX | LOCK_NB)) then (EWOULDBLOCK\n— another PROCESS holds it)
-      #F6AEA9:return Err(FileLocked { path });
+      :return Err(FileLocked { path });<<#F6AEA9>>
       kill
     else (Ok)
       :registry.insert(key → { file, refs = 1 });
-      #CEEAD6:return WLockGuard (new flock);
+      :return WLockGuard (new flock);<<#CEEAD6>>
       kill
     endif
   endif

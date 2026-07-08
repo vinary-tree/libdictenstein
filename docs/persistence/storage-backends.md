@@ -27,8 +27,11 @@ Everything above the disk is generic over `S: BlockStorage` (`core/block_storage
 trie runs unchanged over mmap, `io_uring`, or a custom backend (see
 [durable-storage-kernel.md](durable-storage-kernel.md#seam-1--blockstorage-the-storage-backend)).
 The seam models a file as blocks: block $0$ carries the 64-byte `FileHeader`; blocks
-$1..N$ each hold $256\text{ KB}$; block IDs are 24-bit, so a single file addresses
-$2^{24}$ blocks $= 4\text{ TB}$. All I/O buffers are `AlignedBlock`s
+$1..N$ each hold $256\text{ KB}$; block IDs are 24-bit (`MAX_BLOCK_COUNT = 2^{24}`), so a
+single file addresses $2^{24}$ blocks $= 4\text{ TB}$. (A *swizzled child pointer* is a
+narrower reach: it encodes `block_id` in **23 bits** — see [Pointer swizzling](#pointer-swizzling) —
+so nodes reached through swizzled links live in the first $2^{23} = 8\text{ M}$ blocks,
+$2\text{ TB}$.) All I/O buffers are `AlignedBlock`s
 (`#[repr(C, align(4096))]`) — 4096-byte alignment satisfies `O_DIRECT`, and because
 $256\text{ KB}$ is already a multiple of 4096 the alignment costs zero padding, so one
 buffer pool serves both backends.
@@ -64,7 +67,7 @@ rate and memory pressure via `AdaptivePoolController` (`core/adaptive_pool.rs`).
 The first 64 bytes of block 0 are the `#[repr(C, align(64))]` `FileHeader`; the remaining
 bytes of block 0 hold the durable checkpoint descriptor. Per-field layout:
 
-<img src="../diagrams/file-header.svg" alt="A byte-field diagram of the 64-byte FileHeader across 8 rows of 8 bytes. Bytes 0–7: magic 0x5041525400010000 ('PART' + v1.0) in green. Bytes 8–11: version = 2 (green); bytes 12–15: flags (amber). Bytes 16–23: root_ptr, the swizzled overlay root, in teal. Bytes 24–27: block_count (amber); bytes 28–31: _pad1 (grey). Bytes 32–39: free_list_head (blue, allocator state). Bytes 40–47: entry_count (amber). Bytes 48–55: checksum, CRC-64 of the header (purple). Bytes 56–63: image_checkpoint_lsn, the #48 image-coverage frontier for v2+ files (indigo)." width="60%"/>
+<img src="../diagrams/file-header.svg" alt="A contiguous byte-table diagram of the 64-byte FileHeader, one row per field. Bytes 0–7: magic 0x5041525400010000 ('PART' + v1.0) in green. Bytes 8–11: version = 2 (green); bytes 12–15: flags (amber). Bytes 16–23: root_ptr, the swizzled overlay root, in teal. Bytes 24–27: block_count (amber); bytes 28–31: _pad1 (grey). Bytes 32–39: free_list_head (blue, allocator state). Bytes 40–47: entry_count (amber). Bytes 48–55: checksum, a 64-bit FNV-1a hash of the header (purple). Bytes 56–63: image_checkpoint_lsn, the #48 image-coverage frontier for v2+ files (indigo)." width="60%"/>
 
 | Field | Bytes | Meaning |
 |-------|-------|---------|
@@ -76,17 +79,23 @@ bytes of block 0 hold the durable checkpoint descriptor. Per-field layout:
 | `_pad1` | 28–31 | alignment padding. |
 | `free_list_head` | 32–39 | head of the free-block list (`0` = none). |
 | `entry_count` | 40–47 | dictionary entry count. |
-| `checksum` | 48–55 | CRC-64 of the header (excluding this field). |
+| `checksum` | 48–55 | a 64-bit content checksum of the header (excluding this field) — **computed with FNV-1a** (`disk_manager.rs::compute_checksum`; the field's code doc-comment mislabels it "CRC-64"). |
 | `image_checkpoint_lsn` | 56–63 | **#48** image-coverage frontier — the max WAL LSN folded into *this* image, written atomically with it, so reopen's $\max(\text{wal\_record}, \text{this})$ avoids double-apply. Folded into the checksum only for v2+ files, so v1 files still validate byte-identically. |
 
 ### Data blocks — arenas, buckets, and node headers
 
 Interior nodes are packed into **arena pages** (`ArenaHeader` + fixed-size slots;
 `ARENA_MAGIC` / `ARENA_MAGIC_V2`), so many small nodes share one 256 KB block and one I/O.
-Each serialized node opens with a 16-byte `NodeHeader` (`node_type`, `prefix_len`, `flags`,
-`num_children`, and a `u64` optimistic-lock `version`):
+Each *serialized* node opens with a 16-byte **`SerializedNodeHeader`** (`serialization.rs`) —
+which is **not** the same layout as the in-memory `NodeHeader`. It carries a 4-byte `b"ART\0"`
+magic; a **`u8`** format version (`FORMAT_VERSION = 1`, or `FORMAT_VERSION_V2 = 2` for
+relative-offset encoding — distinct from the block-0 header's `u32` `FORMAT_VERSION = 2`);
+`node_type`; `flags`; an `encoding_flags` byte (relative-offset / sequential-sibling /
+has-value bits); `num_children` (`u16`); `prefix_len`; and a `u32` `data_size` for the
+type-specific bytes that follow. (The in-memory node's `u64` optimistic-lock `version`
+is a runtime concurrency field and is **not** persisted here.)
 
-<img src="../diagrams/node-header.svg" alt="A byte-field diagram of the 16-byte NodeHeader: byte 0 node_type, byte 1 prefix_len, byte 2 flags, byte 3 padding, bytes 4–5 num_children, bytes 6–7 padding, bytes 8–15 the u64 optimistic-lock version counter." width="55%"/>
+<img src="../diagrams/serialized-node-header.svg" alt="A contiguous byte-table diagram of the 16-byte on-disk SerializedNodeHeader, one row per field: bytes 0-3 the magic ART followed by a NUL byte, byte 4 the u8 format version, byte 5 node_type, byte 6 flags, byte 7 encoding_flags (relative-offset, sequential-sibling, and has-value bits), bytes 8-9 num_children as a u16, byte 10 prefix_len, byte 11 padding, bytes 12-15 data_size as a u32 giving the size of the type-specific data that follows the header." width="60%"/>
 
 High-fan-out *string* leaves — a subtree of many short suffixes — collapse into a **B-trie
 bucket** (`StringBucket` + `BucketHeader`; `BUCKET_MAGIC`, an 8192-byte page, up to 256
@@ -133,6 +142,7 @@ Path compression collapses single-child chains: a node stores a compressed prefi
 ## `u64` profile formats
 
 `PersistentARTrieU64Compact` (the default `u64` profile) uses `U64Key<4>` — a prefix-4 CX
+(the compact snapshot format, magic `AR64CX01`; see [native-u64-and-cx.md](../algorithms/native-u64-and-cx.md))
 checkpoint budget with one native `u64` edge per transition — for time-series and
 token-sequence data. `PersistentARTrieU64Prefix3Compat` uses `U64Key<3>`, kept for opening
 prefix-3 images and as a benchmark control. The `u64` checkpoint is a native `u64` CX

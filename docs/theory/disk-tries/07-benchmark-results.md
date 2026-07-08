@@ -46,6 +46,10 @@ which a mean would hide — hence we report percentiles, not just averages.
 - **Rust**: rustc 1.87.0 (nightly)
 - **Optimization**: `--release` profile with LTO
 
+> **Note.** The recorded toolchain (kernel `6.18.2`, `rustc 1.87.0`) postdates the
+> `2024-12-27` label above — treat that label as this snapshot's stable *identifier*,
+> not a precise capture date.
+
 > The current hardware reference used for newer runs is recorded at
 > `~/.claude/hardware-specifications.md`; cite that file rather than copying its
 > contents, so the two never drift.
@@ -86,7 +90,7 @@ is the marginal rate at the largest size, not the small-`n` averages.
 **What this is.** Time to reopen the file and rebuild a queryable trie: load the
 last checkpoint, then replay the WAL tail not covered by it.
 
-**Why it is $~1.5–2\times$ slower than the initial build.** Recovery does strictly more
+**Why it is $\approx 1.5–2\times$ slower than the initial build.** Recovery does strictly more
 work per entry than insertion: it must read and decode each WAL record *and* rebuild
 the in-memory overlay, where the original build only did the latter. Throughput
 scales sub-linearly because WAL replay is dominated by sequential record decode,
@@ -113,7 +117,7 @@ not depend on entry count, so the apparent "throughput" grows linearly only beca
 the denominator (entries) grows while the numerator (time) does not. The practical
 reading: checkpoints are `O(1)` enough to be taken frequently, keeping the WAL replay
 tail — and therefore recovery time — short. (Full checkpoint *capture* that
-serializes the overlay into a dense CX image is a separate, size-dependent cost; see
+serializes the overlay into a dense CX image (the crate's compact snapshot codec) is a separate, size-dependent cost; see
 the registered experiments below for its measured density.)
 
 ### In-Memory Performance Comparison
@@ -129,7 +133,7 @@ representation from the cost of durability.
 | DynamicDawg | ~20 µs | ~200 µs | ~1.2 ms |
 | DoubleArrayTrie | ~15 µs | ~180 µs | ~1.0 ms |
 
-**Why PersistentARTrie is $~2–2.5\times$ slower here.** Even with sync off, the persistent
+**Why PersistentARTrie is $\approx 2–2.5\times$ slower here.** Even with sync off, the persistent
 path still maintains WAL records and the immutable overlay's path-copy discipline,
 which the pure in-memory `DynamicDawg`/`DoubleArrayTrie` skip entirely. This is the
 structural price of being *able* to become durable — the gap narrows once amortised
@@ -154,7 +158,7 @@ holds across the persistent representation.
 
 1. **Durability vs. performance trade-off.** `~3 M` inserts/sec *with* full durability
    makes the structure suitable for high-throughput workloads that also need crash
-   recovery, at a measured $~2–2.5\times$ build-time tax over non-durable structures.
+   recovery, at a measured $\approx 2–2.5\times$ build-time tax over non-durable structures.
 2. **Sub-millisecond recovery.** A 1000-term dictionary recovers in under `1 ms`,
    enabling fast restarts.
 3. **Near-`O(1)` checkpoints.** Checkpoint markers cost `~1.7 µs` independent of size,

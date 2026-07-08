@@ -5,9 +5,10 @@
 ' Concurrent readers keep traversing the OLD immutable snapshot until the swap.
 '
 ' Source of truth: src/persistent_artrie/suffix_automaton.rs
-'   (NativeSuffixIndex::mutate_retryable — Prepare → CoW clone → apply_op →
+'   (mutate_retryable — Prepare → CoW clone → apply_op →
 '    ArcSwap::compare_and_swap (Arc::ptr_eq) → Commit; MAX_CAS_RETRIES = 64).
-'   The identical shape backs suffix_tree.rs and scdawg.rs.
+'   One implementation PER FAMILY, same protocol: NativeSuffixIndex (suffix_automaton.rs),
+'   NativeSuffixTreeIndex (suffix_tree.rs), NativeScdawgIndex (scdawg.rs).
 '
 ' Color key:  green  #C8E6C9 = in-memory immutable graph snapshot (reader-visible)
 '             orange #FFCC80 = durable on-disk operation-segment WAL (append + fsync)
@@ -18,7 +19,6 @@ skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
 skinparam wrapWidth 110
 skinparam maxMessageSize 100
-skinparam ParticipantPadding 2
 skinparam shadowing false
 skinparam sequenceArrowColor #37474F
 skinparam sequenceLifeLineBorderColor #90A4AE

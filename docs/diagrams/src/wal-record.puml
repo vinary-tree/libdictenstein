@@ -3,7 +3,9 @@
 ' wal-record.puml — the 17-byte WAL record frame + the 15 record types.
 ' Source of truth: src/persistent_artrie/core/wal/codec.rs
 '   (RECORD_HEADER_SIZE = 17; WalRecordType, 15 discriminants).
-' Replaces the no-viewBox svgbob SVG with a compact, colored, viewBox'd byte-field.
+' Drawn as a CONTIGUOUS colored byte table (offset column + field column) hosted in
+' a floating note; the 15 WalRecordType discriminants are preserved as a text block
+' inside the same note, below the table. Full-cell color via Creole |<#hex>| cells.
 ' Color key: purple integrity (CRC) · amber length · orange LSN (WAL) ·
 '            teal type · blue payload
 ' ============================================================================
@@ -11,36 +13,36 @@ skinparam defaultFontSize 14
 skinparam shadowing false
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
-skinparam rectangle {
-  BorderColor #37474F
-  FontColor #212121
-  BorderThickness 1.2
-}
-skinparam noteFontSize 13
 skinparam TitleFontSize 15
+skinparam noteFontSize 14
+skinparam note {
+  BackgroundColor #FFFFFF
+  BorderColor #37474F
+}
 
 title WAL record — 17-byte header + type-specific payload
 
-rectangle "bytes **0..3**    crc32  (over length · lsn · type · payload)" as R0 #E1BEE7
-rectangle "bytes **4..7**    length  (payload byte count)" as R1 #FFE0B2
-rectangle "bytes **8..15**    lsn  (u64 log-sequence number)" as R2 #FFCC80
-rectangle "byte  **16**    type  (1 of 15 WalRecordType)" as R3 #B2DFDB
-rectangle "bytes **17..**    payload  (type-specific)" as R4 #BBDEFB
+note as WR
+|= bytes |= field |
+|<#E1BEE7> 0..3 |<#E1BEE7> crc32  (over length · lsn · type · payload) |
+|<#FFE0B2> 4..7 |<#FFE0B2> length  (payload byte count) |
+|<#FFCC80> 8..15 |<#FFCC80> lsn  (u64 log-sequence number) |
+|<#B2DFDB> 16 |<#B2DFDB> type  (1 of 15 WalRecordType) |
+|<#BBDEFB> 17.. |<#BBDEFB> payload  (type-specific) |
 
-R0 -[hidden]down- R1
-R1 -[hidden]down- R2
-R2 -[hidden]down- R3
-R3 -[hidden]down- R4
-
-note bottom of R4
-  **15 WalRecordType discriminants**
-  1 Insert · 2 Remove · 3 Checkpoint · 4 BeginTx · 5 CommitTx
-  6 AbortTx · 7 Increment · 8 Upsert · 9 CompareAndSwap
-  10 BatchInsert · 11 BatchIncrement · 12 VersionUpdate
-  13 VersionDurable · 14 VersionGc · 15 CommitRank
+**15 WalRecordType discriminants**
+1 Insert · 2 Remove · 3 Checkpoint · 4 BeginTx · 5 CommitTx
+6 AbortTx · 7 Increment · 8 Upsert · 9 CompareAndSwap
+10 BatchInsert · 11 BatchIncrement · 12 VersionUpdate
+13 VersionDurable · 14 VersionGc · 15 CommitRank
 end note
 
 legend bottom
-  purple CRC integrity · amber length · orange LSN · teal type · blue payload
+| Color | Field |
+|<#E1BEE7>| CRC-32 integrity |
+|<#FFE0B2>| length |
+|<#FFCC80>| LSN (log-sequence number) |
+|<#B2DFDB>| record type |
+|<#BBDEFB>| payload |
 endlegend
 @enduml

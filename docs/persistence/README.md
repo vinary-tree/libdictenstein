@@ -28,6 +28,7 @@ lives there, so this page stays a map, not a manual.
 | **checkpoint** | A periodic background fold of the live overlay into a dense on-disk *image*, after which the WAL below the checkpoint can be reclaimed. |
 | **watermark** | The largest LSN $L$ such that *every* LSN in $1..=L$ has committed — the only safe `checkpoint_lsn` under out-of-order lock-free commit. |
 | **swizzling** | Storing a child link as *either* an in-memory pointer *or* an on-disk block location in one word, so subtrees load lazily. |
+| **CX image** | The **compact snapshot** — the dense, path-compressed on-disk *image* a checkpoint folds the live overlay into (magic `AR64CX01`). "CX" is the format's codename, not an acronym. |
 
 ---
 
@@ -44,7 +45,7 @@ The stack is drawn as two companion figures so each fits the prose column: part 
 
 <img src="../diagrams/persistence-stack.svg" alt="The persistent-ARTrie durability stack, part ① of ② — the six layers and the live WRITE and READ paths. Layer ① Client API (green) exposes PersistentARTrie/…Char/…U64/…Vocab with insert/upsert/get/iter_prefix. Layer ② the lock-free overlay engine (teal, core/overlay/) holds the immutable OverlayNode with an arc-swap AtomicNodePtr root, the copy-on-write cas_walk, and the Order-A durable_write skeleton — the live representation. Layer ③ WAL + durability (orange, core/wal + durability.rs + committed_watermark.rs) appends and fsyncs before publish and computes the safe checkpoint_lsn. Layer ④ the buffer manager (grey infrastructure) pools and flushes pages. Layer ⑤ the disk manager (blue, the BlockStorage seam) is MmapDiskManager by default or IoUringDiskManager. Layer ⑥ arena/block storage (blue) places 256 KB aligned blocks with swizzled pointers. Solid down-arrows trace a write descending the spine — write enters, the orange WAL append+fsync gate before publish, then stage pages, flush blocks, and arena slots; a dashed teal arrow traces a read into the overlay only, never touching WAL or disk. The checkpoint fold, the reopen replay, and the cross-cutting concurrency and eviction concerns are the companion figure persistence-stack-2." width="100%"/>
 
-<img src="../diagrams/persistence-stack-2.svg" alt="The persistent-ARTrie durability stack, part ② of ② — the checkpoint fold, the reopen replay, and the cross-cutting concerns. Layers ② overlay, ⑤ disk, and ⑥ arena appear here as anchors (their sub-module detail is in part ①). An indigo checkpoint box folds the overlay into a dense CX image and publishes it to disk at checkpoint_lsn = the committed watermark, via a dashed indigo snapshot arrow then a publish-image-and-advance-watermark arrow. A dashed blue REOPEN arrow rebuilds the overlay from the disk image plus the retained WAL tail. A red cross-cutting concurrency box notes the handles are bare Arc, reads and writes lock-free, with the CK > merge > OR > EC lock hierarchy for checkpoint/merge/eviction only, and governs the overlay; a grey eviction box unswizzles cold subtrees on memory pressure and faults them back on read (serial_disk_ptr), and reclaims the overlay. The six layers ①–⑥ with the WRITE and READ paths are the companion figure persistence-stack." width="100%"/>
+<img src="../diagrams/persistence-stack-2.svg" alt="The persistent-ARTrie durability stack, part ② of ② — the checkpoint fold, the reopen replay, and the cross-cutting concerns. Layers ② overlay, ⑤ disk, and ⑥ arena appear here as anchors (their sub-module detail is in part ①). An indigo checkpoint box folds the overlay into a dense CX image and publishes it to disk at checkpoint_lsn = the committed watermark, via a dashed indigo snapshot arrow then a publish-image-and-advance-watermark arrow. A dashed blue REOPEN arrow rebuilds the overlay from the disk image plus the retained WAL tail. A red cross-cutting concurrency box notes the handles are bare Arc, reads and writes lock-free, with the CK > merge > EC lock hierarchy for checkpoint/merge/eviction only, and governs the overlay; a grey eviction box unswizzles cold subtrees on memory pressure and faults them back on read (serial_disk_ptr), and reclaims the overlay. The six layers ①–⑥ with the WRITE and READ paths are the companion figure persistence-stack." width="100%"/>
 
 ---
 
@@ -104,7 +105,7 @@ Mechanics: **[durability-and-recovery.md](durability-and-recovery.md)**.
 `SharedARTrie` / `SharedCharARTrie` / `SharedVocabARTrie` are **bare `Arc<T>`** — there is
 no outer `RwLock`; reads *and* writes are lock-free. Locks serialize *only* checkpoint,
 merge, and eviction, under a strict acyclic hierarchy
-$\text{CK} > \text{merge\_lock} > \text{OR} > \text{EC}$. Deep-dive:
+$\text{CK} > \text{merge\_lock} > \text{EC}$. Deep-dive:
 **[concurrency-model.md](concurrency-model.md)**.
 
 ### Cross-cutting: eviction

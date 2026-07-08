@@ -1,4 +1,4 @@
-# Formal-verification map — invariant ↔ model ↔ proof
+# Formal-verification map — the invariant–model–proof correspondence
 
 **Navigation**: [↑ Persistence architecture](README.md) · [Durability & recovery](durability-and-recovery.md) · [Concurrency model](concurrency-model.md) · [Formal-verification tree](../../formal-verification/)
 
@@ -23,11 +23,11 @@ The map is drawn as two companion figures — one per prong — so each fits the
 | Prong | Tool | Establishes | Scope |
 |-------|------|-------------|-------|
 | ① Model checking | TLA⁺ / TLC | temporal **safety + liveness** under concurrency and crashes | *bounded* instances, *all* interleavings |
-| ② Theorem proving | Rocq / Coq | **functional correctness** + ADT refinement | *all* inputs, machine-checked `Qed.` |
+| ② Theorem proving | Rocq / Coq | **functional correctness** + abstract-data-type (ADT) refinement | *all* inputs, machine-checked `Qed.` |
 
 **Aggregate:** 69 Rocq `.v` files, 1,301 propositions (992 Theorem + 301 Lemma + 8
 Corollary), **0 Admitted / 0 Axiom / 0 Parameter**; 55 TLA⁺ modules, 65 `.cfg` TLC configs,
-all SANY-clean. Many models ship a paired **`_Unsafe.cfg` negative control** that must
+all SANY-clean (SANY = the TLA⁺ syntactic analyzer). Many models ship a paired **`_Unsafe.cfg` negative control** that must
 *violate* the invariant, proving the checker has teeth.
 
 ## Correspondence by concern
@@ -62,7 +62,7 @@ all SANY-clean. Many models ship a paired **`_Unsafe.cfg` negative control** tha
 | Invariant | TLA⁺ model | Rocq / test | Doc |
 |-----------|-----------|-------------|-----|
 | Shared-handle linearizability (byte + char + **vocab**), reads observe completed visible state | `SharedPersistentConcurrency.tla`, `ConcurrentVocabLinearizability.tla` | `Spec/SharedPersistentConcurrencySpec.v` | [concurrency-model](concurrency-model.md) |
-| F4 deadlock-freedom (`CK > merge_lock > OR > EC`, drop-before-join) | — | `tests/persistent_lockfree_f4_lock_hierarchy_loom.rs`, `tests/vocab_lockfree_f4_lock_hierarchy_loom.rs` | [concurrency-model](concurrency-model.md) |
+| F4 deadlock-freedom (`CK > merge_lock > EC`, drop-before-join) | — | `tests/persistent_lockfree_f4_lock_hierarchy_loom.rs`, `tests/vocab_lockfree_f4_lock_hierarchy_loom.rs` | [concurrency-model](concurrency-model.md) |
 
 ### Eviction & epoch reclamation
 
@@ -116,5 +116,5 @@ RUN_TLC=1 scripts/verify-formal-correspondence.sh
 ## See also
 
 - [`formal-verification/README.md`](../../formal-verification/README.md) — the properties table and theorem list.
-- [`formal-verification/VERIFICATION_RESULTS.md`](../../formal-verification/VERIFICATION_RESULTS.md) — the full model-checking + proof results and the spec↔Rust correspondence tables.
+- [`formal-verification/VERIFICATION_RESULTS.md`](../../formal-verification/VERIFICATION_RESULTS.md) — the full model-checking + proof results and the spec $\leftrightarrow$ Rust correspondence tables.
 - [`formal-verification/GAP_LEDGER.md`](../../formal-verification/GAP_LEDGER.md) — the tracked verification gaps and footguns (e.g. the `#41` watermark hazard).

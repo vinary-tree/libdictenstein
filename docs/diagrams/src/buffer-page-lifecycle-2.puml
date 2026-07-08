@@ -17,10 +17,13 @@
 '     · the CLOCK victim must be unpinned AND have reference_bit == 0;
 '     · a dirty victim is written back (clear_dirty) before its frame is reused.
 '
-' Color key:
-'   green (#C8E6C9) = page is RESIDENT in a buffer-pool frame (in memory)
-'   red   (#C62828) = the write-transition (mark_dirty under a WRITE_LEASE)
-'   grey  (#ECEFF1) = infrastructure note
+' Color key (warm = dirty, cool = clean; second hue splits pinned/unpinned):
+'   green   (#C8E6C9) = Clean · Unpinned — CLOCK-evictable (calm resting state)
+'   teal    (#B2DFDB) = Clean · Pinned   — clean but held under a lease
+'   red     (#FFCDD2) = Dirty · Pinned   — flush blocked (WRITE_LEASE held)
+'   orange  (#FFCC80) = Dirty · Unpinned — must flush before reuse (WAL/durability)
+'   red     (#C62828) = the mark_dirty write-transition (arrow)
+'   neutral (#F1F1F1) = the Resident composite frame · grey (#ECEFF1) = infra note
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
@@ -34,12 +37,12 @@ skinparam state {
 
 title Resident (buffer-pool frame) — internal substates (2 of 2)\nClean/Dirty × Pinned/Unpinned
 
-state "Resident (buffer-pool frame)" as Resident #C8E6C9 {
+state "Resident (buffer-pool frame)" as Resident #F1F1F1 {
 
   state "Clean · Unpinned" as CleanUnpinned #C8E6C9 : dirty=false · lease=0\n→ CLOCK-evictable
-  state "Clean · Pinned" as CleanPinned #C8E6C9 : read/write lease held\n→ pinned, NOT evictable
-  state "Dirty · Pinned" as DirtyPinned #C8E6C9 : modified under a lease\n(differs from disk)
-  state "Dirty · Unpinned" as DirtyUnpinned #C8E6C9 : modified · leases dropped\n→ flush before reuse
+  state "Clean · Pinned" as CleanPinned #B2DFDB : read/write lease held\n→ pinned, NOT evictable
+  state "Dirty · Pinned" as DirtyPinned #FFCDD2 : modified under a lease\n(differs from disk)
+  state "Dirty · Unpinned" as DirtyUnpinned #FFCC80 : modified · leases dropped\n→ flush before reuse
 
   [*] --> CleanUnpinned : entry\n(fault-in populates)
 
@@ -61,8 +64,11 @@ note bottom of Resident #ECEFF1
 end note
 
 legend right
-| Color | Page condition |
-|<#C8E6C9>| resident in a buffer-pool frame |
-|<#C62828>| write-transition (mark_dirty) |
+| Color | Frame condition |
+|<#C8E6C9>| clean · unpinned — CLOCK-evictable |
+|<#B2DFDB>| clean · pinned — held under a lease |
+|<#FFCDD2>| dirty · pinned — flush blocked (WRITE_LEASE) |
+|<#FFCC80>| dirty · unpinned — must flush before reuse |
+|<#C62828>| mark_dirty write-transition |
 endlegend
 @enduml

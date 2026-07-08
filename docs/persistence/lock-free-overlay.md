@@ -35,7 +35,7 @@ Its fields:
 
 | Field | Type | Role |
 |-------|------|------|
-| `store` | `AdaptiveEdgeStore<K::Unit, Child<K, V>>` | the tiered child map (see [storage-backends.md](storage-backends.md#adaptive-edge-storage)) |
+| `store` | `ChildStore<K, V>` (a newtype over `AdaptiveEdgeStore<K::Unit, Child<K, V>>`) | the tiered child map (see [storage-backends.md](storage-backends.md#adaptive-edge-storage)) |
 | `value` | `Option<V>` | the **immutable** leaf value (membership uses `V = ()`, counting uses `u64`) |
 | `prefix` | `Arc<[K::Unit]>` (+ `prefix_len`) | the path-compressed prefix, capped at `K::MAX_PREFIX_LEN` |
 | `flags` | `AtomicU8` | `IS_FINAL` / `IS_DIRTY` / `IS_LEAF` / `HAS_VALUE` |

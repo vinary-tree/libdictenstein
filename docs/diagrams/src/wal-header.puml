@@ -2,38 +2,42 @@
 ' ============================================================================
 ' wal-header.puml — the 64-byte WAL file header (29 bytes used, 35 reserved).
 ' Source of truth: src/persistent_artrie/core/wal/header.rs (WalHeader, SIZE=64).
-' Replaces the no-viewBox svgbob SVG with a compact, colored, viewBox'd byte-field.
-' Color key: green identity/magic · green version · indigo checkpoint LSN ·
-'            orange commit-seq (WAL) · amber regime flag · grey reserved
+' Drawn as a CONTIGUOUS colored byte table (offset column + field column, one row
+' per field) hosted in a floating note; rows share borders (no gaps). Full-cell
+' color via Creole |<#hex>| cells.
+' NOTE: a literal '|' is the Creole column separator — magic/rank_regime use '·'.
+' Color key: green identity/version · indigo checkpoint LSN · orange commit-seq ·
+'            amber regime flag · grey reserved
 ' ============================================================================
 skinparam defaultFontSize 14
 skinparam shadowing false
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
-skinparam rectangle {
-  BorderColor #37474F
-  FontColor #212121
-  BorderThickness 1.2
-}
 skinparam TitleFontSize 15
+skinparam noteFontSize 14
+skinparam note {
+  BackgroundColor #FFFFFF
+  BorderColor #37474F
+}
 
 title WAL file header — 64 bytes (records begin at offset 64)
 
-rectangle "bytes **0..7**    magic = 'PARTWAL' + NUL  |  'PARTWALO'" as R0 #C8E6C9
-rectangle "bytes **8..11**    version = 2  (min supported = 1)" as R1 #C8E6C9
-rectangle "bytes **12..19**    checkpoint_lsn  = committed watermark" as R2 #C5CAE9
-rectangle "bytes **20..27**    commit_seq_floor  (carried across rotation)" as R3 #FFCC80
-rectangle "byte  **28**    rank_regime  (Owned = 0 | Overlay = 1)" as R4 #FFE0B2
-rectangle "bytes **29..63**    reserved  (zero-filled; additive future fields)" as R5 #ECEFF1
-
-R0 -[hidden]down- R1
-R1 -[hidden]down- R2
-R2 -[hidden]down- R3
-R3 -[hidden]down- R4
-R4 -[hidden]down- R5
+note as WH
+|= bytes |= field |
+|<#C8E6C9> 0..7 |<#C8E6C9> magic = 'PARTWAL'+NUL  ·  'PARTWALO' (overlay) |
+|<#C8E6C9> 8..11 |<#C8E6C9> version = 2  (min supported = 1) |
+|<#C5CAE9> 12..19 |<#C5CAE9> checkpoint_lsn  = committed watermark |
+|<#FFCC80> 20..27 |<#FFCC80> commit_seq_floor  (carried across rotation) |
+|<#FFE0B2> 28 |<#FFE0B2> rank_regime  (Owned = 0 · Overlay = 1) |
+|<#ECEFF1> 29..63 |<#ECEFF1> reserved  (zero-filled; additive future fields) |
+end note
 
 legend bottom
-  green identity/version · indigo checkpoint LSN · orange commit-seq
-  amber regime · grey reserved
+| Color | Field |
+|<#C8E6C9>| identity — magic · version |
+|<#C5CAE9>| checkpoint LSN (committed watermark) |
+|<#FFCC80>| commit-seq floor (WAL) |
+|<#FFE0B2>| rank-regime flag |
+|<#ECEFF1>| reserved |
 endlegend
 @enduml

@@ -1,39 +1,39 @@
 @startuml art-node48-fields
 ' ============================================================================
 ' art-node48-fields.puml — the Node48 struct layout (byte-ART, 17..48 children).
-' Source: docs/theory/disk-tries/03-adaptive-radix-tree.md (Leis et al. 2013).
-' Replaces the ASCII struct-field box with a compact, colored, viewBox'd byte-field.
-' Color key:  green identity · amber child-count · light-blue inline prefix ·
-'             blue byte→slot index · mid-blue child pointers
+' Source of truth: src/persistent_artrie/nodes/node48.rs (§Layout comment, ~668 B).
+' Drawn as a CONTIGUOUS colored field table hosted in a floating note; rows share
+' borders (no gaps). Layout = 16-B NodeHeader + 12-B CompressedPrefix + 256-B
+' child_index + children.
+' Color key: green NodeHeader · light-blue inline prefix · blue byte→slot index ·
+'            mid-blue child pointers
 ' ============================================================================
 skinparam defaultFontSize 14
 skinparam shadowing false
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
-skinparam rectangle {
-  BorderColor #37474F
-  FontColor #212121
-  BorderThickness 1.2
-}
 skinparam TitleFontSize 15
+skinparam noteFontSize 14
+skinparam note {
+  BackgroundColor #FFFFFF
+  BorderColor #37474F
+}
 
-title Node48 — 17..48 children (~656 B) · index + direct
+title Node48 — 17..48 children (~668 B) · index + direct
 
-rectangle "**type** : u8 — node-type tag (= 48)" as R0 #C8E6C9
-rectangle "**num_children** : u8 — child count (17..48)" as R1 #FFE0B2
-rectangle "**partial_len** : u8 — compressed-path length" as R2 #C8E6C9
-rectangle "**partial** : [u8; 8] — inline compressed prefix" as R3 #E3F2FD
-rectangle "**child_index** : [u8; 256] — maps byte → slot (255 = empty)" as R4 #BBDEFB
-rectangle "**children** : [ptr; 48] — child pointers in slots" as R5 #90CAF9
-
-R0 -[hidden]down- R1
-R1 -[hidden]down- R2
-R2 -[hidden]down- R3
-R3 -[hidden]down- R4
-R4 -[hidden]down- R5
+note as N48
+|= field |= description |
+|<#C8E6C9> NodeHeader : 16 B |<#C8E6C9> fixed 16-byte prefix — see node-header |
+|<#E3F2FD> prefix : [u8; 12] |<#E3F2FD> inline compressed path (CompressedPrefix) |
+|<#BBDEFB> child_index : [u8; 256] |<#BBDEFB> maps byte → slot (255 = empty) |
+|<#90CAF9> children : [SwizzledPtr; 48] |<#90CAF9> child pointers in slots (384 B) |
+end note
 
 legend bottom
-  green identity · amber child-count · light-blue inline prefix
-  blue byte→slot index · mid-blue child pointers
+| Color | Field |
+|<#C8E6C9>| NodeHeader — 16 B fixed prefix (see node-header) |
+|<#E3F2FD>| inline compressed-path prefix (12 B) |
+|<#BBDEFB>| byte→slot index (256 B) |
+|<#90CAF9>| child pointers (SwizzledPtr, 8 B each) |
 endlegend
 @enduml

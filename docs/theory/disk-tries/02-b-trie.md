@@ -1,6 +1,6 @@
 # B-trie: Disk-Based Burst Trie
 
-This document presents the **B-trie** data structure from Askitis & Zobel (2009, [doi:10.1007/s00778-008-0094-1](https://doi.org/10.1007/s00778-008-0094-1)) — a disk-based adaptation of the *burst trie* that achieves `5–50%` better performance than B+-trees for string indexing. Throughout, $\Sigma$ is the alphabet, $\mid \Sigma \mid$ its size, `m` a string's length, `b` the number of strings per bucket, and `h` the trie height.
+This document presents the **B-trie** data structure from Askitis & Zobel (2009, [DOI: 10.1007/s00778-008-0094-1](https://doi.org/10.1007/s00778-008-0094-1)) — a disk-based adaptation of the *burst trie* that achieves `5–50%` better performance than B+-trees for string indexing. Throughout, $\Sigma$ is the alphabet, $\mid \Sigma \mid$ its size, `m` a string's length, `b` the number of strings per bucket, and `h` the trie height.
 
 ## Table of Contents
 
@@ -431,6 +431,6 @@ The key innovation is recognizing that the burst trie's "burst into $\mid \Sigma
 
 ## References
 
-1. Askitis, N. & Zobel, J. (2009). "B-tries for disk-based string management." *The VLDB Journal*, 18(1), 157-179. [doi:10.1007/s00778-008-0094-1](https://doi.org/10.1007/s00778-008-0094-1)
-2. Heinz, S., Zobel, J., & Williams, H.E. (2002). "Burst tries: A fast, efficient data structure for string keys." *ACM TOIS*, 20(2), 192-223.
-3. Bayer, R. & Unterauer, K. (1977). "Prefix B-trees." *ACM TODS*, 2(1), 11-26.
+1. Askitis, N. & Zobel, J. (2009). "B-tries for disk-based string management." *The VLDB Journal*, 18(1), 157-179. [DOI: 10.1007/s00778-008-0094-1](https://doi.org/10.1007/s00778-008-0094-1)
+2. Heinz, S., Zobel, J., & Williams, H.E. (2002). "Burst tries: A fast, efficient data structure for string keys." *ACM TOIS*, 20(2), 192-223. [DOI: 10.1145/506309.506312](https://doi.org/10.1145/506309.506312)
+3. Bayer, R. & Unterauer, K. (1977). "Prefix B-trees." *ACM TODS*, 2(1), 11-26. [DOI: 10.1145/320521.320530](https://doi.org/10.1145/320521.320530)

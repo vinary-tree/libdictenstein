@@ -1,0 +1,47 @@
+@startuml serialized-node-header
+' ============================================================================
+' serialized-node-header.puml — the 16-byte ON-DISK SerializedNodeHeader.
+' Source of truth: src/persistent_artrie/serialization.rs (struct SerializedNodeHeader,
+' #[repr(C)], SERIALIZED_HEADER_SIZE = 16; NODE_MAGIC = b"ART\0").
+' NOTE: this is the *on-disk* header — distinct from the *in-memory* NodeHeader
+' (node-header.svg): the on-disk form carries a 4-byte magic + a u8 format version +
+' a u32 data_size, and does NOT persist the in-memory u64 optimistic-lock version.
+' Drawn as a CONTIGUOUS colored byte table (offset column + field column) hosted in a
+' floating note; rows share borders (no gaps). Full-cell color via Creole |<#hex>| cells.
+' Color key: green identity (magic · version · node_type) · amber flags/counters ·
+'            grey padding · blue data_size (payload length)
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam TitleFontSize 15
+skinparam noteFontSize 14
+skinparam note {
+  BackgroundColor #FFFFFF
+  BorderColor #37474F
+}
+
+title SerializedNodeHeader — the 16-byte on-disk node header
+
+note as SNH
+|= bytes |= field |
+|<#C8E6C9> 0..3 |<#C8E6C9> magic = b'ART\0' |
+|<#C8E6C9> 4 |<#C8E6C9> version  (u8: 1, or 2 = relative-offset encoding) |
+|<#C8E6C9> 5 |<#C8E6C9> node_type  (4 / 16 / 48 / 0 = Node256) |
+|<#FFE0B2> 6 |<#FFE0B2> flags  (IS_FINAL · IS_DIRTY · IS_LEAF) |
+|<#FFE0B2> 7 |<#FFE0B2> encoding_flags  (RELATIVE_OFFSETS · SEQUENTIAL_SIBLINGS · HAS_VALUE) |
+|<#FFE0B2> 8..9 |<#FFE0B2> num_children  (u16) |
+|<#FFE0B2> 10 |<#FFE0B2> prefix_len |
+|<#ECEFF1> 11 |<#ECEFF1> _padding |
+|<#BBDEFB> 12..15 |<#BBDEFB> data_size  (u32 — size of type-specific data that follows) |
+end note
+
+legend bottom
+| Color | Field |
+|<#C8E6C9>| identity — magic · version · node_type |
+|<#FFE0B2>| flags / counters |
+|<#ECEFF1>| alignment padding |
+|<#BBDEFB>| data_size (type-specific payload length) |
+endlegend
+@enduml

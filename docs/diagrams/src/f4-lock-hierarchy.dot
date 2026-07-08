@@ -2,9 +2,11 @@
 // f4-lock-hierarchy.dot — the F4 "lock collapse" strict acyclic lock ordering.
 // After F4, SharedARTrie / SharedCharARTrie / SharedVocabARTrie are bare Arc<T>:
 // overlay reads AND writes are lock-free. The ONLY residual locks — for concurrent
-// checkpoints, the dormant owned path, and eviction — obey one strict acyclic
-// order: CK > merge_lock > OR > EC. Acquire only top→bottom; EC is a LEAF never
+// checkpoints, byte/char merges, and eviction — obey one strict acyclic
+// order: CK > merge_lock > EC. Acquire only top→bottom; EC is a LEAF never
 // held across another lock or a worker .join() (the drop-before-join discipline).
+// (The former inner owned_root "OR" RwLock rung was removed once the lock-free
+// overlay became the sole production structure.)
 //
 // Source of truth: src/persistent_artrie/core/shared_access.rs (module header).
 // Verified by tests/persistent_lockfree_f4_lock_hierarchy_loom.rs and
@@ -13,7 +15,7 @@
 // Color key (house palette + persistence accents — docs/diagrams/README.md):
 //   red    #FFCDD2  lock / serialization rung (deeper red border = higher in the order)
 //   teal   #B2DFDB  the lock-free overlay (reads AND writes — NO lock)
-//   grey   #ECEFF1  the vocab subset boundary (CK, EC only — no merge_lock/OR)
+//   grey   #ECEFF1  the vocab subset boundary (CK, EC only — no merge_lock)
 //   dark slate #37474F  the "acquired-before" ordering edges
 // ============================================================================
 digraph f4_lock_hierarchy {
@@ -23,7 +25,7 @@ digraph f4_lock_hierarchy {
     labelloc="t";
     fontsize=15;
     fontcolor="#212121";
-    label="F4 lock hierarchy — strict acyclic order CK > merge_lock > OR > EC\n(the handle is lock-free; locks serialize ONLY\ncheckpoint · merge · eviction)";
+    label="F4 lock hierarchy — strict acyclic order CK > merge_lock > EC\n(the handle is lock-free; locks serialize ONLY\ncheckpoint · merge · eviction)";
     nodesep=0.5;
     ranksep=0.7;
     node [shape=box, style="filled,rounded", fontname="DejaVu Sans",
@@ -34,25 +36,22 @@ digraph f4_lock_hierarchy {
     overlay [label="Lock-free overlay (reads AND writes)\nbare Arc<T> · CAS root · NO lock",
              fillcolor="#B2DFDB", color="#00695C"];
 
-    // --- the four lock rungs (top = acquired first) ---------------------
+    // --- the three lock rungs (top = acquired first) --------------------
     CK [label="CK — checkpoint_lock : Mutex<()>\nserialize concurrent checkpoints",
         fillcolor="#FFCDD2", color="#B71C1C"];
-    ML [label="merge_lock : Mutex<()>\nserialize merge ‖ merge  (byte/char only)",
+    ML [label="merge_lock : Mutex<()>\nserialize merge vs merge  (byte/char only)",
         fillcolor="#FFCDD2", color="#C62828"];
-    OR [label="OR — owned_root : RwLock<TrieRoot>\nDORMANT (kill-switch / WAL-replay)\ncapture-read",
-        fillcolor="#FFCDD2", color="#D32F2F"];
     EC [label="EC — eviction_coordinator : Mutex<Option<..>>\nLEAF — never held across a lock\nor a worker .join()",
         fillcolor="#FFCDD2", color="#E53935"];
 
     // --- ordering edges (acquire only top → bottom) ---------------------
     overlay -> CK [label="mutators are &self;\nonly these take a lock", style="dashed", color="#00695C", fontcolor="#00695C"];
     CK -> ML [label="acquired-before"];
-    ML -> OR [label="acquired-before"];
-    OR -> EC [label="acquired-before"];
+    ML -> EC [label="acquired-before"];
 
     // --- the vocab subset: CK and EC only (no merge_lock / OR) ----------
     subgraph cluster_vocab {
-        label="vocab subset — overlay-only ⇒ CK, EC only\n(CK, EC independent: the vocab eviction\ncallback is a no-op, so CK never reads EC\n⇒ trivially acyclic)";
+        label="vocab subset — overlay-only, so CK, EC only\n(CK, EC independent: the vocab eviction\ncallback is a no-op, so CK never reads EC\n— trivially acyclic)";
         style="dashed,rounded";
         color="#607D8B";
         fontcolor="#455A64";

@@ -127,10 +127,56 @@ Each part-2 companion is embedded next to its part-1 (`README.md`, `src/lib.rs` 
 
 ---
 
+### P9 — Byte-layout contiguity + swatch legends — ☑ DONE
+
+**Defect.** The P2/P3 byte-field template (a vertical stack of `rectangle`s joined by
+`-[hidden]down-`) fixed *size* but rendered **non-contiguously**: PlantUML's Graphviz
+layout content-sizes each box, centers it, and inserts ~60 px vertical gaps between
+36 px boxes — so the cells neither align nor touch, misrepresenting the contiguous
+bytes they describe. Two follow-ons: `buffer-page-lifecycle-2` was *monotonically
+green* (all four Resident substates + the composite `#C8E6C9`), and every legend named
+colors in prose (`green identity · amber flags`) rather than showing swatches.
+
+**Fix — contiguous Creole byte tables.** Re-authored all **16** byte/bit/struct layouts
+as a Creole table hosted in a floating `note` (a `title` above, a swatch `legend`
+below): one row per field, an offset (or `field : type`) column + a description column,
+every cell filled via `|<#hex>|`. Table rows share borders → **0 gaps, aligned
+columns** by construction. `node-layouts` (four *distinct* node tiers, not one
+structure) became a per-tier comparison table (tier · fan-out · layout), not a fused
+byte strip. Heights collapse as the gaps vanish and widths hold or shrink:
+
+| diagram | before (W×H) | after (W×H) |
+|---------|-------------:|------------:|
+| `file-header` | 496 × 1030 | 425 × 421 |
+| `node-header` | 614 × 724 | 563 × 323 |
+| `wal-header` | 514 × 644 | 498 × 323 |
+| `wal-record` | 564 × 678 | 483 × 404 |
+
+**Recolor.** `buffer-page-lifecycle-2` now encodes clean/dirty × pinned/unpinned as a
+warm→cool gradient — green `#C8E6C9` (clean·unpinned) · teal `#B2DFDB` (clean·pinned) ·
+red `#FFCDD2` (dirty·pinned, flush-blocked) · orange `#FFCC80` (dirty·unpinned,
+must-flush) — over a neutral `#F1F1F1` composite frame; the red `#C62828` `mark_dirty`
+arrow is unchanged.
+
+**Swatch legends.** All **13** prose color-key legends converted to two-column swatch
+tables (`|<#hex>|` cell + concept), and the four redrawn diagrams that lacked a legend
+gained one.
+
+**New gotcha (recorded in README):** a literal `|` is the Creole column separator —
+`wal-header`'s `magic … | 'PARTWALO'` and `rank_regime (Owned = 0 | Overlay = 1)` were
+rephrased with `·` so the table rows don't split.
+
+**Verify:** full render exit 0; `git diff` touched only the intended SVGs; a 2nd render
+was byte-identical (freshness gate green); `--check` = 0 hard failures; every touched
+SVG's viewBox width ≤ 700 px; cell geometry confirms exact contiguity
+(`y_{n+1} = y_n + height_n`).
+
+---
+
 ## Status snapshot (final)
 
 - **Hard hygiene (R1 + no-deprecation): met crate-wide** — `--check` = 0 failures; render byte-stable.
-- **svgbob + bytefield: eliminated** (0 remaining); byte layouts are compact PlantUML byte-fields.
+- **svgbob + bytefield: eliminated** (0 remaining); byte layouts are contiguous PlantUML byte tables (P9).
 - **ASCII diagrams: converted** (49 anchored + 3 long-tail); **data-tables → Markdown** (0 `┌` left).
 - **Width (R3): 38 → 0 over-budget** — every diagram ≤ 700 px (the last 10 resolved by content-preserving split/redesign/restructure).
 - **3 diagrams split**; part-2 companions embedded in `README.md` / `src/lib.rs` / `durable-storage-kernel.md`.

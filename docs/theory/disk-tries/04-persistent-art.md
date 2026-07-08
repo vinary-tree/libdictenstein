@@ -83,7 +83,7 @@ This crate's `SwizzledPtr` (source of truth: `src/persistent_artrie/core/swizzle
 ### Why the MSB Works
 
 On modern 64-bit systems:
-- Virtual addresses use at most 48 bits (AMD64) or 52 bits (Intel 5-level paging)
+- Virtual addresses use at most 48 bits (AMD64) or 57 bits (Intel 5-level paging)
 - User-space addresses typically have bit `63 = 0`
 - Kernel addresses have bit `63 = 1`, but we never store kernel pointers
 
@@ -170,7 +170,7 @@ The state word moves through four states over its lifetime — an on-disk refere
 
 <img src="../../diagrams/swizzled-ptr-states.svg" alt="State diagram of the SwizzledPtr lifecycle: Disk reference (MSB 0) transitions via swizzle CAS to Installing (state = MSB|1), then to Memory (state = MSB), then via unswizzle CAS to Evicting (state = MSB|2), then back to Disk reference. Disk-reference is colored blue, the in-memory state green, the transitional states amber." width="700"/>
 
-*Figure: the swizzle lifecycle. `Installing` (`state = (1<<63) | 1`) and `Evicting` (`state = (1<<63) | 2`) are the transitional states that let exactly one thread own publication or removal of `memory_ptr`; readers that lose the race simply observe the winner's final state. The reverse path ($Memory \to Evicting \to Disk reference$) is how eviction reclaims RAM while leaving the durable on-disk encoding behind.*
+*Figure: the swizzle lifecycle. `Installing` (`state = (1<<63) | 1`) and `Evicting` (`state = (1<<63) | 2`) are the transitional states that let exactly one thread own publication or removal of `memory_ptr`; readers that lose the race simply observe the winner's final state. The reverse path (Memory → Evicting → Disk reference) is how eviction reclaims RAM while leaving the durable on-disk encoding behind.*
 
 The `compare_exchange` ensures only one thread successfully swizzles a pointer:
 
@@ -361,7 +361,7 @@ For NVMe SSDs with 128KB-256KB optimal I/O size, larger blocks amortize the per-
 
 ### Block Header
 
-<img src="../../diagrams/part-block-header.svg" alt="The 64-byte on-disk block header as a byte-field: magic, version, block_type (0 nodes, 1 buckets, 2 metadata), flags, block_id, a CRC-64 checksum, num_entries, free_offset, prev_block and next_block chain links, and 28 bytes of reserved padding." width="70%"/>
+<img src="../../diagrams/part-block-header.svg" alt="The 64-byte on-disk block header as a byte-field: magic, version, block_type (0 nodes, 1 buckets, 2 metadata), flags, block_id, a 64-bit checksum, num_entries, free_offset, prev_block and next_block chain links, and 28 bytes of reserved padding." width="70%"/>
 
 ### Node Packing Within Blocks
 
@@ -410,7 +410,7 @@ fn concurrent_lookup(&self, key: &[u8]) -> Option<&Value> {
 
 For insert/delete with concurrent readers:
 
-**Option 1: Copy-on-write** — the *path-copying* form of making a data structure persistent in the sense of Driscoll et al. (1989, [doi:10.1016/0022-0000(89)90034-2](https://doi.org/10.1016/0022-0000(89)90034-2)): a mutation clones only the affected node (and, transitively, its ancestors), leaving the old version intact for in-flight readers.
+**Option 1: Copy-on-write** — the *path-copying* form of making a data structure persistent in the sense of Driscoll et al. (1989, [DOI:10.1016/0022-0000(89)90034-2](https://doi.org/10.1016/0022-0000(89)90034-2)): a mutation clones only the affected node (and, transitively, its ancestors), leaving the old version intact for in-flight readers.
 ```
 1. Create modified copy of node
 2. Atomically swap parent's child pointer
@@ -547,11 +547,11 @@ The next document covers buffer management: the page cache, LRU eviction, and cr
 
 1. DuckDB Team. (2022). "Persistent Storage of Adaptive Radix Trees in DuckDB." [Blog Post](https://duckdb.org/2022/07/27/art-storage)
 
-2. Driscoll, J. R., Sarnak, N., Sleator, D. D., & Tarjan, R. E. (1989). "Making Data Structures Persistent." *Journal of Computer and System Sciences*, 38(1), 86-124. [doi:10.1016/0022-0000(89)90034-2](https://doi.org/10.1016/0022-0000(89)90034-2)
+2. Driscoll, J. R., Sarnak, N., Sleator, D. D., & Tarjan, R. E. (1989). "Making Data Structures Persistent." *Journal of Computer and System Sciences*, 38(1), 86-124. [DOI:10.1016/0022-0000(89)90034-2](https://doi.org/10.1016/0022-0000(89)90034-2)
 
-3. Luo, X., Luo, L., Zheng, W., & Kuo, T. W. (2023). "SMART: A High-Performance Adaptive Radix Tree for Disaggregated Memory." *OSDI*. [PDF](https://www.usenix.org/system/files/osdi23-luo.pdf)
+3. Luo, X., Zuo, P., Shen, J., Gu, J., Wang, X., Lyu, M. R., & Zhou, Y. (2023). "SMART: A High-Performance Adaptive Radix Tree for Disaggregated Memory." *OSDI*. [PDF](https://www.usenix.org/system/files/osdi23-luo.pdf)
 
-4. Graefe, G. (2011). "Modern B-Tree Techniques." *Foundations and Trends in Databases*.
+4. Graefe, G. (2011). "Modern B-Tree Techniques." *Foundations and Trends in Databases*, 3(4), 203-402. [DOI:10.1561/1900000028](https://doi.org/10.1561/1900000028)
 
 5. Leis, V., Haubenschild, M., Kemper, A., & Neumann, T. (2018). "LeanStore: In-Memory Data Management Beyond Main Memory." *ICDE*.
 

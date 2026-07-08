@@ -78,8 +78,9 @@ commit-visibility order. See [wal-format.md §5](wal-format.md#5-the-rank-regime
 
 ## Checkpoint flips — folding the overlay into a dense image
 
-A **checkpoint** captures the immutable overlay snapshot into a dense CX image, publishes
-it, and advances the reclaimable watermark — under the checkpoint lock, so concurrent
+A **checkpoint** captures the immutable overlay snapshot into a dense **CX** image (the
+compact-snapshot codec, magic `AR64CX01`), publishes it, and advances the reclaimable
+watermark — under the checkpoint lock, so concurrent
 checkpoints serialize:
 
 <img src="../diagrams/checkpoint-flip.svg" alt="A checkpoint-flip state machine. From Serving (green, live overlay) the flow acquires the checkpoint lock CK (amber), captures the LIVE representation (green) into fresh arena slots, passes the RES-4 total-loss guard (red, refusing a degenerate/empty capture), publishes the dense CX image to disk (blue) while retaining the WAL, advances the checkpoint watermark (amber) recording checkpoint_lsn = committed watermark, releases the lock, and resumes serving — reads were never blocked." width="92%"/>

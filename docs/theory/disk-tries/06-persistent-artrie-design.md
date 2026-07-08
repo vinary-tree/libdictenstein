@@ -11,7 +11,7 @@ mutation lock (see the `SwizzledPtr` lifecycle in
 [04-persistent-art](04-persistent-art.md)). **CX** is this crate's path-compressing
 overlay↔dense checkpoint codec, which serializes the live overlay into a compact
 on-disk image. The persistent ARTrie is *version-persistent* in the sense of
-Driscoll et al. 1989 ([doi:10.1016/0022-0000(89)90034-2](https://doi.org/10.1016/0022-0000(89)90034-2)):
+Driscoll et al. 1989 ([DOI:10.1016/0022-0000(89)90034-2](https://doi.org/10.1016/0022-0000(89)90034-2)):
 published overlay nodes are immutable, so a mutation path-copies rather than
 overwrites.
 

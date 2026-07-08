@@ -1817,7 +1817,7 @@ mod tests {
     #[test]
     fn test_serialize_roundtrip_with_max_prefix() {
         let mut node4 = Node4::new();
-        // MAX_PREFIX_LEN is 8 for byte nodes
+        // MAX_PREFIX_LEN is 12 for byte nodes; this exercises an 8-byte prefix
         node4.prefix = CompressedPrefix::from_bytes(b"12345678");
         node4.header.prefix_len = 8;
         node4.header.set_final(true);

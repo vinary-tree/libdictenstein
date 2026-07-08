@@ -110,7 +110,7 @@ hygiene_check() {
   local bad=0 svg tag vbw
   shopt -s nullglob
   for svg in "$OUT_DIR"/*.svg; do
-    if grep -qE 'syntax is deprecated|end of the line, after' "$svg"; then
+    if grep -qE 'syntax is deprecated|end of the line|Please use .*instead' "$svg"; then
       echo "  ✗ hygiene: baked PlantUML deprecation banner in $svg" >&2; bad=1
     fi
     tag="$(tr '\n' ' ' < "$svg" | grep -oE '<svg[^>]*>' | head -1 || true)"

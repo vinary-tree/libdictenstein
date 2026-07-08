@@ -1,43 +1,41 @@
 @startuml art-node4-fields
 ' ============================================================================
 ' art-node4-fields.puml — the Node4 struct layout (byte-ART, 1..4 children).
-' Source: docs/theory/disk-tries/03-adaptive-radix-tree.md (Leis et al. 2013).
-' Replaces the ASCII struct-field box with a compact, colored, viewBox'd byte-field.
-' Color key (theory-doc node palette; mirrors the sibling node-header.puml):
-'   green      #C8E6C9  identity (type tag, partial_len)
-'   amber      #FFE0B2  mutable child counter (num_children)
-'   light-blue #E3F2FD  inline compressed-path prefix (partial)
-'   blue       #BBDEFB  routing keys
-'   mid-blue   #90CAF9  child pointers
+' Source of truth: src/persistent_artrie/nodes/node4.rs (§Layout comment).
+' Drawn as a CONTIGUOUS colored field table hosted in a floating note; rows share
+' borders (no gaps). Full-cell color via Creole |<#hex>| cells.
+' Layout = 16-B NodeHeader (see node-header) + 12-B CompressedPrefix + keys + children.
+' Color key:  green   #C8E6C9  the fixed NodeHeader (identity + counters + version)
+'             l-blue  #E3F2FD  inline compressed-path prefix (CompressedPrefix)
+'             blue    #BBDEFB  routing keys
+'             mid-blue #90CAF9 child pointers (SwizzledPtr, 8 B each)
 ' ============================================================================
 skinparam defaultFontSize 14
 skinparam shadowing false
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
-skinparam rectangle {
-  BorderColor #37474F
-  FontColor #212121
-  BorderThickness 1.2
-}
 skinparam TitleFontSize 15
+skinparam noteFontSize 14
+skinparam note {
+  BackgroundColor #FFFFFF
+  BorderColor #37474F
+}
 
-title Node4 — 1..4 children (~48 B) · linear scan
+title Node4 — 1..4 children (~64 B) · linear scan
 
-rectangle "**type** : u8 — node-type tag (= 4)" as R0 #C8E6C9
-rectangle "**num_children** : u8 — child count (1..4)" as R1 #FFE0B2
-rectangle "**partial_len** : u8 — compressed-path length" as R2 #C8E6C9
-rectangle "**partial** : [u8; 8] — inline compressed prefix" as R3 #E3F2FD
-rectangle "**keys** : [u8; 4] — unsorted key bytes" as R4 #BBDEFB
-rectangle "**children** : [ptr; 4] — child pointers" as R5 #90CAF9
-
-R0 -[hidden]down- R1
-R1 -[hidden]down- R2
-R2 -[hidden]down- R3
-R3 -[hidden]down- R4
-R4 -[hidden]down- R5
+note as N4
+|= field |= description |
+|<#C8E6C9> NodeHeader : 16 B |<#C8E6C9> fixed 16-byte prefix — see node-header |
+|<#E3F2FD> prefix : [u8; 12] |<#E3F2FD> inline compressed path (CompressedPrefix) |
+|<#BBDEFB> keys : [u8; 4] |<#BBDEFB> sorted key bytes · linear scan |
+|<#90CAF9> children : [SwizzledPtr; 4] |<#90CAF9> child pointers (32 B) |
+end note
 
 legend bottom
-  green identity · amber child-count · light-blue inline prefix
-  blue keys · mid-blue child pointers
+| Color | Field |
+|<#C8E6C9>| NodeHeader — 16 B fixed prefix (see node-header) |
+|<#E3F2FD>| inline compressed-path prefix (12 B) |
+|<#BBDEFB>| routing keys |
+|<#90CAF9>| child pointers (SwizzledPtr, 8 B each) |
 endlegend
 @enduml

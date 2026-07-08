@@ -48,7 +48,7 @@ activate N
 N --> EV : stamp = D
 deactivate N
 EV -> EV : D == D  ✓  (stamp matches — no concurrent version)
-EV -> N : unswizzle child → OnDisk(D)  <#C8E6C9>**SAFE**
+EV -> N : unswizzle child → OnDisk(D)  <color:#2E7D32>**SAFE**</color>
 note right of EV #C8E6C9 : Readers that later reach the OnDisk child\nfault it back in from D — no data hidden.
 
 == Case B — a writer path-copied N first: the stamps DIFFER ⇒ back off ==
@@ -65,7 +65,7 @@ activate N
 N --> EV : stamp ≠ D
 deactivate N
 EV -> EV : D ≠ stamp  ✗  (a newer version exists)
-EV -[#C62828]-> EV : **back off** — do NOT publish the stale image  <#FFCDD2>**REFUSED**
+EV -[#C62828]-> EV : **back off** — do NOT publish the stale image  <color:#C62828>**REFUSED**</color>
 note right of EV #FFCDD2 : Publishing D now would unswizzle to an image that\npredates N′ and hide the writer's update. The stamp\nmismatch is the guard that forbids it (M-2a).
 
 @enduml

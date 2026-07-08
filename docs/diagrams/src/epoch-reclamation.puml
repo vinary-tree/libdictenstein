@@ -28,7 +28,6 @@ skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
 skinparam wrapWidth 112
 skinparam maxMessageSize 105
-skinparam ParticipantPadding 3
 skinparam shadowing false
 skinparam sequenceArrowColor #37474F
 skinparam sequenceLifeLineBorderColor #90A4AE

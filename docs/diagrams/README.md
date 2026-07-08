@@ -112,7 +112,10 @@ way across every figure in the persistence corpus:
 Conventions:
 - White background (`#FFFFFF`), `DejaVu Sans` font, dark slate arrows (`#37474F`).
 - Put a **color key** in a comment at the top of each source and, where the format
-  supports it, a rendered legend.
+  supports it, a rendered legend. Prefer a **swatch legend** — a table whose first
+  column is a filled `|<#hex>|` cell and second column names the concept — over a prose
+  list that spells out color names (`green identity · amber flags`), which is not
+  reader-friendly and drifts from the actual fills.
 - Name flows end-to-end; never leave a dangling edge or an undefined symbol.
 
 ---
@@ -139,14 +142,22 @@ Additional hard rules the gate checks:
   the SVG **and** silently drops the color. Use the trailing stereotype
   `:label;<<#RRGGBB>>` (see `src/selector.puml`).
 - **No `svgbob` / `bytefield-svg`.** Both are retired: svgbob emits no root viewBox (R1)
-  and bytefield renders too small. Byte/bit layouts are compact PlantUML "byte-field"
-  figures — a vertical stack of colored `rectangle`s, one per field (see
-  `src/file-header.puml`, `src/wal-record.puml`).
+  and bytefield renders too small. Byte / bit / struct layouts are compact PlantUML
+  **byte tables** — a Creole table hosted in a floating `note` (with a `title` above and
+  a swatch `legend` below): one row per field, an offset (or `field : type`) column plus
+  a description column, every cell filled with its house color via `|<#hex>|`. Because
+  table rows share borders, the fields render **contiguously** (no gaps) — the correct
+  depiction of adjacent bytes, unlike a stack of separate `rectangle`s which the layout
+  engine staggers (see `src/file-header.puml`, `src/wal-record.puml`).
 
-Two more PlantUML gotchas (render wrong rather than fail the gate):
+Three more PlantUML gotchas (render wrong rather than fail the gate):
 
 - **`skinparam` blocks must be multi-line** — a single-line `skinparam rectangle { A B }`
   is a syntax error.
+- **A literal `|` is the Creole column separator** — inside a byte-table (or legend) cell
+  it opens a new column and breaks the row. Rephrase with `·` or `/` (e.g. wal-header's
+  `magic = 'PARTWAL'+NUL · 'PARTWALO'`). Single `_underscores_` are literal; only
+  `__double__` underlines.
 - **A literal `\"` renders as a visible backslash-quote.** Use single quotes `'x'` or
   typographic `"x"` inside labels.
 

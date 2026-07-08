@@ -1,6 +1,6 @@
 # Buffer Management
 
-This document covers the storage layer components that enable efficient disk-based trie operations: the buffer manager (page cache), the **write-ahead log (WAL)** — a durable, append-only record of intended changes written *before* the corresponding data pages, so a crash can be repaired by replaying the log — and crash recovery. These components form the foundation for durability and performance in our Persistent ARTrie. Two acronyms recur: **LSN** (Log Sequence Number, a monotonically increasing identifier stamped on each log record and on the page it last modified) and **ARIES** (Algorithms for Recovery and Isolation Exploiting Semantics; Mohan et al. 1992, [doi:10.1145/128765.128770](https://doi.org/10.1145/128765.128770)), the canonical WAL-based recovery protocol.
+This document covers the storage layer components that enable efficient disk-based trie operations: the buffer manager (page cache), the **write-ahead log (WAL)** — a durable, append-only record of intended changes written *before* the corresponding data pages, so a crash can be repaired by replaying the log — and crash recovery. These components form the foundation for durability and performance in our Persistent ARTrie. Two acronyms recur: **LSN** (Log Sequence Number, a monotonically increasing identifier stamped on each log record and on the page it last modified) and **ARIES** (Algorithms for Recovery and Isolation Exploiting Semantics; Mohan et al. 1992, [DOI:10.1145/128765.128770](https://doi.org/10.1145/128765.128770)), the canonical WAL-based recovery protocol.
 
 ## Table of Contents
 
@@ -680,9 +680,9 @@ The final document brings these components together in our Persistent ARTrie des
 
 ## References
 
-1. Graefe, G. (2012). "A Survey of B-Tree Locking Techniques." *ACM TODS*.
+1. Graefe, G. (2010). "A Survey of B-Tree Locking Techniques." *ACM TODS*, 35(3), 16:1-16:26. [DOI:10.1145/1806907.1806908](https://doi.org/10.1145/1806907.1806908)
 
-2. Mohan, C., Haderle, D., Lindsay, B., Pirahesh, H., & Schwarz, P. (1992). "ARIES: A Transaction Recovery Method Supporting Fine-Granularity Locking and Partial Rollbacks Using Write-Ahead Logging." *ACM TODS*, 17(1), 94-162. [doi:10.1145/128765.128770](https://doi.org/10.1145/128765.128770)
+2. Mohan, C., Haderle, D., Lindsay, B., Pirahesh, H., & Schwarz, P. (1992). "ARIES: A Transaction Recovery Method Supporting Fine-Granularity Locking and Partial Rollbacks Using Write-Ahead Logging." *ACM TODS*, 17(1), 94-162. [DOI:10.1145/128765.128770](https://doi.org/10.1145/128765.128770)
 
 3. O'Neil, E. J., O'Neil, P. E., & Weikum, G. (1993). "The LRU-K Page Replacement Algorithm for Database Disk Buffering." *SIGMOD*.
 

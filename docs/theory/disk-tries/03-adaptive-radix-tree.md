@@ -1,6 +1,6 @@
 # The Adaptive Radix Tree (ART)
 
-This document presents the **Adaptive Radix Tree (ART)** — an in-memory trie whose nodes change their internal representation according to how many children they hold — introduced by Leis, Kemper, and Neumann (2013, [doi:10.1109/ICDE.2013.6544812](https://doi.org/10.1109/ICDE.2013.6544812)). ART achieves both excellent space efficiency and lookup performance, making it an ideal foundation for our persistent trie design.
+This document presents the **Adaptive Radix Tree (ART)** — an in-memory trie whose nodes change their internal representation according to how many children they hold — introduced by Leis, Kemper, and Neumann (2013, [DOI: 10.1109/ICDE.2013.6544812](https://doi.org/10.1109/ICDE.2013.6544812)). ART achieves both excellent space efficiency and lookup performance, making it an ideal foundation for our persistent trie design.
 
 Throughout, **SIMD** (Single Instruction, Multiple Data) denotes CPU vector instructions that apply one operation to several lanes of a register in parallel; ART uses SIMD to compare many child keys at once. We write key length as `m` (bytes), alphabet as $\Sigma$, and alphabet size as $\mid \Sigma \mid$.
 
@@ -88,7 +88,7 @@ ART defines four node types, each optimized for a different fanout range. Every 
 
 <img src="../../diagrams/node-layouts.svg" alt="The four byte-ART node storage layouts side by side: Node4 (keys[4] + children[4], linear scan), Node16 (keys[16] + children[16], SSE 16-way SIMD compare), Node48 (index[256] mapping byte to slot + children[48], indexed lookup), and Node256 (children[256] direct array)." width="860"/>
 
-*Figure: byte-ART node bodies and their search methods. The character variants (`PersistentARTrieChar`, `u32` keys) parallel these but diverge in three ways — `CharNode16` compares 8 `u32` lanes with AVX2 (`_mm256_cmpeq_epi32`) instead of 16 `u8` lanes with SSE, `CharNode48` uses binary search over sorted `u32` keys instead of a 256-byte index, `CharBucket` is a HashMap-like container, and there is **no** `CharNode256` (a direct `u32`-indexed array would need 4 GB).*
+*Figure: byte-ART node bodies and their search methods. The character variants (`PersistentARTrieChar`, `u32` keys) parallel these but diverge in three ways — `CharNode16` compares 8 `u32` lanes with AVX2 (`_mm256_cmpeq_epi32`) instead of 16 `u8` lanes with SSE, `CharNode48` uses binary search over sorted `u32` keys instead of a 256-byte index, and the dense tier is a HashMap-like `CharBucket` rather than a `CharNode256` (a direct `u32`-indexed array would need 4 GB).*
 
 The four types are detailed below.
 
@@ -97,7 +97,7 @@ The four types are detailed below.
 The smallest node type for very sparse regions of the tree.
 
 **Structure:**
-<img src="../../diagrams/art-node4-fields.svg" alt="The Node4 struct as a byte-field: a node-type tag, a num_children counter of 1 to 4, the compressed-path length and inline partial prefix, then an unsorted 4-byte key array and 4 child pointers; total about 48 bytes, searched by linear scan." width="70%"/>
+<img src="../../diagrams/art-node4-fields.svg" alt="The Node4 struct as a byte table: a 16-byte NodeHeader (node_type, prefix_len, flags, num_children as a u16, and a u64 version), a 12-byte inline CompressedPrefix, then a sorted 4-byte key array and 4 SwizzledPtr child pointers (32 bytes); total about 64 bytes, searched by linear scan." width="70%"/>
 
 **Lookup:** Linear scan of keys array (4 comparisons max).
 
@@ -122,7 +122,7 @@ fn find_child_node4(node: &Node4, key: u8) -> Option<&Node> {
 Optimized for SIMD parallel comparison.
 
 **Structure:**
-<img src="../../diagrams/art-node16-fields.svg" alt="The Node16 struct as a byte-field: node-type tag, num_children counter of 5 to 16, compressed-path length and inline partial prefix, then a 16-aligned sorted 16-byte key array and 16 child pointers; total about 160 bytes, searched with an SSE 16-way SIMD compare." width="70%"/>
+<img src="../../diagrams/art-node16-fields.svg" alt="The Node16 struct as a byte table: a 16-byte NodeHeader (node_type, prefix_len, flags, num_children as a u16, and a u64 version), a 12-byte inline CompressedPrefix, then a sorted 16-byte key array and 16 SwizzledPtr child pointers (128 bytes); total about 168 bytes, searched with an SSE 16-way SIMD compare." width="70%"/>
 
 **Lookup:** SIMD parallel comparison finds the key in one instruction.
 
@@ -154,7 +154,7 @@ fn find_child_node16_simd(node: &Node16, key: u8) -> Option<&Node> {
 Uses an index array for `O(1)` lookup without storing 256 pointers.
 
 **Structure:**
-<img src="../../diagrams/art-node48-fields.svg" alt="The Node48 struct as a byte-field: node-type tag, num_children counter of 17 to 48, compressed-path length and inline partial prefix, then a 256-byte child_index mapping each byte to a slot (255 meaning empty) and 48 child pointers; total about 656 bytes." width="70%"/>
+<img src="../../diagrams/art-node48-fields.svg" alt="The Node48 struct as a byte table: a 16-byte NodeHeader (node_type, prefix_len, flags, num_children as a u16, and a u64 version), a 12-byte inline CompressedPrefix, then a 256-byte child_index mapping each byte to a slot (255 meaning empty) and 48 SwizzledPtr child pointers (384 bytes); total about 668 bytes." width="70%"/>
 
 **Lookup:** Two array accesses with no searching.
 
@@ -169,17 +169,18 @@ fn find_child_node48(node: &Node48, key: u8) -> Option<&Node> {
 }
 ```
 
-**Space analysis:**
-- 256-byte index array + $48 \times 8$ = 384 bytes of pointers $\Rightarrow$ 640 bytes total
-- A full Node256 would need $256 \times 8 = 2048$ bytes
-- Savings: `~69%` for nodes with 17-48 children
+**Space analysis** (child storage):
+- 256-byte index array + $48 \times 8 = 384$ bytes of pointers $= 640$ bytes of child storage
+  (the whole node is $\approx 668$ B once the 16-byte `NodeHeader` + 12-byte `CompressedPrefix` are added)
+- A full `Node256` child array would need $256 \times 8 = 2048$ bytes
+- Savings: `~69%` on child storage for nodes with 17-48 children ($640$ vs $2048$)
 
 ### Node256 (49-256 children)
 
 Direct array indexing for dense nodes.
 
 **Structure:**
-<img src="../../diagrams/art-node256-fields.svg" alt="The Node256 struct as a byte-field: node-type tag, num_children counter of 49 to 256, compressed-path length and inline partial prefix, then a direct 256-entry child-pointer array giving O(1) indexed lookup; total about 2080 bytes." width="70%"/>
+<img src="../../diagrams/art-node256-fields.svg" alt="The Node256 struct as a byte table: a 16-byte NodeHeader (node_type, prefix_len, flags, num_children as a u16, and a u64 version), a 12-byte inline CompressedPrefix, then a direct 256-entry SwizzledPtr child array (2048 bytes) giving O(1) indexed lookup; total about 2076 bytes." width="70%"/>
 
 **Lookup:** Single array access.
 
@@ -198,10 +199,15 @@ fn find_child_node256(node: &Node256, key: u8) -> Option<&Node> {
 
 | Type | Children | Keys Storage | Lookup Method | Size |
 |------|----------|--------------|---------------|------|
-| Node4 | 1-4 | [u8; 4] unsorted | Linear scan | ~48 B |
-| Node16 | 5-16 | [u8; 16] sorted | SIMD compare | ~160 B |
-| Node48 | 17-48 | [u8; 256] index | Index + direct | ~656 B |
-| Node256 | 49-256 | (implicit) | Direct array | ~2080 B |
+| Node4 | 1-4 | [u8; 4] sorted | Linear scan | ~64 B |
+| Node16 | 5-16 | [u8; 16] sorted | SIMD compare | ~168 B |
+| Node48 | 17-48 | [u8; 256] index | Index + direct | ~668 B |
+| Node256 | 49-256 | (implicit) | Direct array | ~2076 B |
+
+Sizes are the crate's `#[repr(C)]` structs: a **16-byte `NodeHeader`** (`node_type`,
+`prefix_len`, `flags`, `num_children:u16`, `version:u64`) + a **12-byte `CompressedPrefix`**
++ the per-tier keys/index and `[SwizzledPtr; N]` children (8 B each) —
+`src/persistent_artrie/nodes/node{4,16,48,256}.rs`.
 
 ---
 
@@ -211,7 +217,7 @@ Path compression eliminates chains of single-child nodes, reducing tree height a
 
 <img src="../../diagrams/path-compression.svg" alt="Before and after path compression for the term metamorphosis: a 14-node unary chain (one node per byte) collapses into a single final node carrying an inline 12-byte partial prefix, turning up to 14 page faults into 1." width="720"/>
 
-*Figure: path compression for `"metamorphosis"`. Collapsing the unary chain turns up to 14 page faults (one per node) into one read. In this crate the byte variant stores up to **12 inline prefix bytes** per node (`MAX_PREFIX_LEN = 12`); the first 8 are compared pessimistically during descent and any remainder is verified at the leaf. A run longer than the inline cap is split into $\lceil len / 13\rceil$ such nodes rather than degenerating back into a per-byte chain.*
+*Figure: path compression for `"metamorphosis"`. Collapsing the unary chain turns up to 14 page faults (one per node) into one read. In this crate the byte variant stores up to **12 inline prefix bytes** per node (`MAX_PREFIX_LEN = 12`); all 12 are compared pessimistically during descent and any tail beyond the inline cap is verified at the leaf. A run longer than the inline cap is split into $\lceil len / 13\rceil$ such nodes rather than degenerating back into a per-byte chain.*
 
 ### The Problem with Uncompressed Tries
 
@@ -235,7 +241,7 @@ ART supports two strategies:
 
 ### Hybrid Approach
 
-ART uses a hybrid: store a bounded inline prefix and, for longer compressions, verify the tail at the leaf. The original paper inlines 8 bytes; this crate inlines up to 12 (`MAX_PREFIX_LEN = 12` for byte nodes, 6 `u32` characters for char nodes) and still compares only the first 8 pessimistically during descent.
+ART uses a hybrid: store a bounded inline prefix and, for longer compressions, verify the tail at the leaf. The original paper inlines 8 bytes; this crate inlines up to 12 (`MAX_PREFIX_LEN = 12` for byte nodes, 6 `u32` characters for char nodes) and compares all of them pessimistically during descent.
 
 ```rust
 fn check_prefix(node: &Node, key: &[u8], depth: usize) -> PrefixMatch {
@@ -488,7 +494,9 @@ fn find_child_node32_avx2(node: &Node32, key: u8) -> Option<usize> {
 
 ### Space Efficiency
 
-**Bytes per pointer (including overhead):**
+**Bytes per pointer** — a conceptual per-pointer amortization of the ART design (Leis et al.);
+the *exact* crate `#[repr(C)]` struct sizes (which add the 16-byte `NodeHeader` and 12-byte
+`CompressedPrefix`) are the **Summary of Node Types** table above.
 
 | Node Type | Overhead | Per Pointer | At Capacity |
 |-----------|----------|-------------|-------------|
@@ -620,10 +628,10 @@ These properties make ART an excellent foundation for our Persistent ARTrie desi
 
 ## References
 
-1. Leis, V., Kemper, A., & Neumann, T. (2013). "The Adaptive Radix Tree: ARTful Indexing for Main-Memory Databases." *ICDE*. [doi:10.1109/ICDE.2013.6544812](https://doi.org/10.1109/ICDE.2013.6544812) · [PDF](https://db.in.tum.de/~leis/papers/ART.pdf)
+1. Leis, V., Kemper, A., & Neumann, T. (2013). "The Adaptive Radix Tree: ARTful Indexing for Main-Memory Databases." *ICDE*. [DOI: 10.1109/ICDE.2013.6544812](https://doi.org/10.1109/ICDE.2013.6544812) · [PDF](https://db.in.tum.de/~leis/papers/ART.pdf)
 
-2. Binna, R., Zangerle, E., Pichl, M., Specht, G., & Leis, V. (2018). "HOT: A Height Optimized Trie Index for Main-Memory Database Systems." *SIGMOD*.
+2. Binna, R., Zangerle, E., Pichl, M., Specht, G., & Leis, V. (2018). "HOT: A Height Optimized Trie Index for Main-Memory Database Systems." *SIGMOD*. [DOI: 10.1145/3183713.3196896](https://doi.org/10.1145/3183713.3196896)
 
-3. Alvarez, V., Richter, S., Chen, X., & Dittrich, J. (2015). "A Comparison of Adaptive Radix Trees and Hash Tables." *ICDE*.
+3. Alvarez, V., Richter, S., Chen, X., & Dittrich, J. (2015). "A Comparison of Adaptive Radix Trees and Hash Tables." *ICDE*. [DOI: 10.1109/ICDE.2015.7113370](https://doi.org/10.1109/ICDE.2015.7113370)
 
-4. Mao, Y., Kohler, E., & Morris, R. T. (2012). "Cache Craftiness for Fast Multicore Key-Value Storage." *EuroSys*.
+4. Mao, Y., Kohler, E., & Morris, R. T. (2012). "Cache Craftiness for Fast Multicore Key-Value Storage." *EuroSys*. [DOI: 10.1145/2168836.2168855](https://doi.org/10.1145/2168836.2168855)

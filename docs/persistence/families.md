@@ -3,7 +3,7 @@
 **Navigation**: [↑ Persistence architecture](README.md) · [Lock-free overlay](lock-free-overlay.md) · [Storage backends](storage-backends.md) · [Core abstractions](../architecture/abstractions.md)
 
 The `persistent-artrie` feature ships several disk-backed dictionaries. They **share one
-durability infrastructure** (WAL, checkpoint, buffer/block storage — the
+durability infrastructure** (a write-ahead log (WAL), checkpoint, buffer/block storage — the
 [durable-storage kernel](durable-storage-kernel.md)) but split into **two representation
 families** that differ in *what they publish*:
 
@@ -31,7 +31,7 @@ the reclaimable WAL watermark (see [durability-and-recovery.md](durability-and-r
 |---------|------|----------|-----------|--------------|
 | `PersistentARTrie<V>` | bytes (`u8`) | `ByteKey` | `b"PART"` | arbitrary byte strings; **no** UTF-8 re-decode on reconstruction |
 | `PersistentARTrieChar<V>` | Unicode scalars (`u32`) | `CharKey` | `b"ARTC"` | Unicode text (CJK, emoji, accents); WAL stores terms as UTF-8 |
-| `PersistentARTrieU64Compact<V>` | native `u64` sequences | `U64Key<4>` | `b"AR64"` | token / time-series data; prefix-4 compact CX checkpoint budget |
+| `PersistentARTrieU64Compact<V>` | native `u64` sequences | `U64Key<4>` | `b"AR64"` | token / time-series data; prefix-4 compact **CX** checkpoint budget (CX = the compact-snapshot codec, magic `AR64CX01`) |
 | `PersistentARTrieU64Prefix3Compat<V>` | native `u64` sequences | `U64Key<3>` | `b"AR64"` | prefix-3 compatibility / benchmark baseline |
 | `PersistentVocabARTrie` | Unicode terms | `CharKey`, `V = u64` | `b"ARTC"` (vocab header) | durable `term $\leftrightarrow$ u64` bijection |
 
@@ -58,7 +58,8 @@ and constants. This is the "three alphabets, one code path" design detailed in
 <img src="../diagrams/units-keys.svg" alt="Two abstractions fanning into the shared generic backends. The left grey column is CharUnit (src/char_unit.rs) with its u8/char/u64 impls feeding the generic in-memory DictionaryNode. The right grey column is KeyEncoding (core/key_encoding.rs) with its ByteKey/CharKey/U64Key impls, each labelled with its Unit, Token, and KEY_BYTES, fanning into the single generic persistent overlay OverlayNode<K,V> / AtomicNodePtr<K,V> / OverlayDictionaryNode<K,V> (blue). A dashed edge marks the seam KeyEncoding::Token is itself a CharUnit. Grey = the unit/key traits and their alphabets; green = the in-memory consumers; blue = the persistent overlay consumers." width="100%"/>
 
 The **child storage** inside each node is a shared `AdaptiveEdgeStore` that adapts to label
-width: byte keys use ART-style dense `Node4/16/48/256` tiers for high fan-out, while char
+width: byte keys use ART-style dense `Node4/16/48/256` tiers for high fan-out (the Adaptive
+Radix Tree of Leis et al. 2013), while char
 and `u64` keys retain native labels and use inline, sorted, or sparse-indexed storage as
 fan-out grows (see [storage-backends.md](storage-backends.md#adaptive-edge-storage)).
 
@@ -145,3 +146,8 @@ recovery reconstructs state:
 - [Core abstractions — `CharUnit` + `KeyEncoding`](../architecture/abstractions.md)
 - [Persistent ARTrie design (theory)](../theory/disk-tries/06-persistent-artrie-design.md)
 - [Vocabulary trie](../algorithms/vocab-trie.md) · [Native u64 + CX](../algorithms/native-u64-and-cx.md) · [Persistent suffix graphs](../algorithms/persistent-suffix-graphs.md)
+
+## References
+
+- V. Leis, A. Kemper, T. Neumann. *The Adaptive Radix Tree.* ICDE 2013.
+  [DOI:10.1109/ICDE.2013.6544812](https://doi.org/10.1109/ICDE.2013.6544812)

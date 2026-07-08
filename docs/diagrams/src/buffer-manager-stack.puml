@@ -39,6 +39,11 @@ App --> BM : get_page() / release_page()
 BM --> DM : read() / write()
 
 legend bottom
-  green app · blue page table · teal frame pool · amber LRU · slate disk
+| Color | Layer |
+|<#C8E6C9>| application layer (client-facing) |
+|<#BBDEFB>| page table (page_id → frame lookup) |
+|<#B2DFDB>| frame pool (fixed-size page frames) |
+|<#FFE0B2>| eviction policy (LRU) |
+|<#CFD8DC>| disk manager (durable substrate) |
 endlegend
 @enduml

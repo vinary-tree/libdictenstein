@@ -99,7 +99,7 @@ pub trait ValuedDictZipper: DictZipper {
 
 Two design facts drive everything else:
 
-1. **`Self::Unit: CharUnit`** — `CharUnit` is the unit abstraction (`u8` / `char` / `u64`). It deliberately does **not** require `Ord`, so combinators that must sort labels for deterministic iteration do so via `Debug` formatting (`format!("{:?}", a)`), which yields a stable order for the natural numeric/character ordering of every supported unit.
+1. **`Self::Unit: CharUnit`** — `CharUnit` is the unit abstraction (`u8` / `char` / `u64`). Its bound **includes `Ord`**, so combinators that must sort labels for deterministic iteration do so with `sort_unstable()` over that total order — the natural numeric / character / word ordering of every supported unit (which also avoids the per-comparison `Debug`-string allocation an `Ord`-free design would force).
 2. **`Value: DictionaryValue`** — the value trait (see [`src/value.rs`](../../src/value.rs)) requires `Clone + Default + Send + Sync + Unpin + 'static` (and `Serialize + DeserializeOwned` under the `persistent-artrie` feature). Auto-implemented for `()`, the integer/float primitives, `bool`, `char`, `String`, `Vec<T>`, `HashSet<T>`, and `SmallVec<A>`. The unit type `()` overrides `is_value()` to return `false`, so a `()`-valued dictionary behaves like a pure set.
 
 > **Extension-trait ergonomics.** You rarely name the combinator structs directly. Each combinator ships a blanket-implemented extension trait so any `DictZipper` gains a fluent constructor: `UnionZipperExt::union_with`, `IntersectionZipperExt::intersection_with`, `DifferenceZipperExt::difference_from`, `SymmetricDifferenceZipperExt::symmetric_difference_with`, `PrefixZipper::with_prefix`, `ExcludingPrefixZipper::iter_excluding`, `ValueDiffZipperExt::value_diff_with`. `impl<Z: DictZipper> …Ext for Z {}` is the pattern — every cursor, including a combinator, gets every operator.
@@ -124,7 +124,7 @@ The table below is the heart of the subsystem: each row is one combinator's fold
 | **Intersection** $A \cap B$ | **ALL** operands final | label present in **all** operands (else prune) | $\cap$ of operands' labels | merge via strategy (`LatticeMeet` default) |
 | **Difference** `A \ B` | `A` final **AND NOT** `B` final | `A` (left); `B` tags along | `A`'s children only | from `A` (no merge) |
 | **Symmetric diff** $A \triangle B$ | **exactly one** operand final | label present in **any** operand | $\cup$ of operands' labels | from the single source |
-| **Prefix** ${t : p \sqsubseteq t}$ | underlying `is_final()` | underlying `descend` from prefix node | underlying children | underlying value |
+| **Prefix** $\{t : p \sqsubseteq t\}$ | underlying `is_final()` | underlying `descend` from prefix node | underlying children | underlying value |
 | **Excluding-prefix** | underlying `is_final()`, excluded subtrees pruned | underlying, skipping excluded prefixes | underlying minus excluded | underlying value |
 | **Value-diff** | both final **AND** $L.value \ne R.value$ | label in **both** (intersection) | $\cap$ of children | both values exposed separately |
 

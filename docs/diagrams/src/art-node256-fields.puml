@@ -1,37 +1,36 @@
 @startuml art-node256-fields
 ' ============================================================================
 ' art-node256-fields.puml — the Node256 struct layout (byte-ART, 49..256 children).
-' Source: docs/theory/disk-tries/03-adaptive-radix-tree.md (Leis et al. 2013).
-' Replaces the ASCII struct-field box with a compact, colored, viewBox'd byte-field.
-' Color key:  green identity · amber child-count · light-blue inline prefix ·
-'             mid-blue direct child array
+' Source of truth: src/persistent_artrie/nodes/node256.rs (§Layout comment, ~2076 B).
+' Drawn as a CONTIGUOUS colored field table hosted in a floating note; rows share
+' borders (no gaps). Layout = 16-B NodeHeader + 12-B CompressedPrefix + a direct
+' 256-slot child array (no keys — the byte IS the index).
+' Color key: green NodeHeader · light-blue inline prefix · mid-blue direct child array
 ' ============================================================================
 skinparam defaultFontSize 14
 skinparam shadowing false
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
-skinparam rectangle {
-  BorderColor #37474F
-  FontColor #212121
-  BorderThickness 1.2
-}
 skinparam TitleFontSize 15
+skinparam noteFontSize 14
+skinparam note {
+  BackgroundColor #FFFFFF
+  BorderColor #37474F
+}
 
-title Node256 — 49..256 children (~2080 B) · direct array
+title Node256 — 49..256 children (~2076 B) · direct array
 
-rectangle "**type** : u8 — node-type tag (= 256)" as R0 #C8E6C9
-rectangle "**num_children** : u16 — child count (49..256)" as R1 #FFE0B2
-rectangle "**partial_len** : u8 — compressed-path length" as R2 #C8E6C9
-rectangle "**partial** : [u8; 8] — inline compressed prefix" as R3 #E3F2FD
-rectangle "**children** : [ptr; 256] — direct-access array (O(1) index)" as R4 #90CAF9
-
-R0 -[hidden]down- R1
-R1 -[hidden]down- R2
-R2 -[hidden]down- R3
-R3 -[hidden]down- R4
+note as N256
+|= field |= description |
+|<#C8E6C9> NodeHeader : 16 B |<#C8E6C9> fixed 16-byte prefix — see node-header |
+|<#E3F2FD> prefix : [u8; 12] |<#E3F2FD> inline compressed path (CompressedPrefix) |
+|<#90CAF9> children : [SwizzledPtr; 256] |<#90CAF9> direct-access array — O(1) index (2048 B) |
+end note
 
 legend bottom
-  green identity · amber child-count · light-blue inline prefix
-  mid-blue direct child array
+| Color | Field |
+|<#C8E6C9>| NodeHeader — 16 B fixed prefix (see node-header) |
+|<#E3F2FD>| inline compressed-path prefix (12 B) |
+|<#90CAF9>| direct child array (SwizzledPtr, 8 B each) |
 endlegend
 @enduml

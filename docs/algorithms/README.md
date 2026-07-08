@@ -232,7 +232,7 @@ plain suffix automaton. See [suffix-automaton.md](implementations/suffix-automat
 A `DynamicDawg` whose edge labels are 64-bit units — for token sequences and time-series keys:
 
 ```rust
-use libdictenstein::dynamic_dawg_u64::DynamicDawgU64;
+use libdictenstein::dynamic_dawg::DynamicDawgU64;
 
 let dict = DynamicDawgU64::new();   // thread-safe insert + remove over u64 labels
 ```
@@ -244,7 +244,7 @@ let dict = DynamicDawgU64::new();   // thread-safe insert + remove over u64 labe
 Crash-durable Adaptive Radix Tries: `PersistentARTrie` / `PersistentARTrieChar`
 (key -> value), `PersistentARTrieU64Compact` (native `u64` sequence keys), and
 `PersistentVocabARTrie` (term <-> u64 vocabulary ids). These are built on a
-lock-free overlay, write-ahead logging, and CX checkpoint images over `mmap`
+lock-free overlay, write-ahead logging, and CX (compact-snapshot) checkpoint images over `mmap`
 (or `io_uring`) block storage. See the
 [crate README](../../README.md#persistent-artrie--lock-free--durable) and
 [mmap-architecture.md](../persistence/README.md).

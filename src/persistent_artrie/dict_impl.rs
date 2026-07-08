@@ -343,7 +343,7 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     /// **F4 (EC leaf lock):** wrapped in a `Mutex` so `enable_eviction` /
     /// `disable_eviction` (already `&self` via `EvictableARTrie`) toggle it after
     /// the collapse. This is the **EC** lock — a strict LEAF in `CK > merge_lock >
-    /// OR > EC`: never held across acquiring CK/merge_lock/OR, and (critically) NEVER
+    /// EC`: never held across acquiring CK/merge_lock, and (critically) NEVER
     /// held across the worker `.join()` — `disable_eviction`/`close`/`Drop` use the
     /// drop-before-join statement-temporary (`lock().take()` → drop guard →
     /// `shutdown()`).
@@ -413,9 +413,9 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     /// char field). The per-key merge CAS-retry loop is obstruction-free; this lock
     /// kills merge‖merge livelock by serializing the whole-trie merge entry points
     /// (`merge_from`/`merge_replace`/`merge_from_batched*`/`merge_from_parallel`).
-    /// A dedicated **leaf-ish** lock in the hierarchy `CK > merge_lock > OR > EC`:
-    /// the merge driver takes `merge_lock` then (on the owned path) OR, never the
-    /// reverse; checkpoint (CK) snapshots the lock-free root concurrently as
+    /// A dedicated **leaf-ish** lock in the hierarchy `CK > merge_lock > EC`:
+    /// the merge driver takes `merge_lock` and never acquires a higher lock while
+    /// holding it; checkpoint (CK) snapshots the lock-free root concurrently as
     /// designed and never holds `merge_lock`. `Arc<Mutex>` so it survives a future
     /// handle clone unchanged, mirroring `checkpoint_lock` EXACTLY. Single
     /// acquisition site (the innermost private driver); public wrappers must NOT

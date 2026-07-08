@@ -143,7 +143,7 @@ impl FileHeader {
         Ok(())
     }
 
-    /// Compute CRC-64 checksum of header fields (excluding checksum field)
+    /// Compute a 64-bit FNV-1a checksum of header fields (excluding checksum field)
     pub fn compute_checksum(&self) -> u64 {
         // Simple FNV-1a hash for checksum (not cryptographic)
         let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis

@@ -16,7 +16,7 @@ This document introduces the foundational concepts needed to understand disk-bas
 
 ### Definition
 
-A **trie** (from "retrieval," pronounced either "try" or "tree"; introduced by Fredkin 1960, [doi:10.1145/367390.367400](https://doi.org/10.1145/367390.367400)) is a tree-based data structure for storing strings where each edge is labeled with a character (or more generally, a symbol from an alphabet). The path from the root to any node spells out a prefix of the stored strings.
+A **trie** (from "retrieval," pronounced either "try" or "tree"; introduced by Fredkin 1960, [DOI: 10.1145/367390.367400](https://doi.org/10.1145/367390.367400)) is a tree-based data structure for storing strings where each edge is labeled with a character (or more generally, a symbol from an alphabet). The path from the root to any node spells out a prefix of the stored strings.
 
 ```
               root
@@ -89,7 +89,7 @@ This wastes space when nodes have few children.
 
 ### Patricia Trie (Radix Tree)
 
-A **Patricia trie** (Practical Algorithm To Retrieve Information Coded In Alphanumeric; Morrison 1968, [doi:10.1145/321479.321481](https://doi.org/10.1145/321479.321481)) compresses chains of single-child nodes by storing edge labels as strings rather than single characters.
+A **Patricia trie** (Practical Algorithm To Retrieve Information Coded In Alphanumeric; Morrison 1968, [DOI: 10.1145/321479.321481](https://doi.org/10.1145/321479.321481)) compresses chains of single-child nodes by storing edge labels as strings rather than single characters.
 
 ```
 Standard Trie:          Patricia Trie:
@@ -132,7 +132,7 @@ Initial (bucket):       After burst:
 
 ### DAWG (Directed Acyclic Word Graph)
 
-A **DAWG** — also called the *directed acyclic word graph* or minimal acyclic finite-state automaton (Blumer et al. 1985, [doi:10.1016/0304-3975(85)90157-4](https://doi.org/10.1016/0304-3975(85)90157-4); minimized incrementally by Daciuk et al. 2000, [doi:10.1162/089120100561601](https://doi.org/10.1162/089120100561601)) — shares suffixes in addition to prefixes, creating a DAG rather than a tree. This minimizes space but complicates some operations.
+A **DAWG** — also called the *directed acyclic word graph* or minimal acyclic finite-state automaton (Blumer et al. 1985, [DOI: 10.1016/0304-3975(85)90157-4](https://doi.org/10.1016/0304-3975(85)90157-4); minimized incrementally by Daciuk et al. 2000, [DOI: 10.1162/089120100561601](https://doi.org/10.1162/089120100561601)) — shares suffixes in addition to prefixes, creating a DAG rather than a tree. This minimizes space but complicates some operations.
 
 ### Succinct Tries
 
@@ -201,8 +201,8 @@ B-trees exemplify disk-optimized design:
 - **Node size = block size**: each node read/write is one I/O
 
 For `N = 1` billion items and `B = 4 KB` pages holding 400 keys:
-- B-tree height: $log_4_0_0(10^9) \approx 4$ levels
-- Binary tree height: $log_2(10^9) \approx 30$ levels
+- B-tree height: $\log_{400}(10^9) \approx 4$ levels
+- Binary tree height: $\log_2(10^9) \approx 30$ levels
 
 ---
 
@@ -224,7 +224,7 @@ Consider looking up `"international"` (13 characters) in a naive disk trie:
 - If each node is a separate disk read: 13 I/Os!
 
 Compare to a B-tree with fanout 256:
-- Height $\approx 3–4$ for most dictionaries
+- Height $\approx$ 3–4 for most dictionaries
 - Only 3-4 I/Os per lookup
 
 ### Design Goals for Disk Tries
@@ -295,8 +295,8 @@ The following documents explore specific solutions:
 
 ## References
 
-1. Fredkin, E. (1960). "Trie Memory". *Communications of the ACM*, 3(9), 490-499. [doi:10.1145/367390.367400](https://doi.org/10.1145/367390.367400)
-2. Morrison, D. R. (1968). "PATRICIA—Practical Algorithm To Retrieve Information Coded In Alphanumeric". *Journal of the ACM*, 15(4), 514-534. [doi:10.1145/321479.321481](https://doi.org/10.1145/321479.321481)
-3. Heinz, S., Zobel, J., & Williams, H. E. (2002). "Burst Tries: A Fast, Efficient Data Structure for String Keys". *ACM TOIS*.
-4. Aggarwal, A. & Vitter, J. S. (1988). "The Input/Output Complexity of Sorting and Related Problems". *CACM*.
-5. Bayer, R. & McCreight, E. (1972). "Organization and Maintenance of Large Ordered Indexes". *Acta Informatica*.
+1. Fredkin, E. (1960). "Trie Memory". *Communications of the ACM*, 3(9), 490-499. [DOI: 10.1145/367390.367400](https://doi.org/10.1145/367390.367400)
+2. Morrison, D. R. (1968). "PATRICIA—Practical Algorithm To Retrieve Information Coded In Alphanumeric". *Journal of the ACM*, 15(4), 514-534. [DOI: 10.1145/321479.321481](https://doi.org/10.1145/321479.321481)
+3. Heinz, S., Zobel, J., & Williams, H. E. (2002). "Burst Tries: A Fast, Efficient Data Structure for String Keys". *ACM TOIS*, 20(2), 192-223. [DOI: 10.1145/506309.506312](https://doi.org/10.1145/506309.506312)
+4. Aggarwal, A. & Vitter, J. S. (1988). "The Input/Output Complexity of Sorting and Related Problems". *CACM*, 31(9), 1116-1127. [DOI: 10.1145/48529.48535](https://doi.org/10.1145/48529.48535)
+5. Bayer, R. & McCreight, E. (1972). "Organization and Maintenance of Large Ordered Indexes". *Acta Informatica*, 1(3), 173-189. [DOI: 10.1007/BF00288683](https://doi.org/10.1007/BF00288683)

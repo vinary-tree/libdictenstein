@@ -169,11 +169,11 @@ byte, char, and `u64` persistent tries:
 
 | Generic type (in `core/overlay/`) | Role |
 |-----------------------------------|------|
-| `OverlayNode<K, V>` | the immutable, copy-on-write overlay node; stores `ChildStore<K::Unit, Child<K, V>>`, a `prefix: Arc<[K::Unit]>` capped at `K::MAX_PREFIX_LEN`, and an immutable `Option<V>` |
+| `OverlayNode<K, V>` | the immutable, copy-on-write overlay node; stores a `ChildStore<K, V>` (a thin wrapper over `AdaptiveEdgeStore<K::Unit, Child<K, V>>`), a `prefix: Arc<[K::Unit]>` capped at `K::MAX_PREFIX_LEN`, and an immutable `Option<V>` |
 | `Child<K, V>` | an owned child slot: `InMem(Arc<OverlayNode<K, V>>)` or `OnDisk(SwizzledPtr)` |
 | `AtomicNodePtr<K, V>` | the lock-free `arc-swap` root cell that publishes new overlay versions via CAS |
 | `OverlayDictionaryNode<K, V>` | the public `DictionaryNode` handle, whose `type Unit = K::Token` — it presents the variant's natural public token while storing the compact `K::Unit` internally |
-| `AdaptiveEdgeStore<K::Unit, …>` | the tiered child storage shared by every variant (dense `Node4/16/48/256` tiers for high-fanout byte keys; inline / sorted / sparse for char & `u64`) |
+| `AdaptiveEdgeStore<K::Unit, …>` | the tiered child storage shared by every variant (`Tiny` / `Small` inline tiers for 0–4 / 5–16 edges, then `Sorted` and `SparseIndexed`; plus byte-only ART-style `ByteIndexed48` / `ByteDense256` dense tiers for high-fanout byte keys) |
 
 A single blanket `impl<K: KeyEncoding, V> TrieRoot for OverlayNode<K, V>` replaces
 what were two near-identical hand-written impls (byte and char) — it yields

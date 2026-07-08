@@ -10,7 +10,7 @@ start there for depth.
 
 The `persistent-artrie` family shares one lock-free **durable overlay stack** — a client
 API over an atomic-root overlay, gated by a log-before-publish WAL, checkpointed into a
-dense image, and persisted by a pluggable block backend:
+dense **CX** (compact-snapshot) image, and persisted by a pluggable block backend:
 
 <img src="../../diagrams/artrie-layering.svg" alt="Persistent ARTrie durability stack: Client API → lock-free overlay (atomic root, immutable adaptive edge stores) → durability (append+fsync WAL, then publish via CAS, checkpoint lock) → checkpoint storage (mmap default or io_uring+O_DIRECT, CX/dense images, retained WAL replay). Acknowledged $\implies$ durable; linearization point = the winning CAS." width="100%"/>
 

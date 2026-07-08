@@ -2,53 +2,54 @@
 ' ============================================================================
 ' file-header.puml — the 64-byte PersistentARTrie FileHeader at block 0.
 ' Source of truth: src/persistent_artrie/core/disk_manager.rs (struct FileHeader,
-' #[repr(C, align(64))]). Replaces the tiny bytefield SVG with a compact, colored,
-' viewBox'd PlantUML byte-field (one row per field, offsets on the left).
+' #[repr(C, align(64))]). Drawn as a CONTIGUOUS colored byte table (offset column +
+' field column, one row per field) hosted in a floating note — a struct/RFC-style
+' byte map whose rows share borders (no gaps), not a staggered box stack. Full-cell
+' color via Creole |<#hex>| cells (same engine as the swatch legend).
 ' Color key (house palette + persistence accents — docs/diagrams/README.md):
 '   green  #C8E6C9  identity (magic, version)
 '   amber  #FFE0B2  flags / counters
 '   teal   #B2DFDB  swizzled overlay root pointer
 '   blue   #BBDEFB  allocator state (free-list head)
 '   grey   #ECEFF1  alignment padding
-'   purple #E1BEE7  integrity (CRC-64 checksum)
+'   purple #E1BEE7  integrity (64-bit content-hash checksum; FNV-1a in code)
 '   indigo #C5CAE9  checkpoint image-coverage frontier (#48, v2+)
 ' ============================================================================
 skinparam defaultFontSize 14
 skinparam shadowing false
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "DejaVu Sans"
-skinparam rectangle {
-  BorderColor #37474F
-  FontColor #212121
-  BorderThickness 1.2
-}
 skinparam TitleFontSize 15
+skinparam noteFontSize 14
+skinparam note {
+  BackgroundColor #FFFFFF
+  BorderColor #37474F
+}
 
 title FileHeader — the 64-byte descriptor at block 0
 
-rectangle "bytes **0..7**   magic = 0x5041525400010000  ('PART' v1.0)" as R0 #C8E6C9
-rectangle "bytes **8..11**   version = 2" as R1 #C8E6C9
-rectangle "bytes **12..15**   flags  (reserved)" as R2 #FFE0B2
-rectangle "bytes **16..23**   root_ptr  — swizzled overlay root" as R3 #B2DFDB
-rectangle "bytes **24..27**   block_count" as R4 #FFE0B2
-rectangle "bytes **28..31**   _pad1  (alignment)" as R5 #ECEFF1
-rectangle "bytes **32..39**   free_list_head  (0 = none)" as R6 #BBDEFB
-rectangle "bytes **40..47**   entry_count" as R7 #FFE0B2
-rectangle "bytes **48..55**   checksum  — CRC-64 of header" as R8 #E1BEE7
-rectangle "bytes **56..63**   image_checkpoint_lsn  — #48 frontier (v2+)" as R9 #C5CAE9
-
-R0 -[hidden]down- R1
-R1 -[hidden]down- R2
-R2 -[hidden]down- R3
-R3 -[hidden]down- R4
-R4 -[hidden]down- R5
-R5 -[hidden]down- R6
-R6 -[hidden]down- R7
-R7 -[hidden]down- R8
-R8 -[hidden]down- R9
+note as FH
+|= bytes |= field |
+|<#C8E6C9> 0..7 |<#C8E6C9> magic = 0x5041525400010000  ('PART' v1.0) |
+|<#C8E6C9> 8..11 |<#C8E6C9> version = 2 |
+|<#FFE0B2> 12..15 |<#FFE0B2> flags  (reserved) |
+|<#B2DFDB> 16..23 |<#B2DFDB> root_ptr  — swizzled overlay root |
+|<#FFE0B2> 24..27 |<#FFE0B2> block_count |
+|<#ECEFF1> 28..31 |<#ECEFF1> _pad1  (alignment) |
+|<#BBDEFB> 32..39 |<#BBDEFB> free_list_head  (0 = none) |
+|<#FFE0B2> 40..47 |<#FFE0B2> entry_count |
+|<#E1BEE7> 48..55 |<#E1BEE7> checksum  — 64-bit content hash of header |
+|<#C5CAE9> 56..63 |<#C5CAE9> image_checkpoint_lsn  — #48 frontier (v2+) |
+end note
 
 legend bottom
-  green identity · amber flags/counters · teal overlay-root ptr
-  blue allocator · grey pad · purple CRC-64 · indigo checkpoint LSN
+| Color | Field |
+|<#C8E6C9>| identity — magic · version |
+|<#FFE0B2>| flags / counters |
+|<#B2DFDB>| swizzled overlay-root pointer |
+|<#BBDEFB>| allocator — free-list head |
+|<#ECEFF1>| alignment padding |
+|<#E1BEE7>| 64-bit integrity checksum |
+|<#C5CAE9>| checkpoint image-coverage frontier (v2+) |
 endlegend
 @enduml

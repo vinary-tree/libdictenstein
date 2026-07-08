@@ -59,7 +59,7 @@ The format is deliberately small and self-describing:
 Two forward-compatibility tripwires (a **dual magic** and a **fail-closed version
 ceiling**) ensure an *older* binary refuses a file it would mis-interpret rather
 than silently corrupting recovery. The whole design follows the ARIES discipline
-(Mohan et al. 1992, [doi:10.1145/128765.128770](https://doi.org/10.1145/128765.128770)),
+(Mohan et al. 1992, [DOI:10.1145/128765.128770](https://doi.org/10.1145/128765.128770)),
 specialized here to a **redo-only** log.
 
 Source of truth: [`src/persistent_artrie/core/wal/`](../../src/persistent_artrie/core/wal/)
@@ -116,12 +116,12 @@ type-specific payload of `length` bytes.
 | `4` | 4 | `length: u32` (LE) | **Total** frame length in bytes (`17 + payload_len`). |
 | `8` | 8 | `lsn: u64` (LE) | The record's Log Sequence Number. |
 | `16` | 1 | `type: u8` | One of the 15 `WalRecordType` discriminants ([§3.1](#31-record-types)). |
-| `17` | `length − 17` | payload | Type-specific encoding (see each type below). |
+| `17` | `length - 17` | payload | Type-specific encoding (see each type below). |
 
 **Reading discipline.** A reader (`WalReader`) seeks past the 64-byte header,
 then repeatedly: read 17 header bytes (EOF here ends the log cleanly); reject a
-`length < 17`; read the `length − 17` payload bytes (a short read here is a
-**torn tail** → stop); recompute the CRC over `header_bytes[4..] ‖ payload` and
+`length < 17`; read the `length - 17` payload bytes (a short read here is a
+**torn tail** → stop); recompute the CRC over `header_bytes[4..]` $\Vert$ `payload` and
 compare against the stored `crc32` (mismatch → torn/corrupt → stop). A torn or
 CRC-failing frame and everything after it is treated as **never durable** — this
 is precisely how the "durable prefix" is delimited on recovery.
@@ -146,7 +146,7 @@ The `type` byte is a `WalRecordType` (`#[repr(u8)]`). All 15 discriminants:
 | `12` | `VersionUpdate` | Records a new structural **version** of the trie (replaces N mutation records for point-in-time recovery). |
 | `13` | `VersionDurable` | Marks a version as fully persisted (safe to recover to). |
 | `14` | `VersionGc` | Records versions reclaimed by garbage collection (skipped on replay). |
-| `15` | `CommitRank` | **Order-A commit-generation marker.** Binds a data record's `data_lsn` to the commit `generation` (the published leaf's `version`) it committed at, in CAS order. **Replay no-op** for membership; it only supplies `generation_of`. Layout: `data_lsn(u64 LE) ‖ term_len(u32 LE) ‖ term ‖ generation(u64 LE)`. Additive in **v2**. |
+| `15` | `CommitRank` | **Order-A commit-generation marker.** Binds a data record's `data_lsn` to the commit `generation` (the published leaf's `version`) it committed at, in CAS order. **Replay no-op** for membership; it only supplies `generation_of`. Layout: `data_lsn(u64 LE)` $\Vert$ `term_len(u32 LE)` $\Vert$ `term` $\Vert$ `generation(u64 LE)`. Additive in **v2**. |
 
 > An unknown type byte (e.g. `0xff`) is rejected as `InvalidRecordType` — the
 > reader never guesses.
@@ -172,7 +172,7 @@ base / vocab / un-flipped-char recovery is unchanged, with **no** global version
 bump.
 
 **Version ceiling (the format tripwire).** `from_bytes` accepts only
-`version ∈ [MIN_SUPPORTED_VERSION, VERSION] = [1, 2]`. A too-**new** file
+`version` $\in$ `[MIN_SUPPORTED_VERSION, VERSION] = [1, 2]`. A too-**new** file
 (`version > VERSION`) is refused fail-closed; a too-**old** file
 (`version < MIN_SUPPORTED_VERSION`) is unreadable. The $1 \to 2$ bump marks the
 additive arrival of the `CommitRank = 15` record. **Backward compatibility** is
@@ -292,7 +292,7 @@ lock-ordering inversion deadlocks. The Order-A skeleton fixes only the
 ## 8. Crash recovery
 
 Recovery is **redo-only** ARIES (Mohan et al. 1992,
-[doi:10.1145/128765.128770](https://doi.org/10.1145/128765.128770)): open → load
+[DOI:10.1145/128765.128770](https://doi.org/10.1145/128765.128770)): open → load
 the last checkpoint image → scan the durable WAL tail from `checkpoint_lsn` →
 reconcile per-term by max commit-generation → rebuild the overlay → resume.
 
@@ -303,7 +303,7 @@ Step by step:
 1. **Open + validate the header.** Reject a bad magic or an out-of-range version
    fail-closed (this is the dual-magic / version ceiling of [§4](#4-forward-compatibility-dual-magic--version)).
    Decode `checkpoint_lsn`, `commit_seq_floor`, and `rank_regime`.
-2. **Load the checkpoint image.** Everything with `LSN ≤ checkpoint_lsn` is
+2. **Load the checkpoint image.** Everything with `LSN` $\le$ `checkpoint_lsn` is
    already folded into the dense image, so replay only needs the tail.
 3. **Scan the durable WAL tail** (`LSN > checkpoint_lsn`), stopping at the first
    torn / CRC-failing frame — that frame delimits the durable prefix.
@@ -379,4 +379,4 @@ Salient points:
 - Mohan, C., Haderle, D., Lindsay, B., Pirahesh, H., & Schwarz, P. (1992).
   *ARIES: A Transaction Recovery Method Supporting Fine-Granularity Locking and
   Partial Rollbacks Using Write-Ahead Logging.* ACM Transactions on Database
-  Systems 17(1), 94–162. [doi:10.1145/128765.128770](https://doi.org/10.1145/128765.128770)
+  Systems 17(1), 94–162. [DOI:10.1145/128765.128770](https://doi.org/10.1145/128765.128770)

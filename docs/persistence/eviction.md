@@ -74,7 +74,7 @@ The eviction system implements SQLite-style bounded memory operation:
 
 <img src="../diagrams/eviction-pipeline.svg" alt="Eviction pipeline: pressure band to urgency to queue to async thread to quiescence to LRU select to unswizzle" width="980"/>
 
-*Figure 1 — The node-eviction pipeline. `MemoryPressureMonitor` classifies available RAM into `Normal`/`Low`/`Critical`; `request_eviction` maps $Low \Rightarrow Moderate$ and $Critical \Rightarrow Emergency$ (`Normal` is a no-op); the async `artrie-eviction` thread runs `cooldown → wait_for_quiescence → select_for_eviction (LRU) → atomic unswizzle → record stats`, after which the cold node lives on disk as a `DiskRef` and is re-faulted on next access.*
+*Figure 1 — The node-eviction pipeline. `MemoryPressureMonitor` classifies available RAM into `Normal`/`Low`/`Critical`; `request_eviction` maps `Low` $\Rightarrow$ `Moderate` and `Critical` $\Rightarrow$ `Emergency` (`Normal` is a no-op); the async `artrie-eviction` thread runs `cooldown → wait_for_quiescence → select_for_eviction (LRU) → atomic unswizzle → record stats`, after which the cold node lives on disk as a `DiskRef` and is re-faulted on next access.*
 
 **Why this shape.** Detection, policy, and mechanism are separated so each can be tuned independently: the monitor's thresholds bound *when* eviction starts, the LRU policy decides *what* leaves first, and the epoch machinery makes the *mechanism* safe. Making the eviction thread asynchronous (rather than evicting inline after each checkpoint, the way naïve bounded caches do) keeps client `insert`/`lookup`/`iterate` latency off the eviction critical path.
 
@@ -320,7 +320,7 @@ DiskLocationRegistry.select_for_eviction(target_bytes, lru, min_depth, max_count
 
 Node eviction (above) reclaims *trie nodes*; beneath it, the block-storage **buffer pool** manages fixed-size *pages* (256 KB frames) and is what physically reads a node in (*fault-in*) and writes a dirty node out (*flush*). Understanding the page lifecycle clarifies the $DiskRef \to fault-in \to resident$ round-trip that eviction reverses.
 
-**What.** A buffer-pool `Frame` (`core/buffer_manager.rs`) carries a `block_id`, a `lease_state` (a read-pin count or the exclusive `WRITE_LEASE`), a `dirty` flag, and a `reference_bit` for the CLOCK replacement algorithm. There is no single `enum PageState`; a page's condition is the product of ${resident, on-disk} \times {clean, dirty} \times {pinned, unpinned}$. **How.** `load_page`/`pin_page_data` fault a page in; `pin_read`/`pin_write` pin it; `mark_dirty` flags a write; `flush_page`/`flush_all` write it back and `clear_dirty`; and `get_free_frame` reuses an unpinned, unreferenced frame as a CLOCK victim. **Why.** Two invariants make this safe and are visible in the figure: a page is **never** a CLOCK victim while *pinned*, and a *dirty* page may **not** be flushed while a `WRITE_LEASE` is held (a dirty victim is written back before its frame is reused, so no acknowledged bytes are lost).
+**What.** A buffer-pool frame's per-frame state (`FrameMetadata`, `core/buffer_manager.rs`) carries a `block_id`, a `lease_state` (a read-pin count or the exclusive `WRITE_LEASE`), a `dirty` flag, and a `reference_bit` for the CLOCK replacement algorithm. There is no single `enum PageState`; a page's condition is the product of $\{\text{resident}, \text{on-disk}\} \times \{\text{clean}, \text{dirty}\} \times \{\text{pinned}, \text{unpinned}\}$. **How.** `load_page`/`pin_page_data` fault a page in; `pin_read`/`pin_write` pin it; `mark_dirty` flags a write; `flush_page`/`flush_all` write it back and `clear_dirty`; and `get_free_frame` reuses an unpinned, unreferenced frame as a CLOCK victim. **Why.** Two invariants make this safe and are visible in the figure: a page is **never** a CLOCK victim while *pinned*, and a *dirty* page may **not** be flushed while a `WRITE_LEASE` is held (a dirty victim is written back before its frame is reused, so no acknowledged bytes are lost).
 
 <img src="../diagrams/buffer-page-lifecycle.svg" alt="Buffer-pool page lifecycle, part 1 of 2: the top-level Disk ⇄ Resident ⇄ eviction cycle — fault-in, pin/unpin, flush, and CLOCK write-back" width="520"/>
 <img src="../diagrams/buffer-page-lifecycle-2.svg" alt="Buffer-pool page lifecycle, part 2 of 2: the Resident frame's internal substates — Clean/Dirty × Pinned/Unpinned" width="590"/>
@@ -454,7 +454,7 @@ pub trait EvictableARTrie: ARTrie {
 }
 ```
 
-**Source:** `src/artrie_trait.rs:513-584`
+**Source:** `src/artrie_trait.rs:624`
 
 ### Usage Example
 
@@ -653,7 +653,7 @@ The eviction subsystem lives under the unit-agnostic `core/` of the persistent A
 | `src/persistent_artrie/core/memory_monitor.rs` | `MemoryPressureMonitor`, `MemoryPressureLevel` (`Normal`/`Low`/`Critical`), `MemoryPressureConfig`, `sysinfo`/PSI-based detection |
 | `src/persistent_artrie/core/concurrency.rs` | `EpochManager` (EBR: `enter_read`/`exit_read`/`advance`/`wait_for_quiescence`) and `EpochGuard` |
 | `src/persistent_artrie/core/swizzled_ptr.rs` | `SwizzledPtr` — atomic `swizzle`/`unswizzle`, `DiskLocation`, `NodeType` |
-| `src/persistent_artrie/core/buffer_manager.rs` | Buffer-pool `Frame` lifecycle (pin/unpin, mark-dirty, flush, CLOCK eviction) |
+| `src/persistent_artrie/core/buffer_manager.rs` | Buffer-pool frame (`FrameMetadata`) lifecycle (pin/unpin, mark-dirty, flush, CLOCK eviction) |
 | `src/artrie_trait.rs` | `EvictableARTrie` trait definition (`enable_eviction`, `force_eviction`, `eviction_stats`, `touch_node`) |
 
 > The byte/char/vocab `EvictableARTrie` *implementations* are wired through each variant's Phase-6 eviction sub-modules (e.g. `src/persistent_artrie/*/eviction*.rs` and the `atomic_ops`/`persist` sub-modules), which adapt the shared `core/eviction` machinery to that variant's node type. Overlay eviction is functional and proven for the byte and char variants (the shared `OverlayEvictable` primitives in `core/overlay/evict.rs`, driven from the eviction coordinator and the checkpoint-integrated callback); the vocab variant installs a no-op eviction callback for API parity (its overlay-only vocabulary never evicts finals).
@@ -664,3 +664,14 @@ The eviction subsystem lives under the unit-agnostic `core/` of the persistent A
 - [Lock-free overlay](lock-free-overlay.md) — the immutable `OverlayNode` whose cold subtrees eviction unswizzles into a `Child::OnDisk(SwizzledPtr)` (the on-disk *DiskRef* of this document), and the read-path fault-in.
 - [Durability & recovery](durability-and-recovery.md) — the checkpoint that writes a node's bytes to disk *before* eviction can reclaim its RAM, so an evicted node is never lost.
 - [Persistence architecture](README.md) — the whole stack, with eviction as a cross-cutting concern.
+
+## References
+
+- K. Fraser. *Practical Lock-Freedom.* PhD thesis, University of Cambridge, 2004 — epoch-based
+  reclamation (EBR), the safe-memory-reclamation discipline used here. Technical Report
+  [UCAM-CL-TR-579](https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-579.html).
+- *Dynamic Memory Allocation in SQLite* — the bounded page-cache / capped-memory model this
+  subsystem's `resident_budget_bytes` design follows. <https://www.sqlite.org/malloc.html>
+
+*(The **CLOCK** second-chance victim selection and the **LRU** coldness heuristic are classical
+page-cache algorithms, described mechanically in the sections above.)*

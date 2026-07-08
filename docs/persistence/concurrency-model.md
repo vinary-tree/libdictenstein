@@ -5,7 +5,7 @@
 The persistent-ARTrie family is **lock-free by default**: `SharedARTrie`,
 `SharedCharARTrie`, and `SharedVocabARTrie` are bare `Arc<T>` handles, and both reads and
 writes proceed without a global lock. The only operations that take *any* mutual exclusion
-are concurrent checkpoints, the dormant owned-path fallback, and eviction — and those obey
+are concurrent checkpoints, byte/char merges, and eviction — and those obey
 one strict, acyclic lock order. This document is the concurrency contract: the F4 lock
 collapse, MVCC snapshot reads, the two distinct "epoch" mechanisms, version GC, and the
 eviction-safety stamp.
@@ -41,19 +41,24 @@ new `unsafe`**.
 
 The residual locks obey a strict acyclic order — acquire only top-to-bottom:
 
-<img src="../diagrams/f4-lock-hierarchy.svg" alt="The F4 lock hierarchy as a top-to-bottom ordering graph. At the top, the lock-free overlay (teal) handles reads AND writes with no lock; a dashed edge notes that only the residual operations take a lock. Below it, four red lock rungs in strict acquire order: CK (checkpoint_lock Mutex, serialize concurrent checkpoints), then merge_lock (Mutex, serialize merge-vs-merge, byte/char only), then OR (owned_root RwLock, dormant kill-switch/WAL-replay, capture-read), then EC (eviction_coordinator Mutex, a LEAF never held across a lock or a worker join). A dashed grey cluster shows the vocab subset: overlay-only, so only CK and EC, and because the vocab eviction callback is a no-op, CK does not read EC, making the order trivially acyclic." width="80%"/>
+<img src="../diagrams/f4-lock-hierarchy.svg" alt="The F4 lock hierarchy as a top-to-bottom ordering graph. At the top, the lock-free overlay (teal) handles reads AND writes with no lock; a dashed edge notes that only the residual operations take a lock. Below it, three red lock rungs in strict acquire order: CK (checkpoint_lock Mutex, serialize concurrent checkpoints), then merge_lock (Mutex, serialize merge-vs-merge, byte/char only), then EC (eviction_coordinator Mutex, a LEAF never held across a lock or a worker join). A dashed grey cluster shows the vocab subset: overlay-only, so only CK and EC, and because the vocab eviction callback is a no-op, CK does not read EC, making the order trivially acyclic." width="80%"/>
 
 $$
-\text{CK} \;>\; \text{merge\_lock} \;>\; \text{OR} \;>\; \text{EC}
+\text{CK} \;>\; \text{merge\_lock} \;>\; \text{EC}
 $$
 
 - **CK** — `checkpoint_lock: Mutex<()>` serializes concurrent checkpoints.
 - **merge_lock** — serializes merge-vs-merge (byte/char only).
-- **OR** — the `owned_root: RwLock<TrieRoot>`, a *dormant* kill-switch / WAL-replay path, read during checkpoint capture.
-- **EC** — `eviction_coordinator: Mutex<Option<..>>`, a **leaf**: never held across acquiring `CK`/`merge_lock`/`OR`, and never held across a worker `.join()` — the **drop-before-join** discipline, `let x = field.lock().take(); x.shutdown();`.
+- **EC** — `eviction_coordinator: Mutex<Option<..>>`, a **leaf**: never held across acquiring `CK`/`merge_lock`, and never held across a worker `.join()` — the **drop-before-join** discipline, `let x = field.lock().take(); x.shutdown();`.
 
-**Vocab is a strict subset.** `SharedVocabARTrie` is overlay-only, so it has *no* `merge_lock`
-and *no* owned root — only `CK` and `EC`. Its eviction callback is a no-op, so `CK` never
+Only three locks remain. The former inner `owned_root: RwLock<TrieRoot>` rung (once a dormant
+kill-switch / WAL-replay fallback) was **removed** once the lock-free overlay became the sole
+production structure — reads and writes take *no* owned-tree lock (see
+[lock-free-overlay.md](lock-free-overlay.md); `dict_impl.rs` retains only
+`checkpoint_lock` / `merge_lock` / `eviction_coordinator`).
+
+**Vocab is a strict subset.** `SharedVocabARTrie` is overlay-only, so it has *no* `merge_lock` —
+only `CK` and `EC`. Its eviction callback is a no-op, so `CK` never
 reads `EC`; the two are independent and the order is trivially acyclic. The lock hierarchy
 is exhaustively exercised by `tests/persistent_lockfree_f4_lock_hierarchy_loom.rs` and
 `tests/vocab_lockfree_f4_lock_hierarchy_loom.rs`, and the shared-handle linearizability by
@@ -138,12 +143,13 @@ The full invariant $\leftrightarrow$ model $\leftrightarrow$ proof correspondenc
 [formal-verification-map.md](formal-verification-map.md).
 
 > **Status.** The lock-free/F4 design described here is the **current, verified**
-> architecture. The byte and char collapse is committed; the vocab-F4 extension is complete
-> and model-checked (`SharedPersistentConcurrency.tla` clean; the three `vocab_*` loom/
-> concurrency tests pass) and is landing in the working tree at time of writing.
+> architecture. The byte, char, *and* vocab collapse are committed and gated; the vocab-F4
+> extension is complete and model-checked (`SharedPersistentConcurrency.tla` clean; the three
+> `vocab_*` loom/concurrency tests pass).
 
 ## References
 
 - M. Herlihy, N. Shavit. *The Art of Multiprocessor Programming.* Morgan Kaufmann, 2008
   (lock-freedom, linearizability).
 - K. Fraser. *Practical Lock-Freedom.* PhD thesis, University of Cambridge, 2004 (EBR).
+  Technical Report [UCAM-CL-TR-579](https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-579.html).
