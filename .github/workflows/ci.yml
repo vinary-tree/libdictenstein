@@ -384,6 +384,14 @@ jobs:
       - name: SVG hygiene gate (root viewBox + no baked deprecation banner)
         run: bash scripts/render-diagrams.sh --check
 
+      # GitHub strips backslash-escapes inside `$…$` / `$$…$$` before MathJax parses
+      # them, so `\_` `\{` `\;` are corrupted — loudly (parse error) or silently
+      # (wrong output). Only $`…`$ and ```math fences survive. See docs/README.md.
+      - name: Doc math hygiene gate (GitHub-safe delimiters)
+        run: |
+          python3 scripts/check-doc-math.py --selftest
+          python3 scripts/check-doc-math.py
+
   # -----------------------------------------------------------------
   # Scheduled/manual deep bounded model check. This is intentionally
   # not a PR job because several focused TLC models are large.

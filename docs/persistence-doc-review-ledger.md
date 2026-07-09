@@ -15,7 +15,10 @@ owner amendments that override where they conflict**:
 1. **Prefer PlantUML over Mermaid** for any new/replaced diagram.
 2. **Math notation uses LaTeX, not unicode literals** — this **overrides** the pgmcp
    "Mathematical notation" guideline ("use unicode for math"):
-   - **Prose:** MathJax `$…$` / `$$…$$`.
+   - **Prose:** MathJax. **Delimiters (superseded 2026-07-09):** `$…$` / `$$…$$` are
+     unsafe — GitHub strips backslash-escapes from inside them, corrupting `\_` `\{` `\;`.
+     Use ``$`…`$`` inline and ` ```math ` fences for display; gated by
+     `scripts/check-doc-math.py`. See `docs/README.md`.
    - **Diagram labels:** PlantUML LaTeX `<latex>…</latex>` / `<math>…</math>` (JLaTeXMath,
      bundled in the installed `plantuml.jar`). **Verified:** renders headless + **byte-stable**
      across renders (identical `data:image` sha1). **Caveat:** it embeds a *raster* image

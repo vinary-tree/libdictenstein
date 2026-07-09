@@ -12,6 +12,10 @@ diagrams-as-code + CI-gated + guideline-conformant discipline established by the
 - **Started**: 2026-07-06.
 - **Amendments to the house style**: PlantUML preferred over Mermaid for committed
   figures; MathJax/LaTeX (`$…$` / `$$…$$`) replaces Unicode-in-backticks for math.
+  - **Superseded 2026-07-09**: those delimiters are unsafe — GitHub strips
+    backslash-escapes from inside them. Use ``$`…`$`` and ` ```math ` fences instead;
+    see `docs/README.md` § *Authoring conventions — math in Markdown*, gated by
+    `scripts/check-doc-math.py`.
 - **Hard coordination constraint**: the in-flight files
   `design/f4-lock-collapse-implementation.md` and
   `../formal-verification/tla+/SharedPersistentConcurrency.tla` are **not edited** here

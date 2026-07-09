@@ -23,7 +23,7 @@ Route by the paths that changed (a change may hit more than one surface — run 
 | `docs/diagrams/src/*.{puml,mmd,d2,dot,gv,bob}`, `docs/benchmarks/artifacts/*.gp` | diagrams-as-code | §A |
 | `src/**`, `benches/**`, `tests/**`, `Cargo.toml` | Rust code | §B |
 | `docs/formal/**`, `*.v`, `*.tla`, `UNSAFE_*.tsv` | formal / unsafe boundary | §C |
-| other `docs/**` (prose only) | docs | nothing to run beyond §A if a figure moved |
+| any `*.md` (including `docs/**` prose) | docs | §D |
 
 ---
 
@@ -105,6 +105,36 @@ prefer the specific harness for what changed and cap resources per the repo's
   jobs invoke (see `.github/workflows/ci.yml` steps "Run … correspondence harness").
 - **Unsafe change:** reconcile `UNSAFE_INVENTORY.tsv` + `UNSAFE_CONTRACTS.tsv`
   (set-equality, no orphan tags) or the formal-correspondence gate fails.
+
+---
+
+## §D — Docs (the GitHub-math gate)
+
+GitHub runs CommonMark backslash-escape processing *inside* math spans before MathJax
+parses them, so `$…$` and `$$…$$` corrupt `\_` `\{` `\}` `\;` `\,` `\#` — loudly (a
+`'_' allowed only in math mode` parse error) or, worse, silently: `\max\{\,L\,\}`
+renders as `\max{,L,}`. Only ``$`…`$`` and ` ```math ` fences survive verbatim.
+
+```bash
+python3 scripts/check-doc-math.py --selftest   # tokenizer termination + all 4 rules fire
+python3 scripts/check-doc-math.py              # expect "doc-math: OK"; this is what CI runs
+```
+
+The gate also rejects an ASCII letter abutting an opening ``$` `` (GitHub renders no math
+there) and two-or-more literal `\$` on one line (they can pair into a spurious math span).
+See `docs/README.md` § *Authoring conventions — math in Markdown*.
+
+**Observe the render, not just the exit code.** For a doc whose math you changed, confirm
+GitHub itself agrees — the escapes must survive into the rendered span:
+
+```bash
+jq -Rs '{text: ., mode: "gfm"}' docs/persistence/durability-and-recovery.md \
+  | gh api -X POST /markdown --input - \
+  | grep -o '<math-renderer[^>]*>[^<]*' | head
+```
+
+Every `\_` `\{` `\;` you authored must still be present in that output, and no
+`\text{…}` may contain a bare `_`.
 
 ---
 

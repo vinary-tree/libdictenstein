@@ -63,3 +63,46 @@ note in part 1 and re-attached from a `← from part 1` note in part 2.
 > transducer that walks any of these dictionaries — lives in the companion crate
 > **[liblevenshtein](https://github.com/universal-automata/liblevenshtein-rust)**.
 > libdictenstein contains no fuzzy-matching code itself.
+
+---
+
+## Authoring conventions — math in Markdown
+
+Prose math is MathJax; diagram labels use PlantUML-LaTeX (`<latex>` / `<math>`).
+**Which delimiters you use is not cosmetic — GitHub corrupts the obvious ones.**
+
+Before handing a math span to MathJax, GitHub's Markdown pass runs CommonMark
+backslash-escape processing *over the span's interior*. Inside `$…$` and `$$…$$`
+that rewrites `\_`→`_`, `\{`→`{`, `\}`→`}`, `\;`→`;`, `\,`→`,`, `\#`→`#`. The damage
+comes in two flavours, and the silent one is the dangerous one:
+
+- **Loud** — a bare `_` or `#` reaches MathJax, which aborts with
+  `'_' allowed only in math mode`.
+- **Silent** — `\max\{\,L\,\}` renders as `\max{,L,}`: the set braces disappear and
+  literal commas replace thin-spaces. No error, wrong mathematics.
+
+Only two forms survive GitHub's escape pass verbatim. Use them:
+
+| | Write this | Not this |
+|---|---|---|
+| **Inline** | ``$`\text{checkpoint\_lsn}`$`` | `$\text{checkpoint\_lsn}$` |
+| **Display** | a ` ```math ` fenced block | `$$ … $$` |
+| **Literal `$`** | inline code — `` `$₁` `` | `\$₁` |
+
+Two further rules, both established by rendering probes against GitHub's own GFM
+endpoint (`gh api -X POST /markdown`):
+
+1. **Never let an ASCII letter abut the opening `` $` ``.** GitHub declines to open
+   inline math there, so ``InMem$`\Rightarrow`$descend`` renders as literal text.
+   Write ``InMem $`\Rightarrow`$ descend``. (A digit or `)` before the `$` is fine.)
+2. **Keep literal dollars in inline code.** Two or more `\$` on one line can pair
+   into a spurious math span — and whether they do is not predictable from the
+   source: `{\$, b\$}` renders as text while `\$₁, \$₂` renders as math.
+
+`scripts/check-doc-math.py` enforces all four rules over every tracked `*.md`, and
+runs in the `diagrams` CI job. Run it before committing docs:
+
+```bash
+python3 scripts/check-doc-math.py          # every tracked *.md
+python3 scripts/check-doc-math.py FILE…    # just these
+```
