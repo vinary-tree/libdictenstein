@@ -127,7 +127,7 @@ Both arms do REAL eviction under matched pressure: CONTROL owned-tree `force_evi
   NO reclaim — §F must beat it) by > noise; (b) TREATMENT RSS $`\le`$ CONTROL RSS. Supported iff both.
 - **HF3 (reclamation effectiveness):** `overlay_reclaimed_nodes` > 0 AND $`\approx`$ matched to CONTROL reclaimed count
   under same budget/cadence (fairness witness).
-- **Secondary vetoes (gated FIRST by SF5):** SF1 pause T$`\le`$C; SF2 p99/p999 $`\le`$1.10$`\times`$; SF3 RSS $`\le`$1.25$`\times`$; SF4 contended
+- **Secondary vetoes (gated FIRST by SF5):** SF1 pause T $`\le`$ C; SF2 p99/p999 $`\le`$1.10$`\times`$; SF3 RSS $`\le`$1.25$`\times`$; SF4 contended
   not sig worse. **SF5 CORRECTNESS (ABORT on fail):** (i) reopen-exact both arms; (ii) `faultin_count==0` T
   (cold-only held); (iii) `overlay_reclaimed_nodes>0` T (no silent no-op). Enforced by `--evict-real` smoke +
   OE1-OE4.

@@ -51,7 +51,7 @@ torn hybrid. Red-team status in §13.
   lockfree_value_route. Default `OwnedTree`.
 - **Checkpoint:** `publish_durable_and_reclaim` (persist.rs:108) rotates by next_lsn + asserts next_lsn
   unchanged (lock-free-INCOMPATIBLE). `capture_snapshot_immutable` (343, cfg-gated) captures watermark
-  BEFORE root load + asserts watermark$`\le`$synced_frontier (465). `publish_immutable_snapshot_retaining_wal`
+  BEFORE root load + asserts watermark $`\le`$ synced_frontier (465). `publish_immutable_snapshot_retaining_wal`
   (548, cfg-gated) RETAINS WAL. **No publisher captures-immutable AND reclaims by watermark.**
 - **Header:** `MAGIC`/`MAGIC_OVERLAY` dual-accept (header.rs:128); VERSION=2 already; regime byte 28,
   default Owned, unknown→Owned fail-safe.
@@ -83,7 +83,7 @@ ONE dangerous window:** after C makes `MAGIC_OVERLAY` durable but BEFORE the bin
 LOST. **Resolution:** the regime-stamp code and the `LockFreeOverlay` ctor default ship in the SAME
 release (true by construction — the stamp is reached only via the flip code that also sets the default).
 **ASSUMPTION-4 (HIGH, the #1 red-team item):** verify NO path appends an owned record to a
-`MAGIC_OVERLAY` WAL — i.e. every Overlay-stamped V$`\in`${(),u64} trie has `enable_lockfree` run (route_overlay
+`MAGIC_OVERLAY` WAL — i.e. every Overlay-stamped V $`\in`${(),u64} trie has `enable_lockfree` run (route_overlay
 true) AND no arbitrary-V / value-CAS / doc-tx trie is EVER stamped Overlay.
 
 ## 6. Quiesce / lock-ordering
@@ -93,7 +93,7 @@ checkpoint/set_commit_seq_floor). N-S4-3: re-discharge the faulting-producers lo
 insert‖remove‖increment‖checkpoint‖eviction soak.
 
 ## 7. Checkpoint-through-overlay (largest NEW unit)
-Build `publish_immutable_snapshot_reclaiming` = capture_snapshot_immutable + watermark$`\le`$synced_frontier
+Build `publish_immutable_snapshot_reclaiming` = capture_snapshot_immutable + watermark $`\le`$ synced_frontier
 assert + watermark-bounded reclaim. **HAZARD:** a plain `rotate_to_archive` archives the WHOLE active
 file $`\Rightarrow`$ records `> w` (the in-flight tail) move to the archive that normal open never reads $`\Rightarrow`$ tail-LOSS.
 **Correct (7a):** tail-preserving compaction (copy `> w` to a fresh Overlay active, fsync, rename). NEW
@@ -121,13 +121,13 @@ Per-file (base/vocab keep MAGIC untouched). Back-compat: new binary reads old Ow
    RecoveryManager::rebuild_from_wal (503), recover_from_archives (mmap_ctor.rs:1199). Reversible/inert.
 2. **S5-2:** `WalWriter::set_owned_regime()` (inverse, empty-WAL-guarded). Reversible.
 3. **S5-3:** un-gate `capture_snapshot_immutable` + `publish_immutable_snapshot_retaining_wal`; promote
-   the watermark$`\le`$frontier assert to unconditional. Reversible.
+   the watermark $`\le`$ frontier assert to unconditional. Reversible.
 4. **S5-4:** `SharedCharARTrie::checkpoint` route-split (mod.rs:1298); move the lockfree_root.is_none()
    assert into the owned arm. Reversible while no ctor flips.
 5. **S5-5:** `flip_to_overlay(&mut self)` + symmetric `kill_switch_to_owned(&mut self)`; file-length
    emptiness assert. Reversible (no caller).
 6. **S5-6:** multi-segment recovery correspondence test (both polarities), real-disk scratch. Reversible.
-7. **S5-7 — THE FLIP (IRREVERSIBLE):** the V$`\in`${(),u64} ctors call `flip_to_overlay()`; first production
+7. **S5-7 — THE FLIP (IRREVERSIBLE):** the V $`\in`${(),u64} ctors call `flip_to_overlay()`; first production
    write of MAGIC_OVERLAY. Owner GO + full gate. Arbitrary-V ctors UNCHANGED.
 
 ## 11. Gate sequence (irreversible — exhaustive)

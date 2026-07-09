@@ -1362,7 +1362,7 @@ Same as DynamicDawg:
 | **Remove** | O(m) | Plus ref count updates |
 | **Contains** | O(m) | With Bloom filter: O(1) rejection |
 | **Compact** | O(n) | n = total nodes |
-| **Query (fuzzy)** | O(m$`\times`$d²$`\times`$b) | d = distance, b = branching |
+| **Query (fuzzy)** | O(m $`\times`$ d²$`\times`$b) | d = distance, b = branching |
 
 ### Benchmark Results
 

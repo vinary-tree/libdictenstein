@@ -525,7 +525,7 @@ if dict.text_count() > 1000 && dict.needs_compaction() {
 | **Construction** | O(n) | n = text length |
 | **Insert character** | O(1) amortized | Online construction |
 | **Contains (exact)** | O(m) | m = query length |
-| **Fuzzy search** | O(m$`\times`$d²$`\times`$b) | d = distance, b = branching |
+| **Fuzzy search** | O(m $`\times`$ d²$`\times`$b) | d = distance, b = branching |
 | **Compact** | O(s) | s = number of states |
 
 ### Benchmark Results

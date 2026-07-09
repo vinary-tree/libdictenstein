@@ -181,7 +181,7 @@ src/phonetic/
 | Query Type | Complexity | Notes |
 |------------|------------|-------|
 | Exact (d=0) | O(k) | Direct trie lookup, 100-300$`\times`$ faster |
-| Fuzzy (d$`\ge`$1) | O(k log n) | Levenshtein automaton pruning |
+| Fuzzy (d $`\ge`$ 1) | O(k log n) | Levenshtein automaton pruning |
 | Regex | O(n $`\times`$ k) | Scans normalized forms |
 
 Where k = query length, n = dictionary size.

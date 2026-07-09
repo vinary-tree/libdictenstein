@@ -63,7 +63,7 @@ liveVersion+1, acked. New `Checkpoint(n)`: durableVersion := liveVersion (re-sta
 acked node is reachable-at-acked-version OR onDisk-evictedToVersion==acked OR durable-version==acked).
 Negative control `USE_1C_GUARD=FALSE` drops the conjunct → WriterCas then unguarded evict →
 evictedToVersion(1) $`\ne`$ acked(2) → NoStaleEvict VIOLATED (the lost update). Keep USE_FAULT_IN=FALSE
-control. MaxRoot$`\approx`$8. Gate the new `_StaleEvict_Unsafe.cfg` in verify-formal-correspondence.sh (251/305/360).
+control. MaxRoot $`\approx`$ 8. Gate the new `_StaleEvict_Unsafe.cfg` in verify-formal-correspondence.sh (251/305/360).
 loom (NOT TLA): the stamp Release/Acquire vs with_child reconstruction + checkpoint-tail ‖ writer.
 
 ## 2. BUDGET (revert v3 over-correction) — APPROXIMATE on-disk + overhead
@@ -169,7 +169,7 @@ implementation obligations folded into the phases:
   set — the 1c guard correctly REFUSES to evict hot (overwritten-since-checkpoint) nodes, so a hot
   working set continuously rewritten and LARGER than budget cannot be bounded (inherent: you can't
   safely evict a node being concurrently overwritten). DOCUMENT this; the convergence bench must measure
-  libgrammstein's n-gram counter hot-set size vs budget (NOT just steady-state reclaim$`\ge`$growth). NOTE:
+  libgrammstein's n-gram counter hot-set size vs budget (NOT just steady-state reclaim $`\ge`$ growth). NOTE:
   checkpoint-tail eviction just-stamped ~all nodes → cold set evictable there; the limit bites the async
   pressure loop / pathological all-hot workloads. libgrammstein's STREAMING import has a bounded recent
   hot window << cold imported set → eviction works; the limit is for hot-set>budget steady-state.

@@ -328,7 +328,7 @@ Char-only (byte/vocab emit zero CommitRank). Needs `LockfreeInsertResult::Alread
 has NO correct rank: claim-fresh-commit_seq resurrects; read-publishing-commit_seq is unavailable (it
 didn't observe that root, and the value isn't durably attached); rank-root.version is cross-domain. $`\Rightarrow`$
 it MUST NO-RANK, which under the deployed reconcile is safe ONLY under `RankRegime::Overlay`
-(unranked$`\Rightarrow`$drop). "Store commit_seq on the root node" is a strictly-dominated TRAP (degenerates to
+(unranked $`\Rightarrow`$ drop). "Store commit_seq on the root node" is a strictly-dominated TRAP (degenerates to
 FIX-A, gives no durability the CommitRank doesn't, widens the hot-path node). FIX-A is therefore
 **mutually exclusive** with commit_seq-stamped real arms: it is the PRE-stamp regime; at S4 the
 idempotent arms convert from "rank observed-version" to "NO-RANK + non-faulting present-hoist", the same

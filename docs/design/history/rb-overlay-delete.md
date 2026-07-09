@@ -45,7 +45,7 @@ pub fn as_non_final(&self) -> Self {
 Clears `IS_FINAL`+`HAS_VALUE` on a COPY (immutability preserved), retains children/prefix (compaction = future opt,
 out of scope — matches owned remove which also leaves the node). No `without_value` (folded in). ZERO unsafe
 (same shape as `as_final`; Send/Sync unaffected). Node unit tests: clear→not-final/no-value/children-preserved/
-original-unchanged; as_non_final$`\circ`$as_final round-trip; deep-child retention ("cat" cleared keeps "cats" final);
+original-unchanged; as_non_final $`\circ`$ as_final round-trip; deep-child retention ("cat" cleared keeps "cats" final);
 both ByteKey+CharKey.
 
 ## (3) `remove_cas_durable` — Order-A mirror of insert_cas_durable
@@ -106,7 +106,7 @@ replaced by **last-writer-wins under the root-CAS total order**.
   (t∈present) <=> (t∉removed)` + `NoResurrection` + `NoLostOp`. **Negative control `_Unsafe.cfg`:**
   `USE_FRESH_COPY_CLEAR=FALSE` models the rejected in-place clear (clear `present` WITHOUT bumping root) → TLC MUST
   violate `LastWriterWins` (resurrection/lost-remove). Register in `verify-formal-correspondence.sh` SANY/RUN_TLC/
-  negative-control lists (`:251`/`:269`/`:323`). Bounded: 2 Terms, MaxRoot$`\approx`$6.
+  negative-control lists (`:251`/`:269`/`:323`). Bounded: 2 Terms, MaxRoot $`\approx`$ 6.
 - **§4.5 Why the prefix-insert fix survives:** insert's path is UNCHANGED (still shares the node + `fetch_or`);
   remove never flips an existing node's bit, it swaps in a fresh node version via root-CAS. The two never write the
   same atomic; the root-CAS total order resolves them. Loom schedule #2 is the machine-checked witness.

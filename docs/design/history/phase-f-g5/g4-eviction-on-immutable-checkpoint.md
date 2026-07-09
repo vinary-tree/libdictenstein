@@ -131,9 +131,9 @@ registryDurableUpTo <= Watermark`; `EvictionTouchesOnlyDurable` (evicted ⊆ dur
 Both arms eviction ENABLED. CONTROL = owned tree + `publish_durable_and_reclaim` (publishes registry `:123-127`);
 TREATMENT = overlay + `bench_immutable_checkpoint_with_eviction`.
 - **HE1:** Immediate + eviction-ON, TREATMENT throughput > CONTROL (disjoint); two-sided Welch; supported iff
-  positive $`\land`$ significant $`\land`$ d$`\ge`$0.8. **Expectation:** eviction publication is OFF the timed writer path (checkpointer's
+  positive $`\land`$ significant $`\land`$ d $`\ge`$ 0.8. **Expectation:** eviction publication is OFF the timed writer path (checkpointer's
   `update_disk_registry` = one `RwLock::write` swap), so track the eviction-OFF result (+312%); registry build cost
-  is in BOTH arms (same serializer). **Secondaries (vetoes):** SE1 pause T$`\le`$C; SE2 tails $`\le`$1.10$`\times`$; SE3 RSS $`\le`$1.25$`\times`$;
+  is in BOTH arms (same serializer). **Secondaries (vetoes):** SE1 pause T $`\le`$ C; SE2 tails $`\le`$1.10$`\times`$; SE3 RSS $`\le`$1.25$`\times`$;
   SE4 contended not sig worse; **SE5 (NEW correctness veto): post-checkpoint force_eviction + reload returns exact
   values in BOTH arms — fail $`\Rightarrow`$ ABORT (bug, not perf).**
 - **§E.2 durability-parity-under-eviction:** per-write fsync unchanged+equal (ledger §2; invalidate is a flag bump,

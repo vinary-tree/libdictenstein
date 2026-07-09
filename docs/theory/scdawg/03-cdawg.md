@@ -132,7 +132,7 @@ Let's trace the compaction for w = "abcabcab\$" (with end marker):
 | q₆ | {6} | {cabc, bcabc, abcabc} | Yes (a,\$) | No |
 | q₇ | {7} | {cabca, bcabca, abcabca} | Yes (b,\$) | No |
 | q₈ | {8} | {cabcab, bcabcab, abcabcab} | Yes (\$) | No |
-| q₉ | {9} | {\$, b\$, ab\$, ...} | No | Yes |
+| q₉ | {9} | {`$`, `b$`, `ab$`, ...} | No | Yes |
 
 In this example, most states have multiple outgoing edges (branching), so few can be removed.
 

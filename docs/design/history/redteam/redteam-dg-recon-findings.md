@@ -12,7 +12,7 @@ regime mechanism (cross-codebase) and the DG phase ordering — fixable in a foc
 (`persistent_artrie/mmap_ctor.rs:378`), vocab (`persistent_vocab_artrie/mmap_ctor.rs:238`), and char ALL funnel
 through `AsyncWalWriter::open_or_create` → `WalWriter::open` (`writer.rs:101`) — exactly where the proposed guard
 $`header.version < VERSION \Rightarrow UnsafeVersionMixing`$ lands. The moment DG-RECON sets `VERSION=3`, every pre-existing
-base/vocab WAL (legitimately v2) is REFUSED at open. **regime$`\equiv`$version assumed the WAL version is char-specific; it
+base/vocab WAL (legitimately v2) is REFUSED at open. **regime $`\equiv`$ version assumed the WAL version is char-specific; it
 is GLOBAL.**
 
 **F1b [CRITICAL] — fresh vocab/base WALs become v3-unranked after the bump.** `WalWriter::create` → `WalHeader::new()`

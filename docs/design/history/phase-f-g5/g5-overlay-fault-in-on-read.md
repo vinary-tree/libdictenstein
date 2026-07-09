@@ -61,7 +61,7 @@ fn find_leaf_faulting(&self, root_slot: &AtomicNodePtr<V>, chars: &[u32], max_fa
     -> Result<Option<Arc<PersistentCharNode<V>>>>
 ```
 Per attempt: `enter_read()`; `old_root = root_slot.load()`; walk top-down collecting spine; at each edge:
-`None`$`\Rightarrow`$absent (`Ok(None)`); InMem$`\Rightarrow`$descend; **OnDisk$`\Rightarrow`$fault**: `loaded = load_overlay_node_from_disk(ptr)?`, rebuild
+`None`$`\Rightarrow`$absent (`Ok(None)`); InMem $`\Rightarrow`$ descend; **OnDisk $`\Rightarrow`$ fault**: `loaded = load_overlay_node_from_disk(ptr)?`, rebuild
 spine bottom-up splicing `Child::InMem(loaded)` (exactly `evict_overlay_node_at_path`'s shape, `mod.rs:1499-1518`,
 but InMem not OnDisk), `root_slot.compare_exchange(&old_root, new_root)` → Ok: rebase+continue; Err: drop `loaded`
 (refcount) + rebase. Terminal: leaf-by-`is_final` (as `find_leaf_recursive:526-531`). On retry exhaustion: one
@@ -84,7 +84,7 @@ c if c.as_on_disk().map_or(false,|p| !p.is_null()) => {
 ```
 **Correct, not a lost update:** `build_path_recursive` builds a NEW spine; splicing InMem(faulted+extended) at `key`
 is identical in shape to an in-mem child $`\Rightarrow`$ **the single root CAS in `insert_lockfree_recursive` (`:407-419`) remains
-the sole arbiter.** CAS wins$`\Rightarrow`$faulted-in + new term, durable (Order-A WAL before CAS, `insert_cas_durable:214`),
+the sole arbiter.** CAS wins $`\Rightarrow`$ faulted-in + new term, durable (Order-A WAL before CAS, `insert_cas_durable:214`),
 visible. CAS loses (writer/evictor)$`\Rightarrow`$`Conflict`$`\Rightarrow`$existing retry from fresh root, dropped spine (no leak/clobber); on
 retry the slot may be InMem (racer faulted) $`\Rightarrow`$ descend without reload. **The silent-drop bug is eliminated.**
 Counter write `build_value_path_recursive`: same edit (fault then descend) — fixes the infinite-spin; its read step

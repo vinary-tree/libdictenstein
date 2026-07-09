@@ -22,7 +22,7 @@ via a reversible `bench-internals` accessor.
   (`Arc<RwLock>` `insert_with_value` + downgrade checkpoint), in the disjoint-prefix workload.
 - **H0:** μ_T − μ_C = 0.
 - **Two-sided** Welch's t (must detect TREATMENT *losing* — per-op fsync / Arc-refcount contention are
-  real risks, §9). H1 "supported" only if effect is positive AND significant AND meets the d$`\ge`$0.8 floor.
+  real risks, §9). H1 "supported" only if effect is positive AND significant AND meets the d $`\ge`$ 0.8 floor.
 
 **Secondary (descriptive regression VETOES, not confirmatory tests → no multiplicity correction):**
 - **S1 — checkpoint pause** (writer-observable stall): TREATMENT $`\le`$ CONTROL.
@@ -100,7 +100,7 @@ Flipping WITH eviction on is not yet measurable; ledger says so.
 
 ## 4. Workload spec (FROZEN)
 
-**Hardware:** AMD Threadripper PRO 5975WX, 32 physical cores, SMT OFF, 4 CCD$`\times`$8, 32 MiB L3/CCD, governor
+**Hardware:** AMD Threadripper PRO 5975WX, 32 physical cores, SMT OFF, 4 CCD $`\times`$ 8, 32 MiB L3/CCD, governor
 `performance` (live; no sudo), NVMe `/dev/nvme0n1p4` 66 GB free (97% full). (Execution agent: confirm against
 `/home/dylon/.claude/hardware-specifications.md` + live `lscpu`/`nproc`; record any delta in RESULTS.)
 
@@ -165,7 +165,7 @@ checked pre+post each round (abort if exceeded); `MemoryMax=32G` bounds page-cac
   windows (a checkpoint that stalls no writer is fine for TREATMENT; CONTROL's downgrade excludes writers during
   capture → SHOULD stall — exactly S1's hypothesis). ALSO checkpointer-side per-call duration (mean/p99).
   Per-thread `Vec<u64>` histograms merged post-join (zero timed-region contention).
-- **S2 latency p50/p99/p999:** merge all W$`\times`$WRITES_PER_ROUND per-op latencies post-join (`hdrhistogram` dev-dep
+- **S2 latency p50/p99/p999:** merge all W $`\times`$ WRITES_PER_ROUND per-op latencies post-join (`hdrhistogram` dev-dep
   available, or sort-Vec at 16k/round).
 - **S3 peak RSS:** `/proc/self/status` `VmHWM` in the single-arm-per-process pass (C10).
 - **Secondary (non-gating):** `cas_retries`/TREATMENT round, `round_dir_bytes`, read_ops, checkpoint count.
@@ -193,21 +193,21 @@ ceiling guard/per-round cleanup kept verbatim from v1.
 
 ## 8. Statistical + pre-registration plan (anti-p-hacking)
 
-- **K = 30 measured rounds/arm** (after 2 warmup). Justification: exp #11 needed 57 replicates for d$`\approx`$0.345;
+- **K = 30 measured rounds/arm** (after 2 warmup). Justification: exp #11 needed 57 replicates for d $`\approx`$ 0.345;
   expected effect here is SMALLER (durability equalized). Power for two-sided Welch α=0.05 to detect the
   pre-registered floor **d=0.8** at $`\approx`$0.9 power needs $`\approx`$27/arm → K=30 margin. We deliberately do NOT chase a
-  small d$`\approx`$0.3 effect (not decision-relevant for an IRREVERSIBLE flip). K=30 fixed before data.
+  small d $`\approx`$ 0.3 effect (not decision-relevant for an IRREVERSIBLE flip). K=30 fixed before data.
 - **Primary test:** two-sample **Welch's t** on the K throughput vectors (variant A, Immediate). Report per-arm
   mean±sd; difference (T−C) + 95% Welch CI; t, Welch–Satterthwaite df, two-sided p; Cohen's d (pooled). Also
   **Mann–Whitney U** (distribution-free corroboration). Decision keys on Welch + CI + d.
 - **Effect-size floor (pre-registered):** because the flip is IRREVERSIBLE + deletes the owned tree, require
-  **d $`\ge`$ 0.8** (large) for an unconditional "flip wins on throughput" (exp #11 used d$`\ge`$0.5 for a *reversible*
+  **d $`\ge`$ 0.8** (large) for an unconditional "flip wins on throughput" (exp #11 used d $`\ge`$ 0.5 for a *reversible*
   change; irreversible warrants higher). 0.5$`\le`$d<0.8 = "modest, flip-neutral on throughput — decide on S1/S2".
 - **α=0.05.** Secondaries are descriptive vetoes (can only BLOCK, not justify).
 - **STOPPING RULE:** exactly K=30/arm/variant. NO peeking, NO early stop, NO adding rounds. Launch once, tee,
   analyze offline. Analysis script written + committed BEFORE the run, run once on the frozen CSV.
 - **DECISION RULE → flip recommendation (frozen, exhaustive):**
-  1. **PROCEED:** Welch p<0.05 AND diff>0 AND d$`\ge`$0.8 (variant A throughput) AND no regression: S1 T$`\le`$C, S2
+  1. **PROCEED:** Welch p<0.05 AND diff>0 AND d $`\ge`$ 0.8 (variant A throughput) AND no regression: S1 T $`\le`$ C, S2
      p99/p999 T≤1.10×C, S3 RSS T≤1.25×C, S4 contended T not sig worse (p≥0.05 or diff≥0).
   2. **PROCEED-WITH-CAVEAT (tail/pause, not throughput):** throughput null/modest (d<0.8) BUT S1 clear pause/
      tail improvement AND no S2/S3/S4 regression → "flip buys bounded tail latency, not mean throughput."
@@ -321,7 +321,7 @@ No production source change beyond the already-present reversible `bench-interna
 
 - **diff (T−C) = +14,231.3 ops/s (+312.05%)**, **95% Welch CI [13,931.8, 14,530.8]** (excludes 0, strictly positive).
 - **Welch t = 96.9467, df = 30.72, p(two-sided) = 9.10e-40.**
-- **Cohen's d = 25.03** (pooled) — vastly exceeds the pre-registered d$`\ge`$0.8 floor.
+- **Cohen's d = 25.03** (pooled) — vastly exceeds the pre-registered d $`\ge`$ 0.8 floor.
 - **Mann–Whitney U = 900.0, p = 3.02e-11** (complete separation; corroborates Welch).
 
 <img src="../benchmarks/artifacts/lockfree-flip-throughput.svg" alt="Clustered bar chart of write throughput in ops/sec, CONTROL (Arc<RwLock> owned tree, red) versus TREATMENT (lock-free overlay, blue), across six regime-and-variant pairs. TREATMENT is 3-6.5x higher in every pair: eviction-OFF disjoint 4561 vs 18792 (+312%), eviction-OFF contended 5800 vs 15486 (+167%), eviction-ON disjoint 2720 vs 17235 (+534%), eviction-ON contended 3799 vs 15205 (+300%), evict+reclaim disjoint 1987 vs 14970 (+653%), evict+reclaim contended 2439 vs 14806 (+507%)." width="860"/>
@@ -331,7 +331,7 @@ No production source change beyond the already-present reversible `bench-interna
 ### Secondary descriptive vetoes
 - **S1 — checkpoint pause.** FROZEN S1 = the **writer-observable** stall (§6: "measured AT THE WRITER as the
   upper tail of per-op write latency during checkpoint windows"; §1: "writer-observable stall"). Writer-observed
-  p999: **control 126,374 µs vs treatment 4,533 µs → treatment 96.4 % better (T$`\le`$C, no regression — a large S1
+  p999: **control 126,374 µs vs treatment 4,533 µs → treatment 96.4 % better (T $`\le`$ C, no regression — a large S1
   improvement).** Secondary "ALSO" diagnostic (checkpointer-side per-call, §6): mean control 67,625 / treatment
   59,532 µs; **p99 control 132,144 / treatment 185,414 µs** — the per-call checkpoint is *longer* for TREATMENT
   (its immutable snapshot still walks the overlay to serialize, §9 item 5) but does so WITHOUT stalling writers,
@@ -381,7 +381,7 @@ hypothesis"), making the writer-observed p999 the S1 quantity by construction.
 
 ### §8 DECISION-RULE VERDICT → **BRANCH 1: PROCEED**
 All Branch-1 conditions met: Welch p = 9.10e-40 < 0.05 AND diff = +14,231 ops/s > 0 AND d = 25.03 $`\ge`$ 0.8
-(variant A throughput), with **no regression** — S1 writer-observed pause T$`\le`$C (4.5 ms $`\le`$ 126 ms, a 96 %
+(variant A throughput), with **no regression** — S1 writer-observed pause T $`\le`$ C (4.5 ms $`\le`$ 126 ms, a 96 %
 improvement), S2 p99/p999 ratios 0.029/0.036 $`\le`$ 1.10$`\times`$, S3 RSS ratio 0.878 $`\le`$ 1.25$`\times`$, S4 contended diff +9,687
 (positive, p = 6.3e-35, not worse). **One-line flip recommendation:** the lock-free overlay write+immutable-
 checkpoint path beats the owned `Arc<RwLock>` tree on throughput by ~3–4$`\times`$ AND collapses the writer-observed

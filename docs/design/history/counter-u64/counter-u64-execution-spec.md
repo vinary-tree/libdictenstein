@@ -8,7 +8,7 @@ makes `increment`/`fetch_add` return `Result<V>`.
 
 ## The helper (DONE — use it, do not re-create)
 `crate::persistent_artrie_core::counter_codec`:
-- `counter_leaf_to_i128::<V>(&[u8]) -> Option<i128>` — decode 8-LE-byte leaf (u64/i64; None else/len$`\ne`$8)
+- `counter_leaf_to_i128::<V>(&[u8]) -> Option<i128>` — decode 8-LE-byte leaf (u64/i64; None else/len $`\ne`$ 8)
 - `counter_value_to_i128::<V>(&V) -> Option<i128>` — decode a typed V (confines `serialize`)
 - `i128_to_counter_leaf::<V>(i128) -> Option<Vec<u8>>` — encode → leaf bytes, range-checked
   (u64: `[0,u64::MAX]`; i64: `[i64::MIN,i64::MAX]`); byte-identical to `serialize(&(n as V))`

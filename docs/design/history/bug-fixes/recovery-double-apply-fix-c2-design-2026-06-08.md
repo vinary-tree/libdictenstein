@@ -62,7 +62,7 @@ the synced frontier — IS the #41 footgun (lies that non-durable LSNs are synce
 ## Red-team round-1 result
 CORRECT + #41-safe for the CLEAN path (crash-points 1=mid-recovery, 2=post-recovery-pre-checkpoint,
 3b=post-Checkpoint-record, 4=post-checkpoint-pre-reopen) across single/multi/rotated archive layouts,
-both V$`\in`${u64,i64}. The #41 assert never fires from the fix (override consumed post-capture). No-relog
+both V $`\in`${u64,i64}. The #41 assert never fires from the fix (override consumed post-capture). No-relog
 preserved (ctors append nothing). Steady-state unaffected (override defaults 0).
 
 **OPEN RISK — crash-point 3a:** crash AFTER the image descriptor fsync but BEFORE the WAL `Checkpoint`

@@ -24,7 +24,7 @@ C-opt-1 does NOT do — so ship F5-B.)
 WAL tail through OWNED mutators (`replay_records_lww`); F5 must replay it INTO THE OVERLAY via
 the no-WAL overlay publishers, reusing `reconcile_lww` (winners are representation-agnostic
 `(term,op)`; the Overlay-regime unranked-orphan drop is inherited). Gate + proptest hard.
-**Gate (before any switch):** both-loaders correspondence proptest — byte+char $`\times`$ V$`\in`${(),
+**Gate (before any switch):** both-loaders correspondence proptest — byte+char $`\times`$ V $`\in`${(),
 u64/i64,String,struct} $`\times`$ {valued,term-only,empty-""} → reopen via owned-loader vs F5 → assert
 identical len/term-set/get_value(incl."")/membership; + a deep (~100k-unit) key; + a WAL-tail
 (crash-without-checkpoint) reopen + the unranked-drop negative control.

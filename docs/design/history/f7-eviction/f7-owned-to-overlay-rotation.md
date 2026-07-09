@@ -78,7 +78,7 @@ final state (byte+char $`\times`$ V incl. "" and term-only members). So converte
 owned-reopen, incl. unranked Owned entries (orphan-KEEP).
 
 ### Verification
-- crash-safety proptest (5 crash points $`\times`$ byte/char $`\times`$ V$`\in`${(),u64,String} $`\times`$ empty/non-empty
+- crash-safety proptest (5 crash points $`\times`$ byte/char $`\times`$ V $`\in`${(),u64,String} $`\times`$ empty/non-empty
   WAL/image): inject drop at each step, reopen, assert every committed term+value + "" +
   unranked Owned entries survive + final regime Overlay; idempotence on double reopen.
 - TLA+: extend (5-state conversion machine {Owned,Archived,OverlayStamped,OverlayBuilt,

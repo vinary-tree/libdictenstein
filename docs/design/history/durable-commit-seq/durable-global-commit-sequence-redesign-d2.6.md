@@ -73,7 +73,7 @@ Correct for v2 (no ranks $`\Rightarrow`$ in-order = the total `&mut self` append
 v3 file: the R5 guard in `WalWriter::open` returns `UnsafeVersionMixing` when `header.version < VERSION`. The
 read-only `WalReader`/`read_header` is permissive `[MIN_SUPPORTED..=VERSION]` so `migrate_v2_to_v3` reads v2. ∎
 
-### 1.2 Why regime$`\equiv`$version closes the A-cluster
+### 1.2 Why regime $`\equiv`$ version closes the A-cluster
 A#1 (first window): no window — the header version IS the regime. A#2 (base never reconciles): by design (base = v2
 in-order; guard blocks base opening v3). A#3 (multi-regime archive): per-segment version. A#4 (no regime stamp):
 version IS the regime. A#5/A#6 (wrong-domain assert / not persisted): flip forces a fresh v3 file, regime durable
@@ -115,7 +115,7 @@ let cseq = match rank.get(&lsn).copied() {
 ```
 Everything else (checkpoint-skip `:283-285`, expansion `:287`, stable sort `:296`) UNCHANGED. v1+v2 → KEEP@lsn
 (closes C#11/C#10; v2 root-version is just the `rank.unwrap_or(lsn)` sort key; v2 never dropped, drop needs
-version$`\ge`$3). **No watermark, no reconstructed-overlay-watermark, no per-checkpoint regime stamp** (D2.5's two-pass
+version $`\ge`$ 3). **No watermark, no reconstructed-overlay-watermark, no per-checkpoint regime stamp** (D2.5's two-pass
 watermark + `committed_watermark_floor` header field DROPPED). Rationale: drop is purely version-gated, and R3
 ack-after-rank guarantees $`acked \implies ranked \implies never the drop arm`$; the only unranked v3 records are un-acked
 two-append orphans which MUST drop. A torn-hole = a missing data record; a CommitRank with a missing `data_lsn` is

@@ -1288,7 +1288,7 @@ prototype_fuzzy_matcher(
 | **Insert** | O(m log n) | m = term length, n = dict size |
 | **Remove** | O(m log n) | HashMap operations |
 | **Contains** | O(m log n) | Tree traversal + lookups |
-| **Fuzzy search** | O(m$`\times`$d²$`\times`$b$`\times`$log n) | Additional log factor |
+| **Fuzzy search** | O(m $`\times`$ d²$`\times`$b $`\times`$ log n) | Additional log factor |
 
 ### Benchmark Results
 

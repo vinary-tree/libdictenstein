@@ -164,5 +164,5 @@ domain; bound the `commit_seq_by_data_lsn` map (B#2c — e.g. cap + fall back to
 
 This is SIMPLER than D2.5 (no regime field/inference, no per-op-merge coder, reconcile mostly as-is). The (1a)
 spine + R3 ack + R5 chokepoint + R6 tx + R7 errata carry from D2/D2.5. Next: a Plan agent produces D2.6 with these
-6 decisions pre-made (filling in mechanics, not re-deriving), then ONE final narrow red-team (regime$`\equiv`$version +
+6 decisions pre-made (filling in mechanics, not re-deriving), then ONE final narrow red-team (regime $`\equiv`$ version +
 atomic-gate + result-sentinel), then foreground implementation.

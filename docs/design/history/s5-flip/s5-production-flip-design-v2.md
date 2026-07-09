@@ -93,7 +93,7 @@ Crash-safe at each step (table in §10). Archived Overlay segments stay Overlay 
 §4); irreversibility boundary = existence of any Overlay archive segment (RA-10).
 
 ## 8. H4/A7 — promote asserts (MEDIUM)
-persist.rs:464 (watermark$`\le`$synced_frontier, #41 guard), persist.rs:140 (next_lsn-unchanged), mod.rs:1312
+persist.rs:464 (watermark $`\le`$ synced_frontier, #41 guard), persist.rs:140 (next_lsn-unchanged), mod.rs:1312
 (lockfree_root.is_none, → owned arm of the route-split): `debug_assert*` → `assert*` (unconditional).
 RA-11: the watermark advances strictly AFTER WAL append+sync (Order-A) $`\Rightarrow`$ no spurious release panic.
 
@@ -121,7 +121,7 @@ soak stays MANDATORY (empirical gate; RA-12: mitigated not eliminated).
   `insert_cas_with_value_nodurable`; **wire reestablish into BOTH ctors gated on Overlay regime** (the
   V1 close — byte-identical for Owned files). Reversible (no construction flip yet).
 - S5-11: the new gate tests. Reversible.
-- **S5-12 — THE FLIP (IRREVERSIBLE, ~6 lines):** the V$`\in`${(),u64} ctors call `flip_to_overlay` (create) /
+- **S5-12 — THE FLIP (IRREVERSIBLE, ~6 lines):** the V $`\in`${(),u64} ctors call `flip_to_overlay` (create) /
   reestablish handles open. Arbitrary-V UNCHANGED. Owner GO + full gate.
 
 ## 12. Gate sequence (timeout-wrapped, tee'd, REAL-disk scratch)

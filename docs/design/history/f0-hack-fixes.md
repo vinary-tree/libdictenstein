@@ -97,7 +97,7 @@ resident value, not default); loom `get_or_insert‖remove` (no phantom — valu
 - **Fix A (batch):** new `insert_batch_cas_durable(&self, terms:&[&str])->Result<usize>` (membership, loops
   `insert_cas_durable`, count+first-Err-stops); new `route_insert_batch<V,S>(trie, entries)->Option<Result<usize>>`
   in `lockfree_value_route.rs` (all-None→membership; else u64-downcast loop `insert_cas_with_value_durable`/
-  `insert_cas_durable`; None if V$`\ne`$u64 & any Some). Wire `insert_batch:18` (replace `:28-42`) + **add routing to
+  `insert_cas_durable`; None if V $`\ne`$ u64 & any Some). Wire `insert_batch:18` (replace `:28-42`) + **add routing to
   `insert_batch_bytes:148`** (currently missing). `_chars/_sorted/_grouped` inherit. Update the module doc.
 - **Fix B (document-tx tx-ii):** replace the `:321-329` blanket error; validate state; reject negative aggregated
   increment; apply SETs via `route_insert_with_value`/`insert_cas_durable`, increments via

@@ -146,7 +146,7 @@ today) — see R4. Do NOT do that.
   recovery_replay_completeness_correspondence.rs:241.
 
 ## New TLA obligation — RecoveryRebuildOverlay
-1. Sink-completeness (lockfree_root$`\ne`$None at every apply). 2. tx-filter parity (no new filtering —
+1. Sink-completeness (lockfree_root $`\ne`$ None at every apply). 2. tx-filter parity (no new filtering —
 applier-swap not drain-swap). 3. **Watermark coverage** ($`\forall`$ visible LSN ℓ: ℓ$`\le`$watermark() after the
 seed — #41 invariant; the `_Unsafe.cfg` must still exhibit loss when the seed is omitted). 4.
 No-relog (0 WAL records appended). + a Rust regression test: corruption-rebuild/recover_from_archives

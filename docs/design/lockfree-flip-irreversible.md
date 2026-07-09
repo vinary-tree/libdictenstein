@@ -129,8 +129,8 @@ is the only data-affecting one-way step, deliberately split out (F7).
 
 ## (9) Formal + verification
 - **Integration spec `LockFreeFlipEndToEnd.tla`** (belt-and-suspenders for an irreversible flip; reuse base-module
-  actions): headline invariant `EveryCommittedTermSurvivesFullCycle` over Write$`\cup`$Commit$`\cup`$Checkpoint$`\cup`$Evict$`\cup`$FaultIn$`\cup`$
-  Crash$`\cup`$Recover; tiny CONSTANTS (2 writers/2 terms/MaxLSN=3); `_Unsafe.cfg` re-breaks one link (capture-ordering
+  actions): headline invariant `EveryCommittedTermSurvivesFullCycle` over Write $`\cup`$ Commit $`\cup`$ Checkpoint $`\cup`$ Evict $`\cup`$ FaultIn $`\cup`$
+  Crash $`\cup`$ Recover; tiny CONSTANTS (2 writers/2 terms/MaxLSN=3); `_Unsafe.cfg` re-breaks one link (capture-ordering
   reversed) → MUST violate it. The per-component specs already cover each link.
 - **Production-soak PS1 (the #41 witness through the FLIPPED production API):** N writers `trie.insert`/`increment`
   + R readers `trie.contains`/`get_value` + checkpointer `trie.checkpoint()` + evictor `force_eviction`, all

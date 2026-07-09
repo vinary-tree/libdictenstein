@@ -274,7 +274,7 @@ graph revision and CAS-publish the winning copy.
 | **Remove** | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
 | **Union** | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ |
 | **Clone Cost** | O(n) | O(n) | O(1) | O(1) | O(1) | N/A |
-| **Clone Sharing** | ❌ Deep | ❌ Deep | ✅ Arc | ✅ Arc | ✅ Arc$`\times`$2 | N/A |
+| **Clone Sharing** | ❌ Deep | ❌ Deep | ✅ Arc | ✅ Arc | ✅ Arc $`\times`$ 2 | N/A |
 | **Unicode** | Byte | ✅ Char | Byte | ✅ Char | Byte | Byte |
 | **Thread-Safe** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Use Case** | General | Unicode | Dynamic | Dyn+Unicode | Simple | Substring |

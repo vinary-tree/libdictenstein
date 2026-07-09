@@ -54,7 +54,7 @@ let cseq = match rank.get(&lsn).copied() {
     },
 };
 ```
-$`Owned\Rightarrow KEEP@lsn`$ = byte-for-byte today's `unwrap_or(lsn)` (no regression). R3 ack-after-rank $`\Rightarrow`$ acked$`\implies`$ranked$`\implies`$never
+$`Owned\Rightarrow KEEP@lsn`$ = byte-for-byte today's `unwrap_or(lsn)` (no regression). R3 ack-after-rank $`\Rightarrow`$ acked $`\implies`$ ranked $`\implies`$ never
 dropped. R6 tx-gating folded into this single body so every caller gets it.
 
 ### 1.3 How each entry obtains `regime_of`

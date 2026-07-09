@@ -93,15 +93,15 @@ rank, watermark not advanced → recovery replays under `gen=lsn` fallback (corr
 rebuilds from corrected owned replay); fix touches ONLY the owned replay; REC-B must reuse the reconcile.
 
 ## (4) Formal re-proof
-**NEW spec `LockFreeOverlayDurableReplay.tla` (+`.cfg`+`_Unsafe.cfg`)** — bounded (Terms={a,b}, MaxOps$`\approx`$4, lsns/gens
+**NEW spec `LockFreeOverlayDurableReplay.tla` (+`.cfg`+`_Unsafe.cfg`)** — bounded (Terms={a,b}, MaxOps $`\approx`$ 4, lsns/gens
 1..6). Vars: `nextLsn`,`nextGen`,`wal`(seq of Insert/Remove/Rank), `present`/`removed` (visible, same abstraction as
 `LockFreeOverlayRemoveCas`), `committed`, `replayed`. Actions: `Append(t,kind)` (step1, no visibility change);
 `CommitCas(t)` (step2, update present/removed LWW + assign `gen'=nextGen[t]+1`); `AppendRank(t)` (step2.5, then
 $`committed'\cup ={lsn,rankLsn}`$); `CrashRecover` (replayed[t]=effect of max-gen data record, gen=rank else lsn, ties by
 lsn, over committed $`\le`$ frontier). **`USE_COMMIT_RANK=TRUE`** (design, replay by gen) / **`=FALSE`** (`_Unsafe.cfg`
 negative control, replay by lsn = the broken scheme). Invariants: **`ReplayEqualsCommittedVisible`** ($`\forall`$t:
-(t$`\in`$replayed)<=>(t$`\in`$present)) [headline]; `NoLostNetWrite` (present$`\Rightarrow`$replayed, the s019 direction); 
-`NoResurrectionOnReplay` ($`\neg`$present$`\Rightarrow`$$`\neg`$replayed); reuse `DurablePrefix`. **The `_Unsafe.cfg` MUST violate
+(t $`\in`$ replayed)<=>(t $`\in`$ present)) [headline]; `NoLostNetWrite` (present $`\Rightarrow`$ replayed, the s019 direction); 
+`NoResurrectionOnReplay` ($`\neg`$present $`\Rightarrow`$$`\neg`$replayed); reuse `DurablePrefix`. **The `_Unsafe.cfg` MUST violate
 `ReplayEqualsCommittedVisible` via the s019 trace** (Append Insert@a, Append Remove@b>a, CommitCas(Remove) then
 CommitCas(Insert) $`\Rightarrow`$ present={s} but lsn-replay ends Remove $`\Rightarrow`$ replayed={} $`\Rightarrow`$ FALSE<=>TRUE). If the unsafe cfg passes,
 the control is broken $`\Rightarrow`$ fail the gate. Register in `verify-formal-correspondence.sh` SANY(`:252`)+TLC(`:303`)+

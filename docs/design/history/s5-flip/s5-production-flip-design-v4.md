@@ -120,7 +120,7 @@ Each names its production entry point. Land all GREEN before owner GO; only S5-1
   NO route guard. FIX: `Err` under `route_overlay()` (symmetry with `commit_document`). Severity downgraded
   (§RES-2).
 - **S5-8 (promote asserts).** `debug_assert*`→`assert*` at persist.rs:140 (next_lsn-unchanged #41 guard), the
-  watermark$`\le`$synced_frontier guard, the moved `lockfree_root.is_none` owned-arm assert. Entry:
+  watermark $`\le`$ synced_frontier guard, the moved `lockfree_root.is_none` owned-arm assert. Entry:
   `publish_durable_and_reclaim` (persist.rs:108). Order-A $`\implies`$ no spurious panic.
 - **S5-9 (cfg un-gate + checkpoint route-split).** Entry: `checkpoint()` (persist.rs:86). Production
   `checkpoint()`→`capture_snapshot()` (persist.rs:255) serializes from `self.root` (OWNED tree) ONLY — no

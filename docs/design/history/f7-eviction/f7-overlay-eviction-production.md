@@ -268,7 +268,7 @@ wiring — no hidden no-op there.)
   overlay-eviction path, so the single invalidate suffices. Add a comment it is owned-only (or
   defensively invalidate there too) so a future owned+eviction byte config can't silently regress.
 - (was 7, formal scope) OverlayEvictionCas.tla covers the abstract 3-way evictor‖faulter‖writer
-  root-CAS + evict$`\subseteq`$durable precondition + no-UAF — but does NOT cover: (i) the checkpoint-tail
+  root-CAS + evict $`\subseteq`$ durable precondition + no-UAF — but does NOT cover: (i) the checkpoint-tail
   composition (publish→concurrent-writer-invalidate→tail-evictor is_valid() as one system — close with
   a loom test: checkpoint-tail-eviction ‖ writer), (ii) convergence/budget (a LIVENESS property the
   safety specs don't model — close with a massif heap soak under write-heavy load), (iii) byte's NEW

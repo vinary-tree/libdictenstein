@@ -137,7 +137,7 @@ Reversible hardening (land before owner GO), then the single irreversible flip:
 - S5-9 (cfg un-gate + checkpoint route-split), S5-10 (§3 streaming-fallible reestablish + flip_to_overlay
   + kill_switch_to_owned + insert_cas_with_value_nodurable; wire reestablish into both ctors gated on
   Overlay regime), S5-11 (tests). Reversible.
-- **S5-12 — THE FLIP (IRREVERSIBLE, ~6 lines):** the V$`\in`${(),u64} ctors call flip_to_overlay. Owner GO +
+- **S5-12 — THE FLIP (IRREVERSIBLE, ~6 lines):** the V $`\in`${(),u64} ctors call flip_to_overlay. Owner GO +
   full gate. Arbitrary-V UNCHANGED.
 
 ## 6. Gate additions (beyond v2 §12)

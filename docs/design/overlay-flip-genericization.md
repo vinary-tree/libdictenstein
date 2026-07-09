@@ -72,7 +72,7 @@ direction (`units_from_str`) already exists.
 
 ## 4. Value-route `Any`/`TypeId` genericity across `K`
 - **Composes cleanly:** `Any` needs `Self: 'static`; `K: 'static` is guaranteed by `KeyEncoding:
-  'static`, `V`/`S` already `'static$\Rightarrow no new bound.$K` is never a separate downcast target — it's
+  'static`, `V`/`S` already `'static` $`\Rightarrow`$ no new bound. `K` is never a separate downcast target — it's
   baked into the concrete monomorph (`PersistentARTrie{Char}<CounterValue, S>`), so `TypeId` can't
   collide across variants; zero `unsafe`.
 - **The u64-vs-i64 divergence:** the generic `route_get_value` driver branches on

@@ -153,7 +153,7 @@ source, map bounded 1<<20 + scan-fallback; floor lives ONLY in Overlay files); D
 transition, not a VERSION bump — the old Owned image+archives stay readable by any binary; sole forward bridge);
 D6 sentinel (`IncrementOutcome{Delta|Absolute(i64)}`, no codec change, DG-DECODE); §7.1 char enumeration +
 merge-bridge overlay-reject + `OverlayWalImpliesOverlayLive` asserts; R7 errata.
-**REPLACED from D2.6:** regime$`\equiv`$version → dedicated `rank_regime` field (VERSION stays 2); R5 version-guard →
+**REPLACED from D2.6:** regime $`\equiv`$ version → dedicated `rank_regime` field (VERSION stays 2); R5 version-guard →
 regime-mismatch guard; split DG-RECON→DG-PATHS → recovery-gating folded into DG-RECON; version-unaware prune →
 mixed-archive Owned-pin; [unspecified idempotent claim → §A idempotent-NO-RANK].
 

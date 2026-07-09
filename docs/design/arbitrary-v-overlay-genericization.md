@@ -23,7 +23,7 @@ re-find-on-conflict is the arbiter), but **must be re-proven** with the loom/pro
 harness — that re-proof is the riskiest single obligation.
 
 **The decisive enabler:** the on-disk format **already** stores `[node][value_len:u32]
-[bincode(V)]` (`persist.rs$\approx L529-555; read back at$disk_io.rs:242`). The `u64` limit
+[bincode(V)]` (`persist.rs` $`\approx`$ L529-555; read back at `disk_io.rs:242`). The `u64` limit
 lives *only* in the overlay's `AtomicU64`. So genericizing the overlay's in-memory value
 unblocks Phase B/C for all `V` with **zero on-disk format change** and full backward
 compatibility.
