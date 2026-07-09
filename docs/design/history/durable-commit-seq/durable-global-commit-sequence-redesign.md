@@ -26,7 +26,7 @@ seeded once at open, survives enable_lockfree — the precise A.2 fix).
 `commit_seq.fetch_add(1, AcqRel)+1`, claimed BEFORE the visibility CAS each loop iteration; on CAS-loss the claim is
 DISCARDED (leaves a harmless gap — we only ever COMPARE commit_seq, never require contiguity). Theorem
 (`CommitSeqMonotone`): if `X ≺_CAS Y` on the same term, `commit_seq(X) < commit_seq(Y)` — because the only way Y
-gets a lower winning claim than X is if Y claimed-and-won before X claimed ($\Rightarrow$ Y ≺_CAS X, contradiction). Claiming
+gets a lower winning claim than X is if Y claimed-and-won before X claimed ($`\Rightarrow`$ Y ≺_CAS X, contradiction). Claiming
 AFTER the CAS (no gaps) reopens a CAS-vs-fetch_add inversion — rejected; gaps are the correct price.
 **A.6 (crash between data-append and rank-append) — made BENIGN, NOT eliminated (honest):** under Order-A you
 CANNOT carry the CAS-assigned key in a single durable-before-visible append (the key is unknown until the CAS = the
@@ -66,7 +66,7 @@ commit_document" dependence.
 **C1′:** its R-2 bail-rank `g_read` becomes a `commit_seq` claimed at the read-snapshot (same counter) → strictly <
 any superseder's commit_seq in the DURABLE domain (fixes the synthesis note "C1′ inherits A.2"). One counter, one
 rank record, one reconcile; the `NoPhantomCasWrite` + `DurableGlobalOrder` TLAs compose.
-**cf1f80c:** single-session insert/remove → commit_seq order $\equiv$ root-version order, so `reconcile_lww` + the OD4 s019
+**cf1f80c:** single-session insert/remove → commit_seq order $`\equiv`$ root-version order, so `reconcile_lww` + the OD4 s019
 regression PASS unchanged (strengthens, doesn't regress).
 **WAL:** REUSE `CommitRank=15` (rename `generation→commit_seq` in the v3 path; wire layout byte-identical). Header
 **VERSION 2→3** (`header.rs:38`), MIN_SUPPORTED 1. Backward: v1→lsn fallback, v2→root-version legacy comparator
@@ -85,14 +85,14 @@ fire its invariant; register in `verify-formal-correspondence.sh:341`):
   LSN) → MUST violate on s019.
 - W4/A.4: tx records + abort; `NoUncommittedTxReplay`; `_UnsafeTxIgnored.cfg` (reconcile ignores tx) → MUST violate.
 - `CommitSeqMonotone` (the §2 theorem, gaps modeled).
-**Extended soak (the blind spots cf1f80c's 50/50 missed) — each $\ge$50$\times$ green, Immediate+GroupCommit, real-disk:**
+**Extended soak (the blind spots cf1f80c's 50/50 missed) — each $`\ge`$50$`\times`$ green, Immediate+GroupCommit, real-disk:**
 (1) archive-rebuild (`recover_from_archives`), (2) cross-restart (session1 insert+remove → reopen → session2 insert
 → crash → reopen → PRESENT), (3) increment-mixed-with-insert/upsert/remove on one key (value equality), (4)
 aborted document-tx (OwnedTree), (5) idempotent-arm race. Plus a deterministic cross-restart regression
 (fails-pre/passes-post). Stay-green: `concurrent_durable_writers_all_survive_reopen`, the existing soak, OD4,
 `recovery_replay_completeness_correspondence`, atomicity specs, full gate exit 0, 0 unsafe.
 
-## (8) Phased migration (foreground, green-gated: nextest $\ge$2534 + verify-formal-correspondence exit 0 + unsafe exit 0)
+## (8) Phased migration (foreground, green-gated: nextest $`\ge`$2534 + verify-formal-correspondence exit 0 + unsafe exit 0)
 - **DG0:** `commit_seq` field + seeding (no behavior change; key still root-version). Rollback: delete field.
 - **DG1:** producers source key from `commit_seq`, claim-before-CAS-discard-on-loss, INCL. increment-ranked (A.3) +
   idempotent-arm fix (A.5); header 2→3. Rollback: revert key source + header. Gate: single-session soak+OD4 green;
@@ -101,7 +101,7 @@ aborted document-tx (OwnedTree), (5) idempotent-arm race. Plus a deterministic c
   `AllPathsAgree`.
 - **DG3:** value-CAS C1′ on the shared counter. Gate: NoPhantomCasWrite + DurableGlobalOrder compose.
 - **DG4 (HARD GATE):** the extended TLA + FIVE controls fire. If any passes → STOP.
-- **DG5:** the 5 extended soaks $\ge$50$\times$ + deterministic cross-restart regression. Unblocks the flip.
+- **DG5:** the 5 extended soaks $`\ge`$50$`\times`$ + deterministic cross-restart regression. Unblocks the flip.
 DG0-DG3 revert by code; DG4-DG5 verification-only; the one one-way step = header 2→3 (fail-closed, opt-in pre-flip).
 
 ## (9) Honest risks + the irreducible hole

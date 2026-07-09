@@ -64,7 +64,7 @@ For the Persistent ARTrie design:
 | Exact lookup | `O(m)` | 2-4 (typical) |
 | Insert | `O(m + log B)` amortized | 2-4 + 1 write |
 | Prefix search | `O(m + k)` | Depends on `k` |
-| Levenshtein (`d = 1, 2`) | $O(n\cdot m\cdot d^2)$ | Varies with pruning |
+| Levenshtein (`d = 1, 2`) | $`O(n\cdot m\cdot d^2)`$ | Varies with pruning |
 
 Where: `n` = query (input) length, `m` = term length, `B` = bucket size (`~100–500`), `k` = result count
 

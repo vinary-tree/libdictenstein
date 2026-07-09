@@ -8,7 +8,7 @@
 
 | # | Obligation (failure = data loss) | Tool | Artifact | Evidence now | Upgrade | Effort | Risk |
 |---|---|---|---|---|---|---|---|
-| 1 | `NoLostWriteUnderLockFreeCommit` (#41) | **TLAPS** | `LockFreeDurableCheckpoint.tla` → $THEOREM Spec \Rightarrow []Inv$ | TLC 2w/3lsn + loom MAX_LSN=2 + `_Unsafe` neg-control | bounded→unbounded | 4–8 d (worst 2 wk) | MED-HIGH (inductive `Inv` hard) |
+| 1 | `NoLostWriteUnderLockFreeCommit` (#41) | **TLAPS** | `LockFreeDurableCheckpoint.tla` → $`THEOREM Spec \Rightarrow []Inv`$ | TLC 2w/3lsn + loom MAX_LSN=2 + `_Unsafe` neg-control | bounded→unbounded | 4–8 d (worst 2 wk) | MED-HIGH (inductive `Inv` hard) |
 | 2 | Overlay-drops-unranked / no-resurrection (A2) | **Verus** (opt) | `reconcile_lww_with_regime` (recovery.rs:290) `ensures` over multisets | TLC `LockFreeOverlayDurableReplay` + unit test | test→proof | 5–9 d | MED (WalRecord/HashMap/sort spec-models) |
 | 3 | RES-3 base-image self-completeness | **TLA model** (+opt Verus on extracted pure fn) | new `WalSegmentRetention.tla`; or `prune_keep_set` extraction | indirect only | new model + gate test | 3–6 d | **HIGH (claim-correctness) — see red-team** |
 | 4 | Reestablish term/value preservation + clear-last abort-safety | **Rocq** | extend MapRefinement-idiom; fold-of-publish = recovered_owned | `s5_10b_*` tests | test→model proof | 2–4 d | LOW-MED (model not real iterator code) |
@@ -21,7 +21,7 @@
 4. #41 (obligation 1): STAYS TLC + loom for the flip; TLAPS is the top POST-flip hardening (4–8 d, high variance). Justification: the watermark is TLC-checked at the witnessing bound (2 writers = min to disagree on commit order; 3 LSNs covers the appended-before/committed-after window) WITH a failing negative control proving it necessary-and-sufficient.
 
 ## Rejected tools (§e, one line each)
-Apalache (bounded, not the $\forall$-proof #41 needs) · Iris/coq-paco/coq-itree (months for what loom+TLA cover) ·
+Apalache (bounded, not the $`\forall`$-proof #41 needs) · Iris/coq-paco/coq-itree (months for what loom+TLA cover) ·
 Spin/mCRL2/Uppaal/IVy (re-model = translation risk, not assurance; Uppaal=timed, irrelevant) ·
 Maude/K/AProVE/CSI/TCT-TRS/TTT2 (term-rewriting/termination — category mismatch) ·
 ProVerif/Tamarin (no crypto/secrecy) · CVC5/Z3/Yices/Vampire/E/MiniSAT (backends, not front-ends) ·
@@ -40,8 +40,8 @@ yields a small reversible fix that mostly closes it.**
   lowest over count/size, floored ONLY by `remaining_count<=1` — no explicit LSN/checkpoint floor.
 - ⚠️ REFINEMENT (the strategy's concern (ii) is MOOT): the segment filename is
   `wal_{counter:020}_...` (writer.rs:482) with `counter` a monotonic global `AtomicU64`
-  (`ARCHIVE_SEGMENT_COUNTER`). The zero-padded fixed-width counter $\Rightarrow$ **lexical path order $\equiv$ counter
-  order $\equiv$ this-trie's rotation order $\equiv$ first-LSN order**. So prune removes the OLDEST/lowest-LSN
+  (`ARCHIVE_SEGMENT_COUNTER`). The zero-padded fixed-width counter $`\Rightarrow`$ **lexical path order $`\equiv`$ counter
+  order $`\equiv`$ this-trie's rotation order $`\equiv`$ first-LSN order**. So prune removes the OLDEST/lowest-LSN
   segments FIRST — the order is correct, not arbitrary. "filename-time vs first-LSN" does not diverge.
 - 🎯 THE GENUINE RESIDUAL: `recover_from_archives` DELETES the base image + rebuilds with
   `checkpoint_lsn=0`. If prune removed old segments (records subsumed by the now-deleted base), the
@@ -63,7 +63,7 @@ yields a small reversible fix that mostly closes it.**
 
 ### Tool assignments — VALIDATED
 - TLAPS-for-#41 (1), Verus-for-A2 (2), Rocq-for-reestablish (4), decline-#5: all sound. The §c inductive
-  strengthening for #41 ($checkpointLsn \le Watermark$ + the retention floor) is the right shape; the
+  strengthening for #41 ($`checkpointLsn \le Watermark`$ + the retention floor) is the right shape; the
   `CHOOSE`-Watermark elimination is the honestly-flagged hard part.
 - The §e rejections are correct (verified the category mismatches; SMT-as-backend-only is right).
 - The §f residuals (vacuous-ensures risk, model-vs-real-code gap, "proofs don't retire Test A/RES-3

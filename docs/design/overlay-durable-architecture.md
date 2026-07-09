@@ -56,7 +56,7 @@ ALREADY SHARED in `persistent_artrie::core` (byte just reuses — DRY already wo
 - `overlay::{OverlayNode<K,V>, AtomicNodePtr<K,V>}` + `overlay::flip::LockFreeOverlay<K,V,S>` (read engine
   + flip/route + reestablish folds — Step 1, done).
 - `committed_watermark::CommittedWatermark` — was **CHAR-LOCAL** (`persistent_artrie/char/committed_watermark.rs`);
-  K-agnostic (a contiguous-prefix LSN tracker) $\Rightarrow$ MOVE to core (pure DRY win). *[Since executed: the
+  K-agnostic (a contiguous-prefix LSN tracker) $`\Rightarrow`$ MOVE to core (pure DRY win). *[Since executed: the
   canonical tracker now lives at `persistent_artrie/core/committed_watermark.rs`; the char path re-exports it.]*
 
 CHAR-CONCRETE (the extraction targets — push the skeleton up, keep the seam):
@@ -64,7 +64,7 @@ CHAR-CONCRETE (the extraction targets — push the skeleton up, keep the seam):
   `insert_cas_with_value_durable`/`upsert_cas_durable` (char/lockfree_cas.rs:370/556/1654/1747/1862).
 - The checkpoint route-split + `capture_snapshot_immutable` + the retaining publisher (char/persist.rs:109/383).
 - `CheckpointSnapshot` (char/persist.rs) + the on-disk serializer — GENUINELY per-variant (char arena
-  format vs byte arena format) $\Rightarrow$ stays a seam.
+  format vs byte arena format) $`\Rightarrow`$ stays a seam.
 
 BYTE GAPS (red-team `aec7447`): byte has NONE of the durable-write/checkpoint/watermark/regime machinery;
 it has only Phase A/B (overlay node + enable_lockfree + NO-WAL CAS). So byte both REUSES the shared traits
@@ -119,7 +119,7 @@ reopen-without-checkpoint = the #41-closed witness, byte twin).
 ## Why this is excellent + reusable + scalable + DRY (the directive scorecard)
 - **DRY:** one copy of Order-A, the checkpoint route-split, the watermark, the read engine, the reestablish
   fold, A2 recovery. Per-variant code = only the genuinely divergent seams (WAL builder, serializer, value
-  bound, owned readers) $\approx$ the irreducible ~30%.
+  bound, owned readers) $`\approx`$ the irreducible ~30%.
 - **Reusable + scalable:** a new variant implements the seams; the data-loss-critical control flow is
   inherited + already proven. Open–Closed.
 - **Non-blocking / max parallelism:** RCU substrate preserved end-to-end — lock-free reads, CAS-publish

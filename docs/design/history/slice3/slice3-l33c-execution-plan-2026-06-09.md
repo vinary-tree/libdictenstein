@@ -56,7 +56,7 @@ in-memory trie entirely in favor of the lock-free OVERLAY (`OverlayNode<K,V>`).
 
 ### 1b. CHAR (`mutation_core.rs` holds UNSAFE rows 19-20)
 - `mutation_core.rs`: `preflight_*`(43/73/80/85), `try_insert_impl_no_wal`(98, row 20 `&mut *current`
-  $\times$6), `try_insert_impl_no_wal_with_value`(134, **LIVE caller atomic_ops.rs:159 — see §8.2**),
+  $`\times`$6), `try_insert_impl_no_wal_with_value`(134, **LIVE caller atomic_ops.rs:159 — see §8.2**),
   `try_remove_impl_no_wal`(176, row 19 `&*current`), `insert_impl_no_wal`(213),
   `insert_impl_no_wal_with_value`(224), `remove_impl_no_wal`(236).
 - `types.rs`: KEEP `CharTrieNodeInner`(468) + `get_child`/`get_child_mut`/`iter_children`/child-map
@@ -108,7 +108,7 @@ reads true → wrong checkpoint-skip → fails `byte_invalid_root_descriptor_rep
 + silent WAL-tail loss).
 - byte `load_root_immutable`(f5_loader.rs:60) `Result<usize>` → **`Result<(usize,bool)>`** (bool =
   `image_loaded`); a corrupt/Err load returns `(0,false)` with an EMPTY overlay (mirror char
-  f5_loader.rs:65); `root_ptr==0` $\Rightarrow$ `(0,false)`.
+  f5_loader.rs:65); `root_ptr==0` $`\Rightarrow`$ `(0,false)`.
 - byte `mmap_ctor.rs`: DELETE the eager pre-load (`load_root_from_disk_with_arena`, ~421-432) + its
   `match` (~569-576); replace `was_loaded_from_disk=loaded_root.is_some()` with `root_ptr!=0`; compute
   `effective_loaded=(root_ptr!=0)&&image_loaded`; thread into `effective_root_ptr`/
@@ -119,7 +119,7 @@ reads true → wrong checkpoint-skip → fails `byte_invalid_root_descriptor_rep
 
 ## 5. OR-lock collapse (CORRECTED) — field-only
 No wrapper-type change/sweep (done in F4). Delete the field `self.root` (byte dict_impl.rs:280, char
-mod.rs:425) $\Rightarrow$ inner RwLock gone. All `self.root.read()/.write()/.get_mut()` sites live inside code
+mod.rs:425) $`\Rightarrow`$ inner RwLock gone. All `self.root.read()/.write()/.get_mut()` sites live inside code
 deleted in §2. KEEP the `SharedTrieAccess::read()/write()` transparent guards (public API). `sync_compat::RwLock`
 stays (wraps BufferManager/ArenaManager). **#41 soak:** multi-writer (insert/upsert/increment CAS) +
 checkpointer + evictor under `timeout` — confirm `CK > merge_lock > EC` has no cycle without the OR rung.
@@ -130,7 +130,7 @@ PRUNE `UNSAFE_INVENTORY.tsv` rows: 4-5 (`char-disk-swizzled-pointer-resolution`)
 (`char-walk-guard-faulter-traversal`), 13-16 (`char-public-node-traversal`), 19
 (`char-mutation-core-traversal`), 20 (`char-mutation-core-unique-borrow`). DELETE the 7 matching
 `UNSAFE_CONTRACTS.tsv` tag rows. **KEEP rows 1-3, 17-18 (Send/Sync), 21, 22-30 (fault-in/inner_to_overlay
-child-map), $\ge$31.** Byte unsafe delta = ZERO. Rows 11-16 retire only if the char public-node OWNED arm
+child-map), $`\ge`$31.** Byte unsafe delta = ZERO. Rows 11-16 retire only if the char public-node OWNED arm
 (node/faulter/pin fields + from_trie/from_ptr + owned else-branches + CharWalkGuard) is fully deleted →
 `PersistentARTrieCharNode` overlay-only (any surviving owned `unsafe { &*ptr }` → set-equality fails =
 the desired fail-closed signal).
@@ -163,7 +163,7 @@ the desired fail-closed signal).
    common_prefix_len/make_common_prefix + StringBucket decode unless dead-code confirms orphan.
 
 ## 9. Gate (per commit)
-full nextest (C1$\approx$2636; C2 shifts after test migration — record) + `--no-default-features` +
+full nextest (C1$`\approx`$2636; C2 shifts after test migration — record) + `--no-default-features` +
 `--all-features` + `--doc` + `verify-formal-correspondence.sh` (0) + `verify-unsafe-boundary-inventory.sh`
 (C1: ZERO delta; **C2: delta = −rows{4-16,19-20} + 7 contract tags**, fail-closed if any owned `unsafe`
 survives) + `fmt --check` + cross-repo READ-ONLY `cargo check` (liblevenshtein-rust + libgrammstein;

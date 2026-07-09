@@ -379,8 +379,8 @@ transparently. The `supports_fixed_buffers()` method reports registration status
 ### RLIMIT_MEMLOCK Constraint
 
 Pre-registered buffers require the kernel to pin (lock) the buffer pool in physical RAM.
-The default `RLIMIT_MEMLOCK` is 8 MB, which limits registration to pools $\le$ ~28 frames
-(16 frames $\times$ 256KB = 4MB works, 32 frames $\times$ 256KB = 8MB fails due to io_uring ring
+The default `RLIMIT_MEMLOCK` is 8 MB, which limits registration to pools $`\le`$ ~28 frames
+(16 frames $`\times`$ 256KB = 4MB works, 32 frames $`\times`$ 256KB = 8MB fails due to io_uring ring
 overhead). Production deployments needing pre-registered buffers with larger pools should
 increase `RLIMIT_MEMLOCK` via `/etc/security/limits.conf` or `prlimit`.
 
@@ -436,7 +436,7 @@ Tests `IoUringDiskManager::flush_dirty_cache()` (batched SQE submission) vs
 **Interpretation**: The massive gap is expected and **not a fair comparison**. mmap's
 "sync" only calls `msync` which marks pages dirty for the kernel's writeback daemon —
 it does NOT issue `fsync`. The data is not necessarily on durable storage. io_uring's
-`flush_dirty_cache` + `fdatasync` actually writes 64 $\times$ 256KB = 16MB of data to disk via
+`flush_dirty_cache` + `fdatasync` actually writes 64 $`\times`$ 256KB = 16MB of data to disk via
 O_DIRECT and then issues `fdatasync`, providing **true durability**. The 16.1ms for
 16MB = ~1 GB/s, which is reasonable for NVMe sequential write throughput.
 
@@ -543,7 +543,7 @@ is the correct comparison against `mmap + explicit fsync`, not `mmap + msync`.
 
 ### Eviction-path Benchmark Results
 
-**Configuration**: Pool=8 frames, Dataset=128 blocks (128$\times$256KB = 32MB).
+**Configuration**: Pool=8 frames, Dataset=128 blocks (128$`\times`$256KB = 32MB).
 Every access past the initial 8 blocks causes eviction.
 
 #### Group 1: Read-Only Eviction (1 I/O per eviction: read)
@@ -585,7 +585,7 @@ No regressions detected in existing benchmarks. Notable improvements from Aligne
 
 #### Key Finding: mmap Remains Faster for Eviction-path I/O
 
-On NVMe storage, mmap remains **2.2-2.5$\times$ faster** than io_uring for eviction-path I/O.
+On NVMe storage, mmap remains **2.2-2.5$`\times`$ faster** than io_uring for eviction-path I/O.
 This is consistent with Phase 3 findings: the kernel page cache provides near-zero-cost
 eviction (page table manipulation) vs io_uring's explicit `submit_and_wait` syscall
 overhead per I/O operation.
@@ -624,6 +624,6 @@ The AlignedBlock pool provided the most significant measurable improvement:
 - **`cmp_batch_read/io_uring_batch`**: 116.7% throughput improvement
   (from ~14.7 ms to ~6.7 ms for 64 blocks)
 
-This eliminates 64 $\times$ `alloc_zeroed(256KB)` calls per batch, replacing them with
+This eliminates 64 $`\times`$ `alloc_zeroed(256KB)` calls per batch, replacing them with
 a single `Mutex::lock` + `Vec::split_off`. The pool is pre-populated at construction
 time, so the first batch read is also fast.

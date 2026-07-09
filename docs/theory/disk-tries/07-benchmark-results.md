@@ -28,7 +28,7 @@ Before the numbers, the vocabulary. Each metric answers a different question.
 | **Recovery time** | µs or ms | Wall time to reconstruct a usable trie after reopen (checkpoint load + WAL replay) | Bounds restart / failover downtime |
 | **Checkpoint time** | µs | Wall time to capture a durable checkpoint marker | Determines how cheaply durability points can be taken |
 | **Checkpoint density** | bytes/entry | On-disk checkpoint size divided by entry count | Storage cost and, indirectly, recovery I/O |
-| **Write amplification** | ratio | Bytes written to storage $\div$ logical bytes inserted | The durability tax: WAL + checkpoint overhead over the raw data |
+| **Write amplification** | ratio | Bytes written to storage $`\div`$ logical bytes inserted | The durability tax: WAL + checkpoint overhead over the raw data |
 
 `p50`/`p99` notation: `pN` is the value below which `N%` of samples fall. A low
 `p50` with a high `p99` signals a long tail (e.g. an occasional fault-in or fsync),
@@ -90,7 +90,7 @@ is the marginal rate at the largest size, not the small-`n` averages.
 **What this is.** Time to reopen the file and rebuild a queryable trie: load the
 last checkpoint, then replay the WAL tail not covered by it.
 
-**Why it is $\approx 1.5–2\times$ slower than the initial build.** Recovery does strictly more
+**Why it is $`\approx 1.5–2\times`$ slower than the initial build.** Recovery does strictly more
 work per entry than insertion: it must read and decode each WAL record *and* rebuild
 the in-memory overlay, where the original build only did the latter. Throughput
 scales sub-linearly because WAL replay is dominated by sequential record decode,
@@ -133,7 +133,7 @@ representation from the cost of durability.
 | DynamicDawg | ~20 µs | ~200 µs | ~1.2 ms |
 | DoubleArrayTrie | ~15 µs | ~180 µs | ~1.0 ms |
 
-**Why PersistentARTrie is $\approx 2–2.5\times$ slower here.** Even with sync off, the persistent
+**Why PersistentARTrie is $`\approx 2–2.5\times`$ slower here.** Even with sync off, the persistent
 path still maintains WAL records and the immutable overlay's path-copy discipline,
 which the pure in-memory `DynamicDawg`/`DoubleArrayTrie` skip entirely. This is the
 structural price of being *able* to become durable — the gap narrows once amortised
@@ -158,7 +158,7 @@ holds across the persistent representation.
 
 1. **Durability vs. performance trade-off.** `~3 M` inserts/sec *with* full durability
    makes the structure suitable for high-throughput workloads that also need crash
-   recovery, at a measured $\approx 2–2.5\times$ build-time tax over non-durable structures.
+   recovery, at a measured $`\approx 2–2.5\times`$ build-time tax over non-durable structures.
 2. **Sub-millisecond recovery.** A 1000-term dictionary recovers in under `1 ms`,
    enabling fast restarts.
 3. **Near-`O(1)` checkpoints.** Checkpoint markers cost `~1.7 µs` independent of size,

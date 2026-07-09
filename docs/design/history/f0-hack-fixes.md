@@ -9,11 +9,11 @@ back-compat (additive/versioned only), reversible/green-gated. Persisted from th
 ## (0) Load-bearing code facts
 - **F-1:** `reconcile_lww` keys ONLY on `data_lsn` and stamps every op fanned from one record with the SAME
   `(generation, lsn)` (`recovery.rs:259-298`, `rank.insert(*data_lsn,*generation)` :269, `generation_of` :273,
-  fan at :287-288, sort :296). $\Rightarrow$ **one `BatchInsert` at one LSN CANNOT carry N distinct per-entry generations.**
+  fan at :287-288, sort :296). $`\Rightarrow`$ **one `BatchInsert` at one LSN CANNOT carry N distinct per-entry generations.**
 - **F-2:** the commit generation is the published-ROOT version (per-CAS), NOT the leaf version
   (`lockfree_cas.rs:346,363` `Inserted(node, root_generation)`; remove `:532,540`; valued `:1657,1735`
   `new_root.version()`). OD4 comment `:353-362`: leaf `try_set_final` is in-place + does NOT bump leaf version
-  $\Rightarrow$ root version is the strictly-monotone-per-publication source. **The order-a doc §3.6 prose says "leaf
+  $`\Rightarrow`$ root version is the strictly-monotone-per-publication source. **The order-a doc §3.6 prose says "leaf
   version"; the CODE uses root version and is correct — follow the CODE.**
 - **F-3:** increments are CommitRank-FREE by design (`try_increment_cas_durable:1535-1553` logs single-entry
   `BatchIncrement`, NO `append_commit_rank`; deltas commutative, recovery SUMS them, `recovery.rs:347-355`).
@@ -38,7 +38,7 @@ durable, replays on reopen). Document it.
 under the F5 default it silently writes the owned tree (the bug `commit_document` correctly rejects). MUST add the
 route.
 **Variants:** `_chars`/`_sorted`/`_grouped`/`_arena_grouped` delegate to `insert_batch`/`insert_batch_bytes` (the
-sort is owned-arena locality, semantically inert; harmless to keep) $\Rightarrow$ routing `insert_batch` + `insert_batch_bytes`
+sort is owned-arena locality, semantically inert; harmless to keep) $`\Rightarrow`$ routing `insert_batch` + `insert_batch_bytes`
 covers all. Q1-B (one BatchInsert + `(data_lsn,term)`-keyed reconcile) is the documented escape hatch only if
 huge-batch WAL append-count is ever measured as a bottleneck (costs a reconcile re-proof; overlay gets no arena-
 locality benefit so not worth it now).
@@ -61,7 +61,7 @@ partial state) — do NOT ship it (it's the trap a naive "same WAL records, over
 - **tx-i (follow-on, gated):** add a `pending_tx_ops` bracket to `reconcile_lww` (match the `redo_phase` that
   already drops uncommitted ops — removes a latent inconsistency between the two recovery paths) + extend
   `LockFreeOverlayDurableReplay.tla` with BeginTx/CommitTx + a `NoUncommittedTxReplay` negative control. Then the
-  overlay tx can be all-or-nothing crash-atomic. Touches the proven reconcile $\Rightarrow$ its own re-proof.
+  overlay tx can be all-or-nothing crash-atomic. Touches the proven reconcile $`\Rightarrow`$ its own re-proof.
 
 ## (2) Q2 — compare_and_swap + get_or_insert
 ### 2.1 compare_and_swap → R-A (documented gap) for F0; RC-B (proven primitive) gated follow-on
@@ -97,7 +97,7 @@ resident value, not default); loom `get_or_insert‖remove` (no phantom — valu
 - **Fix A (batch):** new `insert_batch_cas_durable(&self, terms:&[&str])->Result<usize>` (membership, loops
   `insert_cas_durable`, count+first-Err-stops); new `route_insert_batch<V,S>(trie, entries)->Option<Result<usize>>`
   in `lockfree_value_route.rs` (all-None→membership; else u64-downcast loop `insert_cas_with_value_durable`/
-  `insert_cas_durable`; None if V$\ne$u64 & any Some). Wire `insert_batch:18` (replace `:28-42`) + **add routing to
+  `insert_cas_durable`; None if V$`\ne`$u64 & any Some). Wire `insert_batch:18` (replace `:28-42`) + **add routing to
   `insert_batch_bytes:148`** (currently missing). `_chars/_sorted/_grouped` inherit. Update the module doc.
 - **Fix B (document-tx tx-ii):** replace the `:321-329` blanket error; validate state; reject negative aggregated
   increment; apply SETs via `route_insert_with_value`/`insert_cas_durable`, increments via
@@ -110,7 +110,7 @@ resident value, not default); loom `get_or_insert‖remove` (no phantom — valu
 
 ## (4) Verification (per fix)
 - **A:** deterministic `batch_overlay_replay_orders_by_commit_rank` regression (FAILS if reverted to one
-  BatchInsert); extend the mixed soak with batch inserts ($\ge$50$\times$ green, Immediate+GroupCommit); gate-by
+  BatchInsert); extend the mixed soak with batch inserts ($`\ge`$50$`\times`$ green, Immediate+GroupCommit); gate-by
   `persistent_bulk_mutation_correspondence`, `persistent_lockfree_overlay_proptest`,
   `recovery_replay_completeness_correspondence`, the existing `LockFreeOverlayDurableReplay` TLA (+ `_Unsafe` still
   fires). NO new TLA.
@@ -119,9 +119,9 @@ resident value, not default); loom `get_or_insert‖remove` (no phantom — valu
   all-or-nothing) semantics; PS3: commit_document APPLIES (was errors), negative-delta still errors. (tx-i
   follow-on: the reconcile-bracket TLA negative control.)
 - **C:** PS3 asserts the documented error. (RC-B follow-on: `LockFreeOverlayValueCas.tla` + loom + proptest.)
-- **D:** proptest `Op::GetOrInsert` + loom ($\| remove$, `‖get_or_insert`); gate-by `LockFreeARTrieLinearizability` +
+- **D:** proptest `Op::GetOrInsert` + loom ($`\| remove`$, `‖get_or_insert`); gate-by `LockFreeARTrieLinearizability` +
   `LockFreeOverlayDurableReplay` stay green. NO new TLA negative control.
-- **Global per phase:** nextest $\ge$2534 + `verify-formal-correspondence.sh` (RUN_TLC=1) exit 0 +
+- **Global per phase:** nextest $`\ge`$2534 + `verify-formal-correspondence.sh` (RUN_TLC=1) exit 0 +
   `verify-unsafe-boundary-inventory.sh` exit 0 + 0 new unsafe; systemd 32G + real-disk for soaks.
 
 ## (5) Phased reversible migration (no phase flips the default; that's F5)

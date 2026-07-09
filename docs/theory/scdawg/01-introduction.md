@@ -16,7 +16,7 @@ For each word w in dictionary:
             Report match
 ```
 
-**Complexity**: $O(N \times m)$ where `N` = total characters in the dictionary, `m` = query length.
+**Complexity**: $`O(N \times m)`$ where `N` = total characters in the dictionary, `m` = query length.
 
 For our 88,000-word dictionary (~800,000 total characters), searching for a 5-character query performs ~4 million character comparisons. This is unacceptable for interactive applications.
 
@@ -26,7 +26,7 @@ We want a data structure that answers substring queries in time proportional to 
 
 | Approach | Query Time | Space |
 |----------|------------|-------|
-| Naive scan | $O(N \times m)$ | `O(N)` |
+| Naive scan | $`O(N \times m)`$ | `O(N)` |
 | Build index once, query many | **`O(m)`** | `O(N)` |
 
 The SCDAWG achieves this by precomputing all possible substrings into a graph structure where:
@@ -95,7 +95,7 @@ Suffixes: "abab$", "bab$", "ab$", "b$", "$"
         $
 ```
 
-**Problem**: $O(n^2)$ space for an `n`-length input. The string "aaa...a" (`n` copies of 'a') requires $n + (n−1) + … + 1 = O(n^2)$ nodes.
+**Problem**: $`O(n^2)`$ space for an `n`-length input. The string "aaa...a" (`n` copies of 'a') requires $`n + (n−1) + … + 1 = O(n^2)`$ nodes.
 
 ### Suffix Tree
 

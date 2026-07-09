@@ -13,12 +13,12 @@ Plan-agent design.
 `lockfree_root: AtomicNodePtr<V>` (`Child=InMem(Arc)|OnDisk(SwizzledPtr)`, path-copy+root-CAS, arc-swap refcount).
 `force_eviction`→`force_eviction_char` (`coordinator.rs:327`)→`evict_char_nodes` (`mod.rs:1392`)→
 `evict_node_at_path` (`mod.rs:1722`) which short-circuits `CharTrieRoot::Empty => return false` (`:1736-1739`) —
-in the overlay arm `self.root` is Empty (data in `lockfree_root`) $\Rightarrow$ **no memory reclaimed** (the §E no-op,
+in the overlay arm `self.root` is Empty (data in `lockfree_root`) $`\Rightarrow`$ **no memory reclaimed** (the §E no-op,
 stated at `mod.rs:1653-1663` + ledger:577-581). **Proven foundation reused:** `eviction_primitive_tests`
 (`lockfree_cas.rs:1202-1259`) proves on the overlay node `with_child(k, Child::OnDisk(ptr))` + root-CAS (a)
 publishes OnDisk, (b) no UAF (pre-evict reader snapshot still sees the subtree), (c) no leak (strong_count==1
 after roots drop). The missing pieces per the primitive's own note (`:1186-1189`): "real per-node disk
-locations" (the registry now supplies) + "fault-in-on-read" (scoped out, §3). $\Rightarrow$ new component = ONE driver +
+locations" (the registry now supplies) + "fault-in-on-read" (scoped out, §3). $`\Rightarrow`$ new component = ONE driver +
 ONE gated accessor + tests + TLA + §F. No production path, no new unsafe, one-edit rollback.
 
 ## (2) The overlay-eviction DRIVER
@@ -56,7 +56,7 @@ physical witness.
 
 ## (3) Fault-in-on-read: ABSENT → COLD-ONLY scoping (the honest core)
 **Finding (code-cited): fault-in is absent.** `find_in_lockfree_trie` (`lockfree_cas.rs:461-468`) and
-`find_leaf_recursive` (`:534-538`) treat an OnDisk child via `as_in_mem()→None` $\Rightarrow$ term reported ABSENT;
+`find_leaf_recursive` (`:534-538`) treat an OnDisk child via `as_in_mem()→None` $`\Rightarrow`$ term reported ABSENT;
 `build_path_recursive` (`:334-346`) treats OnDisk as `AlreadyExists`. So evicting a node later re-read/written
 makes that term unreachable (silent correctness violation). **Decision: cold-only, no-fault-in — and SAY SO.**
 A correct fault-in (read bytes via buffer manager → deserialize OverlayNode → CAS-install InMem racing
@@ -65,7 +65,7 @@ path — unacceptable for a reversible measurement. **Instead the driver evicts 
 enforced by a cold-prefix filter: writers insert a LIVE range; the evictor is fed only the spine of a disjoint
 COLD range (inserted, checkpointed, never re-touched). Honest: measures real reclamation of cold subtrees under
 concurrent write load (the production eviction scenario) WITHOUT claiming fault-in (the flip owns it). SF5 gates:
-`faultin_count` MUST be 0 (any non-zero = a hot node wrongly evicted $\Rightarrow$ ABORT). Cold selection = inside the
+`faultin_count` MUST be 0 (any non-zero = a hot node wrongly evicted $`\Rightarrow`$ ABORT). Cold selection = inside the
 overlay callback, skip any candidate whose path isn't in the cold prefix (`path.starts_with(COLD)`), no
 coordinator change.
 
@@ -81,27 +81,27 @@ pub fn bench_evict_overlay_cold_nodes(&self, budget_bytes: usize, cold_filter: i
     }).0
 }
 ```
-Needs only `&self` (overlay path is all `&self`) $\Rightarrow$ callable from the checkpointer thread; coordinator already
+Needs only `&self` (overlay path is all `&self`) $`\Rightarrow`$ callable from the checkpointer thread; coordinator already
 installed by the §E `bench_enable_eviction`. Reclamation driven SYNCHRONOUSLY from the checkpointer (deterministic,
 off the writer path; `bench_enable_eviction`'s background no-op callback unchanged). **Rollback (one edit each):**
 delete `bench_evict_overlay_cold_nodes`; delete `evict_overlay_nodes`+`evict_overlay_node_at_path`; remove the §F
 driver call+cold-filter from the bench; delete §F tests + TLA + its verify-script lines; (ledger §F append-only).
-`checkpoint()`+production untouched; only safe APIs $\Rightarrow$ unsafe-inventory gate stays exit-0.
+`checkpoint()`+production untouched; only safe APIs $`\Rightarrow`$ unsafe-inventory gate stays exit-0.
 
 ## (5) Safety: no-lost-write + no-UAF + tests + TLA
 **No-lost-write:** eviction converts an in-mem subtree to an OnDisk ref whose bytes were written by the PRIOR
 checkpoint (registry SwizzledPtr → `serialize_char_node_to_disk` output) + WAL RETAINED (TREATMENT publisher
-records `checkpoint_lsn=watermark`, no truncate). ℓ$\le$watermark → in checkpoint image (durable OnDisk target);
+records `checkpoint_lsn=watermark`, no truncate). ℓ$`\le`$watermark → in checkpoint image (durable OnDisk target);
 ℓ>watermark → replayed from retained WAL; evicts only registry-resident (checkpointed/durable) nodes; coordinator
 refuses invalidated registry; loser-safe CAS. **The dangerous line (destructive truncate) is NOT introduced.**
-$\Rightarrow$ NoLostWriteUnderLockFreeCommit + Order-A + watermark + registry-invalidation + EBR-no-UAF preserved.
+$`\Rightarrow`$ NoLostWriteUnderLockFreeCommit + Order-A + watermark + registry-invalidation + EBR-no-UAF preserved.
 **No-UAF:** pure Arc/arc-swap; readers pin `load_full()`; superseded root keeps subtree alive until last reader
 drops; evicted subtree frees by refcount (Phase-D witness). Zero raw ptrs, zero new unsafe.
 **Correspondence tests** (`#[cfg(test)] mod overlay_eviction_driver_correspondence`, real-disk `target/test-tmp`):
 - **OE1 `cold_eviction_under_concurrent_writers_reopens_losing_nothing`** (headline): insert COLD `c-*` + LIVE
   `w-*`; checkpoint-with-eviction; N `insert_cas_durable` writers on fresh `w2-*` ‖ repeated
   `bench_evict_overlay_cold_nodes(budget,|p|p.starts_with('c'))`; assert evicted>0 (REAL — 0 with old no-op),
-  cold terms not re-read (cold contract), reopen $\Rightarrow$ EVERY acked term (`c-*`,`w-*`,`w2-*`) present.
+  cold terms not re-read (cold contract), reopen $`\Rightarrow`$ EVERY acked term (`c-*`,`w-*`,`w2-*`) present.
 - **OE2 `reader_concurrent_with_overlay_eviction_sees_consistent_snapshot`** (no-UAF): reader loops
   contains_lockfree on LIVE ‖ evictor reclaims COLD; no panic/UAF (run under sanitizers); LIVE monotone-present.
   + a loom variant in `tests/persistent_lockfree_overlay_loom.rs` (2 writers+1 evictor+1 reader, 2-level tree).
@@ -111,7 +111,7 @@ drops; evicted subtree frees by refcount (Phase-D witness). Zero raw ptrs, zero 
   interleavings; post-run acked set == inserted set.
 **TLA:** `EvictionWalkEBR.tla` is owned-tree EBR; the NEW interaction is evictor-root-CAS ‖ writer-root-CAS (CAS
 arbitration). NEW spec **`OverlayEvictionCas.tla`** (+`.cfg`/`_Unsafe.cfg`): vars `root`,
-`linkedInMem`,`onDisk`,`live`,`cold`,`acked`; `WriterCas` (path-copy+root-CAS, +acked), $EvictCas(n\in cold\cap linkedInMem)$
+`linkedInMem`,`onDisk`,`live`,`cold`,`acked`; `WriterCas` (path-copy+root-CAS, +acked), $`EvictCas(n\in cold\cap linkedInMem)`$
 (succeed XOR lose-to-writer/rebase), `Reclaim`. Invariants: **`NoLostAck == \A l∈acked: reachable(l)`**,
 **`EvictTouchesOnlyCold == onDisk ⊆ cold`**, **`ReachableNotFreed`** (no-UAF). `_Unsafe.cfg` lets EvictCas fire on
 `live` → violates EvictTouchesOnlyCold/NoLostAck (cold-only gate necessary). CONSTANTS `Nodes={n1,n2,n3}`,
@@ -124,10 +124,10 @@ Both arms do REAL eviction under matched pressure: CONTROL owned-tree `force_evi
   **Expectation (anti-hindsight): the +533% NARROWS** (T now pays real reclaim cost C already paid). A narrowing
   is EXPECTED, not a regression — the question is whether T STILL wins + frees memory.
 - **HF2 (the now-meaningful metric):** (a) TREATMENT §F peak RSS < TREATMENT §E peak RSS (§E was 1,318,888 KiB,
-  NO reclaim — §F must beat it) by > noise; (b) TREATMENT RSS $\le$ CONTROL RSS. Supported iff both.
-- **HF3 (reclamation effectiveness):** `overlay_reclaimed_nodes` > 0 AND $\approx$ matched to CONTROL reclaimed count
+  NO reclaim — §F must beat it) by > noise; (b) TREATMENT RSS $`\le`$ CONTROL RSS. Supported iff both.
+- **HF3 (reclamation effectiveness):** `overlay_reclaimed_nodes` > 0 AND $`\approx`$ matched to CONTROL reclaimed count
   under same budget/cadence (fairness witness).
-- **Secondary vetoes (gated FIRST by SF5):** SF1 pause T$\le$C; SF2 p99/p999 $\le$1.10$\times$; SF3 RSS $\le$1.25$\times$; SF4 contended
+- **Secondary vetoes (gated FIRST by SF5):** SF1 pause T$`\le`$C; SF2 p99/p999 $`\le`$1.10$`\times`$; SF3 RSS $`\le`$1.25$`\times`$; SF4 contended
   not sig worse. **SF5 CORRECTNESS (ABORT on fail):** (i) reopen-exact both arms; (ii) `faultin_count==0` T
   (cold-only held); (iii) `overlay_reclaimed_nodes>0` T (no silent no-op). Enforced by `--evict-real` smoke +
   OE1-OE4.
@@ -135,16 +135,16 @@ Both arms do REAL eviction under matched pressure: CONTROL owned-tree `force_evi
   arms); same `EvictionConfig::without_memory_monitor()`, min_depth, batch_size, coldness (both via
   `force_eviction_char`/`select_char_for_eviction`); only the callback differs. Per-write fsync unchanged+equal.
   **The evictor does ZERO disk I/O on BOTH arms** (cold-only → no fault-in read-back; just an in-mem slot swap)
-  $\Rightarrow$ NO new fsync/read asymmetry (cleaner than §E); only the §2.2/C3 truncate-vs-retain remains.
+  $`\Rightarrow`$ NO new fsync/read asymmetry (cleaner than §E); only the §2.2/C3 truncate-vs-retain remains.
 - **§F.3 metrics:** append TRAILING cols (analyze script maps leading 18 by name, ignores extras): **col20
   `overlay_reclaimed_nodes`**, **col21 `evict_bytes_nominal`**, **col22 `faultin_count`(==0)**. peak_rss_kib (col16)
   = physical witness via single-arm RSS pass. cas_retries now includes evictor rebases.
-- **§F.4 rigor:** K=30 + 2 warmup; Welch+CI+d($\ge$0.8 floor)+MWU; interleave+randomize (C9); single-arm RSS (C10);
+- **§F.4 rigor:** K=30 + 2 warmup; Welch+CI+d($`\ge`$0.8 floor)+MWU; interleave+randomize (C9); single-arm RSS (C10);
   real-disk `target/bench-scratch` never tmpfs; 5 GiB ceiling; systemd 32G + `taskset -c 0-15`; both Immediate +
   without_memory_monitor. SF5 first.
-- **§F.5 decision rule:** SF5-gated, then: **1 PROCEED** (T throughput $\ge$C $\land$ HF2 $\land$ HF3 $\land$ no SF1-4 veto); **2
-  PROCEED-WITH-CAVEAT** (throughput narrows but $\ge$0 $\land$ HF2 holds); **3 DON'T-FLIP no-benefit** (T ties/loses $\land$/$\lor$ HF2
-  fails — overlay doesn't free memory $\Rightarrow$ §E +533% was the no-op artifact); **4 DON'T-FLIP regression** (SF1/2/4 veto).
+- **§F.5 decision rule:** SF5-gated, then: **1 PROCEED** (T throughput $`\ge`$C $`\land`$ HF2 $`\land`$ HF3 $`\land`$ no SF1-4 veto); **2
+  PROCEED-WITH-CAVEAT** (throughput narrows but $`\ge`$0 $`\land`$ HF2 holds); **3 DON'T-FLIP no-benefit** (T ties/loses $`\land`$/$`\lor`$ HF2
+  fails — overlay doesn't free memory $`\Rightarrow`$ §E +533% was the no-op artifact); **4 DON'T-FLIP regression** (SF1/2/4 veto).
 - **§F.6 runbook:** build release benches `--features persistent-artrie,bench-internals`; `--evict-real` smoke
   (SF5); `--measure --evict-real --variant {disjoint,contended}` ONCE each; `--arm {control,treatment}` RSS pass;
   `analyze_lockfree_flip.py` once; compare T §F-RSS vs §E-RSS (HF2a). All wrapped systemd + taskset + tee.
@@ -153,12 +153,12 @@ Both arms do REAL eviction under matched pressure: CONTROL owned-tree `force_evi
   cold_filter)`); insert a fixed COLD prefix set once at round start, checkpoint, never touch; cols 20-22 +
   `sf5_correctness_check`. No Cargo change.
 
-## (7) Phased migration (each GREEN: nextest $\ge$2476 + verify-formal-correspondence exit 0)
+## (7) Phased migration (each GREEN: nextest $`\ge`$2476 + verify-formal-correspondence exit 0)
 1. **TLA first:** `OverlayEvictionCas.tla`+`.cfg`+`_Unsafe.cfg`; register SANY/RUN_TLC/_Unsafe. Gate: SANY ok,
    RUN_TLC holds NoLostAck/EvictTouchesOnlyCold/ReachableNotFreed, `_Unsafe` FAILS, exit 0. Rollback: del 3 files + 3 lines.
 2. **Driver (in-crate cfg(test)):** `evict_overlay_node_at_path`+`evict_overlay_nodes` + OE1-OE4. Gate: nextest
-   $\ge$2480 (+4); verify exit 0; OE1 asserts evicted>0 + reopen-loses-nothing. Rollback: del 2 fns + test mod.
-3. **Bench accessor (bench-internals):** `bench_evict_overlay_cold_nodes`. Gate: default nextest $\ge$2476 (out of
+   $`\ge`$2480 (+4); verify exit 0; OE1 asserts evicted>0 + reopen-loses-nothing. Rollback: del 2 fns + test mod.
+3. **Bench accessor (bench-internals):** `bench_evict_overlay_cold_nodes`. Gate: default nextest $`\ge`$2476 (out of
    default build) + `cargo build --release --benches --features persistent-artrie,bench-internals` ok + verify exit
    0. Rollback: del accessor.
 4. **Bench arm + §F:** `--evict-real` (matched eviction + cold partition + cols20-22 + sf5_correctness_check);
@@ -173,9 +173,9 @@ Both arms do REAL eviction under matched pressure: CONTROL owned-tree `force_evi
    reported as lower reclaimed-count, doesn't gate the disjoint primary.
 2. **Fault-in (designed AROUND):** absent (§3a); cold-only + SF5(ii) faultin==0 + SF5(i) reopen-exact ABORT rather
    than emit a verdict. Real fault-in stays owner-gated (the flip).
-3. **Disk-read asymmetry ELIMINATED by scoping:** cold nodes never faulted $\Rightarrow$ evictor zero disk I/O both arms.
+3. **Disk-read asymmetry ELIMINATED by scoping:** cold nodes never faulted $`\Rightarrow`$ evictor zero disk I/O both arms.
 4. **Real reclamation likely NARROWS the +533% — that IS the point.** HF1 pre-registers narrowing as EXPECTED; the
-   deliverable is whether T still wins + frees memory (HF2/HF3), not preserving the inflated number. HF2 fail $\Rightarrow$
+   deliverable is whether T still wins + frees memory (HF2/HF3), not preserving the inflated number. HF2 fail $`\Rightarrow`$
    Branch 3 DON'T-FLIP (measurement doing its job).
 5. **RSS-as-truth caveat:** VmHWM + deferred Arc drop under readers + glibc arena retention can mask reclamation.
    Mitigation: HF2a compares T-§F vs T-§E (same allocator/workload, isolates the delta) AND HF3 reports the

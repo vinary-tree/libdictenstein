@@ -5,7 +5,7 @@
 > Status: **roadmap** (not yet implemented). Answers "what would full arbitrary-`V`
 > support entail?" The lock-free overlay node currently carries only a `u64` value
 > (`value: AtomicU64`), so the immutable/lock-free architecture can be the *default*
-> checkpoint/read/write source only for $V \in {(), u64-counter}$. This document is
+> checkpoint/read/write source only for $`V \in {(), u64-counter}`$. This document is
 > the plan to lift that to **all** `V`.
 
 ## Executive summary
@@ -48,7 +48,7 @@ vocab overlay runs single-phase correctly); unifies the char + vocab overlays on
 model (dissolving the "do NOT apply the prefix fix to vocab" caveat); and the
 `Option<V>` serializes directly with no lossy `u64` bridge.
 
-**Same-key value race (v1 $\ne$ v2):** #1 is *first-committer-wins* at the overlay (the root
+**Same-key value race (v1 $`\ne`$ v2):** #1 is *first-committer-wins* at the overlay (the root
 CAS is a unique total order); production `insert_with_value` is *last-writer-wins*. This
 is a **semantic gap for arbitrary `V`** (invisible for `()`/counters). Resolution: add an
 explicit last-writer-wins `upsert_cas` (a value-update path-copy) for production parity,
@@ -73,7 +73,7 @@ loom model).
   preserved; no `unsafe impl`).
 - `impl TrieRoot for PersistentCharNode<V>` + `TrieRoot::get_value -> Option<u64>`: add an
   associated `type Value` (ripples to `ReadTransaction::get/get_str` + byte/char/TestNode
-  impls) — OR defer (keep `u64` MVCC snapshot reads) for the scoped $V\in {(),u64}$ work.
+  impls) — OR defer (keep `u64` MVCC snapshot reads) for the scoped $`V\in {(),u64}`$ work.
 - The **vocab** overlay becomes a `PersistentCharNode<u64>` consumer; reverse-index
   (`index_term_storage`) is outside the node, untouched; its `unreachable!` on-disk branch
   stays. Genericization makes char *match* vocab's single-phase model.
@@ -82,20 +82,20 @@ loom model).
 
 ## How it unblocks Phase B/C for all `V`
 With `Option<V>` in the node, `capture_snapshot_immutable`'s `overlay_to_inner` converter
-copies $Option<V> \to Option<V>$ directly into `CharTrieNodeInner<V>` and feeds the existing
+copies $`Option<V> \to Option<V>`$ directly into `CharTrieNodeInner<V>` and feeds the existing
 `serialize_char_node_to_disk` — byte-equivalent (neither rep uses path compression).
 Recovery deserializes `bincode::<V>` (bound already in `DictionaryValue`). The generic-`V`
 checkpoint limitation is *removed*; no on-disk format change.
 
-## Forward-compatibility with the scoped ($V\in {(),u64}$) work
+## Forward-compatibility with the scoped ($`V\in {(),u64}`$) work
 **Introduce `PersistentCharNode<V = ()>` (default type param) so bare `PersistentCharNode`
 keeps compiling as `<()>` and arbitrary `V` slots in additively.** The value-field swap
 (`AtomicU64`→`Option<V>`) is NOT purely additive (it flips finalization to single-phase),
 so: write the Phase-B converter generic from day one (`overlay_to_inner<V>`), and avoid a
-$u64\to Option<V>$ bridge that becomes dead code. **Trade-off:** doing the `Option<V>` swap +
+$`u64\to Option<V>`$ bridge that becomes dead code. **Trade-off:** doing the `Option<V>` swap +
 single-phase flip as G1 *now* avoids rework but pays the single-phase re-proof cost
-upfront; keeping the proven two-phase `AtomicU64` overlay for the $V\in {(),u64}$ scoped work
-defers that risk at the cost of a small converter bridge later. For $V\in {(),u64}$ the
+upfront; keeping the proven two-phase `AtomicU64` overlay for the $`V\in {(),u64}`$ scoped work
+defers that risk at the cost of a small converter bridge later. For $`V\in {(),u64}`$ the
 CURRENT two-phase overlay already works perfectly (membership needs no value; counters use
 the wait-free `fetch_add`), so G1 is only strictly required when arbitrary `V` is pursued.
 

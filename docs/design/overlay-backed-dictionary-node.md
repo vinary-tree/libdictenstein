@@ -124,7 +124,7 @@ A faulter requires an *owned* handle to the trie (to call
   owned (non-`Shared`) trie eviction is impossible, so the overlay is fully InMem
   and no faulter is needed (`faulter = None`).
 
-`None` faulter $\Rightarrow$ an encountered non-null OnDisk slot maps to "no transition" / is
+`None` faulter $`\Rightarrow`$ an encountered non-null OnDisk slot maps to "no transition" / is
 skipped in `edges()` — but this is **unreachable** on these paths (proven by the
 correspondence test, which checks the overlay walk equals `iter_prefix("")` /
 the owned twin EXACTLY). It is the same conservative degrade the production
@@ -142,10 +142,10 @@ directly onto the overlay node API:
   `MappedDictionaryNode` contract returns `None` there, matching the owned node
   (whose `value` is also `None` for membership).
 - `transition(unit)` → `node.find_child(unit)`:
-  - `Child::InMem(arc)` $\Rightarrow$ `Some(Overlay { node: arc.clone(), faulter })`.
-  - `Child::OnDisk(ptr)` (non-null) $\Rightarrow$ fault via `faulter` $\Rightarrow$
+  - `Child::InMem(arc)` $`\Rightarrow`$ `Some(Overlay { node: arc.clone(), faulter })`.
+  - `Child::OnDisk(ptr)` (non-null) $`\Rightarrow`$ fault via `faulter` $`\Rightarrow`$
     `Some(Overlay { node: loaded, faulter })`; if no faulter / load fails ⇒ `None`.
-  - null / absent $\Rightarrow$ `None`.
+  - null / absent $`\Rightarrow`$ `None`.
   - char converts the `char` label to `u32` (overlay keys are `u32`); byte uses the
     `u8` directly.
 - `edges()` → iterate `node.iter_children()`, mapping each non-null child (InMem
@@ -186,7 +186,7 @@ directly onto the overlay node API:
    `transition()` + `is_final()` + `value()`, collecting `(term, is_final, value)`
    for ALL reachable terms, and assert the overlay traversal yields EXACTLY the
    same set as the owned twin AND as `iter_prefix("")`. Gold-standard proof that
-   overlay traversal $\equiv$ owned traversal.
+   overlay traversal $`\equiv`$ owned traversal.
 2. Existing transducer / fuzzy / zipper / reopen-traversal tests.
 3. Full suite with arbitrary-V overlay routing (historically `--features
    "persistent-artrie overlay-arbitrary-v parallel-merge"`; since the F2-default-on
@@ -263,7 +263,7 @@ byte walk of `{a, ab, abc, b, cat, cats}` yields only `{a, b, cat}` (and its `va
 returns `None` for owned nodes — the value codec is unavailable at that layer). The
 CHAR owned walk is complete (bucketless trie + the `549b068` faulter). The new OVERLAY
 byte walk is complete and correct — it is in fact a strict superset of the deficient
-owned byte walk. Because of this, the byte owned-twin comparison in the test is $\supseteq$
+owned byte walk. Because of this, the byte owned-twin comparison in the test is $`\supseteq`$
 (term-set superset) with the authoritative equivalence asserted against
 `iter()`/`iter_with_values()`; the char owned-twin comparison is `==`. Fixing the
 byte owned `DictionaryNode` walk is a separate follow-up, out of scope for F7

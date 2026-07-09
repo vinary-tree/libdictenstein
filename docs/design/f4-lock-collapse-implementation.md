@@ -47,11 +47,11 @@ compiles unchanged, dispatching to the now-`&self` methods through the guard.
 ## 2. The complete Tier-1 / Tier-2 field disposition (the F3 obligation)
 
 Every `&mut self` inherent/trait method on both tries was classified. **Tier-2** =
-reachable on the shared handle $\Rightarrow$ method becomes `&self`, field wrapped for interior
-mutability. **Tier-1** = pre-share configuration only (never on a `Shared*` API) $\Rightarrow$
+reachable on the shared handle $`\Rightarrow`$ method becomes `&self`, field wrapped for interior
+mutability. **Tier-1** = pre-share configuration only (never on a `Shared*` API) $`\Rightarrow`$
 stays `&mut self`, NO wrap.
 
-### Tier-2 fields wrapped (byte = 5, char = 7; + `merge_lock` $\Rightarrow$ byte=6/char=8 per V11.2)
+### Tier-2 fields wrapped (byte = 5, char = 7; + `merge_lock` $`\Rightarrow`$ byte=6/char=8 per V11.2)
 
 | Field | byte | char | Wrapper | Why interior-mutable |
 |-------|------|------|---------|----------------------|

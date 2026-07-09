@@ -43,9 +43,9 @@ The residual locks obey a strict acyclic order — acquire only top-to-bottom:
 
 <img src="../diagrams/f4-lock-hierarchy.svg" alt="The F4 lock hierarchy as a top-to-bottom ordering graph. At the top, the lock-free overlay (teal) handles reads AND writes with no lock; a dashed edge notes that only the residual operations take a lock. Below it, three red lock rungs in strict acquire order: CK (checkpoint_lock Mutex, serialize concurrent checkpoints), then merge_lock (Mutex, serialize merge-vs-merge, byte/char only), then EC (eviction_coordinator Mutex, a LEAF never held across a lock or a worker join). A dashed grey cluster shows the vocab subset: overlay-only, so only CK and EC, and because the vocab eviction callback is a no-op, CK does not read EC, making the order trivially acyclic." width="80%"/>
 
-$$
+```math
 \text{CK} \;>\; \text{merge\_lock} \;>\; \text{EC}
-$$
+```
 
 - **CK** — `checkpoint_lock: Mutex<()>` serializes concurrent checkpoints.
 - **merge_lock** — serializes merge-vs-merge (byte/char only).
@@ -139,7 +139,7 @@ never per *operation*.
 | Reads observe only completed visible state | `SharedPersistentConcurrency.tla` (`ReadsObserveCompletedVisibleState`) |
 | Eviction stamp safety | `OverlayEvictionCas.tla`, `OverlayEvictionStale.tla` |
 
-The full invariant $\leftrightarrow$ model $\leftrightarrow$ proof correspondence is in
+The full invariant $`\leftrightarrow`$ model $`\leftrightarrow`$ proof correspondence is in
 [formal-verification-map.md](formal-verification-map.md).
 
 > **Status.** The lock-free/F4 design described here is the **current, verified**

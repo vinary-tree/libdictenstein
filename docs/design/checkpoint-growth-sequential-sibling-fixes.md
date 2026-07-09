@@ -45,13 +45,15 @@ trie (§1). The second is a space/write-amplification problem that made the on-d
 bound (§2). Both are fixed; §3 adds the reclamation operation the second motivated; §4 records the
 audited-safe invariant both rely on.
 
-**Notation.** A trie has $N$ terms; incremental checkpointing performs $C$ checkpoints; the resident
-(in-memory) overlay is bounded to $B$ bytes by `resident_budget_bytes`. Arena slots are addressed by
-$(\text{arena\_id}, \text{slot\_id})$; the on-disk pointer stores a **block id** with
+**Notation.** A trie has $`N`$ terms; incremental checkpointing performs $`C`$ checkpoints; the resident
+(in-memory) overlay is bounded to $`B`$ bytes by `resident_budget_bytes`. Arena slots are addressed by
+$`(\text{arena\_id}, \text{slot\_id})`$; the on-disk pointer stores a **block id** with
 
-$$\text{block\_id} = \text{arena\_id} + 1, \qquad \text{arena\_id} = \text{block\_id} - 1$$
+```math
+\text{block\_id} = \text{arena\_id} + 1, \qquad \text{arena\_id} = \text{block\_id} - 1
+```
 
-because block $0$ is the file header (`core/swizzled_ptr.rs:451,466`).
+because block $`0`$ is the file header (`core/swizzled_ptr.rs:451,466`).
 
 ---
 
@@ -61,19 +63,21 @@ because block $0$ is the file header (`core/swizzled_ptr.rs:451,466`).
 ### 2.1 The optimization
 
 When a node's children occupy **contiguous** slots in **one** arena, the char v2 serializer encodes
-them as a single `(first_child_slot, count)` reference instead of $n$ explicit child pointers
+them as a single `(first_child_slot, count)` reference instead of $`n`$ explicit child pointers
 (the `FLAG_SEQUENTIAL_SIBLINGS` encoding, `char/serialization_char.rs:194`). The decoder reconstructs
 
-$$\text{child}_i = (\text{first\_child.arena\_id},\; \text{first\_child.slot\_id} + i), \quad 0 \le i < \text{count}$$
+```math
+\text{child}_i = (\text{first\_child.arena\_id},\; \text{first\_child.slot\_id} + i), \quad 0 \le i < \text{count}
+```
 
-(`char/relative_encoding.rs:661`) and pairs $\text{child}_i$ with the $i$-th key **in key order**.
+(`char/relative_encoding.rs:661`) and pairs $`\text{child}_i`$ with the $`i`$-th key **in key order**.
 
 ### 2.2 The defect
 
 The *producer* of the encoding, `check_sequential_char_children` (`char/persist.rs:772`), read each
-child's arena id straight from the on-disk `block_id` — **without** the canonical $-1$ — while the
+child's arena id straight from the on-disk `block_id` — **without** the canonical $`-1`$ — while the
 *reader/validator* (`collect_char_child_slots` → `ptr_to_arena_slot`, `serialization_char.rs:1063`)
-uses $\text{arena\_id} = \text{block\_id} - 1$. The two disagree by exactly one arena:
+uses $`\text{arena\_id} = \text{block\_id} - 1`$. The two disagree by exactly one arena:
 
 <p align="center">
 <img src="../diagrams/sequential-sibling-arena-convention.svg" alt="A child on disk stores block_id = arena_id + 1 (here block_id 1, slot 148). The BEFORE (buggy) producer read arena_id := block_id = 1; the AFTER (fixed) producer reads arena_id := block_id − 1 = 0. The reader/validator always uses block_id − 1 = 0. So the buggy producer's first_child.arena = 1 disagrees with the validator's child_slot.arena = 0 — a MISMATCH that raised 'sequential child mismatch'; the fixed producer's arena = 0 MATCHES and round-trips. The byte twin used the canonical as_arena_slot() on both sides and never had the bug." width="820">
@@ -81,13 +85,13 @@ uses $\text{arena\_id} = \text{block\_id} - 1$. The two disagree by exactly one 
 
 Two consequences follow, and they explain why the bug hid for so long:
 
-- **Common case (children in the parent's arena $P$):** the child's $\text{block\_id} = P+1$, which the
-  buggy check compared against the parent's *canonical* arena $P$; since $P+1 \ne P$, it returned
+- **Common case (children in the parent's arena $`P`$):** the child's $`\text{block\_id} = P+1`$, which the
+  buggy check compared against the parent's *canonical* arena $`P`$; since $`P+1 \ne P`$, it returned
   `None` and **silently declined** the optimization. So sequential encoding was effectively never used
   for correctly-same-arena siblings — no crash, just a missed optimization.
 - **Boundary case (children one arena behind the parent):** when a parent is re-serialized into arena
-  $P+1$ while its children remain in arena $P$ (exactly the layout eviction + incremental checkpointing
-  produces), the child's $\text{block\_id} = P+1$ *equals* the parent's canonical arena $P+1$, so the
+  $`P+1`$ while its children remain in arena $`P`$ (exactly the layout eviction + incremental checkpointing
+  produces), the child's $`\text{block\_id} = P+1`$ *equals* the parent's canonical arena $`P+1`$, so the
   check spuriously fired, emitting a `first_child` whose arena is one too high. The serializer's own
   `validate_v2_serialization_context` (`serialization_char.rs:1163`) then walks the freshly-collected
   (canonical) child slots, finds `child_slot.arena_id ≠ first_child.arena_id`, and raises the error —
@@ -128,13 +132,15 @@ Because a cross-arena parent→child layout now correctly falls back to the rela
 The shared checkpoint serializer (`core/overlay/compressed_serialize.rs:174`) re-serialized **every**
 resident node to a **fresh** appended arena slot on every checkpoint; the arena is a strictly
 append-only bump allocator (`char/arena.rs:856`) that never reclaims a superseded slot, and the
-retaining WAL never rotates. Per-checkpoint appends were therefore $O(\text{resident set})$, so the
+retaining WAL never rotates. Per-checkpoint appends were therefore $`O(\text{resident set})`$, so the
 on-disk file grew as
 
-$$\text{file size} \;\approx\; O\!\left(C \times B\right)$$
+```math
+\text{file size} \;\approx\; O\!\left(C \times B\right)
+```
 
-— unbounded in the number of checkpoints, even though the *live* data is $O(N)$ and the *resident* set
-is bounded to $B$. For `pgmcp`'s incremental build this meant RAM stayed bounded but disk did not.
+— unbounded in the number of checkpoints, even though the *live* data is $`O(N)`$ and the *resident* set
+is bounded to $`B`$. For `pgmcp`'s incremental build this meant RAM stayed bounded but disk did not.
 
 ### 3.2 The fix — reuse the durable-clean node's slot
 
@@ -161,10 +167,10 @@ for char at `char/persist.rs` and byte at `overlay_checkpoint.rs`). It is gated 
 ### 3.3 Why the census stays faithful (the load-bearing subtlety)
 
 `resident_budget_bytes` is enforced from the eviction registry census
-$\;\text{resident} = \sum_{\text{registered nodes}} \text{size\_bytes}\;$ (`disk_registry.rs:442`). If
+$`\;\text{resident} = \sum_{\text{registered nodes}} \text{size\_bytes}\;`$ (`disk_registry.rs:442`). If
 dirty-skip dropped clean nodes from that census, the estimate would under-count, eviction would
 under-fire, and RAM would grow unbounded — defeating the purpose. So the reuse path keeps **full
-registration**: it records the reused node with its **exact** on-disk size (an $O(1)$
+registration**: it records the reused node with its **exact** on-disk size (an $`O(1)`$
 `slot_data_range` lookup), identical to what a fresh serialize would have recorded. Only the
 growth-causing `allocate` is elided. The census is therefore **bit-identical** to the pre-dirty-skip
 behavior; the `dirty_skip_keeps_resident_bytes_within_budget_across_interleaved_checkpoints` test is the
@@ -172,7 +178,7 @@ arbiter.
 
 ### 3.4 Effect
 
-Per-checkpoint growth drops to $O(\text{dirty nodes})$: the newly-inserted nodes plus the
+Per-checkpoint growth drops to $`O(\text{dirty nodes})`$: the newly-inserted nodes plus the
 eviction-churned spine. Idempotent re-checkpoints of an unchanged trie append **nothing** (every node
 is clean → reused), which the `dirty_skip_bounds_growth_across_idempotent_checkpoints` test verifies as
 a plateau — file size becomes *independent of checkpoint count*.
@@ -202,7 +208,7 @@ Two properties are worth calling out:
 - **NOT RAM-bounded.** Compaction materializes the full live set in memory (enumeration + rebuilt trie
   + verify snapshots), so peak memory is a small multiple of the live-data size — it is **not** bounded
   by `resident_budget_bytes`. A post-enumeration guard fails loud (rather than OOM) when
-  $\;4 \times \text{live\_data\_bytes} > \text{available RAM}\;$. Consequently `compact()` is an
+  $`\;4 \times \text{live\_data\_bytes} > \text{available RAM}\;`$. Consequently `compact()` is an
   **explicit, caller-invoked** maintenance operation (never auto-triggered inside `checkpoint()`), and
   a trie whose *live* set exceeds RAM cannot be compacted via this path (see §5).
 
@@ -212,14 +218,14 @@ Two properties are worth calling out:
 ## 5. §4 — Cross-checkpoint pointer stability (append-only invariant)
 
 Both dirty-skip (§2) and the checkpoint's ordinary `Child::OnDisk` passthrough embed, in checkpoint
-$N{+}1$'s image, pointers into arenas written by checkpoint $N$. This is safe **iff** those arenas are
+$`N{+}1`$'s image, pointers into arenas written by checkpoint $`N`$. This is safe **iff** those arenas are
 never reused or overwritten while still referenced. An audit confirmed three independent guarantees:
 
 1. the arena is a strictly append-only bump allocator with no free list (`char/arena.rs:856`);
 2. the disk block layer's `free_list_head` is never populated on the char path, so `allocate_block`
    only ever bump-extends the file — block ids are never reused; and
-3. `arena_count` is monotonic, so arena $N$'s blocks are always a subset of the range checkpoint
-   $N{+}1$ publishes.
+3. `arena_count` is monotonic, so arena $`N`$'s blocks are always a subset of the range checkpoint
+   $`N{+}1`$ publishes.
 
 `core/version_gc.rs` is a purely logical reader-refcount registry with **zero** production callers and
 touches no arena; its WAL record is ignored on replay. Reopen eager-loads the full image

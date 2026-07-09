@@ -140,7 +140,7 @@ Overlay-only forward (`OverlayNode<VocabKey, u64>`) + migrated reverse index (op
 ## 6. Data-loss-critical concerns
 1. **Bijection consistency across crash.** insert(id N) writes WAL `Insert{term,N}` + overlay leaf(value=N) +
    reverse[N]=term. The WAL record is the SINGLE source of truth; the overlay + reverse index are derived. A crash
-   mid-insert must recover to a consistent (term→N $\land$ N→term) OR (neither) state — never half. Recovery replays the
+   mid-insert must recover to a consistent (term→N $`\land`$ N→term) OR (neither) state — never half. Recovery replays the
    WAL into BOTH. The reverse-index write must NOT be acked before the WAL is durable.
 2. **Id monotonicity across restart.** `next_index` must never reuse an id. Seed from `max(reverse-index, scan,
    checkpoint)` on reopen (like the `commit_seq` floor). A reused id corrupts the bijection.

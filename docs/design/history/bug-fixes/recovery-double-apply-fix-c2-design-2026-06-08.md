@@ -4,7 +4,7 @@
 > **Status: IMPLEMENTED (commit d023074) — full gate green. 2 red-team rounds; the confirming round
 > caught a silent-LOSS inversion (use `max_applied_lsn`, NOT `max_lsn_in_segments`) — adopted. 3a is a
 > separate pre-existing bug (task #48). One simplification vs the round-1 plan: the `image_coverage_lsn`
-> lives in `CommittedWatermark` (its `new()` inits it $\Rightarrow$ ZERO trie-literal edits) and is read-cleared
+> lives in `CommittedWatermark` (its `new()` inits it $`\Rightarrow`$ ZERO trie-literal edits) and is read-cleared
 > directly in `publish` (no `CheckpointSnapshot` field needed; checkpoints are serialized so "first
 > post-recovery checkpoint only" still holds). C2 fixes the bug WITHOUT the L1 generic-V delta arm (it
 > makes the reopen SKIP the archive, so the delta arm is never reached).** Source: Plan+red-team passes.
@@ -15,7 +15,7 @@
    WAL"). The #41 assert `watermark_at_capture ≤ synced_frontier_at_capture`
    (overlay_checkpoint.rs:295) guards exactly this.
 2. The on-disk WAL `Checkpoint.checkpoint_lsn` record = an **image-coverage** fact ("the published
-   image already contains the effects of every WAL record with LSN $\le$ this"). Drives the reopen
+   image already contains the effects of every WAL record with LSN $`\le`$ this"). Drives the reopen
    drain-skip (recovery.rs:318: `loaded_from_disk && checkpoint_lsn>0 && lsn<=checkpoint_lsn → skip`)
    and the prune subsumption (writer.rs:853).
 
@@ -50,19 +50,19 @@ the synced frontier — IS the #41 footgun (lies that non-durable LSNs are synce
 3. **`CheckpointSnapshot`** (overlay_checkpoint.rs:58): add `image_checkpoint_lsn_override: Option<u64>`.
 4. **`capture_overlay_snapshot`** (:225): `let cov = self.recovery_image_coverage_lsn.swap(0, AcqRel);
    image_checkpoint_lsn_override: (cov!=0).then_some(cov)`. **The #41 assert (:295) + watermark capture
-   (:257) are byte-identical — untouched.** Swap-clear $\Rightarrow$ only the FIRST post-recovery checkpoint carries
+   (:257) are byte-identical — untouched.** Swap-clear $`\Rightarrow`$ only the FIRST post-recovery checkpoint carries
    it (later checkpoints have a real watermark from real durable writes).
 5. **`publish_overlay_snapshot_retaining`** (:333) + the `_with_eviction` twin: `checkpoint_lsn =
    base_watermark.max(snapshot.image_checkpoint_lsn_override.unwrap_or(0))`.
 6. **COUPLED L1 generic-V delta arm** (flip.rs:1166): genericize to mirror the absolute arm (:1136):
    read current via the i128 `counter_codec`, +delta, `i128_to_counter_value::<V>`, `overlay_publish_value`
    (NOT the u64-only `overlay_publish_counter`). Ship TOGETHER — generic-V alone unmasks i64 to Some(8);
-   C2 alone leaves i64 masked. Default override `None`/0 $\Rightarrow$ steady-state checkpoints byte-identical.
+   C2 alone leaves i64 masked. Default override `None`/0 $`\Rightarrow`$ steady-state checkpoints byte-identical.
 
 ## Red-team round-1 result
 CORRECT + #41-safe for the CLEAN path (crash-points 1=mid-recovery, 2=post-recovery-pre-checkpoint,
 3b=post-Checkpoint-record, 4=post-checkpoint-pre-reopen) across single/multi/rotated archive layouts,
-both V$\in${u64,i64}. The #41 assert never fires from the fix (override consumed post-capture). No-relog
+both V$`\in`${u64,i64}. The #41 assert never fires from the fix (override consumed post-capture). No-relog
 preserved (ctors append nothing). Steady-state unaffected (override defaults 0).
 
 **OPEN RISK — crash-point 3a:** crash AFTER the image descriptor fsync but BEFORE the WAL `Checkpoint`
@@ -86,8 +86,8 @@ partially-applied segment in the set; (2) `max_lsn_in_segments` (writer.rs:591) 
 (`WalReader::next_record` advances the cursor by the intact length field on a payload-CRC mismatch,
 reader.rs:77-95, so post-corruption records parse + are counted) while the REBUILD stopped at the first
 corrupt record (byte mmap_ctor.rs:969 / char :1195 / `rebuild_from_wal_segments_regime_aware`
-recovery.rs:1600; also orphan-drop/abort-mid-apply recovery.rs:1647). $\Rightarrow$ the override could exceed the
-last APPLIED lsn $\Rightarrow$ the reopen drain-skip (`lsn ≤ checkpoint_lsn`) would SKIP the un-applied tail $\Rightarrow$
+recovery.rs:1600; also orphan-drop/abort-mid-apply recovery.rs:1647). $`\Rightarrow`$ the override could exceed the
+last APPLIED lsn $`\Rightarrow`$ the reopen drain-skip (`lsn ≤ checkpoint_lsn`) would SKIP the un-applied tail $`\Rightarrow`$
 **permanent silent LOSS** (worse than the double-apply). **FIX: source the override from
 `max_applied_lsn` = the LSN of the last successfully-applied record, tracked INSIDE the rebuild apply
 loops (byte inline apply arm; char inline apply arm; the winner-apply in
@@ -105,9 +105,9 @@ checkpoints; C2 does NOT widen it (the torn case leaves the override un-recorded
 marker.** Do NOT bundle the optional (A) prune as a "fix" — it doesn't cover `recover_from_archives`.
 
 **Everything else verified sound:** #41 assert untouched (override consumed post-capture, never feeds the
-in-memory watermark); swap-clear $\Rightarrow$ only the first post-recovery checkpoint carries it; char parity (2
+in-memory watermark); swap-clear $`\Rightarrow`$ only the first post-recovery checkpoint carries it; char parity (2
 char ctors); a `checkpoint_lsn` above the active-WAL max is benign for the skip (no records above to
-wrongly skip) AS LONG AS it $\le$ max-applied (the BLOCKING constraint). **Must also zero-init the new field
+wrongly skip) AS LONG AS it $`\le`$ max-applied (the BLOCKING constraint). **Must also zero-init the new field
 in EVERY struct literal/ctor (incl. open_inner :589-627, create) or steady-state leaks the override.**
 
 ## Verdict: CONVERGED. Implement C2 by hand with the `max_applied_lsn` correction (NOT max_lsn_in_segments);

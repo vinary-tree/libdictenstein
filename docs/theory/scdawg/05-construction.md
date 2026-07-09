@@ -26,7 +26,7 @@ struct ReferencePair {
 
 **Explicit**: When `start > end`, the reference is at the node itself.
 
-**Implicit**: When $start \le end$, the reference is within the edge starting at `node` with first character `text[start]`.
+**Implicit**: When $`start \le end`$, the reference is within the edge starting at `node` with first character `text[start]`.
 
 ### Node Structure
 

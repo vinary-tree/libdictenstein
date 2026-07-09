@@ -195,9 +195,9 @@ was actually executed.
 - New test files: `bijective_trait_invariant.rs` (3),
   `serialization_value_roundtrip.rs` (10),
   `vocab_trait_honesty.rs` (11). Plus +25 unit tests sprinkled across the
-  source tree (extract_terms deep-chain $\times$ 2, factory unicode_backends,
-  sync_compat try_read/try_write $\times$ 2, value FilterableValue per-element $\times$
-  3, suffix_automaton doc-tests $\times$ 6).
+  source tree (extract_terms deep-chain $`\times`$ 2, factory unicode_backends,
+  sync_compat try_read/try_write $`\times`$ 2, value FilterableValue per-element $`\times`$
+  3, suffix_automaton doc-tests $`\times`$ 6).
 
 ### Remaining work — multi-week / multi-day, deferred to follow-up sessions
 

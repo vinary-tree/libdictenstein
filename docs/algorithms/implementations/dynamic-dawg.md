@@ -264,7 +264,7 @@ There is no lock-object byte cost: the per-node `ArcSwap`/`AtomicBool`/`ArcSwapO
 cells provide interior mutability atomically, and the whole structure is reached
 through a single shared `Arc` (8 bytes).
 
-**Example**: 10,000-term dictionary $\approx$ 250KB (nodes)
+**Example**: 10,000-term dictionary $`\approx`$ 250KB (nodes)
 
 ### Clone Behavior & Memory Semantics
 
@@ -499,7 +499,7 @@ let writer = {
 
 #### 1. SmallVec for Edges
 
-Most nodes have $\le$4 edges. `SmallVec` avoids heap allocation:
+Most nodes have $`\le`$4 edges. `SmallVec` avoids heap allocation:
 
 ```rust
 // Inline storage for ≤4 edges (stack allocated)
@@ -664,7 +664,7 @@ let dict = DynamicDawg::from_iter(lines);
 ```
 
 **Characteristics:**
-- **Time**: $O(n\cdot m)$ where n=terms, m=avg length
+- **Time**: $`O(n\cdot m)`$ where n=terms, m=avg length
 - **Memory**: Linear with term count (~250KB for 10K terms)
 - **Optimization**: Pre-sorting terms improves cache locality
 
@@ -819,7 +819,7 @@ let dicts: Vec<DynamicDawg<Vec<u32>>> = documents
 // Full pattern documented in Contextual Completion guide
 ```
 
-→ See [Parallel Workspace Indexing](https://github.com/universal-automata/liblevenshtein-rust) for complete pattern with ~150$\times$ speedup.
+→ See [Parallel Workspace Indexing](https://github.com/universal-automata/liblevenshtein-rust) for complete pattern with ~150$`\times`$ speedup.
 
 ## Accessor Methods
 
@@ -853,7 +853,7 @@ pub fn contains(&self, term: &str) -> bool
 
 **Performance**:
 - **Complexity**: `O(m)` where m is term length
-- **Optimizations**: Bloom filter for fast negative lookups (~100$\times$ faster rejection)
+- **Optimizations**: Bloom filter for fast negative lookups (~100$`\times`$ faster rejection)
 - **Concurrency**: Wait-free read (atomic-snapshot loads; no lock, never blocks)
 
 **Example**:
@@ -1071,7 +1071,7 @@ assert_eq!(removed, 0); // Already minimal
 
 **Interpretation**:
 - Higher node count → More memory usage
-- `node_count()` $\approx$ `term_count()` → Good compression (lots of sharing)
+- `node_count()` $`\approx`$ `term_count()` → Good compression (lots of sharing)
 - `node_count()` >> `term_count()` → Poor compression (deletions without compaction)
 
 **Monitoring Example**:
@@ -1337,7 +1337,7 @@ The `union_with()` and `union_replace()` methods enable **merging two DynamicDaw
 **Key Characteristics**:
 - 🔓 **Non-blocking**: wait-free reads and lock-free CAS writes (no locks)
 - 💾 **DAWG-preserving**: Maintains minimization through `insert_with_value()`
-- ⚡ **Efficient**: $O(n\cdot m)$ traversal with minimal memory overhead
+- ⚡ **Efficient**: $`O(n\cdot m)`$ traversal with minimal memory overhead
 - 🎯 **Flexible**: Custom merge functions for value conflicts
 
 ### union_with() - Merge with Custom Logic
@@ -1369,8 +1369,8 @@ where
 5. Repeat until stack empty
 
 **Complexity**:
-- **Time**: $O(n\cdot m)$ where n = terms in `other`, m = average term length
-  - $O(n\cdot m)$ for DFS traversal
+- **Time**: $`O(n\cdot m)`$ where n = terms in `other`, m = average term length
+  - $`O(n\cdot m)`$ for DFS traversal
   - `O(m)` per term for `insert_with_value()`
 - **Space**: `O(d)` where d = maximum trie depth (typically < 50)
   - DFS stack size proportional to deepest path
@@ -1830,7 +1830,7 @@ println!("{:?}", results);  // ["test", "tester"]
 | **Remove** | O(m) | Plus ref count updates |
 | **Contains** | O(m) | With Bloom filter: O(1) rejection |
 | **Compact** | O(n) | n = total nodes |
-| **Query (fuzzy)** | O(m$\times$d²$\times$b) | d = distance, b = branching |
+| **Query (fuzzy)** | O(m$`\times`$d²$`\times`$b) | d = distance, b = branching |
 
 ### Benchmark Results
 

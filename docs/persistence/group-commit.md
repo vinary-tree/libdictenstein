@@ -15,14 +15,14 @@ and for future revision under a different coordinator design.
 Under `DurabilityPolicy::Immediate` (the default), every acknowledged write `fsync`s its own
 WAL record before returning — one `fsync` per write. **Group commit** instead lets many
 concurrent writers *share* one `fsync`: a coordinator collects their records into a batch,
-issues a single `fsync`, and then acknowledges all of them. When $k$ writers commit together
-the amortized cost is one `fsync` per $k$ writes rather than $k$, which is a large win *when
+issues a single `fsync`, and then acknowledges all of them. When $`k`$ writers commit together
+the amortized cost is one `fsync` per $`k`$ writes rather than $`k`$, which is a large win *when
 `fsync` is expensive relative to the coordination overhead*.
 
 The coordinator (`GroupCommitCoordinator`) offers `low_latency`, `high_throughput`, and
 `nvme_optimized` config presets and reports a `batching_efficiency` statistic. It preserves
 the Order-A contract: an acknowledged write is still durable before it is visible — group
-commit only changes *when* the shared `fsync` happens, never the "acknowledged $\implies$
+commit only changes *when* the shared `fsync` happens, never the "acknowledged $`\implies`$
 durable" invariant.
 
 ## Why per-record sync wins on NVMe
@@ -33,15 +33,15 @@ durable" invariant.
 - coordinator-side bookkeeping (LSN assignment, batch-close condition, ack fan-out);
 - an extra `Arc<Mutex<…>>` acquire/release for the in-flight batch.
 
-Let $t_{\text{sync}}$ be the `fsync` time and $t_{\text{coord}}$ the added per-record
-coordination cost. Group commit helps only when $t_{\text{coord}} < t_{\text{sync}}$ (the
-saved sync time must exceed the overhead it costs). On NVMe $t_{\text{sync}}$ is already a
-few microseconds, so $t_{\text{coord}} \ge t_{\text{sync}}$ and the "batched" path is slower
+Let $`t_{\text{sync}}`$ be the `fsync` time and $`t_{\text{coord}}`$ the added per-record
+coordination cost. Group commit helps only when $`t_{\text{coord}} < t_{\text{sync}}`$ (the
+saved sync time must exceed the overhead it costs). On NVMe $`t_{\text{sync}}`$ is already a
+few microseconds, so $`t_{\text{coord}} \ge t_{\text{sync}}`$ and the "batched" path is slower
 in absolute terms.
 
 ## Where it still wins (or is expected to)
 
-- Spinning disks and remote block storage, where $t_{\text{sync}}$ rounds to milliseconds.
+- Spinning disks and remote block storage, where $`t_{\text{sync}}`$ rounds to milliseconds.
 - Cloud volumes with bursty IOPS quotas and large `fsync` tail latency.
 
 These workloads are not in the CI matrix (the benches need a real disk backend and stable

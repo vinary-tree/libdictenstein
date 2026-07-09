@@ -37,7 +37,7 @@ the `StringBucket` decode surface + `NodeInner::Overlay`/`new_overlay` + `ChildN
 ## Reopen
 Codec-only: `enumerate_terms_from_disk`/`enumerate_char_terms_from_disk` → `build_overlay_root_from_terms`.
 Handles all 3 on-disk formats (overlay / CX-compressed / legacy `ROOT_TYPE_BUCKET` incl. empty term `""`).
-BLOCKER#4 (corrupt node under a valid descriptor $\Rightarrow$ replay the WAL, never skip the checkpoint) preserved (C1).
+BLOCKER#4 (corrupt node under a valid descriptor $`\Rightarrow`$ replay the WAL, never skip the checkpoint) preserved (C1).
 
 ## UNSAFE
 Char `UNSAFE_INVENTORY.tsv` 93→77 rows (pruned rows 4-16, 19-20, 22 — the owned swizzled-ptr/node-map/

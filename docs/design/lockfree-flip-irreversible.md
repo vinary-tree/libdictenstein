@@ -31,7 +31,7 @@ registry-invalidation contract + Order-A timing are preserved by construction.
   - **R-C (tombstone in `Option<V>`):** rejected (ripples into serialization + the u64 domain).
 - **Negative-delta `increment` unsupported:** overlay counter is add-only `BatchIncrement` (`lockfree_cas.rs:1088`)
   → §2.4 errors/falls back on δ<0; PS3-guarded. Decrement callers use `OwnedTree`.
-- **Arbitrary `V` → scope is $V\in {(),u64}$:** the value write path `build_value_path_recursive` is hardcoded
+- **Arbitrary `V` → scope is $`V\in {(),u64}`$:** the value write path `build_value_path_recursive` is hardcoded
   `<u64>`; arbitrary `V` needs G1 (single-phase + `upsert_cas`) — out of scope, stays `OwnedTree` (a per-monomorph
   guard). On-disk format is already `[len][bincode(V)]` so checkpoint/recover are V-agnostic.
 - **Prefix-iteration/zipper:** walk the owned `self.root`; no overlay prefix-enumeration-with-fault-in yet. Point
@@ -39,7 +39,7 @@ registry-invalidation contract + Order-A timing are preserved by construction.
   E1-iter-B follow-on** — until then documented last-checkpoint-consistent.
 
 **Feasibility:** the flip is feasible for insert/increment/checkpoint/evict/recover/**point-reads** on
-$V\in {(),u64}$ — every primitive built, proven, benchmarked PROCEED. The gaps above are the honest residuals.
+$`V\in {(),u64}`$ — every primitive built, proven, benchmarked PROCEED. The gaps above are the honest residuals.
 
 ## (2) E2 — write-path flip (kill-switch router; no logic duplicated)
 Each production mutator gains ONE top-level `match self.route_overlay()` branch. `route_overlay()` =
@@ -49,14 +49,14 @@ Order-A (WAL-durable BEFORE visibility CAS, `lockfree_cas.rs:243`) + `invalidate
 `NoLostWriteUnderLockFreeCommit` + the registry contract hold by construction.
 - `insert`/`insert_with_value(V=())` → `insert_cas_durable`; `insert_with_value(V=u64)` → new thin
   `insert_cas_with_value_durable` (reuses `build_value_path_recursive`).
-- $increment(V=u64, \delta \ge 0)$ → `try_increment_cas_durable` (u64 adapter; δ<0 errors/falls back).
+- $`increment(V=u64, \delta \ge 0)`$ → `try_increment_cas_durable` (u64 adapter; δ<0 errors/falls back).
 - `upsert(V=u64)` → new thin `upsert_cas_durable` (last-writer = CAS winner).
 - `insert_batch*` → one `BatchInsert` WAL append + N overlay CAS (existing single-append discipline).
 - document-tx → same WAL records, overlay apply.
 - `remove` → R-A error/fallback (or R-B).
 - arbitrary V → forced `OwnedTree`.
 **The irreversible default-flip** = one edit per constructor: `overlay_write_mode: LockFreeOverlay` +
-`enable_lockfree()` for $V\in {(),u64}$. `set_overlay_write_mode` (new setter) = the runtime fallback (restart-time,
+`enable_lockfree()` for $`V\in {(),u64}`$. `set_overlay_write_mode` (new setter) = the runtime fallback (restart-time,
 §8.1). `SharedCharARTrie` wrappers keep `self.write()` for E2 until Phase F (lock discipline unchanged until F).
 
 ## (3) E1 — read-path flip (after E2)
@@ -87,7 +87,7 @@ production eviction now reclaims overlay memory (§F-proven).
 ## (6) Recovery — overlay-root rebuild + the BACK-COMPAT proof
 **On-disk format UNCHANGED by the flip (proven by construction):** the overlay checkpoint serializes via
 `overlay_to_inner` → the SAME `serialize_char_node_to_disk` (`persist.rs:424`); value blob `[len][bincode(V)]`
-identical; root descriptor/WAL formats unchanged. **$\Rightarrow$ a file written pre-flip reopens post-flip and vice-versa —
+identical; root descriptor/WAL formats unchanged. **$`\Rightarrow`$ a file written pre-flip reopens post-flip and vice-versa —
 the DATA is never irreversibly transformed.** This bounds the irreversibility to code/architecture (you can always
 downgrade the binary + reopen the same files).
 - **REC-A (RECOMMENDED first flip):** after owned recovery, rebuild `lockfree_root` from `iter()`/`iter_with_values()`
@@ -95,7 +95,7 @@ downgrade the binary + reopen the same files).
   owned). Cost: O(terms) overlay inserts on open (doubles open-time tree-build for large tries — risk §11.3).
 - **REC-B (follow-on):** lazy structural load via `inner_to_overlay` (single-level OnDisk children) + fault-in +
   WAL-tail replay. O(1)-in-image open; avoids the double build.
-- `Remove` in recovery: REC-A rebuilds from the live set (`iter()` enumerates only final terms) $\Rightarrow$ deleted terms
+- `Remove` in recovery: REC-A rebuilds from the live set (`iter()` enumerates only final terms) $`\Rightarrow`$ deleted terms
   naturally absent — **recovery correct even under R-A** (§6.3). Watermark base = recovered frontier (already wired).
 
 ## (7) Phase F — owned-tree removal + RwLock→Arc (the IRREVERSIBLE commit)
@@ -129,8 +129,8 @@ is the only data-affecting one-way step, deliberately split out (F7).
 
 ## (9) Formal + verification
 - **Integration spec `LockFreeFlipEndToEnd.tla`** (belt-and-suspenders for an irreversible flip; reuse base-module
-  actions): headline invariant `EveryCommittedTermSurvivesFullCycle` over Write$\cup$Commit$\cup$Checkpoint$\cup$Evict$\cup$FaultIn$\cup$
-  Crash$\cup$Recover; tiny CONSTANTS (2 writers/2 terms/MaxLSN=3); `_Unsafe.cfg` re-breaks one link (capture-ordering
+  actions): headline invariant `EveryCommittedTermSurvivesFullCycle` over Write$`\cup`$Commit$`\cup`$Checkpoint$`\cup`$Evict$`\cup`$FaultIn$`\cup`$
+  Crash$`\cup`$Recover; tiny CONSTANTS (2 writers/2 terms/MaxLSN=3); `_Unsafe.cfg` re-breaks one link (capture-ordering
   reversed) → MUST violate it. The per-component specs already cover each link.
 - **Production-soak PS1 (the #41 witness through the FLIPPED production API):** N writers `trie.insert`/`increment`
   + R readers `trie.contains`/`get_value` + checkpointer `trie.checkpoint()` + evictor `force_eviction`, all
@@ -140,7 +140,7 @@ is the only data-affecting one-way step, deliberately split out (F7).
 - **Existing 2489 suite:** mode-agnostic behavioral tests RUN THROUGH the overlay (the identity oracle, as G4 used
   them); owned-internal tests re-point or run in `OwnedTree`-mode fixtures (mode-parameterized). Green at every phase.
 
-## (10) Phased migration (each green-gated: nextest $\ge$2489 + verify-formal-correspondence exit 0 + unsafe-inventory exit 0)
+## (10) Phased migration (each green-gated: nextest $`\ge`$2489 + verify-formal-correspondence exit 0 + unsafe-inventory exit 0)
 - **F0** — routing scaffold + thin primitives (`insert_cas_with_value_durable`, `upsert_cas_durable`, overlay batch
   loop) + **un-gate fault-in to production**. No default flip. Reversible.
 - **F1** — integration TLA + PS1/PS2/PS3 harness (mode-parameterized; run `OwnedTree` first = harness sound). Reversible.

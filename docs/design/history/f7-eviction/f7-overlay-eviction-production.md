@@ -53,7 +53,7 @@ SHARED byte+char concern. Resident heap grows unbounded → libgrammstein byte n
    points or the budget drifts** (derive from the CAS publish points, not ad-hoc).
 
 ## Invariants (the #41 guard is structural)
-- **No lost write / #41:** victims sourced ONLY from the post-checkpoint registry = nodes durable $\le$
+- **No lost write / #41:** victims sourced ONLY from the post-checkpoint registry = nodes durable $`\le`$
   committed_watermark_at_capture (publish-AFTER-verify, persist.rs:739-754). An un-synced write (LSN >
   watermark) is NOT serialized → NOT in the registry → can NEVER be selected. A concurrent durable
   write invalidates the registry (coordinator.rs:424 invalidate_registry; is_valid gate) → evictor
@@ -73,14 +73,14 @@ uses; eviction touches ONLY lockfree_root (overlay), never self.root (owned) —
 the owned tree.
 
 ## Verification
-- Tests (extend OE1-OE4 + char eviction suites): round-trip exact (byte+char $\times$ {(),u64,String}, fault
+- Tests (extend OE1-OE4 + char eviction suites): round-trip exact (byte+char $`\times`$ {(),u64,String}, fault
   AND reopen); DATA-LOSS-PROOF (budget=0 evict-all, reopen, all terms incl. u64>i64::MAX recover);
-  resident-heap $\approx$ budget (the counter + massif); evict‖reader/writer/faulter no-UAF (loom +
+  resident-heap $`\approx`$ budget (the counter + massif); evict‖reader/writer/faulter no-UAF (loom +
   sanitizers); no-double-count-on-reopen; loser-safe proptest (byte OE4).
 - Formal: gate the EXISTING OverlayEvictionCas.tla (+ _Unsafe negative) in verify-formal-correspondence.sh;
   no-unsafe-boundary stays exit-0 NO delta (driver+fault add ZERO unsafe).
-- Heap bench: scaled N-million byte keys, enable_eviction ON, post-checkpoint resident $\approx$ budget vs
-  unbounded; libgrammstein billion-ngram proxy $\le$ <16GB. Real disk target/test-tmp, NEVER tmpfs.
+- Heap bench: scaled N-million byte keys, enable_eviction ON, post-checkpoint resident $`\approx`$ budget vs
+  unbounded; libgrammstein billion-ngram proxy $`\le`$ <16GB. Real disk target/test-tmp, NEVER tmpfs.
 
 ## Residual risks (red-team surface)
 R1 byte fault-in is NEW code (char's proven) — needs byte OE1/OE2/OE4 + loom before flip.
@@ -146,11 +146,11 @@ slot so it is never a victim). Also assert the "" root value survives evict-all.
 | BYTE  | overlay-default (`route_overlay()`) | `EvictableARTrie for SharedARTrie` (shared_trait_impl.rs:243)→`enable_eviction`→`evict_node_at_path` (OWNED, **no-op**). NO overlay reclaimer exists at all; NO overlay fault-in on read OR write. | **NO-OP** + missing primitive + missing fault-in + missing registry-invalidation (v2 FIX 1/2) |
 | VOCAB | **OWNED-tree** (`lockfree_root: None`, query reads `self.root`; NO `route_overlay`) | `EvictableARTrie for SharedVocabARTrie` (mod.rs:723)→`enable_eviction`→`evict_node_at_path` (OWNED, parent-pointer-integrity) acts on the REAL tree vocab uses. | **WORKS** — reclaims the owned tree it actually reads from. |
 
-$\Rightarrow$ The overlay-eviction work targets **CHAR + BYTE** (the overlay-default variants, both production no-ops),
+$`\Rightarrow`$ The overlay-eviction work targets **CHAR + BYTE** (the overlay-default variants, both production no-ops),
 DRY via the shared `OverlayNode<K,V>` core helper. **VOCAB needs NO change** — it is owned-tree by
 default and its `evict_node_at_path` already reclaims its real representation. (If a vocab lock-free
 overlay production mode is ever enabled it would inherit the char fix through the shared helper, but the
-default + the libgrammstein use are owned $\Rightarrow$ out of scope here.)
+default + the libgrammstein use are owned $`\Rightarrow`$ out of scope here.)
 
 ## v2.1 FIX 3 (REVISED — registry-sized budget, NOT process-RSS, NOT a per-node live counter)
 The audit kills BOTH earlier budget proposals: the MemoryPressureMonitor measures SYSTEM-available
@@ -177,7 +177,7 @@ RESOLUTION — the checkpoint-built DiskLocationRegistry IS the per-trie, drift-
     ground-truth heap bound). PRECISION UPGRADE (if the factor is unstable): weight selection by an
     in-memory tier size derived from the registry's `node_type` (no new field, no drift) — deferred
     behind the massif evidence.
-  $\Rightarrow$ The red-team's #4 (resident-accounting drift) is DISSOLVED: there is no per-node live counter; the
+  $`\Rightarrow`$ The red-team's #4 (resident-accounting drift) is DISSOLVED: there is no per-node live counter; the
     registry is the accounting, updated at register (checkpoint) and rebuilt fresh each checkpoint.
 
 ## STATUS: v2.1 — RE-RED-TEAM (byte invalidation + byte read/write fault-in + registry-sized budget + 3-variant scope).
@@ -194,7 +194,7 @@ coverage live (163 states clean + _Unsafe negative control). Folds:
 `force_eviction_char` passes `max_count = config.batch_size` (default 256, max 4096) to
 `select_char_for_eviction`, whose loop breaks at `result.len() >= max_count` OR `total_bytes >=
 target_bytes` — WHICHEVER FIRST. So one call evicts ≤ batch_size nodes regardless of how far over
-budget; there is NO multi-pass loop. Under bulk load (a checkpoint adding $\gg$ batch_size resident nodes
+budget; there is NO multi-pass loop. Under bulk load (a checkpoint adding $`\gg`$ batch_size resident nodes
 — libgrammstein's exact load) the heap grows faster than one batch/checkpoint reclaims → resident
 stays > budget forever. FIX: the CHECKPOINT-TAIL budget path selects UNCAPPED (`max_count =
 usize::MAX`) so one pass selects all the COLDEST nodes summing to `target_bytes = resident − budget`
@@ -208,7 +208,7 @@ arity / param carrying the uncapped `max_count` for the budget path (do not chan
 ## v3 MUST-FIX 2 (was 1b, MAJOR) — budget on IN-MEMORY tier size, not on-disk bytes
 REFUTED the "term-length-varying factor": the overlay serialize is 1:1 (each overlay node = one
 `Frame` = one `serialize_one_char_node_to_disk` = one `register_char`; NO path compression on the
-overlay serialize — Phase B "no path compression $\Rightarrow$ identical structure"), so the registry holds ONE
+overlay serialize — Phase B "no path compression $`\Rightarrow`$ identical structure"), so the registry holds ONE
 entry per (un-path-compressed) overlay node. Therefore `Σ in_mem_tier_size(node_type)` over the
 registry is an EXACT resident estimate (per-tier in-memory size is a known constant: CharNodeN flat
 array + Arc + OverlayNode enum overhead). The current `EvictableCharNode.size_bytes` is doc'd
@@ -232,7 +232,7 @@ lockfree_cas.rs), each currently bailing on OnDisk and each must mirror char's f
 byte already HAS the loader (overlay_fault.rs:48 load_overlay_node_from_disk + OverlayFaulter<ByteKey,V>
 impl :119, zero unsafe) — only the hot paths don't CALL it. The PRESENT-HOIST stays NON-faulting (a
 faulting read before the WAL append is char's documented "75-minute hang"; byte already hoists
-non-faulting at insert_cas_durable:677-686 — preserve that). PersistentNode<V> $\equiv$ OverlayNode<ByteKey,V>
+non-faulting at insert_cas_durable:677-686 — preserve that). PersistentNode<V> $`\equiv`$ OverlayNode<ByteKey,V>
 so char's templates port with no UAF; the read-fault does its own loser-safe install-CAS + bounded
 rebase (never spins — final no-fault walk reads absent after the budget), the write-fault splices the
 faulted child InMem into the fresh path-copy and lets the writer's single root-CAS arbitrate.
@@ -268,7 +268,7 @@ wiring — no hidden no-op there.)
   overlay-eviction path, so the single invalidate suffices. Add a comment it is owned-only (or
   defensively invalidate there too) so a future owned+eviction byte config can't silently regress.
 - (was 7, formal scope) OverlayEvictionCas.tla covers the abstract 3-way evictor‖faulter‖writer
-  root-CAS + evict$\subseteq$durable precondition + no-UAF — but does NOT cover: (i) the checkpoint-tail
+  root-CAS + evict$`\subseteq`$durable precondition + no-UAF — but does NOT cover: (i) the checkpoint-tail
   composition (publish→concurrent-writer-invalidate→tail-evictor is_valid() as one system — close with
   a loom test: checkpoint-tail-eviction ‖ writer), (ii) convergence/budget (a LIVENESS property the
   safety specs don't model — close with a massif heap soak under write-heavy load), (iii) byte's NEW

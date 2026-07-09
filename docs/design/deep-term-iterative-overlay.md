@@ -26,10 +26,10 @@ Three operations walked that spine **recursively**, so a long term (the stress t
 fixes byte + char + vocab. It flattens the descent onto a heap worklist via the safe
 `Arc::try_unwrap` pattern:
 
-- Sole owner of a child `Arc` $\Rightarrow$ `try_unwrap` yields the node by value; drain ITS children
+- Sole owner of a child `Arc` $`\Rightarrow`$ `try_unwrap` yields the node by value; drain ITS children
   onto the worklist; the node drops with an empty store (re-entrant `drop` finds nothing →
   at most one extra frame, never a chain).
-- Shared `Arc` $\Rightarrow$ it just drops (refcount−−); the eventual last owner dismantles it.
+- Shared `Arc` $`\Rightarrow`$ it just drops (refcount−−); the eventual last owner dismantles it.
 
 No node freed while referenced (no UAF), none twice, none leaked — driven purely by `Arc`
 refcounting. **Zero `unsafe`.** The `Drop` must be `impl<K, V>` (E0367: a `Drop` impl

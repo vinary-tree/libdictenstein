@@ -28,7 +28,7 @@ Record the coverage frontier IN the image header (fsync'd ATOMICALLY with the im
 reopen use `eff = max(wal_record_checkpoint_lsn, image_header_coverage)`. A torn WAL record is then
 harmless (the durable image self-describes `coverage=N` → skip `(P,N]` correctly, they ARE in the
 image → no double-apply; and the inverse — record=N but image=old — cannot happen because the single
-image fsync ties coverage to the exact image bytes). #41 UNTOUCHED: image-coverage $\ne$ the in-memory
+image fsync ties coverage to the exact image bytes). #41 UNTOUCHED: image-coverage $`\ne`$ the in-memory
 durability watermark (the same decoupling C2/#47 established); the capture assert overlay_checkpoint.rs:295
 is not in this path. Rejected: (II) write-record-first is a silent-LOSS footgun (record=N, image=old →
 skip-and-lose); no ordering of two independent fsyncs to two files is torn-safe both ways — a single
@@ -44,7 +44,7 @@ The agent assumed char uses its own `CharTrieFileHeader` (with a checkpoint_lsn 
 — `CharTrieFileHeader` is DEAD/unused** (grep: it is referenced ONLY in file_header.rs; nothing writes/reads
 it on disk). The char trie uses the SAME shared `persistent_artrie_core::disk_manager::FileHeader` as byte
 (its `dm.set_root_ptr`/`dm.set_entry_count` in char `persist.rs::publish_snapshot` write that shared header).
-$\Rightarrow$ **#48 is ONE shared `FileHeader` change** (add the version-gated checksummed `image_checkpoint_lsn`), and
+$`\Rightarrow`$ **#48 is ONE shared `FileHeader` change** (add the version-gated checksummed `image_checkpoint_lsn`), and
 BOTH variants' publishers call the same `dm.set_image_checkpoint_lsn(...)` + both reopens call the same
 `dm.image_checkpoint_lsn()`. Simpler than the per-variant plan below; the byte `FileHeader` edits in
 disk_manager.rs are the single format change, shared by char. (Disregard the agent's "char already has the

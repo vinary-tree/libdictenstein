@@ -15,7 +15,7 @@ The persistent ARTrie keeps hot dictionary entries resident in memory for native
 | **EBR** — epoch-based reclamation | A safe-memory-reclamation scheme. Readers announce they are active by entering a global *epoch*; a reclaimer that wants to free a node advances the epoch and then waits until every reader from the old epoch has departed before freeing, so no reader can hold a dangling pointer. Implemented by `EpochManager` in `core/concurrency.rs`. |
 | **Quiescence** | The condition in which no reader from the pre-eviction epoch is still active (`active_readers == 0` after an `advance()`). Reaching quiescence is the precondition for freeing an evicted node. |
 | **LRU** — least recently used | The selection policy that ranks nodes by *coldness* (a recency-and-frequency score) so the coldest nodes are evicted first and hot nodes stay resident. Implemented by `LruRegistry` in `core/eviction/lru_tracker.rs`. |
-| **Urgency** | How aggressively a single eviction pass should run, derived from the memory-pressure level. The `EvictionUrgency` enum has three rungs — `Moderate`, `Urgent`, `Emergency` — that scale the batch size ($\times 1$/$\times 2$/$\times 4$). |
+| **Urgency** | How aggressively a single eviction pass should run, derived from the memory-pressure level. The `EvictionUrgency` enum has three rungs — `Moderate`, `Urgent`, `Emergency` — that scale the batch size ($`\times 1`$/$`\times 2`$/$`\times 4`$). |
 | **Swizzle / unswizzle** | A *swizzled* child pointer points at a live in-memory node (fast path); an *unswizzled* pointer is a compact `DiskRef` naming a `block_id` + location on disk. *Swizzling* faults a node in (disk → memory); *unswizzling* is the atomic swap eviction performs (memory → disk). Implemented by `SwizzledPtr` in `core/swizzled_ptr.rs`. |
 | **Pin / unpin** | A buffer-pool *frame* is *pinned* while a lease (read or write) is held on it; a pinned frame may not be evicted from the pool. *Unpinning* releases the lease. |
 | **Checkpoint** | The durable write of the trie to disk that (re)populates the `DiskLocationRegistry`. Only nodes registered by the most recent checkpoint are eligible for eviction. |
@@ -70,15 +70,15 @@ The eviction system implements SQLite-style bounded memory operation:
 
 **What.** Four cooperating components, all owned by `PersistentARTrie<V>`: a `MemoryPressureMonitor` that watches the OS, an `EvictionCoordinator` that queues and serializes work, a background *eviction thread* that performs the reclamation, and two indices — the `LruRegistry` (which nodes are cold) and the `DiskLocationRegistry` (which nodes have a current disk image and may therefore be evicted).
 
-**How.** The data flows in one direction: the monitor detects pressure and fires a callback; the callback maps the pressure *level* to an `EvictionUrgency` and enqueues a request; the eviction thread dequeues it, waits for epoch quiescence, asks the registries for the coldest evictable nodes, atomically unswizzles each ($ChildNode \to DiskRef$), and records statistics. The figure below traces that path end-to-end; the urgency bands are colored amber → red by severity.
+**How.** The data flows in one direction: the monitor detects pressure and fires a callback; the callback maps the pressure *level* to an `EvictionUrgency` and enqueues a request; the eviction thread dequeues it, waits for epoch quiescence, asks the registries for the coldest evictable nodes, atomically unswizzles each ($`ChildNode \to DiskRef`$), and records statistics. The figure below traces that path end-to-end; the urgency bands are colored amber → red by severity.
 
 <img src="../diagrams/eviction-pipeline.svg" alt="Eviction pipeline: pressure band to urgency to queue to async thread to quiescence to LRU select to unswizzle" width="980"/>
 
-*Figure 1 — The node-eviction pipeline. `MemoryPressureMonitor` classifies available RAM into `Normal`/`Low`/`Critical`; `request_eviction` maps `Low` $\Rightarrow$ `Moderate` and `Critical` $\Rightarrow$ `Emergency` (`Normal` is a no-op); the async `artrie-eviction` thread runs `cooldown → wait_for_quiescence → select_for_eviction (LRU) → atomic unswizzle → record stats`, after which the cold node lives on disk as a `DiskRef` and is re-faulted on next access.*
+*Figure 1 — The node-eviction pipeline. `MemoryPressureMonitor` classifies available RAM into `Normal`/`Low`/`Critical`; `request_eviction` maps `Low` $`\Rightarrow`$ `Moderate` and `Critical` $`\Rightarrow`$ `Emergency` (`Normal` is a no-op); the async `artrie-eviction` thread runs `cooldown → wait_for_quiescence → select_for_eviction (LRU) → atomic unswizzle → record stats`, after which the cold node lives on disk as a `DiskRef` and is re-faulted on next access.*
 
 **Why this shape.** Detection, policy, and mechanism are separated so each can be tuned independently: the monitor's thresholds bound *when* eviction starts, the LRU policy decides *what* leaves first, and the epoch machinery makes the *mechanism* safe. Making the eviction thread asynchronous (rather than evicting inline after each checkpoint, the way naïve bounded caches do) keeps client `insert`/`lookup`/`iterate` latency off the eviction critical path.
 
-> **Note — `MemoryPressureLevel` vs `EvictionUrgency`.** They are distinct enums. `MemoryPressureLevel` (`Normal`, `Low`, `Critical`) describes the *system*; `EvictionUrgency` (`Moderate`, `Urgent`, `Emergency`) describes *how hard a pass works*. The monitor callback in `coordinator.rs` performs the mapping: $Normal \Rightarrow$ no request, $Low \Rightarrow Moderate$, $Critical \Rightarrow Emergency$. (The `Urgent` rung exists for callers that invoke `request_eviction(EvictionUrgency::Urgent)` directly.)
+> **Note — `MemoryPressureLevel` vs `EvictionUrgency`.** They are distinct enums. `MemoryPressureLevel` (`Normal`, `Low`, `Critical`) describes the *system*; `EvictionUrgency` (`Moderate`, `Urgent`, `Emergency`) describes *how hard a pass works*. The monitor callback in `coordinator.rs` performs the mapping: $`Normal \Rightarrow`$ no request, $`Low \Rightarrow Moderate`$, $`Critical \Rightarrow Emergency`$. (The `Urgent` rung exists for callers that invoke `request_eviction(EvictionUrgency::Urgent)` directly.)
 
 ---
 
@@ -123,7 +123,7 @@ pub struct EvictionCoordinator {
 }
 ```
 
-The worker thread holds only a `Weak<EvictionCoordinator>` and polls `request_queue` ($\approx$`100 ms`), so the coordinator can be dropped promptly by its owning trie — the earlier `Condvar`-based design was removed because pinning a strong `Arc` in the worker leaked one OS thread per trie instance.
+The worker thread holds only a `Weak<EvictionCoordinator>` and polls `request_queue` ($`\approx`$`100 ms`), so the coordinator can be dropped promptly by its owning trie — the earlier `Condvar`-based design was removed because pinning a strong `Arc` in the worker leaked one OS thread per trie instance.
 
 **Key Methods:**
 
@@ -259,11 +259,11 @@ pub struct EpochManager {
 
 The end-to-end trigger-to-completion path is **Figure 1** above. In prose, the steps the async `artrie-eviction` thread performs per request are:
 
-1. **Dequeue.** `MemoryPressureLevel::Low`/`Critical` $\Rightarrow$ `request_eviction(urgency)` pushes (or urgency-merges) an `EvictionRequest` onto the coordinator's `VecDeque`. The worker does **not** sleep on a condvar — it holds only a `Weak<EvictionCoordinator>`, upgrades once per iteration, and polls `try_pop_request` roughly every `100 ms`, dropping the strong reference before sleeping. (This `Weak`-driven poll replaced an earlier condvar design that leaked one OS thread per trie by keeping the coordinator alive; see `eviction_loop` in `core/eviction/coordinator.rs`.)
+1. **Dequeue.** `MemoryPressureLevel::Low`/`Critical` $`\Rightarrow`$ `request_eviction(urgency)` pushes (or urgency-merges) an `EvictionRequest` onto the coordinator's `VecDeque`. The worker does **not** sleep on a condvar — it holds only a `Weak<EvictionCoordinator>`, upgrades once per iteration, and polls `try_pop_request` roughly every `100 ms`, dropping the strong reference before sleeping. (This `Weak`-driven poll replaced an earlier condvar design that leaked one OS thread per trie by keeping the coordinator alive; see `eviction_loop` in `core/eviction/coordinator.rs`.)
 2. **Cooldown check.** Skip (and `record_skip`) if the request is older than `5 s` or arrives inside the cooldown window.
 3. **Epoch quiescence.** `advance()` the epoch, then `wait_for_quiescence()`; on timeout, `record_quiescence_timeout` and skip the cycle.
 4. **Select cold nodes.** Ask the `DiskLocationRegistry` for the coldest evictable candidates, scored by the `LruRegistry` (see the algorithm below).
-5. **Unswizzle.** Invoke the callback, which atomically swaps each selected $ChildNode \to DiskRef$.
+5. **Unswizzle.** Invoke the callback, which atomically swaps each selected $`ChildNode \to DiskRef`$.
 6. **Record statistics.** `record_eviction(nodes, bytes, duration_ms)`.
 
 ### Node Selection Algorithm
@@ -299,9 +299,9 @@ DiskLocationRegistry.select_for_eviction(target_bytes, lru, min_depth, max_count
 
 <img src="../diagrams/epoch-reclamation.svg" alt="Epoch-based reclamation sequence: eviction defers the free until every old-epoch reader departs, then swaps and frees" width="900"/>
 
-*Figure 2 — Epoch-based reclamation. `Reader A` pins epoch 5 and may hold a raw `*const Node` into the victim. The eviction thread `advance()`s to epoch 6 and, seeing `A` still active, **defers** the free. After `A` calls `exit_read()` and quiescence is reached, the thread `unswizzle`s the victim ($ChildNode \to DiskRef$) and frees it. `Reader B`, which entered after the boundary, observes the already-published `DiskRef` and faults the node back in — it never touches freed memory.*
+*Figure 2 — Epoch-based reclamation. `Reader A` pins epoch 5 and may hold a raw `*const Node` into the victim. The eviction thread `advance()`s to epoch 6 and, seeing `A` still active, **defers** the free. After `A` calls `exit_read()` and quiescence is reached, the thread `unswizzle`s the victim ($`ChildNode \to DiskRef`$) and frees it. `Reader B`, which entered after the boundary, observes the already-published `DiskRef` and faults the node back in — it never touches freed memory.*
 
-**Guarantee:** a node is freed only after **all** readers from the pre-eviction epoch have completed. The ordering is $advance \to wait for quiescence \to swap \to free$.
+**Guarantee:** a node is freed only after **all** readers from the pre-eviction epoch have completed. The ordering is $`advance \to wait for quiescence \to swap \to free`$.
 
 **Memory-ordering note.** `enter_read`/`exit_read` use `SeqCst` on the `active_readers` counter, and the reclaimer's `has_active_readers()` check is also `SeqCst`. This is the StoreLoad barrier EBR requires: it guarantees that if the reclaimer's scan fails to observe a reader, that reader is guaranteed to observe the reclaimer's unlink (and re-fault a fresh node) rather than dereference a freed one. `AcqRel`/`Acquire` alone would permit the StoreLoad reordering and would **not** be sufficient (see the rationale comments on `EpochManager::enter_read` in `core/concurrency.rs`).
 
@@ -318,9 +318,9 @@ DiskLocationRegistry.select_for_eviction(target_bytes, lru, min_depth, max_count
 
 ### The Buffer-Pool Layer Underneath (Page Lifecycle)
 
-Node eviction (above) reclaims *trie nodes*; beneath it, the block-storage **buffer pool** manages fixed-size *pages* (256 KB frames) and is what physically reads a node in (*fault-in*) and writes a dirty node out (*flush*). Understanding the page lifecycle clarifies the $DiskRef \to fault-in \to resident$ round-trip that eviction reverses.
+Node eviction (above) reclaims *trie nodes*; beneath it, the block-storage **buffer pool** manages fixed-size *pages* (256 KB frames) and is what physically reads a node in (*fault-in*) and writes a dirty node out (*flush*). Understanding the page lifecycle clarifies the $`DiskRef \to fault-in \to resident`$ round-trip that eviction reverses.
 
-**What.** A buffer-pool frame's per-frame state (`FrameMetadata`, `core/buffer_manager.rs`) carries a `block_id`, a `lease_state` (a read-pin count or the exclusive `WRITE_LEASE`), a `dirty` flag, and a `reference_bit` for the CLOCK replacement algorithm. There is no single `enum PageState`; a page's condition is the product of $\{\text{resident}, \text{on-disk}\} \times \{\text{clean}, \text{dirty}\} \times \{\text{pinned}, \text{unpinned}\}$. **How.** `load_page`/`pin_page_data` fault a page in; `pin_read`/`pin_write` pin it; `mark_dirty` flags a write; `flush_page`/`flush_all` write it back and `clear_dirty`; and `get_free_frame` reuses an unpinned, unreferenced frame as a CLOCK victim. **Why.** Two invariants make this safe and are visible in the figure: a page is **never** a CLOCK victim while *pinned*, and a *dirty* page may **not** be flushed while a `WRITE_LEASE` is held (a dirty victim is written back before its frame is reused, so no acknowledged bytes are lost).
+**What.** A buffer-pool frame's per-frame state (`FrameMetadata`, `core/buffer_manager.rs`) carries a `block_id`, a `lease_state` (a read-pin count or the exclusive `WRITE_LEASE`), a `dirty` flag, and a `reference_bit` for the CLOCK replacement algorithm. There is no single `enum PageState`; a page's condition is the product of $`\{\text{resident}, \text{on-disk}\} \times \{\text{clean}, \text{dirty}\} \times \{\text{pinned}, \text{unpinned}\}`$. **How.** `load_page`/`pin_page_data` fault a page in; `pin_read`/`pin_write` pin it; `mark_dirty` flags a write; `flush_page`/`flush_all` write it back and `clear_dirty`; and `get_free_frame` reuses an unpinned, unreferenced frame as a CLOCK victim. **Why.** Two invariants make this safe and are visible in the figure: a page is **never** a CLOCK victim while *pinned*, and a *dirty* page may **not** be flushed while a `WRITE_LEASE` is held (a dirty victim is written back before its frame is reused, so no acknowledged bytes are lost).
 
 <img src="../diagrams/buffer-page-lifecycle.svg" alt="Buffer-pool page lifecycle, part 1 of 2: the top-level Disk ⇄ Resident ⇄ eviction cycle — fault-in, pin/unpin, flush, and CLOCK write-back" width="520"/>
 <img src="../diagrams/buffer-page-lifecycle-2.svg" alt="Buffer-pool page lifecycle, part 2 of 2: the Resident frame's internal substates — Clean/Dirty × Pinned/Unpinned" width="590"/>

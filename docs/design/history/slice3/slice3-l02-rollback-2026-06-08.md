@@ -78,7 +78,7 @@ the opposite of "reversibility preferred until the keystone." **Rejected.**
   gated, reversible design spike **before** L3.2.
 
 ## Corrected ordering (top-level backbone UNCHANGED)
-$L0 \to L1 \to CX \to L2 \to L3$, but:
+$`L0 \to L1 \to CX \to L2 \to L3`$, but:
 - **L0 = L0.1 only** (eviction owned-arm deletion, committed `5aa6fc3`; `#46` at
   `1637aed`). L0.2 removed from L0; L0.3 (OR-lock) already retracted → L3.3 (refinement R1).
 - **Next slice = L1** (recovery redirect, `mmap_ctor.rs` recover-family — task #40).

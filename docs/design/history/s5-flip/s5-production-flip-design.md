@@ -11,7 +11,7 @@ torn hybrid. Red-team status in §13.
 - **A (multi-segment recovery):** the prompt's premise is partly WRONG, which is good news + exposes a
   different hole. **Production open reads records from the SINGLE active WAL file only**
   (`mmap_ctor::open` `WalReader::new(&wal_path)`) and the regime from THAT file's header → one global
-  `reconcile_lww` regime over records that all came from one file $\Rightarrow$ internally consistent. The
+  `reconcile_lww` regime over records that all came from one file $`\Rightarrow`$ internally consistent. The
   "d2.6 per-segment-version threading" **does not exist in code**. So the Owned archive is NOT
   mis-dropped by the active Overlay regime — *because normal open never reads the archive*.
 - **A2 (the real hole):** the corruption-rebuild paths (`recover_from_archives`,
@@ -30,7 +30,7 @@ torn hybrid. Red-team status in §13.
 - **D (checkpoint):** the watermark-bounded DESTRUCTIVE reclaim DOES NOT EXIST. S5 ships the
   **retain-WAL** publisher (`publish_immutable_snapshot_retaining_wal`, lossless, unbounded WAL growth)
   and DEFERS destructive compaction — because a naive `rotate_to_archive` archives the `> w` tail that
-  normal open never reads $\Rightarrow$ tail-loss (**ASSUMPTION-8**).
+  normal open never reads $`\Rightarrow`$ tail-loss (**ASSUMPTION-8**).
 - **Blocker:** `SharedCharARTrie::checkpoint` asserts `lockfree_root.is_none()` (mod.rs:1312) — the flip
   violates it; S5 route-splits the checkpoint body.
 
@@ -51,7 +51,7 @@ torn hybrid. Red-team status in §13.
   lockfree_value_route. Default `OwnedTree`.
 - **Checkpoint:** `publish_durable_and_reclaim` (persist.rs:108) rotates by next_lsn + asserts next_lsn
   unchanged (lock-free-INCOMPATIBLE). `capture_snapshot_immutable` (343, cfg-gated) captures watermark
-  BEFORE root load + asserts watermark$\le$synced_frontier (465). `publish_immutable_snapshot_retaining_wal`
+  BEFORE root load + asserts watermark$`\le`$synced_frontier (465). `publish_immutable_snapshot_retaining_wal`
   (548, cfg-gated) RETAINS WAL. **No publisher captures-immutable AND reclaims by watermark.**
 - **Header:** `MAGIC`/`MAGIC_OVERLAY` dual-accept (header.rs:128); VERSION=2 already; regime byte 28,
   default Owned, unknown→Owned fail-safe.
@@ -67,10 +67,10 @@ C. flip_to_overlay(): set_overlay_regime() in-place on the empty active (PROVEN 
 D. (optional) checkpoint() [OVERLAY] to seal.
 ```
 **Proof normal open is safe:** reopen reads recovered_ops from the active (Overlay) file only + the
-regime from it; every recovered_op is post-flip Overlay; the Owned archive is never read $\Rightarrow$ the
+regime from it; every recovered_op is post-flip Overlay; the Owned archive is never read $`\Rightarrow`$ the
 Overlay-drop only ever fires on post-flip records. The pre-flip data is in the DATA FILE (via step B's
 checkpoint). ∎ **MANDATORY precondition:** checkpoint-before-flip (else pre-flip WAL-only data lands in
-the Owned archive that normal open ignores $\Rightarrow$ LOST — the §3.3 trace).
+the Owned archive that normal open ignores $`\Rightarrow`$ LOST — the §3.3 trace).
 **A2 fix:** make the rebuild paths reconcile EACH segment with that segment's own header regime
 (segments are single-regime by construction); floor-carry across rotate keeps generations globally
 monotone. Conservative fallback: fail-closed on any Overlay archive segment + GAP_LEDGER.
@@ -83,19 +83,19 @@ ONE dangerous window:** after C makes `MAGIC_OVERLAY` durable but BEFORE the bin
 LOST. **Resolution:** the regime-stamp code and the `LockFreeOverlay` ctor default ship in the SAME
 release (true by construction — the stamp is reached only via the flip code that also sets the default).
 **ASSUMPTION-4 (HIGH, the #1 red-team item):** verify NO path appends an owned record to a
-`MAGIC_OVERLAY` WAL — i.e. every Overlay-stamped V$\in${(),u64} trie has `enable_lockfree` run (route_overlay
+`MAGIC_OVERLAY` WAL — i.e. every Overlay-stamped V$`\in`${(),u64} trie has `enable_lockfree` run (route_overlay
 true) AND no arbitrary-V / value-CAS / doc-tx trie is EVER stamped Overlay.
 
 ## 6. Quiesce / lock-ordering
-Flip runs at construction on a not-yet-shared `&mut self` $\Rightarrow$ no concurrent producer/checkpoint/eviction
-$\Rightarrow$ nothing to drain. §A hoist stays non-faulting. `set_overlay_regime` lock order = header→file (same as
+Flip runs at construction on a not-yet-shared `&mut self` $`\Rightarrow`$ no concurrent producer/checkpoint/eviction
+$`\Rightarrow`$ nothing to drain. §A hoist stays non-faulting. `set_overlay_regime` lock order = header→file (same as
 checkpoint/set_commit_seq_floor). N-S4-3: re-discharge the faulting-producers lock-order via the isolated
 insert‖remove‖increment‖checkpoint‖eviction soak.
 
 ## 7. Checkpoint-through-overlay (largest NEW unit)
-Build `publish_immutable_snapshot_reclaiming` = capture_snapshot_immutable + watermark$\le$synced_frontier
+Build `publish_immutable_snapshot_reclaiming` = capture_snapshot_immutable + watermark$`\le`$synced_frontier
 assert + watermark-bounded reclaim. **HAZARD:** a plain `rotate_to_archive` archives the WHOLE active
-file $\Rightarrow$ records `> w` (the in-flight tail) move to the archive that normal open never reads $\Rightarrow$ tail-LOSS.
+file $`\Rightarrow`$ records `> w` (the in-flight tail) move to the archive that normal open never reads $`\Rightarrow`$ tail-LOSS.
 **Correct (7a):** tail-preserving compaction (copy `> w` to a fresh Overlay active, fsync, rename). NEW
 ~60 lines, highest-risk. **RECOMMENDED for S5 (7b):** ship `publish_immutable_snapshot_retaining_wal`
 (retains full WAL, lossless, unbounded growth); defer (7a) to Phase F. Route-split
@@ -121,13 +121,13 @@ Per-file (base/vocab keep MAGIC untouched). Back-compat: new binary reads old Ow
    RecoveryManager::rebuild_from_wal (503), recover_from_archives (mmap_ctor.rs:1199). Reversible/inert.
 2. **S5-2:** `WalWriter::set_owned_regime()` (inverse, empty-WAL-guarded). Reversible.
 3. **S5-3:** un-gate `capture_snapshot_immutable` + `publish_immutable_snapshot_retaining_wal`; promote
-   the watermark$\le$frontier assert to unconditional. Reversible.
+   the watermark$`\le`$frontier assert to unconditional. Reversible.
 4. **S5-4:** `SharedCharARTrie::checkpoint` route-split (mod.rs:1298); move the lockfree_root.is_none()
    assert into the owned arm. Reversible while no ctor flips.
 5. **S5-5:** `flip_to_overlay(&mut self)` + symmetric `kill_switch_to_owned(&mut self)`; file-length
    emptiness assert. Reversible (no caller).
 6. **S5-6:** multi-segment recovery correspondence test (both polarities), real-disk scratch. Reversible.
-7. **S5-7 — THE FLIP (IRREVERSIBLE):** the V$\in${(),u64} ctors call `flip_to_overlay()`; first production
+7. **S5-7 — THE FLIP (IRREVERSIBLE):** the V$`\in`${(),u64} ctors call `flip_to_overlay()`; first production
    write of MAGIC_OVERLAY. Owner GO + full gate. Arbitrary-V ctors UNCHANGED.
 
 ## 11. Gate sequence (irreversible — exhaustive)
@@ -154,7 +154,7 @@ Delete owned tree; SharedCharARTrie RwLock→Arc; remove route_overlay()==false 
 - **A6:** the kill-switch needs set_owned_regime + rotate-to-fresh-Owned or it's incomplete.
 - **A7:** persist.rs:465 frontier assert is unconditional `assert!` (verify; promote if debug_assert!).
 - **A8:** S5 ships retain-WAL (7b) + defers destructive compaction (7a); a naive rotate archives the
-  `> w` tail normal open never reads $\Rightarrow$ loss.
+  `> w` tail normal open never reads $`\Rightarrow`$ loss.
 
 ## 14. Red-team findings (2 adversarial passes, 2026-06-03) — VERDICT: DO NOT FLIP AS DESIGNED
 
@@ -164,35 +164,35 @@ loses acked production data on the FIRST CLEAN REOPEN after the flip — no cras
 - **V1 (HIGH — NOT in the design): `open()` never re-establishes the overlay.** Both ctors construct
   with `lockfree_root: None`, `overlay_write_mode: OwnedTree`, and replay into the OWNED tree — they do
   NOT call `enable_lockfree`/set the mode/replay-into-overlay for an Overlay-regime file. So after any
-  normal reopen of a flipped file, `route_overlay()==false` $\Rightarrow$ production `insert`/`remove`/`increment`/
-  `commit_document` take the OWNED (unranked) arm and append unranked records onto the Overlay WAL $\Rightarrow$
+  normal reopen of a flipped file, `route_overlay()==false` $`\Rightarrow`$ production `insert`/`remove`/`increment`/
+  `commit_document` take the OWNED (unranked) arm and append unranked records onto the Overlay WAL $`\Rightarrow`$
   the NEXT reopen's `reconcile_lww(Overlay)` DROPS them all (removed terms resurrect). STEADY-STATE,
   every process, no crash. Fix: `open()` must re-`enable_lockfree` + set `LockFreeOverlay` + REPLAY THE
   TAIL INTO THE OVERLAY for Overlay files (else reads also miss the recovered data).
 - **H1/V5 (HIGH — ASSUMPTION-4 FALSE): same-monomorph u64 de-route.** `increment(t, -delta)` (negative)
-  and any owned-fallback arm on a FLIPPED u64 trie append an UNRANKED record on the Overlay WAL $\Rightarrow$
+  and any owned-fallback arm on a FLIPPED u64 trie append an UNRANKED record on the Overlay WAL $`\Rightarrow`$
   dropped on reopn. `compare_and_swap`/`commit_document` correctly `Err` under `route_overlay()`, but
   `increment`/`upsert`/the merge drain APPEND. Fix: the owned-fallback arms must REJECT (or emit ranked)
   under `route_overlay()`; `enable_lockfree` must refuse to stamp non-u64 monomorphs.
 - **V2 (HIGH): the merge drain** (`merge_lockfree_values_to_persistent`) appends an unranked
-  BatchIncrement (both char + byte) $\Rightarrow$ dropped on an Overlay file. Must be regime-gated/ranked. (S4
+  BatchIncrement (both char + byte) $`\Rightarrow`$ dropped on an Overlay file. Must be regime-gated/ranked. (S4
   already hit this in `char_lockfree_value_merge`; the fix there was the empty-WAL guard, not this.)
 - **H2/A2 (HIGH, conditional): corruption-rebuild is regime-blind** — `rebuild_from_wal_segments`
   (core) AND `RecoveryManager::rebuild_from_wal` (char) bypass `reconcile_lww` (raw LSN order, no drop)
-  $\Rightarrow$ post-flip mixed-regime archives resurrect/double-apply. A3 cross-segment generation collision is
+  $`\Rightarrow`$ post-flip mixed-regime archives resurrect/double-apply. A3 cross-segment generation collision is
   NOT closed while `commit_seq_floor` is still 0 (DG2 unimplemented). Fix: a SINGLE global reconcile
   pass tagging each record with its segment regime + a populated floor; `publish_snapshot` must also
-  write `checkpoint_lsn` to the data header (it doesn't today $\Rightarrow$ corruption-path double-apply).
+  write `checkpoint_lsn` to the data header (it doesn't today $`\Rightarrow`$ corruption-path double-apply).
 - **H3 (MEDIUM-HIGH): the flip emptiness guard is the wrong predicate.** `enable_lockfree`/the flip key
   the Overlay stamp on `current_lsn()==1`, but after the MANDATED checkpoint-first step
-  `rotate_to_archive` carries `next_lsn` HIGH (file is empty, length==64, but `current_lsn()` != 1) $\Rightarrow$
-  the stamp is SILENTLY SKIPPED $\Rightarrow$ an Overlay trie on an OWNED WAL $\Rightarrow$ NO-RANK orphans KEPT $\Rightarrow$ resurrection.
+  `rotate_to_archive` carries `next_lsn` HIGH (file is empty, length==64, but `current_lsn()` != 1) $`\Rightarrow`$
+  the stamp is SILENTLY SKIPPED $`\Rightarrow`$ an Overlay trie on an OWNED WAL $`\Rightarrow`$ NO-RANK orphans KEPT $`\Rightarrow`$ resurrection.
   Fix: gate on FILE LENGTH == `WalHeader::SIZE`, not `current_lsn()`; assert `rank_regime()==Overlay`
   after. Same for `set_owned_regime` (kill-switch).
-- **H4/A7 (MEDIUM, FALSE): the #41 frontier guard is `debug_assert!`** (persist.rs:464) $\Rightarrow$ compiled out
+- **H4/A7 (MEDIUM, FALSE): the #41 frontier guard is `debug_assert!`** (persist.rs:464) $`\Rightarrow`$ compiled out
   in release. Promote to unconditional `assert!`. (Moot under retain-WAL, load-bearing for any future
   destructive reclaim.) The checkpoint blocker `is_none()` (mod.rs:1312) is likewise debug-only.
-- **V4 (MEDIUM): "checkpoint-before-flip" is not enforceable** — emptiness $\ne$ checkpoint-done. The flip
+- **V4 (MEDIUM): "checkpoint-before-flip" is not enforceable** — emptiness $`\ne`$ checkpoint-done. The flip
   must PERFORM the owned checkpoint, not assert WAL-empty.
 - **H5/N-S4-3 (MEDIUM stall, not deadlock): `remove`/`increment`/`upsert` fault-in BEFORE the WAL
   append** (buffer lock) — the 75-min-hang CLASS, now production-routed. No lock cycle found (CONFIRM no

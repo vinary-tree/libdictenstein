@@ -130,7 +130,7 @@ Date format is ISO-8601 (YYYY-MM-DD).
   `TrieRefNode` / `TrieRefNodeChar` (`pathmap::core`) over a sealed `TrieRefLike`
   handle. `PathMapDictionary{,Char}::root()` takes an `𝒪(1)` copy-on-write
   snapshot and queries run **lock-free** over it (snapshot isolation), replacing
-  the former lock-per-operation, root-replay node ($𝒪(n^2)$ byte-steps + `n` lock
+  the former lock-per-operation, root-replay node ($`𝒪(n^2)`$ byte-steps + `n` lock
   round-trips to walk a term of length `n`). `PathMapZipper` is likewise reworked
   onto `TrieRefZipper`. Fields were private, so there is no downstream breakage.
 - **All dictionary families reorganized into directory submodules** —

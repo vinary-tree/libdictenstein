@@ -21,11 +21,11 @@ These symbols and acronyms are used throughout; each is defined here before use.
 
 | Term | Definition |
 |------|------------|
-| **WAL** (Write-Ahead Log) | A durable, append-only file of *intended* changes written **before** the change is made visible, so a crash can be repaired by replaying the log. The reconciling invariant of the whole subsystem is $acknowledged \implies durable$. |
+| **WAL** (Write-Ahead Log) | A durable, append-only file of *intended* changes written **before** the change is made visible, so a crash can be repaired by replaying the log. The reconciling invariant of the whole subsystem is $`acknowledged \implies durable`$. |
 | **LSN** (Log Sequence Number) | A monotonically increasing `u64` stamped on each WAL record. LSNs are globally monotone across segment rotation, so one global sort over `LSN` is a valid total order. |
 | **CRC** (Cyclic Redundancy Check) | A 32-bit checksum (`crc32`) over a record's `(length, lsn, type, payload)`. A mismatch marks the record (and everything after it) as a torn, non-durable tail. |
 | **Order-A** | The durability protocol "**log before publish**": append + fsync the WAL record **durable** *before* the visibility-publishing root CAS. Its antagonist, **Order-B** (CAS-then-log), is rejected — it can expose a visible-but-not-durable write. |
-| **Watermark** (committed prefix) | The largest LSN `L` such that **every** $LSN \le L$ is committed. Under out-of-order lock-free commit this contiguous frontier is the **only** safe `checkpoint_lsn`. |
+| **Watermark** (committed prefix) | The largest LSN `L` such that **every** $`LSN \le L`$ is committed. Under out-of-order lock-free commit this contiguous frontier is the **only** safe `checkpoint_lsn`. |
 | **CAS** (Compare-And-Swap) | The atomic root-pointer swap that publishes a new trie version. The winning CAS is the **linearization point** (the single visibility instant) of a write. |
 | **EBR** (Epoch-Based Reclamation) | Memory for a superseded node is freed only after every reader that *could* hold a pointer to it has departed its epoch — lock-free, bounded-latency, free of use-after-free. |
 | **Rank-regime** | A per-file marker (`Owned` / `Overlay`) recorded in header byte 28 that selects the **replay drop-rule** for *unranked* records. See [§5](#5-the-rank-regime-replay-drop-rule). |
@@ -121,7 +121,7 @@ type-specific payload of `length` bytes.
 **Reading discipline.** A reader (`WalReader`) seeks past the 64-byte header,
 then repeatedly: read 17 header bytes (EOF here ends the log cleanly); reject a
 `length < 17`; read the `length - 17` payload bytes (a short read here is a
-**torn tail** → stop); recompute the CRC over `header_bytes[4..]` $\Vert$ `payload` and
+**torn tail** → stop); recompute the CRC over `header_bytes[4..]` $`\Vert`$ `payload` and
 compare against the stored `crc32` (mismatch → torn/corrupt → stop). A torn or
 CRC-failing frame and everything after it is treated as **never durable** — this
 is precisely how the "durable prefix" is delimited on recovery.
@@ -146,7 +146,7 @@ The `type` byte is a `WalRecordType` (`#[repr(u8)]`). All 15 discriminants:
 | `12` | `VersionUpdate` | Records a new structural **version** of the trie (replaces N mutation records for point-in-time recovery). |
 | `13` | `VersionDurable` | Marks a version as fully persisted (safe to recover to). |
 | `14` | `VersionGc` | Records versions reclaimed by garbage collection (skipped on replay). |
-| `15` | `CommitRank` | **Order-A commit-generation marker.** Binds a data record's `data_lsn` to the commit `generation` (the published leaf's `version`) it committed at, in CAS order. **Replay no-op** for membership; it only supplies `generation_of`. Layout: `data_lsn(u64 LE)` $\Vert$ `term_len(u32 LE)` $\Vert$ `term` $\Vert$ `generation(u64 LE)`. Additive in **v2**. |
+| `15` | `CommitRank` | **Order-A commit-generation marker.** Binds a data record's `data_lsn` to the commit `generation` (the published leaf's `version`) it committed at, in CAS order. **Replay no-op** for membership; it only supplies `generation_of`. Layout: `data_lsn(u64 LE)` $`\Vert`$ `term_len(u32 LE)` $`\Vert`$ `term` $`\Vert`$ `generation(u64 LE)`. Additive in **v2**. |
 
 > An unknown type byte (e.g. `0xff`) is rejected as `InvalidRecordType` — the
 > reader never guesses.
@@ -172,9 +172,9 @@ base / vocab / un-flipped-char recovery is unchanged, with **no** global version
 bump.
 
 **Version ceiling (the format tripwire).** `from_bytes` accepts only
-`version` $\in$ `[MIN_SUPPORTED_VERSION, VERSION] = [1, 2]`. A too-**new** file
+`version` $`\in`$ `[MIN_SUPPORTED_VERSION, VERSION] = [1, 2]`. A too-**new** file
 (`version > VERSION`) is refused fail-closed; a too-**old** file
-(`version < MIN_SUPPORTED_VERSION`) is unreadable. The $1 \to 2$ bump marks the
+(`version < MIN_SUPPORTED_VERSION`) is unreadable. The $`1 \to 2`$ bump marks the
 additive arrival of the `CommitRank = 15` record. **Backward compatibility** is
 free: a v1 WAL contains no `CommitRank`, so replay falls back to
 `generation_of(lsn) = lsn` — byte-for-byte the pre-fix in-order behavior. No
@@ -221,7 +221,7 @@ branch is where the regime matters:
   (drops it).
 
 A **ranked** record is kept regardless of regime. A multi-segment archive rebuild
-that spans an $Owned \to Overlay$ flip passes a *per-segment* regime lookup, so an
+that spans an $`Owned \to Overlay`$ flip passes a *per-segment* regime lookup, so an
 Owned segment's unranked records are kept while an Overlay segment's unranked
 orphans are dropped — under one global `(generation, lsn)` order (LSNs are
 monotone across rotation). This is the `A2` correctness fix: it prevents an
@@ -275,7 +275,7 @@ exchange:
 
 **Why the watermark is the only safe `checkpoint_lsn`.** Under out-of-order
 lock-free commit, LSN `N+1` can reach disk before LSN `N`. A checkpoint may
-therefore only declare durable the largest `L` such that **every** $LSN \le L$ is
+therefore only declare durable the largest `L` such that **every** $`LSN \le L`$ is
 committed — the contiguous prefix. Stamping the *appended* frontier instead would
 checkpoint past a hole and lose the missing write. This watermark discipline ("no
 lost writes") is model-checked in
@@ -303,7 +303,7 @@ Step by step:
 1. **Open + validate the header.** Reject a bad magic or an out-of-range version
    fail-closed (this is the dual-magic / version ceiling of [§4](#4-forward-compatibility-dual-magic--version)).
    Decode `checkpoint_lsn`, `commit_seq_floor`, and `rank_regime`.
-2. **Load the checkpoint image.** Everything with `LSN` $\le$ `checkpoint_lsn` is
+2. **Load the checkpoint image.** Everything with `LSN` $`\le`$ `checkpoint_lsn` is
    already folded into the dense image, so replay only needs the tail.
 3. **Scan the durable WAL tail** (`LSN > checkpoint_lsn`), stopping at the first
    torn / CRC-failing frame — that frame delimits the durable prefix.
@@ -341,7 +341,7 @@ Salient points:
   in [§7](#7-order-a-write-ordering-and-the-watermark). An evicted `OnDisk` child
   is resolved by `resolve_or_fault`, whose rich `ChildResolution` outcome
   (`InMem` · `Faulted` · `IoFailed` · `Null` · `Missing`) lets each
-  (variant $\times$ method) keep its own error mapping.
+  (variant $`\times`$ method) keep its own error mapping.
 - The byte variant uses a **two-phase** publish (CAS a non-final spine, then a
   single `try_set_final` arbiter flips the shared leaf final — the one
   linearization point); the durable single-phase publish bakes `as_final()` into a
@@ -362,7 +362,7 @@ Salient points:
   — the buffer manager, WAL theory, ARIES recovery, and checkpoint management
   ([crash-recovery section](../theory/disk-tries/05-buffer-management.md#crash-recovery)).
 - [README — "Durable writes: the Order-A protocol"](../../README.md#durable-writes-the-order-a-protocol)
-  — the prose summary of the $acknowledged \implies durable$ contract.
+  — the prose summary of the $`acknowledged \implies durable`$ contract.
 - [`storage-backends.md`](storage-backends.md) — the storage substrate the WAL is written
   to (`mmap` default, `io_uring` + `O_DIRECT` alternative) and the on-disk block format.
 - [`durability-and-recovery.md`](durability-and-recovery.md) — the architecture-level

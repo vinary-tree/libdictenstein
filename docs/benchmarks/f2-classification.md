@@ -68,7 +68,7 @@ src persistent_artrie_char/mmap_ctor.rs :: s5_12_create_flip_eligible_v_overlay_
 
 ## FINAL RESULTS (verified)
 - FEATURE-ON: 90→0 deterministic failures. 2628 tests, 2628 passed (run 2). One intermittent flake (`char_union_with_no_ab_ba_deadlock`, NOT modified, NOT in scope) — passes 3/3 isolated + run-2 full; fails ~1/3 full runs on `assert_eq!(n2, 2)` getting 3 (a genuine cross-instance union race in the test's exact-count assertion).
-- FEATURE-OFF: 2617 passed, 0 failed ($\times$2 runs). Both pre-existing failures (m3, s5_567) fixed. No regression.
+- FEATURE-OFF: 2617 passed, 0 failed ($`\times`$2 runs). Both pre-existing failures (m3, s5_567) fixed. No regression.
 - Bucket A (get→get_value): ~28 tests across 16 files (several via shared assert_char_value/assert_char_map/assert_full_map helpers).
 - Bucket B (owned-pin): ~24 tests (eviction registry/proptest/ebr, DictionaryNode walk, InvalidMagic corruption-injection, epoch op-accounting, dirty-state, recovery-source-owned-pin).
 - Bucket C (compaction owned-pin): 16 compaction tests + acid None-policy + char tx-increment overflow.

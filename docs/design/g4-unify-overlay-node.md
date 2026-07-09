@@ -25,7 +25,7 @@ The byte overlay node (`persistent_artrie/nodes/persistent_node.rs`) and the cha
 | 3 | Inline-array zero filler | `[0u8; 4]` | `[0u32; 4]` | `U::ZERO` (trait const) |
 | 4 | Doc text / module headers | "bytes" | "chars" | prose only |
 
-Everything else — `Child<V>`, `ChildStore<V>` (Inline `[U;4]`/Heap `Vec<U>`, linear-scan $\le$4 / binary-search $\ge$5, promotion/demotion at 4↔5), the `Option<V>` immutable value, the `AtomicU8` flags + `try_set_final` two-phase, `version: AtomicU64`, `prefix: Arc<[U]>`, the manual `Debug`, `impl<V: Clone>` blocks, auto-derived `Send`/`Sync`, the commented-out atomic mutators — is **already byte-identical between the two files** (I diffed them line by line; the only token deltas are exactly rows 1–4 above).
+Everything else — `Child<V>`, `ChildStore<V>` (Inline `[U;4]`/Heap `Vec<U>`, linear-scan $`\le`$4 / binary-search $`\ge`$5, promotion/demotion at 4↔5), the `Option<V>` immutable value, the `AtomicU8` flags + `try_set_final` two-phase, `version: AtomicU64`, `prefix: Arc<[U]>`, the manual `Debug`, `impl<V: Clone>` blocks, auto-derived `Send`/`Sync`, the commented-out atomic mutators — is **already byte-identical between the two files** (I diffed them line by line; the only token deltas are exactly rows 1–4 above).
 
 **There is NO key-specialized SIMD, tier-threshold, or sorted-search divergence in the overlay node.** The AVX2 SIMD `find_child` lives only in the *owned* ART nodes (`node16_char.rs`), which are out of scope. The overlay `ChildStore::find_child` is plain linear/binary on both sides (`persistent_node.rs:297-322` byte and char are identical modulo `u8`/`u32`). **Feasibility verdict: fully unifiable; zero fallback components.**
 
@@ -48,7 +48,7 @@ I read both `persistent_node.rs` files completely. Here is **every** difference,
 
 **(D1) Key-unit type `u8` vs `u32`.** Appears in: `ChildStore::Inline.keys: [u8;4]`/`[u32;4]`, `Heap.keys: Vec<u8>`/`Vec<u32>`, every `find_child(key: u8)`/`(key: u32)`, `child_at -> (&u8,..)`/`(&u32,..)`, `slices -> (&[u8],..)`, `with_child`/`without_child` key params, `prefix: Arc<[u8]>`/`Arc<[u32]>`, `match_prefix(&[u8])`/`(&[u32])`. → **Absorbed by a single type parameter** carrying `Copy+Ord+Eq+...`. This is exactly what `SuffixNode<U,V>` (`suffix_automaton_core/node.rs:38`), `ScdawgNode<U,V>`, and `DATCoreShared<U,V>` already do with `U: CharUnit` over `u8`/`char`.
 
-**(D2) `MAX_PREFIX_LEN` = 12 (byte) vs 6 (char).** Used in `with_prefix`, `with_prefix_replaced` (`.min(MAX_PREFIX_LEN)`). → **Absorbed by an associated const** `<K>::MAX_PREFIX_LEN` on the key trait. (Char caps at 6 `u32`s = 24 bytes; byte at 12 `u8`s = 12 bytes — both $\le$ a small fixed budget; differing values are fine as a const.)
+**(D2) `MAX_PREFIX_LEN` = 12 (byte) vs 6 (char).** Used in `with_prefix`, `with_prefix_replaced` (`.min(MAX_PREFIX_LEN)`). → **Absorbed by an associated const** `<K>::MAX_PREFIX_LEN` on the key trait. (Char caps at 6 `u32`s = 24 bytes; byte at 12 `u8`s = 12 bytes — both $`\le`$ a small fixed budget; differing values are fine as a const.)
 
 **(D3) Inline filler `[0u8;4]` vs `[0u32;4]`** (`persistent_node.rs:247,503` byte; `:267,523` char). These slots are **dead padding** — only `keys[..count]` are ever read (documented at both files' `Inline` doc and confirmed by `find_child`/`slices`/`child_at` all slicing `[..count]`). → **Absorbed by `U::ZERO`** (a trait const) OR by `U: Default` + `U::default()`. I recommend an explicit `ZERO` const (see §1.2) to avoid coupling to `Default`.
 
@@ -415,7 +415,7 @@ impl<K: KeyEncoding, V: Clone + Send + Sync + 'static> TrieRoot for OverlayNode<
 
 ## 5. Phased, reversible migration sequence
 
-Each phase ships green (`cargo nextest run --features persistent-artrie` $\ge$ 2474) and is independently revertible. **Every build/test wrapped** `systemd-run --user --scope -p MemoryMax=32G --quiet env TMPDIR=$PWD/target/test-tmp <cmd>`.
+Each phase ships green (`cargo nextest run --features persistent-artrie` $`\ge`$ 2474) and is independently revertible. **Every build/test wrapped** `systemd-run --user --scope -p MemoryMax=32G --quiet env TMPDIR=$PWD/target/test-tmp <cmd>`.
 
 > Ordering principle: introduce the shared types *additively* first (no variant touches them), then migrate char (pure alias, lowest risk, proves the generic), then bring byte to char's proven model, then migrate byte, then optionally unify `TrieRoot`. Vocab is validated as a no-op after char.
 
@@ -484,7 +484,7 @@ For the **node-alias phases (2, 5)** specifically: **no new test is needed** —
 ### 6.3 Green gate at each phase (the checklist)
 
 At **every** phase boundary, all three must hold:
-1. `systemd-run --user --scope -p MemoryMax=32G --quiet env TMPDIR=$PWD/target/test-tmp cargo nextest run --features persistent-artrie` → **$\ge$ 2474 passing, 0 failing.**
+1. `systemd-run --user --scope -p MemoryMax=32G --quiet env TMPDIR=$PWD/target/test-tmp cargo nextest run --features persistent-artrie` → **$`\ge`$ 2474 passing, 0 failing.**
 2. `systemd-run … scripts/verify-formal-correspondence.sh` → **exit 0** (compiles both feature profiles + all correspondence tests, incl. `persistent_lockfree_overlay_proptest`, `persistent_char_ebr_correspondence`, `persistent_public_durability_policy_correspondence`).
 3. `systemd-run … scripts/verify-unsafe-boundary-inventory.sh` (invoked by #2) → **set-equality** between `formal-verification/UNSAFE_INVENTORY.tsv` and the live `rg`-scanned `unsafe` sites. Since G4 adds **zero** `unsafe` (Send/Sync auto-derive throughout; the only `unsafe impl` touched are the already-deleted-and-commented ones in the node files, which vanish entirely when those files become aliases), the inventory should need **no edits** — but if removing the byte/char node files drops any ledger rows that referenced their paths, update the ledger in the same commit (Constraint 2).
 

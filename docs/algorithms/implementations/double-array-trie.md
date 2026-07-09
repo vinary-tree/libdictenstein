@@ -190,7 +190,7 @@ For a dictionary with N states:
 
 *When V=(), `Option<()>` is zero-sized
 
-**Example**: 50,000-term dictionary $\approx$ 500KB
+**Example**: 50,000-term dictionary $`\approx`$ 500KB
 
 ### Cache Efficiency
 
@@ -303,13 +303,13 @@ impl<V: DictionaryValue> DoubleArrayTrieBuilder<V> {
 
 ### Complexity Analysis
 
-- **Time**: $O(N \times L \times M)$ where:
+- **Time**: $`O(N \times L \times M)`$ where:
   - N = number of terms
   - L = average term length
   - M = average branching factor (~2-3 for natural language)
 
 - **Space**: `O(S)` where S = number of states
-  - Typically S $\approx$ 0.5N to 2N depending on prefix sharing
+  - Typically S $`\approx`$ 0.5N to 2N depending on prefix sharing
 
 ### Optimization: Sorted Insertion
 
@@ -374,7 +374,7 @@ let results: Vec<String> = automaton.query(&dict).collect();
 // Returns: ["test"] (transposition distance = 1)
 ```
 
-**Complexity**: $O(L \times D \times B)$ where:
+**Complexity**: $`O(L \times D \times B)`$ where:
 - L = query length
 - D = max distance
 - B = average branching factor

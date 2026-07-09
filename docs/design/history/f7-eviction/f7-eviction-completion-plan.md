@@ -40,7 +40,7 @@ pure-read (frozen Arc snapshot OR immutable durable image; no UAF via Arc refcou
 load; deadlock: NO trie lock held + NO WAL append — same safe side as the shipping find_leaf_faulting point read, NOT
 the "75-min hang" write-path-present-hoist-under-lock side; UPDATE overlay_read.rs:22-30 "DO NOT fault" doc to scope it);
 (e) navigate alone insufficient — subtree below prefix also faults in the collect walks (bounded: only nodes the query visits).
-DISCRIMINATING TEST (char+byte, () + u64): insert terms under prefix P spanning $\ge$2 levels + a sibling outside P;
+DISCRIMINATING TEST (char+byte, () + u64): insert terms under prefix P spanning $`\ge`$2 levels + a sibling outside P;
 checkpoint-with-eviction (stamps); evict the subtree (min_eviction_depth=0 so interior nodes go OnDisk, assert evicted>0);
 iter_prefix(P) MUST return ALL terms (faulted) not a subset + scoping preserved + returned set == inserted set exactly.
 **A NEEDS a focused red-team** (concurrency/deadlock argument — wrong lock claims have shipped before; v3's "CAS keyed on
@@ -50,7 +50,7 @@ child Arc" was FALSE). NO TLA (read-only, no new CAS, NoStaleEvict unaffected). 
 - **7.1 config:** `resident_budget_bytes: Option<usize>` on EvictionConfig (None=back-compat=unbounded). Add to all
   struct-literal ctors (compiler-enforced). Tests use ..Default → unaffected. Additive/inert.
 - **7.2 per-map accessors:** disk_registry byte_resident_estimate_bytes / char_resident_estimate_bytes =
-  $\Sigma$ (size_bytes + STRUCT_OVERHEAD_{BYTE,CHAR}) over the respective map ONLY (no cross-contamination). Keep
+  $`\Sigma`$ (size_bytes + STRUCT_OVERHEAD_{BYTE,CHAR}) over the respective map ONLY (no cross-contamination). Keep
   total_size_bytes + per-entry size_bytes as-is. Coordinator thin pass-throughs. Additive.
 - **7.3 uncapped arity:** force_eviction_char_uncapped / force_eviction_bytes_uncapped = copies of force_eviction_*
   EXCEPT max_count=usize::MAX + the min_eviction_depth-floor-unreachable log::warn (warn ONLY when selected_bytes <
@@ -87,8 +87,8 @@ durable image) + 3-way writer/faulter (all loser-safe root CAS). Un-gate ripple:
 
 ## Phase 8 — verification
 - **C.1 massif** (example under target/, NEVER tmpfs; assert path not tmpfs): N-million keys, resident_budget_bytes=B,
-  periodic checkpoint (tail fires), byte+char $\times$ ()+u64; peak RSS $\approx$ B+margin vs unbounded control. CALIBRATE
-  STRUCT_OVERHEAD = (measured_resident_RSS − on_disk_$\Sigma$)/Nc per variant+value (massif --pages-as-heap for true RSS).
+  periodic checkpoint (tail fires), byte+char $`\times`$ ()+u64; peak RSS $`\approx`$ B+margin vs unbounded control. CALIBRATE
+  STRUCT_OVERHEAD = (measured_resident_RSS − on_disk_$`\Sigma`$)/Nc per variant+value (massif --pages-as-heap for true RSS).
   **margin MUST cover the write-burst TRANSIENT peak** (superseded path-copy versions free LAZILY on Drop, off-registry);
   calibrate margin from peak-during-burst not quiescence. Document command + numbers in docs/benchmarks/.
 - **C.2 loom** (extend persistent_lockfree_overlay_loom.rs): (1) checkpoint-tail-evict‖writer (the R1 PRIMARY: stamp
@@ -97,7 +97,7 @@ durable image) + 3-way writer/faulter (all loser-safe root CAS). Un-gate ripple:
   (3) 3-way evict‖write‖fault (no-UAF, no-lost-write, loser-safe). TLA=abstract safety; loom=ordering; massif=liveness.
 - **C.3 M-7a doc:** budget enforceable ONLY over cold/quiescent set (1c guard refuses to evict hot/overwritten nodes —
   inherent). libgrammstein counter hot-set: streaming import has bounded hot window << cold imported set → CONVERGES
-  (cold reclaim $\ge$ growth); the limit bites only hot-set>budget steady state. Bench must MEASURE hot-set vs budget.
+  (cold reclaim $`\ge`$ growth); the limit bites only hot-set>budget steady state. Bench must MEASURE hot-set vs budget.
 - **C.4 formal+unsafe+parity:** RUN_TLC=1 verify-formal-correspondence.sh exit 0 (re-run, confirm _Unsafe still FIRES);
   unsafe-inventory set-equality zero-delta; byte OE twins for EVERY char OE test incl. the A.5 prefix test.
 
@@ -132,7 +132,7 @@ handle writers; evict_overlay_nodes = pure Arc-refcount ZERO unsafe); 7.4 un-gat
 
 ## v2 FIX 1 (MAJOR — budget unit mismatch). select_*_for_eviction accumulates ON-DISK size_bytes
 (disk_registry.rs:351/393) and stops at target_bytes; but the tail target is RESIDENT (size_bytes+
-STRUCT_OVERHEAD) → passing target=resident−budget systematically OVER-evicts by $\approx$resident/on_disk (safe
+STRUCT_OVERHEAD) → passing target=resident−budget systematically OVER-evicts by $`\approx`$resident/on_disk (safe
 for OOM but churns). FIX: the uncapped budget path selects in RESIDENT units — add a resident-aware
 selection (new select_char_for_eviction_resident / select_for_eviction_resident, OR an `overhead: usize`
 param) that accumulates `size_bytes + STRUCT_OVERHEAD` per node, stopping at the resident target. Leave
@@ -155,7 +155,7 @@ transient, and the tail only evicts to registry_total−budget → post-tail/int
 budget by the inter-checkpoint transient → a sustained write burst can blow past budget+margin = the OOM
 the feature must prevent. FIX (Phase 8/C.1 + doc): the massif bench MUST measure the INTER-CHECKPOINT
 TRANSIENT PEAK (RSS during a write BURST, not at quiescence); the margin MUST cover it; calibrate
-STRUCT_OVERHEAD on a HIGH-FAN-OUT (not average) workload (the Inline-tier const is exact for $\le$4 children
+STRUCT_OVERHEAD on a HIGH-FAN-OUT (not average) workload (the Inline-tier const is exact for $`\le`$4 children
 but the Heap-tier residual grows with fan-out). DOCUMENT: checkpoint cadence bounds the transient (more
 frequent checkpoints → smaller transient → tighter budget adherence); operators couple cadence to write
 rate. The budget bounds the POST-CHECKPOINT resident; the live peak = budget + transient(cadence).
@@ -165,8 +165,8 @@ a large overshoot (first checkpoint after a burst, worsened by FIX-1's over-evic
 O(depth) spine path-copies + root-CASes INLINE under checkpoint_lock → blocks the next checkpoint + storms
 root-CAS vs live writers. FIX: add a CONFIGURABLE per-tail eviction cap (e.g.
 `resident_budget_eviction_cap: Option<usize>` on EvictionConfig; None = uncapped/budget-precise with a
-documented one-time initial-burst latency; Some(n) = evict $\le$ n nodes/checkpoint, CONVERGING over
-checkpoints). Co-tune with FIX 3: smaller cap → slower reclaim → larger transient → cap MUST be $\ge$
+documented one-time initial-burst latency; Some(n) = evict $`\le`$ n nodes/checkpoint, CONVERGING over
+checkpoints). Co-tune with FIX 3: smaller cap → slower reclaim → larger transient → cap MUST be $`\ge`$
 per-checkpoint growth or the budget never converges (the v3 batch_size-starvation lesson). Keep the
 eviction INSIDE checkpoint_lock (round-1-verified safe); the cap bounds the lock-held latency. The
 uncapped select (FIX 1) feeds this; the cap limits how many of the selected are evicted per pass.
@@ -203,12 +203,12 @@ the cold set < target (under-evict → converges next checkpoint, benign); count
 cap (bounded latency → converges over checkpoints). Vec::with_capacity(max_count.min(candidates.len())) is
 OOM-safe even at usize::MAX. Drop the "uncapped feeds, cap evicts" wording entirely.
 
-## v3 FIX B (was MAJOR C) — cap in NODES, default None $\Rightarrow$ batch_size (NOT usize::MAX).
+## v3 FIX B (was MAJOR C) — cap in NODES, default None $`\Rightarrow`$ batch_size (NOT usize::MAX).
 The cap is a NODE count (= max_count), which bounds the per-checkpoint O(depth) spine-rebuild + root-CAS COUNT =
 the checkpoint_lock-held latency FIX-4 targets. `resident_budget_eviction_cap: Option<usize>` on EvictionConfig;
-None $\Rightarrow$ fall back to the existing validated `batch_size` (default 256, validated [16,4096] at config.rs:202), NOT
+None $`\Rightarrow`$ fall back to the existing validated `batch_size` (default 256, validated [16,4096] at config.rs:202), NOT
 usize::MAX — so the OUT-OF-THE-BOX tail does BOUNDED work per checkpoint and converges as long as cross-checkpoint
-cold-reclaim $\ge$ growth (the M-7a inherent condition). Only an operator who MEASURED their burst raises it. C.1
+cold-reclaim $`\ge`$ growth (the M-7a inherent condition). Only an operator who MEASURED their burst raises it. C.1
 massif must REPORT measured per-checkpoint growth-at-target-write-rate so the operator sets the cap from data, not
 folklore. (Resolves the v3-starvation-redux: bounded default + documented derived floor, not an unguarded footgun.)
 
@@ -249,15 +249,15 @@ diagnosed + rejected (f7-overlay-eviction-production.md:195-206: with max_count=
 load … the heap grows faster than one batch/checkpoint reclaims → resident stays > budget FOREVER";
 fixed there by max_count=usize::MAX). Checkpoint cadence is OPERATOR-DRIVEN (verified: no
 checkpoint_interval/inserts_since_checkpoint mechanism) → per-checkpoint cold growth G is unbounded; a
-bulk import (import millions, then checkpoint) has G $\gg$ 256 → a 256-cap leaves resident growing without
+bulk import (import millions, then checkpoint) has G $`\gg`$ 256 → a 256-cap leaves resident growing without
 bound = the OOM the feature exists to prevent. This is a COLD-set starvation (those nodes ARE evictable,
 just-stamped) — distinct from M-7a's inherent hot-set>budget limit. RESOLUTION (reconcile with the
-already-converged production decision): `resident_budget_eviction_cap: Option<usize>` DEFAULT None $\Rightarrow$
+already-converged production decision): `resident_budget_eviction_cap: Option<usize>` DEFAULT None $`\Rightarrow`$
 **uncapped** (`max_count = usize::MAX`, budget-precise: one pass evicts the coldest summing to
 resident−budget; the large pass is ONE-TIME on the first over-budget checkpoint, then small steady-state
 deltas; the eviction is non-blocking loser-safe root-CAS, NOT one long lock-hold — the documented
-production trade). `Some(n)` $\Rightarrow$ opt-in LATENCY limiter for operators who MEASURED their burst AND accept
-slower convergence (n MUST be $\ge$ per-checkpoint growth or it starves — C.1 massif REPORTS measured growth
+production trade). `Some(n)` $`\Rightarrow`$ opt-in LATENCY limiter for operators who MEASURED their burst AND accept
+slower convergence (n MUST be $`\ge`$ per-checkpoint growth or it starves — C.1 massif REPORTS measured growth
 so n is set from data). Budget tail: `max_count = resident_budget_eviction_cap.unwrap_or(usize::MAX)`.
 This keeps FIX-A's collapse (one resident select arity) + the cap FIELD (opt-in) but inverts the DEFAULT
 to the production design's uncapped choice. (N1 latency is bounded by non-blocking CAS + one-time-ness;

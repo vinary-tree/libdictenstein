@@ -89,7 +89,7 @@ owner amendments that override where they conflict**:
 - **[TODO-VERIFY]** embedded struct literals (`EvictionCoordinator`/`LruRegistry`/`DiskLocationRegistry`/`EvictionStats`) — diff vs source in the consistency pass.
 
 ### `storage-backends.md` — DONE (prose); new diagram queued
-- **[FIXED] G2** — added swizzled-reach clarification after "block IDs are 24-bit … 4 TB": swizzled child pointers encode `block_id` in 23 bits → first $2^{23}$=8 M blocks=2 TB. (24-bit/4 TB kept — it is the correct *file capacity*.)
+- **[FIXED] G2** — added swizzled-reach clarification after "block IDs are 24-bit … 4 TB": swizzled child pointers encode `block_id` in 23 bits → first $`2^{23}`$=8 M blocks=2 TB. (24-bit/4 TB kept — it is the correct *file capacity*.)
 - **[FIXED] G4 + FORMAT_VERSION** — §"Data blocks" rewritten: "Each serialized node opens with a 16-byte `NodeHeader` (… `u64` version)" → the on-disk **`SerializedNodeHeader`** (magic `b"ART\0"`, `u8` version, node_type, flags, encoding_flags, `u16` num_children, prefix_len, `u32` data_size); notes the in-memory `u64` optimistic-lock version is NOT persisted, and the serialized `u8` `FORMAT_VERSION` ≠ the block-0 `u32` `FORMAT_VERSION`. Evidence: `serialization.rs:86-150` (`SerializedNodeHeader`, `NODE_MAGIC=b"ART\0"`, `SERIALIZED_HEADER_SIZE=16`, `FORMAT_VERSION:u8=1`/`_V2:u8=2`).
 - **[FIXED] G5 CX** — added "(the compact snapshot format, magic `AR64CX01`)" gloss on first use.
 - **[QUEUED → task #11] NEW diagram** `serialized-node-header.puml/.svg` — on-disk 16-byte `SerializedNodeHeader` byte-table (replaces the mislabeled `node-header.svg` embed here; `node-header.svg` stays the *in-memory* header in `03-adaptive-radix-tree.md`).

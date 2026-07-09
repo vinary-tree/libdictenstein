@@ -189,7 +189,7 @@ struct LockFreeEdgeList<U: CharUnit, V: DictionaryValue> {
 | Shared handle overhead | Arc → core | 8 bytes (one ptr) |
 
 *Each inline edge is a `(char, Arc<Node>)` tuple = 4 + 8 = 12 bytes, so 4
-edges $\approx$ 48 bytes inline. There is no lock-object byte cost: the per-node
+edges $`\approx`$ 48 bytes inline. There is no lock-object byte cost: the per-node
 `ArcSwap`/`AtomicBool`/`ArcSwapOption` cells provide atomic interior mutability,
 and the whole structure is reached through a single shared `Arc`.
 
@@ -452,7 +452,7 @@ let dict = DynamicDawgChar::from_iter(lines);
 **Performance** (compared to byte-level):
 - **Slightly slower**: Character iteration vs byte iteration
 - **More accurate**: Levenshtein distance counts characters, not bytes
-- **Memory**: ~2$\times$ per node (char = 4 bytes vs u8 = 1 byte for edges)
+- **Memory**: ~2$`\times`$ per node (char = 4 bytes vs u8 = 1 byte for edges)
 
 ### Unicode-Specific Considerations
 
@@ -545,9 +545,9 @@ if let Some(contexts) = dict.get_value("α") {
 
 | Method | Time | Memory | vs DynamicDawg |
 |--------|------|--------|----------------|
-| `new()` + inserts | ~9.5ms | ~490KB | ~1.15$\times$ slower |
-| `from_iter()` | ~4.8ms | ~490KB | ~1.17$\times$ slower |
-| Pre-sorted | ~4.2ms | ~490KB | ~1.20$\times$ slower |
+| `new()` + inserts | ~9.5ms | ~490KB | ~1.15$`\times`$ slower |
+| `from_iter()` | ~4.8ms | ~490KB | ~1.17$`\times`$ slower |
+| Pre-sorted | ~4.2ms | ~490KB | ~1.20$`\times`$ slower |
 
 **Memory usage** (varies with character count):
 
@@ -557,7 +557,7 @@ Medium (10K terms, avg 10 chars):   ~490KB (vs ~250KB byte-level)
 Large (100K terms, avg 10 chars):   ~5MB (vs ~2.5MB byte-level)
 ```
 
-**Trade-off**: ~2$\times$ memory overhead, ~15-20% slower, but **correct** Unicode distances.
+**Trade-off**: ~2$`\times`$ memory overhead, ~15-20% slower, but **correct** Unicode distances.
 
 ### Best Practices
 
@@ -723,10 +723,10 @@ assert!(!dict.contains("cafe\u{0301}")); // Decomposed (e + combining ́) - diff
 | `get_value()` | ~290ns | ~260ns | +12% |
 | `term_count()` | ~5ns | ~5ns | None |
 | `node_count()` | ~5ns | ~5ns | None |
-| Memory (edge labels) | 4$\times$ larger | Baseline | +300% |
+| Memory (edge labels) | 4$`\times`$ larger | Baseline | +300% |
 
 **Why the overhead?**:
-- Edge labels are `char` (4 bytes) vs `u8` (1 byte) → 4$\times$ memory for edges
+- Edge labels are `char` (4 bytes) vs `u8` (1 byte) → 4$`\times`$ memory for edges
 - UTF-8 decoding during traversal adds ~10-15% latency
 - Node structure otherwise identical
 
@@ -807,7 +807,7 @@ The `union_with()` and `union_replace()` methods enable **merging two DynamicDaw
 - 🔓 **Non-blocking**: wait-free reads and lock-free CAS writes (no locks)
 - 💾 **DAWG-preserving**: Maintains minimization through `insert_with_value()`
 - 🌐 **Unicode-correct**: Operates on `char` (Unicode code points), not bytes
-- ⚡ **Efficient**: $O(n\cdot m)$ traversal with minimal memory overhead
+- ⚡ **Efficient**: $`O(n\cdot m)`$ traversal with minimal memory overhead
 - 🎯 **Flexible**: Custom merge functions for value conflicts
 
 ### union_with() - Merge with Custom Logic
@@ -844,8 +844,8 @@ where
 - Result: Proper handling of multi-byte Unicode sequences (emoji, diacritics, etc.)
 
 **Complexity**:
-- **Time**: $O(n\cdot m)$ where n = terms in `other`, m = average term length **in characters**
-  - $O(n\cdot m)$ for DFS traversal
+- **Time**: $`O(n\cdot m)`$ where n = terms in `other`, m = average term length **in characters**
+  - $`O(n\cdot m)`$ for DFS traversal
   - `O(m)` per term for `insert_with_value()`
 - **Space**: `O(d)` where d = maximum trie depth (characters, not bytes)
   - DFS stack size proportional to deepest path
@@ -1362,7 +1362,7 @@ Same as DynamicDawg:
 | **Remove** | O(m) | Plus ref count updates |
 | **Contains** | O(m) | With Bloom filter: O(1) rejection |
 | **Compact** | O(n) | n = total nodes |
-| **Query (fuzzy)** | O(m$\times$d²$\times$b) | d = distance, b = branching |
+| **Query (fuzzy)** | O(m$`\times`$d²$`\times`$b) | d = distance, b = branching |
 
 ### Benchmark Results
 

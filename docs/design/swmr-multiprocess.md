@@ -28,7 +28,7 @@ are "process-specific", "cannot share files across processes"), but nothing *enf
 This design adds two capabilities, in order:
 
 - **Tier-1** — an exclusive-owner OS lock so a second opener is *rejected*, not silently corrupting.
-- **Tier-2 (SWMR)** — one **writer** process plus $N$ **reader** processes over one file, where
+- **Tier-2 (SWMR)** — one **writer** process plus $`N`$ **reader** processes over one file, where
   readers observe the last durable checkpoint (snapshot / MVCC consistency).
 
 <img src="../diagrams/swmr-architecture.svg" alt="SWMR architecture: one writer process and N reader processes over one vocab file on a single host, coordinated by .wlock/.rlock advisory locks and an atomically-renamed image inode." width="880">
@@ -148,11 +148,11 @@ renaming its inode adds nothing to any op. Writer hot path is therefore byte-ide
 chasing over an `Arc<OverlayNode>` → sharded-map `get` for `get_term`. No new lock. The snapshot is
 immutable after build, so reverse-map reads are uncontended.
 
-**Cost.** Let $c$ be the checkpoint interval. A reader's staleness is bounded by $c$ (it sees the last
+**Cost.** Let $`c`$ be the checkpoint interval. A reader's staleness is bounded by $`c`$ (it sees the last
 published checkpoint), i.e. the model is **snapshot-consistent, not cross-process-linearizable** — the
-same trade LMDB and SQLite-WAL readers make. Refresh work is $O(n)$ per checkpoint on a background
-thread (amortized $O(n/c)$ wall-time), never on a read; a read is $O(L)$ for a term of length $L$, the
-same as intra-process. $\blacksquare$ (sketch)
+same trade LMDB and SQLite-WAL readers make. Refresh work is $`O(n)`$ per checkpoint on a background
+thread (amortized $`O(n/c)`$ wall-time), never on a read; a read is $`O(L)`$ for a term of length $`L`$, the
+same as intra-process. $`\blacksquare`$ (sketch)
 
 Formal follow-through: model A's `rename` as one atomic state transition publishing an immutable image
 (readers observe old-or-new, never partial); this fits the project's TLA+ harness alongside
@@ -171,7 +171,7 @@ Formal follow-through: model A's `rename` as one atomic state transition publish
 | R5 | Reader rebuild racing a publish (half-written image?) | A: the reader opens a specific inode; the writer only ever publishes a *complete* inode via `rename`. B: the reader snapshots `(active, block_count, root_ptr)` from a CRC-valid header before enumerating. |
 | R6 | mmap remap-on-growth for readers (B only) | Reader re-reads `block_count` and remaps read-only before trusting the new `root_ptr`; grow-only + immutable + fsync-before-flip ⇒ no SIGBUS. (N/A to A — fresh inode.) |
 | R7 | Writer WAL retention vs readers | Readers never open the WAL (they read only the checkpoint image); the writer retains it for its own recovery, exactly as today. |
-| R8 | fd/inode exhaustion under A (frequent checkpoints) | Each reader pins ≤ 2 inodes (current + one mid-refresh); the writer unlinks the prior canonical each `rename`. On-disk images $= O(\#\text{readers} + 1)$. Mitigated by the (accepted) coarse checkpoint cadence. |
+| R8 | fd/inode exhaustion under A (frequent checkpoints) | Each reader pins ≤ 2 inodes (current + one mid-refresh); the writer unlinks the prior canonical each `rename`. On-disk images $`= O(\#\text{readers} + 1)`$. Mitigated by the (accepted) coarse checkpoint cadence. |
 | R9 | Long-lived reader vs reclamation | A: the OS retains exactly the pinned inode; self-correcting on close. B: old generations accumulate → compaction GC gated by the `.rlock` probe. |
 | R10 | NFS / multi-host | **Single-host only** — A relies on local `rename`/open-unlink; B relies on cross-process page-cache coherence. Documented constraint. |
 | R11 | Byte/char eviction: OnDisk overlay children a reader can't fault | The reader never uses the writer's buffer manager — it faults from its **own** read-only buffer manager over the frozen (immutable) image. Vocab never evicts, so its reader overlay is fully in-memory. |

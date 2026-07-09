@@ -55,7 +55,7 @@ Consider state q₂ = {b, ab} with longest = "ab":
 | q₀ | b | q₂ | b | ab | Secondary |
 | q₁ | b | q₂ | ab | ab | Primary |
 
-The edge from q₀ labeled 'b' is secondary because "b" $\ne$ "ab" = longest(q₂).
+The edge from q₀ labeled 'b' is secondary because "b" $`\ne`$ "ab" = longest(q₂).
 The edge from q₁ labeled 'b' is primary because "ab" = "ab" = longest(q₂).
 
 ### Properties of Primary Edges
@@ -64,7 +64,7 @@ The edge from q₁ labeled 'b' is primary because "ab" = "ab" = longest(q₂).
 
 *Proof*: The longest string in each class is unique and has a unique predecessor.
 
-**Lemma 2**: Primary edges form a spanning tree of the DAWG rooted at $q_0$.
+**Lemma 2**: Primary edges form a spanning tree of the DAWG rooted at $`q_0`$.
 
 This spanning tree corresponds to the **suffix tree** of the string!
 
@@ -158,7 +158,7 @@ For highly repetitive strings (like our "abcabcab"), compaction provides less be
 
 The CDAWG of string w is the directed graph **CDAWG(w) = (V, E)** where:
 
-- **V** = {[x] $\in$ Q_DAWG : [x] satisfies branching/accepting/merge condition}
+- **V** = {[x] $`\in`$ Q_DAWG : [x] satisfies branching/accepting/merge condition}
 
 - **E** = {([x], label, [y]) : there exists a path from [x] to [y] in DAWG
            where all intermediate states are non-branching}
@@ -197,7 +197,7 @@ Compare to the DAWG's `2n − 1` nodes and `3n − 4` edges.
 - Each CDAWG node corresponds to a branching point in the suffix tree.
 - The suffix tree of `w` has exactly `n` leaves (one per suffix).
 - A tree with `n` leaves has at most `n − 1` internal nodes.
-- Adding the root yields at most `n` nodes for the internal structure, hence $\le n + 1$ overall.
+- Adding the root yields at most `n` nodes for the internal structure, hence $`\le n + 1`$ overall.
 - Each edge in the CDAWG corresponds to an edge in the suffix tree: at most `2n − 2`.
 
 ## Source and Sink
@@ -255,8 +255,8 @@ The CDAWG and suffix tree are closely related:
 
 | Property | Suffix Tree | CDAWG |
 |----------|-------------|-------|
-| Node count | $\le 2n$ | $\le n + 1$ |
-| Edge count | $\le 2n$ | $\le 2n − 2$ |
+| Node count | $`\le 2n`$ | $`\le n + 1`$ |
+| Edge count | $`\le 2n`$ | $`\le 2n − 2`$ |
 | Edge labels | Substrings | Substrings |
 | Suffix links | Yes | Yes |
 | Factors recognized | All suffixes | All substrings |

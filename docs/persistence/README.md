@@ -10,7 +10,7 @@ lives there, so this page stays a map, not a manual.
 
 > **One-sentence summary.** The persistent-ARTrie family is a **lock-free, crash-safe,
 > disk-backed** Adaptive Radix Trie: writes are made **durable in a write-ahead log
-> before they become visible** (so *acknowledged $\implies$ durable*), reads traverse an
+> before they become visible** (so *acknowledged $`\implies`$ durable*), reads traverse an
 > **immutable copy-on-write overlay** with no lock, and memory is bounded by evicting cold
 > subtrees to disk and faulting them back on demand.
 
@@ -20,13 +20,13 @@ lives there, so this page stays a map, not a manual.
 
 | Term | Definition |
 |------|-----------|
-| **ART** | *Adaptive Radix Tree* — a trie whose interior nodes adapt their fan-out representation to their child count ($4/16/48/256$ slots), keeping each node compact (Leis et al. 2013). |
+| **ART** | *Adaptive Radix Tree* — a trie whose interior nodes adapt their fan-out representation to their child count ($`4/16/48/256`$ slots), keeping each node compact (Leis et al. 2013). |
 | **overlay** | The single **immutable, path-copied** radix trie that is the *live* representation of the dictionary. New versions are published atomically; readers see a consistent snapshot. |
-| **CAS** | *Compare-And-Swap* — an atomic "swap $x$ to $y$ only if it still holds $x_{\text{old}}$" primitive. The overlay's root pointer is published by CAS; the winning CAS is the write's linearization point. |
+| **CAS** | *Compare-And-Swap* — an atomic "swap $`x`$ to $`y`$ only if it still holds $`x_{\text{old}}`$" primitive. The overlay's root pointer is published by CAS; the winning CAS is the write's linearization point. |
 | **WAL** | *Write-Ahead Log* — an append-only, `fsync`-durable log of operations written *before* a change is made visible, so a crash can be replayed (Mohan et al. 1992, ARIES). |
 | **LSN** | *Log-Sequence Number* — the monotonically increasing position of a record in the WAL. |
 | **checkpoint** | A periodic background fold of the live overlay into a dense on-disk *image*, after which the WAL below the checkpoint can be reclaimed. |
-| **watermark** | The largest LSN $L$ such that *every* LSN in $1..=L$ has committed — the only safe `checkpoint_lsn` under out-of-order lock-free commit. |
+| **watermark** | The largest LSN $`L`$ such that *every* LSN in $`1..=L`$ has committed — the only safe `checkpoint_lsn` under out-of-order lock-free commit. |
 | **swizzling** | Storing a child link as *either* an in-memory pointer *or* an on-disk block location in one word, so subtrees load lazily. |
 | **CX image** | The **compact snapshot** — the dense, path-compressed on-disk *image* a checkpoint folds the live overlay into (magic `AR64CX01`). "CX" is the format's codename, not an acronym. |
 
@@ -75,7 +75,7 @@ byte, char, and `u64` via the `K: KeyEncoding` seam. Deep-dive:
 
 ### ③ WAL + durability control — "log before you publish"
 Every state-changing write appends an `fsync`-durable WAL record (`core/wal/`) *before*
-the overlay publishes it, so **acknowledged $\implies$ durable**. The
+the overlay publishes it, so **acknowledged $`\implies`$ durable**. The
 `CommittedWatermark` (`core/committed_watermark.rs`) tracks the contiguous committed
 prefix — the only safe `checkpoint_lsn`. Policies (`DurabilityPolicy`) trade latency for
 batching. The on-disk record codec is in **[wal-format.md](wal-format.md)**; the write
@@ -105,7 +105,7 @@ Mechanics: **[durability-and-recovery.md](durability-and-recovery.md)**.
 `SharedARTrie` / `SharedCharARTrie` / `SharedVocabARTrie` are **bare `Arc<T>`** — there is
 no outer `RwLock`; reads *and* writes are lock-free. Locks serialize *only* checkpoint,
 merge, and eviction, under a strict acyclic hierarchy
-$\text{CK} > \text{merge\_lock} > \text{EC}$. Deep-dive:
+$`\text{CK} > \text{merge\_lock} > \text{EC}`$. Deep-dive:
 **[concurrency-model.md](concurrency-model.md)**.
 
 ### Cross-cutting: eviction
@@ -120,33 +120,33 @@ lynchpin that makes eviction race-free against concurrent readers. Deep-dive:
 
 | Path | Route | Guarantee |
 |------|-------|-----------|
-| **Write** | API → overlay → **WAL append + fsync** → root-CAS publish → commit-rank → mark watermark | *Acknowledged $\implies$ durable.* The winning root-CAS is the **linearization point**. |
+| **Write** | API → overlay → **WAL append + fsync** → root-CAS publish → commit-rank → mark watermark | *Acknowledged $`\implies`$ durable.* The winning root-CAS is the **linearization point**. |
 | **Read** | API → published overlay root only | Snapshot-consistent, lock-free, wait-free traversal; no WAL/disk on the hot path. |
-| **Reopen** | load checkpoint image → replay WAL tail with $\text{LSN} > n$ → reconcile per-term commit order | Recovery reproduces *exactly* the visible-and-acknowledged pre-crash state — no lost writes, no invented state. |
+| **Reopen** | load checkpoint image → replay WAL tail with $`\text{LSN} > n`$ → reconcile per-term commit order | Recovery reproduces *exactly* the visible-and-acknowledged pre-crash state — no lost writes, no invented state. |
 
-Here $n$ is the image-coverage frontier stamped in the block-0 header: the maximum WAL LSN
-already folded into the on-disk image, so replay skips $\text{LSN} \le n$ to avoid
+Here $`n`$ is the image-coverage frontier stamped in the block-0 header: the maximum WAL LSN
+already folded into the on-disk image, so replay skips $`\text{LSN} \le n`$ to avoid
 double-applying a checkpointed record.
 
 ### The load-bearing invariants (all machine-checked)
 
-$$
+```math
 \text{visible}(t) \;\implies\; \text{WAL-durable}(t) \ \text{at}\ \mathrm{lsn}(t) \le \mathrm{syncedLsn}
-$$
+```
 
-$$
+```math
 \text{checkpoint\_lsn} \;=\; \max\{\,L : \forall\, \ell \in 1..=L,\ \text{committed}(\ell)\,\}
 \quad(\text{a committed contiguous prefix})
-$$
+```
 
-$$
+```math
 \text{RecoveredMap} \;=\; \text{durableCheckpoint} \,\cup\, \text{WAL-tail}[\,\text{walRetainedFrom},\ \mathrm{syncedLsn}\,]
 \;=\; \text{visible}
-$$
+```
 
 These are proven in TLA⁺ (`SharedPersistentConcurrency.tla`, and the `LockFree*` /
 `Concurrent*` model family) and Rocq (the `Spec/Persistent*` specs). The
-invariant $\leftrightarrow$ model $\leftrightarrow$ proof correspondence is catalogued in
+invariant $`\leftrightarrow`$ model $`\leftrightarrow`$ proof correspondence is catalogued in
 **[formal-verification-map.md](formal-verification-map.md)**.
 
 ---

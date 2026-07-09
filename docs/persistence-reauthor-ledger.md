@@ -36,7 +36,7 @@ diagrams-as-code + CI-gated + guideline-conformant discipline established by the
 
 | Item | Action | Status | Verification |
 |------|--------|--------|--------------|
-| `persistence/README.md` (NEW) | Architect entry point: whole-stack synthesis + master diagram (#1) + guided tour + reading map | ☑ | written; embeds `persistence-stack.svg` (recolored to accents; D2 renders 2371$\times$2305) |
+| `persistence/README.md` (NEW) | Architect entry point: whole-stack synthesis + master diagram (#1) + guided tour + reading map | ☑ | written; embeds `persistence-stack.svg` (recolored to accents; D2 renders 2371$`\times`$2305) |
 | `persistence/families.md` (NEW) | Reauthor of `architecture/persistence/README.md`; diagrams #2 (layering + alias note), #3 (KeyEncoding seam), #21 (suffix publish → WAL recolored orange) | ☑ | written; 3 embeds resolve; layering + suffix re-rendered clean, 0 error markers |
 | Cross-links | `docs/README.md` index rows + `architecture/persistence/README.md` reauthored to a lean orientation pointing at the new home | ☑ | updated; family-overview now → `persistence/families.md` |
 
@@ -44,13 +44,13 @@ diagrams-as-code + CI-gated + guideline-conformant discipline established by the
 
 | Item | Action | Status | Verification |
 |------|--------|--------|--------------|
-| `persistence/durable-storage-kernel.md` (NEW) | `core/` as a general reusable engine; two extension seams (BlockStorage + key/record model) + the overlay Template-Method hooks; Recipe A (CoW tree) + Recipe B (non-tree snapshot); reusable-vs-specific table; diagram #4 | ☑ | written; `BlockStorage`/`DurableOverlayWrite`/`DurabilityPolicy` verified vs `core/` source; `kernel-substrate.svg` renders clean 1697$\times$1659 |
+| `persistence/durable-storage-kernel.md` (NEW) | `core/` as a general reusable engine; two extension seams (BlockStorage + key/record model) + the overlay Template-Method hooks; Recipe A (CoW tree) + Recipe B (non-tree snapshot); reusable-vs-specific table; diagram #4 | ☑ | written; `BlockStorage`/`DurableOverlayWrite`/`DurabilityPolicy` verified vs `core/` source; `kernel-substrate.svg` renders clean 1697$`\times`$1659 |
 
 ## Phase 3 — Storage backends + WAL format  ☑
 
 | Item | Action | Status | Verification |
 |------|--------|--------|--------------|
-| `persistence/storage-backends.md` | `git mv` of `mmap-architecture.md`; reauthored to the `BlockStorage` seam + backends + buffer manager + on-disk format; overlay/checkpoint/recovery content moved out to P4 docs; NEW `file-header.bytefield` (#17), reuses `node-header`/`node-layouts`/`swizzled-ptr-states` (#7/#18) | ☑ | written; `FileHeader` fields verified vs `disk_manager.rs`; `file-header.svg` renders (322px, 8$\times$8 rows) |
+| `persistence/storage-backends.md` | `git mv` of `mmap-architecture.md`; reauthored to the `BlockStorage` seam + backends + buffer manager + on-disk format; overlay/checkpoint/recovery content moved out to P4 docs; NEW `file-header.bytefield` (#17), reuses `node-header`/`node-layouts`/`swizzled-ptr-states` (#7/#18) | ☑ | written; `FileHeader` fields verified vs `disk_manager.rs`; `file-header.svg` renders (322px, 8$`\times`$8 rows) |
 | `persistence/wal-format.md` | Integrated into the new corpus (nav + See-also → P4 docs); `.bob` byte layouts kept as-is (accurate; orange WAL accent lives in the D2/PlantUML figures) | ☑ | edits applied; #16 unchanged (correct) |
 | Inbound-link surgery | Retargeted all live `mmap-architecture.md` links (7 algo/theory/user-guide docs + root README) → `persistence/README.md` / `storage-backends.md` / `eviction.md`; refreshed reading-order label; ledger/CHANGELOG inline-code left as historical record | ☑ | `grep '](…mmap-architecture.md'` → 0 live links |
 
@@ -58,8 +58,8 @@ diagrams-as-code + CI-gated + guideline-conformant discipline established by the
 
 | Item | Action | Status | Verification |
 |------|--------|--------|--------------|
-| `persistence/lock-free-overlay.md` (NEW) | Immutable `OverlayNode` + `arc_swap` root + owned `Child` leak-fix + G4; NEW `path-copy.dot` (#6), reuses `cas-walk` (#5) | ☑ | written; `OverlayNode`/`Child`/`ArcSwapOption`/`try_set_final` verified vs `node.rs`/`atomic_ptr.rs`; `path-copy.svg` 657$\times$474pt |
-| `persistence/durability-and-recovery.md` (NEW) | Order-A protocol + committed-watermark theorem + checkpoint flips + recovery + #47/#48/#49; NEW `committed-watermark.d2` (#9), reuses `durable-write-sequence` (#8, WAL→orange), `checkpoint-flip` (#10), `recovery-flow` (#11) | ☑ | written; `CommittedWatermark`/`image_coverage_lsn`/`reconcile_lww` verified vs source; `committed-watermark.svg` 1688$\times$330 |
+| `persistence/lock-free-overlay.md` (NEW) | Immutable `OverlayNode` + `arc_swap` root + owned `Child` leak-fix + G4; NEW `path-copy.dot` (#6), reuses `cas-walk` (#5) | ☑ | written; `OverlayNode`/`Child`/`ArcSwapOption`/`try_set_final` verified vs `node.rs`/`atomic_ptr.rs`; `path-copy.svg` 657$`\times`$474pt |
+| `persistence/durability-and-recovery.md` (NEW) | Order-A protocol + committed-watermark theorem + checkpoint flips + recovery + #47/#48/#49; NEW `committed-watermark.d2` (#9), reuses `durable-write-sequence` (#8, WAL→orange), `checkpoint-flip` (#10), `recovery-flow` (#11) | ☑ | written; `CommittedWatermark`/`image_coverage_lsn`/`reconcile_lww` verified vs source; `committed-watermark.svg` 1688$`\times`$330 |
 | `persistence/concurrency-model.md` (NEW) | F4 collapse + `CK>merge_lock>OR>EC` + `SharedTrieAccess`/`AtomicEnumCell` + MVCC/EBR + version-GC + eviction stamp; NEW `f4-lock-hierarchy.dot` (#12), `two-epochs.d2` (#14), `serial-disk-ptr-stamp.puml` (#15), reuses `epoch-reclamation` (#13) | ☑ | written; F4 shim + hierarchy verified vs `shared_access.rs`; 3 new diagrams render clean, 0 error markers |
 
 ## Phase 5 — Eviction / MVCC / group-commit  ☑
@@ -67,7 +67,7 @@ diagrams-as-code + CI-gated + guideline-conformant discipline established by the
 | Item | Action | Status | Verification |
 |------|--------|--------|--------------|
 | `persistence/eviction.md` | `git mv` of `eviction/README.md` (empty `docs/eviction/` removed); integrated (nav + Related → corpus; aligned "DiskRef" ↔ `Child::OnDisk`); **verified overlay eviction is functional+wired for byte/char** (`evict_overlay_nodes` called from coordinator + checkpoint callback; reads route through `find_leaf_faulting`) — the stale "no-op" memory note is superseded by f7-v4; vocab callback is a no-op for parity; reuses `eviction-pipeline`/`epoch-reclamation`/`buffer-page-lifecycle` (#19) | ☑ | img paths still resolve (both dirs 1 level under docs/); source map matches live `core/eviction/` |
-| `persistence/group-commit.md` | `git mv` of `group_commit_regression.md`; reauthored — corrected stale `persistent_artrie_core/` → `persistent_artrie/core/` paths; added group-commit definition, the $t_\text{coord}<t_\text{sync}$ rationale, `DurabilityFrontier`/`AsyncWalGroupCommit` correctness links | ☑ | paths verified vs live tree |
+| `persistence/group-commit.md` | `git mv` of `group_commit_regression.md`; reauthored — corrected stale `persistent_artrie_core/` → `persistent_artrie/core/` paths; added group-commit definition, the $`t_\text{coord}<t_\text{sync}`$ rationale, `DurabilityFrontier`/`AsyncWalGroupCommit` correctness links | ☑ | paths verified vs live tree |
 | MVCC / version-GC | Covered in `concurrency-model.md` (§MVCC, §Version checkpoint & GC) | ☑ | `TrieRoot`/`ReadTransaction`/`VersionGcRegistry` cited |
 
 ## Phase 6 — Formal-verification map  ☑

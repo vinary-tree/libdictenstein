@@ -11,8 +11,8 @@ regime mechanism (cross-codebase) and the DG phase ordering — fixable in a foc
 `AsyncWalWriter` live in SHARED `persistent_artrie_core/wal/` with ONE global `VERSION` (`header.rs:38`). Base
 (`persistent_artrie/mmap_ctor.rs:378`), vocab (`persistent_vocab_artrie/mmap_ctor.rs:238`), and char ALL funnel
 through `AsyncWalWriter::open_or_create` → `WalWriter::open` (`writer.rs:101`) — exactly where the proposed guard
-$header.version < VERSION \Rightarrow UnsafeVersionMixing$ lands. The moment DG-RECON sets `VERSION=3`, every pre-existing
-base/vocab WAL (legitimately v2) is REFUSED at open. **regime$\equiv$version assumed the WAL version is char-specific; it
+$`header.version < VERSION \Rightarrow UnsafeVersionMixing`$ lands. The moment DG-RECON sets `VERSION=3`, every pre-existing
+base/vocab WAL (legitimately v2) is REFUSED at open. **regime$`\equiv`$version assumed the WAL version is char-specific; it
 is GLOBAL.**
 
 **F1b [CRITICAL] — fresh vocab/base WALs become v3-unranked after the bump.** `WalWriter::create` → `WalHeader::new()`
@@ -26,7 +26,7 @@ through the unified reconcile, all their data DROPS. `V3WalImpliesOverlayLive` i
 corruption/torn-tail path `rebuild_from_wal` (`recovery.rs:503-571`, reached on a NORMAL crash with a torn tail,
 `:458`), `recover_from_archives` (`mmap_ctor.rs:1138`), and `IncrementalRecovery` (`:856`) apply RAW with no gating
 — and D2.6 deferred fixing them to DG-PATHS. A crash+corruption-recovery between DG-RECON and DG-PATHS replays an
-unranked orphan in-order $\Rightarrow$ resurrects a removed term. **The archive/rebuild/incremental gating MUST be IN DG-RECON.**
+unranked orphan in-order $`\Rightarrow`$ resurrects a removed term. **The archive/rebuild/incremental gating MUST be IN DG-RECON.**
 
 **F3 [HIGH — rollback] — overlay-era pruning deletes the pre-flip v2 archives the rollback depends on.**
 `prune_segments_if_needed` (`writer.rs:510`, called in `rotate_to_archive:469` on EVERY rotation) blindly
@@ -35,7 +35,7 @@ operation it prunes exactly the pre-flip v2 segments the §5 rollback ("re-open 
 
 **F4 [MEDIUM] — idempotent-arm (`lockfree_cas.rs:383`) commit_seq claim-point unspecified.** Repurposing it to a
 "freshly-claimed commit_seq" without a specified claim-POINT lets a no-op idempotent insert claim AFTER a concurrent
-real Remove on the same term and out-order it (A.5-class inversion under the global `fetch_add`) $\Rightarrow$ resurrection.
+real Remove on the same term and out-order it (A.5-class inversion under the global `fetch_add`) $`\Rightarrow`$ resurrection.
 Needs an explicit claim-point + ordering proof for this arm (the §3.1 rule covers only the 4 real producers).
 
 **Verified SOUND:** F5 (crash mid fresh-v3 ctor / mid-rotate is safe — the rotate is the trusted owned-checkpoint
@@ -84,12 +84,12 @@ PRE-EXISTING (current v2) binary checks is `version > VERSION` (`header.rs:82`).
 INVISIBLE to old binaries (they ignore reserved). Therefore:
 - **If D2.7 does NOT bump the global VERSION** (keeps 2 + `rank_regime` in reserved): base/vocab are fully safe
   (forward AND rollback — their v2 files always open). BUT a char-Overlay file is NOT fail-closed against an old
-  binary: an old binary opening it reads version 2, ignores `rank_regime`, and char-reconciles it as Owned $\Rightarrow$ KEEPS
-  orphans $\Rightarrow$ silent mis-recovery / possible resurrection.
+  binary: an old binary opening it reads version 2, ignores `rank_regime`, and char-reconciles it as Owned $`\Rightarrow`$ KEEPS
+  orphans $`\Rightarrow`$ silent mis-recovery / possible resurrection.
 - **If D2.7 bumps the global VERSION to 3**: char-Overlay files ARE fail-closed against old binaries (`version 3 >
   2` ⇒ refused), BUT base/vocab's NEW files are also v3 ⇒ an old binary (rollback) opening them is refused ⇒
   base/vocab bricked on rollback (F1 redux on the rollback path).
-You CANNOT make a current-v2 binary check a field it predates $\Rightarrow$ the tension is fundamental for current binaries.
+You CANNOT make a current-v2 binary check a field it predates $`\Rightarrow`$ the tension is fundamental for current binaries.
 
 **Candidate resolutions D2.7 must evaluate + PICK (with a proof + a cross-codebase impact statement):**
 (1) NO bump + `rank_regime` in reserved + the rollback procedure NEVER opens the live Overlay WAL with an old binary
@@ -106,7 +106,7 @@ D2.7's red-team must attack the chosen resolution's forward AND rollback compat 
 
 **VALIDATED SOUND:** §A read-before-append race (Ok(false) asserts "present at the read's linearization point" —
 not a lost insert; same as the existing `remove_cas_durable:498` absent-fast-path); §A mark-but-no-rank
-floor/shared-lsn (each append gets its own lsn; a marked-but-unranked lsn has no commit_seq $\Rightarrow$ excluded from the
+floor/shared-lsn (each append gets its own lsn; a marked-but-unranked lsn has no commit_seq $`\Rightarrow`$ excluded from the
 reclaimed-set floor max — must become a TLA invariant); multi-gen-Overlay prune (binary Owned-vs-Overlay partition);
 base never calls the shared `rebuild_from_wal_segments` (only char `:1138` + re-export, not a call). The (1a) spine
 + CommitSeqMonotone remain untouched.
@@ -115,7 +115,7 @@ base never calls the shared `rebuild_from_wal_segments` (only char `:1138` + re-
 path").** `open_with_recovery_config` (char `mmap_ctor.rs:729`, PRODUCTION-reachable via `:665`) has its OWN inline
 rebuild loop (`:794-920`) applying Insert/Remove/Increment RAW (`insert_impl_no_wal`) — NOT in D2.7 §2's list. Plus
 the PUBLIC `RecoveryManager` raw paths (char `recovery.rs:464` + `:503`, both `record_to_operations`-raw). On a
-corrupt Overlay file each replays unranked orphans in-order $\Rightarrow$ resurrection; `NoUngatedV3Recovery` as scoped would
+corrupt Overlay file each replays unranked orphans in-order $`\Rightarrow`$ resurrection; `NoUngatedV3Recovery` as scoped would
 PASS while these resurrect. **→ D2.8 STRUCTURAL FIX: stop enumerating. Route EVERY char recovery record-application
 through ONE choke-point `apply_recovered_records(records, regime, tx_states)` that runs the regime-gated reconcile.
 A single gated funnel ends the whack-a-mole — there is then ONE place to gate and no enumeration gap.** Cite
@@ -126,7 +126,7 @@ A single gated funnel ends the whack-a-mole — there is then ONE place to gate 
 (e.g. `PARTWALO`); OLD binaries fail-close on it (magic mismatch) WITHOUT a VERSION bump (base/vocab/char-owned keep
 `PARTWAL\0`, unaffected); NEW binaries accept a magic SET `{PARTWAL\0, PARTWALO}` so same-binary recovery/migration
 reads (`WalReader::new`/`read_header`, which route through the same `from_bytes`) still read Overlay files freely.
-This closes the silent-mis-recovery gap (old binary reads an Overlay file as Owned $\Rightarrow$ keeps orphans $\Rightarrow$ resurrection)
+This closes the silent-mis-recovery gap (old binary reads an Overlay file as Owned $`\Rightarrow`$ keeps orphans $`\Rightarrow`$ resurrection)
 that a backup/monitoring/mixed-deploy reader hits in NORMAL ops (not just operator error). **→ D2.8 adopts dual-magic.**
 
 **P0-residual — §A read-before-append AMBIGUITY.** The current `insert_cas_durable` appends the data record at
@@ -137,7 +137,7 @@ append-then-loop shape). Cite `:329/:375/:520/:556`.
 **P2 (specify in D2.8) —** migrate of a source-Owned file with LEGACY root-version CommitRanks must RE-RANK them
 into commit_seq space (or they collide) — §6 omits this. The flip primitive (`ensure_overlay_wal_regime`,
 `open_with_regime`, `RankRegime`) is entirely UNBUILT — crash-mid-flip idempotency (§1.3's "Owned-tail-after-half-
-flip $\Rightarrow$ rotate again") MUST be in the TLA flip model + a real-disk crash-mid-flip soak. Owned-producer-opens-Overlay
+flip $`\Rightarrow`$ rotate again") MUST be in the TLA flip model + a real-disk crash-mid-flip soak. Owned-producer-opens-Overlay
 →Err: document which tools must use `WalReader` (LOW).
 
 **D2.8 = D2.7 + {single gated recovery choke-point (closes the enumeration gap structurally); dual-magic tripwire;

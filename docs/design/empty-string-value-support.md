@@ -32,7 +32,7 @@ eviction root-safety note)** → **this doc (CONVERGED, implementation-ready, ow
 
 **V5 deltas (from Round-3):** §5.4 adds the missed char `test_insert_cas_empty_term` (dict_impl_char.rs:3042)
 to the UPDATE inventory (else P3 RED); §1.1 maps the `claim_commit_seq()`/`note_cas_retry()` placeholders to
-the existing `commit_seq`/`cas_retries` fields + pins the $u64\leftrightarrow i64$ increment seam (non-material precision).
+the existing `commit_seq`/`cas_retries` fields + pins the $`u64\leftrightarrow i64`$ increment seam (non-material precision).
 **V4 deltas (from Round-2):** §1.1 `overlay_increment_root` returns `(count, generation)` + claims
 `commit_seq` (closes the unranked-drop data-loss); `overlay_publish_root_value` uses always-publish
 `changed=|_,_|true` (drops the unavailable `V: PartialEq`); H1-load enumerated as 3 edit sites (iterative
@@ -181,7 +181,7 @@ the SAME `increment_publish_inner` seam (`delta as u64` in / `new_val as i64` ou
 — do NOT literally substitute the generic signature inside the inner.
 
 ### 1.2 Per-variant SEAMS shrink to almost nothing
-The only per-variant code is the `V` $\leftrightarrow$ `Self::CounterValue` conversion (byte `i64`, char `u64`) inside
+The only per-variant code is the `V` $`\leftrightarrow`$ `Self::CounterValue` conversion (byte `i64`, char `u64`) inside
 `overlay_publish_root_value`/`overlay_increment_root` — already an existing seam
 (`bound_increment_delta`, the counter monomorph). The concrete root type is the shared
 `OverlayNode<K,V>` (post-G4), so the publishers themselves are **shared defaults**, not seams. This is
@@ -334,7 +334,7 @@ its own independent (already-correct) root-value+reverse-index lifecycle.
 
 ### 5.1 The NEW loom gate (the headline — closes Round-1 proof-gap #3)
 `tests/persistent_lockfree_overlay_loom.rs`: a schedule witnessing **the root as simultaneously the
-CAS target and a concurrent path-copy target** — $insert("") \| insert("a") \| remove("")$ ($\le$3 threads;
+CAS target and a concurrent path-copy target** — $`insert("") \| insert("a") \| remove("")`$ ($`\le`$3 threads;
 the harness already runs 3-thread `preemption_bound=Some(3)` schedules, so within budget — Round-2 C4).
 Add TWO new model fns mirroring §1.1: `publish_root_final(root)` = the POSITIVE (fresh `as_final` root via
 `ModelRootSlot::compare_exchange`, rebasing on Err) and `finalize_root_in_place(root)` = the NEGATIVE
@@ -353,7 +353,7 @@ loom gate (5.1) is the executable witness.
 
 ### 5.3 Decisive test matrix (byte + char; overlay-default + kill-switched-owned; checkpoint-reopen +
 pure-WAL-replay): valued `insert_with_value("",v)`→checkpoint→reopen→`get_value("")==Some(v)`;
-`increment("")`$\times$N→reopen→count; upsert LWW; **membership `insert("")`→reopen→`contains("")==true`** (H3);
+`increment("")`$`\times`$N→reopen→count; upsert LWW; **membership `insert("")`→reopen→`contains("")==true`** (H3);
 **remove `""`→reopen→`contains("")==false`** (symmetry); back-compat (old value-less file → `""`→None);
 codec root-value round-trip + byte-identical-when-`None`; empty value WITH children; **concurrent
 root-value race** (N threads `increment("")` → count == sum) (R1); compaction-`""` (H8); vocab
@@ -445,7 +445,7 @@ regression.
   last CAS winner — consistent. A `V=()` trie never calls the value publisher.
 - **Round-2 open question — CLOSED (affirmative, verified field-by-field in node.rs):** every path-copy
   mutator preserves the orthogonal fields, so empty-term root state and child structure never clobber each
-  other: `with_child` preserves `value` (:770) + `flags`/`IS_FINAL` (:769) $\Rightarrow$ a concurrent child insert does
+  other: `with_child` preserves `value` (:770) + `flags`/`IS_FINAL` (:769) $`\Rightarrow`$ a concurrent child insert does
   NOT drop the root's empty-term counter/membership; `as_final` preserves `store`+`value` (:812-813);
   `with_value` preserves `store`+`IS_FINAL` (:869-870); `as_non_final` retains `store` (:854), drops `value`
   (:859). Publication is one atomic `arc_swap` `compare_exchange`, so no torn (final-but-value-not-visible)

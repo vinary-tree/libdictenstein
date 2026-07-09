@@ -5,19 +5,19 @@
 B#2a/b/c, B#3a, B#4-residuals, B#5). **D2's (1a) single-LP insert write-path, `CommitSeqMonotone` (D2 §1.4), and
 C1′ (D2 §1.7) are PROVEN SOUND and carried UNCHANGED.** D2.5's R3 ack-after-rank, R5 chokepoint, R6 tx, R7 errata
 are carried UNCHANGED. D2.6 **REPLACES** D2.5's R1c inferred-per-window regime, R1a per-op-merge coder, and the
-split DG sequencing — the fix is a simplification: **regime $\equiv$ WAL VERSION**.
+split DG sequencing — the fix is a simplification: **regime $`\equiv`$ WAL VERSION**.
 
 The six decisions D1–D6 are pre-made (synthesis in `redteam-d2.5-findings.md`). This document validates each
 against code, fills in the mechanics + DG phases, and self-red-teams (§7) the load-bearing claim.
 
 ---
 
-## §1. D1 — regime $\equiv$ WAL VERSION
+## §1. D1 — regime $`\equiv`$ WAL VERSION
 
 **Decision.** A v3 WAL is PURE overlay (every confirmed op is ranked). v1/v2 is owned/legacy (no ranks ever). No
 mixed v3 WAL: the production flip creates a FRESH v3 WAL; the owned path NEVER writes v3 (enforced by the R5
-version guard in `WalWriter::open`). Therefore **v3 $\iff$ overlay-regime**, and the drop is purely version-gated:
-$v3-unranked \Rightarrow DROP$, $v1/v2-unranked \Rightarrow KEEP@lsn$. **No regime field, no inference, no per-Checkpoint regime
+version guard in `WalWriter::open`). Therefore **v3 $`\iff`$ overlay-regime**, and the drop is purely version-gated:
+$`v3-unranked \Rightarrow DROP`$, $`v1/v2-unranked \Rightarrow KEEP@lsn`$. **No regime field, no inference, no per-Checkpoint regime
 stamp** (D2.5 S#1 dropped — superseded).
 
 ### 1.1 Validation against code
@@ -32,7 +32,7 @@ stamp** (D2.5 S#1 dropped — superseded).
 defaults to `OwnedTree` each open (`mmap_ctor.rs:349`), never persisted (A#6). So flipping + continuing to write
 the existing v2 `wal_writer` would append v3 CommitRanks into a v2 file.
 
-> **D2.6 mechanism — "flip $\Rightarrow$ fresh v3 WAL" (the load-bearing constructor step).** The flip is a CONSTRUCTOR-time
+> **D2.6 mechanism — "flip $`\Rightarrow`$ fresh v3 WAL" (the load-bearing constructor step).** The flip is a CONSTRUCTOR-time
 > decision: (1) `set_overlay_write_mode(LockFreeOverlay)` on the OLD binary, (2) clean shutdown runs the OWNED
 > checkpoint (`persist.rs:147-175`, rotating the v2 active WAL into a v2 archive and leaving a fresh v2 active),
 > (3) reopen with the new binary whose ctor, seeing `route_overlay()` true, opens the active WAL through a new
@@ -57,23 +57,23 @@ orphans) — A#3 real.
 > (`mmap_ctor.rs:1106-1160`) + `rebuild_from_wal_segments` (`recovery.rs:1443`): (1) sort segments by first-LSN
 > (`sort_segments_by_lsn:1417`; archive LSN space globally monotone via the rotate `next_lsn` carry,
 > `writer.rs:463`); (2) collect ALL segment records into one `Vec<(Lsn, WalRecord, u32 seg_version)>`, tagging each
-> with its segment's header version via `WalReader::read_header` (unreadable header $\Rightarrow$ refuse); (3) build ONE global
+> with its segment's header version via `WalReader::read_header` (unreadable header $`\Rightarrow`$ refuse); (3) build ONE global
 > rank map across all records (cross-segment rank visibility; ranks never cross the flip — v2 segments have none);
 > (4) run the filtered reconcile (§2) ONCE with `checkpoint_lsn = 0` (no base image — `recover_from_archives`
 > deleted it, `mmap_ctor.rs:1130-1132`), the per-record `seg_version` as the drop discriminant (v2 unranked KEEP,
 > v3 unranked DROP); (5) self-completeness precondition (S#3): first-LSN==1 AND each segment's last+1==next.first
-> (no interior gap), else $RecoveryError("archive non-contiguous; pruned \Rightarrow need base image")$
+> (no interior gap), else $`RecoveryError("archive non-contiguous; pruned \Rightarrow need base image")`$
 > (`prune_segments_if_needed:510` can delete old segments). Thread `max_commit_seq` out for the seed. Cite
 > `recovery.rs:1443-1487`, `mmap_ctor.rs:1106-1160`, `reader.rs:103`.
 
 **(c) base recovers v2 in-order; the guard prevents cross-opening — VALIDATED.** The base owned codebase recovers
 via `RecoveryManager::recover:645` → `analysis_phase:678` + `redo_phase:756` (raw LSN order) + base archive
 `mmap_ctor.rs:649` — NEVER calls `reconcile_lww`/`replay_records_lww` (grep empty in `src/persistent_artrie/`).
-Correct for v2 (no ranks $\Rightarrow$ in-order = the total `&mut self` append order). Under D1 the base never write-opens a
+Correct for v2 (no ranks $`\Rightarrow`$ in-order = the total `&mut self` append order). Under D1 the base never write-opens a
 v3 file: the R5 guard in `WalWriter::open` returns `UnsafeVersionMixing` when `header.version < VERSION`. The
 read-only `WalReader`/`read_header` is permissive `[MIN_SUPPORTED..=VERSION]` so `migrate_v2_to_v3` reads v2. ∎
 
-### 1.2 Why regime$\equiv$version closes the A-cluster
+### 1.2 Why regime$`\equiv`$version closes the A-cluster
 A#1 (first window): no window — the header version IS the regime. A#2 (base never reconciles): by design (base = v2
 in-order; guard blocks base opening v3). A#3 (multi-regime archive): per-segment version. A#4 (no regime stamp):
 version IS the regime. A#5/A#6 (wrong-domain assert / not persisted): flip forces a fresh v3 file, regime durable
@@ -115,9 +115,9 @@ let cseq = match rank.get(&lsn).copied() {
 ```
 Everything else (checkpoint-skip `:283-285`, expansion `:287`, stable sort `:296`) UNCHANGED. v1+v2 → KEEP@lsn
 (closes C#11/C#10; v2 root-version is just the `rank.unwrap_or(lsn)` sort key; v2 never dropped, drop needs
-version$\ge$3). **No watermark, no reconstructed-overlay-watermark, no per-checkpoint regime stamp** (D2.5's two-pass
+version$`\ge`$3). **No watermark, no reconstructed-overlay-watermark, no per-checkpoint regime stamp** (D2.5's two-pass
 watermark + `committed_watermark_floor` header field DROPPED). Rationale: drop is purely version-gated, and R3
-ack-after-rank guarantees $acked \implies ranked \implies never the drop arm$; the only unranked v3 records are un-acked
+ack-after-rank guarantees $`acked \implies ranked \implies never the drop arm`$; the only unranked v3 records are un-acked
 two-append orphans which MUST drop. A torn-hole = a missing data record; a CommitRank with a missing `data_lsn` is
 a dangling rank (keyed by data_lsn; the expansion only emits ops for records that EXIST) — harmlessly ignored.
 Strictly simpler; removes the fragile rank-interleaving walk (B#3).
@@ -143,8 +143,8 @@ record and NO header bump (code-reversible); after, forward-only.
 
 ### 3.1 Why inseparable (validated)
 - **B#5:** if a v3 CommitRank is written while the OLD ungated reconcile is deployed, an unranked Insert-orphan
-  (`data@lockfree_cas.rs:329`, crash before `append_commit_rank@:367`) sorts at `generation_of=lsn` (LARGE) $\Rightarrow$ WINS
-  $\Rightarrow$ resurrects a removed term. Producer + gated reader + bump are atomic.
+  (`data@lockfree_cas.rs:329`, crash before `append_commit_rank@:367`) sorts at `generation_of=lsn` (LARGE) $`\Rightarrow`$ WINS
+  $`\Rightarrow`$ resurrects a removed term. Producer + gated reader + bump are atomic.
 - **B#3a:** the commit_seq stamp is an 8-site producer rewrite. Today 4 producers stamp `generation =
   new_root.version()`: insert `:363` (via `insert_lockfree_recursive:928→933`), remove `:540`, insert-value `:1659`,
   upsert `:1757`; plus idempotent insert `:383`. Increment `try_increment_cas_durable:1492` emits NO CommitRank
@@ -178,7 +178,7 @@ record and NO header bump (code-reversible); after, forward-only.
   enforces "no mixed v3 WAL" for §1. MUST land with the bump (before it, `VERSION=2` and the guard would refuse
   legitimate v2 opens). Cite `writer.rs:101-116`, `header.rs:38,82`.
 
-### 3.2 Re-authored DG phases (each gate: `nextest` $\ge$ current + formal-correspondence exit 0 + unsafe-inventory
+### 3.2 Re-authored DG phases (each gate: `nextest` $`\ge`$ current + formal-correspondence exit 0 + unsafe-inventory
 exit 0; systemd real-disk; `RUN_TLC=1` at the formal gate)
 - **DG0 — `commit_seq` field + floor plumbing (NO behavior change, NO bump, VERSION 2).** Add `commit_seq:
   AtomicU64` + the bounded `commit_seq_by_data_lsn` map (§4) to the char inner struct; `commit_seq_floor` at header
@@ -191,12 +191,12 @@ exit 0; systemd real-disk; `RUN_TLC=1` at the formal gate)
   (B#3a). The 8 sites still stamp `new_root.version()` (NOT yet commit_seq). VERSION still 2 — a v2 reader reads
   `CommitRank.generation` as a root-version, OLD reconcile works (root-version monotone within one session).
   **Rollback:** revert. **Gate:** prefix-split regression PASSES; `CommitSeqMonotone` holds for the increment rank.
-- **DG-DECODE — D6 sentinel fix** (§6) — NO codec change, lands at $\le$DG1. **Gate:** absolute-0 vs delta-0 distinct.
+- **DG-DECODE — D6 sentinel fix** (§6) — NO codec change, lands at $`\le`$DG1. **Gate:** absolute-0 vs delta-0 distinct.
 - **DG2 — durable floor from the reclaimed set, both checkpoint paths (NO bump).** Wire
   `set_commit_seq_floor(reclaimed_range_max(map, checkpoint_lsn))` into owned `persist.rs:147` AND overlay retain
   `persist.rs:579`; seed-from-floor active (§4). **Rollback:** stop setting floors. **Gate:** post-checkpoint-reseed
   PASSES.
-- **DG-RECON — THE ATOMIC GATE (ONE-WAY).** Together: (a) bump `header.rs:38` $VERSION 2\to 3$; (b) repurpose the 8
+- **DG-RECON — THE ATOMIC GATE (ONE-WAY).** Together: (a) bump `header.rs:38` $`VERSION 2\to 3`$; (b) repurpose the 8
   stamp sites to claim `commit_seq`; (c) the new `reconcile_lww` + version-gated drop wired into all three char
   consumers (`mmap_ctor.rs:403,597`, `io_uring_ctor.rs:227`); (d) the R5 guard in `WalWriter::open:116`; (e) the
   flip-creates-fresh-v3-WAL ctor step (§1.1a); plus the §7.1 guards (merge-bridge overlay-reject;
@@ -208,11 +208,11 @@ exit 0; systemd real-disk; `RUN_TLC=1` at the formal gate)
   filtered reconcile + `checkpoint_lsn=0` + contiguity) + `IncrementalRecovery` (per-window + fail-closed) +
   `migrate_v2_to_v3` (§5); thread `max_commit_seq` out. Base `redo_phase`/archive stay raw (v2 only). **Gate:**
   archive-orphan-drop + never-checkpoint + mixed-segment-archive PASS; `AllPathsAgree`, `ArchiveNoResurrection`.
-- **DG-TX — tx gating (R6).** `reconcile_lww` tx-gates in the expansion cursor (drop data of tx $\notin$ Committed, via
+- **DG-TX — tx gating (R6).** `reconcile_lww` tx-gates in the expansion cursor (drop data of tx $`\notin`$ Committed, via
   `tx_states` from `analysis_phase:678`); BatchInsert one commit_seq (v2 Owned, KEEP). **Gate:** torn-tx-batch +
   aborted-tx PASS.
-- **DG-FORMAL (HARD GATE).** TLA `DurableGlobalOrderD26` + all controls. **Any `_Unsafe*.cfg` PASS $\Rightarrow$ STOP.**
-- **DG-SOAK.** All D2 §7.2 scenarios $\ge$50$\times$ (Immediate+GroupCommit, real-disk) PLUS flip-creates-fresh-v3-WAL across
+- **DG-FORMAL (HARD GATE).** TLA `DurableGlobalOrderD26` + all controls. **Any `_Unsafe*.cfg` PASS $`\Rightarrow`$ STOP.**
+- **DG-SOAK.** All D2 §7.2 scenarios $`\ge`$50$`\times`$ (Immediate+GroupCommit, real-disk) PLUS flip-creates-fresh-v3-WAL across
   restart; archive-orphan-drop with a v2-then-v3 segment mix; increment-summed-across-crash; absolute-0 vs delta-0;
   the A#4-residual non-durable/durable-mix loom. Reversible until the flip flag flips.
 
@@ -224,25 +224,25 @@ exit 0; systemd real-disk; `RUN_TLC=1` at the formal gate)
 (one domain); source = reclaimed set; the map is bounded.
 
 ### 4.1 Header-carry is load-bearing (B#2a) — VALIDATED
-`rotate_to_archive` (`writer.rs:458`) writes a FRESH `WalHeader::new()` (zeroes `reserved` $\Rightarrow$ any floor there;
+`rotate_to_archive` (`writer.rs:458`) writes a FRESH `WalHeader::new()` (zeroes `reserved` $`\Rightarrow`$ any floor there;
 resets `checkpoint_lsn=0`; carries `next_lsn`/`synced_lsn` only via runtime atomics `:463-466`, NOT the header).
 `truncate` (`:338-364`) reuses the in-memory header but resets `checkpoint_lsn=0` (`:353`). The owned checkpoint
 TRUNCATES/rotates (`persist.rs:170`), so "recompute from scan" UNDER-computes post-truncate (reclaimed ranks now
-in an archive). $\Rightarrow$ the header-floor-carry is the ONLY thing preventing floor regression — load-bearing.
+in an archive). $`\Rightarrow`$ the header-floor-carry is the ONLY thing preventing floor regression — load-bearing.
 > **Mechanism.** Add `commit_seq_floor: u64` at header bytes 20..28 (`to_bytes:66`/`from_bytes:91` — carve from
 > `reserved[20..64]`, leaving `reserved[28..64]`). In `rotate_to_archive` (`writer.rs:458`) construct the new header
 > `WalHeader { version: <preserved>, commit_seq_floor: <carried>, .. }` (NOT `WalHeader::new()`) — carry version AND
 > floor. In `truncate` (`:352-356`) set `header.commit_seq_floor = <reclaimed floor>` alongside `checkpoint_lsn=0`.
-> Monotone `set_commit_seq_floor` (raise-only, mirroring `set_min_lsn:269`). Floor lives only in v3 files $\Rightarrow$ B#2b
+> Monotone `set_commit_seq_floor` (raise-only, mirroring `set_min_lsn:269`). Floor lives only in v3 files $`\Rightarrow`$ B#2b
 > switch-back mismatch vanishes (owned checkpoint never reads/writes an overlay floor).
 
 ### 4.2 Source = reclaimed set; map bound (B#2c)
 `floor = max { commit_seq(r) : CommitRank with data_lsn ≤ checkpoint_lsn }` (0 if none), from
 `commit_seq_by_data_lsn: BTreeMap<Lsn,u64>` (updated in `append_commit_rank`, `wal_helpers.rs:87`): at checkpoint
 `floor = map.range(..=checkpoint_lsn).map(|(_,s)| *s).max().unwrap_or(0)`; prune `range(..=checkpoint_lsn)` after
-reclaim. Owned path: map empty $\Rightarrow$ floor 0. Wire `persist.rs:147` (owned, `checkpoint_lsn=next_lsn`) + `:579`
+reclaim. Owned path: map empty $`\Rightarrow`$ floor 0. Wire `persist.rs:147` (owned, `checkpoint_lsn=next_lsn`) + `:579`
 (overlay, `checkpoint_lsn=watermark`).
-> **Map bound (B#2c — overlay retains its WAL `persist.rs:599`; never-checkpoint soak $\Rightarrow$ unbounded).** Cap at
+> **Map bound (B#2c — overlay retains its WAL `persist.rs:599`; never-checkpoint soak $`\Rightarrow`$ unbounded).** Cap at
 > `MAX_COMMIT_SEQ_INDEX = 1<<20` (~16 MB). On cap, drop the lowest-`data_lsn` half (oldest). On a checkpoint whose
 > `checkpoint_lsn` exceeds the smallest retained key, FALL BACK to a bounded active-WAL scan
 > `range(prev_floor_lsn..=checkpoint_lsn)` to recompute the reclaimed max (those ranks are in the active WAL, not
@@ -254,7 +254,7 @@ reclaim. Owned path: map empty $\Rightarrow$ floor 0. Wire `persist.rs:147` (own
 ## §5. D5 — implement `migrate_v2_to_v3` (was vaporware — B#4)
 > **Tool (a `pub fn` on the char trie + CLI entry).** `migrate_v2_to_v3(v2_path, v3_path) -> Result<MigrationStats>`:
 > (1) open v2 read-only via `WalReader`/`read_header` (read path permissive `[MIN_SUPPORTED..=VERSION]`,
-> `header.rs:82`; the R5 write-guard does NOT apply to reads); assert $version \in {1,2}$. (2) recover under the v2
+> `header.rs:82`; the R5 write-guard does NOT apply to reads); assert $`version \in {1,2}`$. (2) recover under the v2
 > comparator = the filtered reconcile (§2) with `wal_version=2` (every unranked KEPT@lsn — legacy in-order; reuses
 > `replay_records_lww`; v2 inherits its pre-existing semantics, S#6). (3) create a FRESH v3 trie at `v3_path`
 > (`create_with_config` writes `WalHeader::new()` at `VERSION=3`). (4) checkpoint the recovered image
@@ -269,10 +269,10 @@ reclaim. Owned path: map empty $\Rightarrow$ floor 0. Wire `persist.rs:147` (own
 ---
 
 ## §6. D6 — fix the `result==0` increment-sentinel collision (B#1c-residual, pre-existing)
-VALIDATED: `recovered_operations_from_record:347-354` maps $BatchIncrement \to Increment{result:0}$ (delta) while a
+VALIDATED: `recovered_operations_from_record:347-354` maps $`BatchIncrement \to Increment{result:0}`$ (delta) while a
 single-op `WalRecord::Increment` (`codec.rs:145-152`) → `Increment{result:new_value}` (absolute). A signed delta
-landing a counter at 0 emits `result:0` $\Rightarrow$ both appliers (`mutation_core.rs:326` and the owned twin
-`persistent_artrie/mutation_core.rs:405`) take the DELTA arm for an absolute-0 $\Rightarrow$ divergence.
+landing a counter at 0 emits `result:0` $`\Rightarrow`$ both appliers (`mutation_core.rs:326` and the owned twin
+`persistent_artrie/mutation_core.rs:405`) take the DELTA arm for an absolute-0 $`\Rightarrow`$ divergence.
 > **Encoding fix.** Replace `RecoveredOperation::Increment{result:i64}` with an explicit discriminant: `outcome:
 > IncrementOutcome` where `enum IncrementOutcome { Delta, Absolute(i64) }` (or `result: Option<i64>`: None=delta,
 > Some(v)=absolute incl. 0). `recovered_operations_from_record`: `WalRecord::Increment{delta,result}` →
@@ -281,7 +281,7 @@ landing a counter at 0 emits `result:0` $\Rightarrow$ both appliers (`mutation_c
 > Absolute(v) => insert_impl_no_wal_with_value(term, value_from(v)) }`; owned twin `:399-418` similarly.
 > **WAL-format/codec implication: NONE** — the two on-disk record types already encode the distinction (`Increment`
 > has `result:i64`; `BatchIncrement` has only `(term,delta)`; codec `:341-348`/`:292+`). The collision is purely in
-> the recovery-side `RecoveredOperation` mapping. NOT gated by the bump → lands at DG-DECODE ($\le$DG1). (Overlay durable
+> the recovery-side `RecoveredOperation` mapping. NOT gated by the bump → lands at DG-DECODE ($`\le`$DG1). (Overlay durable
 > increments log `BatchIncrement` deltas `lockfree_cas.rs:1536` — always Delta; only the OWNED `increment` path
 > `atomic_ops.rs:83` logs a single-op `Increment{result}` — always Absolute. Post-fix each is correct.)
 
@@ -289,7 +289,7 @@ landing a counter at 0 emits `result:0` $\Rightarrow$ both appliers (`mutation_c
 
 ## §7. SELF-RED-TEAM
 
-### 7.1 THE load-bearing claim: "v3 WAL $\iff$ every record is from the ranked overlay path"
+### 7.1 THE load-bearing claim: "v3 WAL $`\iff`$ every record is from the ranked overlay path"
 Attacked by enumerating EVERY WAL-append site in char (`rg append_to_wal*`):
 
 **Gated/safe:** insert/insert_with_value/remove (`mutation_api.rs:28,66,106` → ranking overlay producers);
@@ -299,17 +299,17 @@ under overlay). Begin/Commit/BatchInsert/AbortTx only on the owned (non-overlay)
 
 **Arbitrary-V fallthrough** (`insert_with_value:72`, `increment:44`, `upsert:155` fall to the OWNED unranked body
 when the route returns `None` for arbitrary V): `route_overlay()` is FALSE for arbitrary V (the flip
-`enable_lockfree()`s only for $V \in {(), u64}$; `enable_lockfree` is the only `lockfree_root` setter `:160`) $\Rightarrow$
-arbitrary-V keeps `lockfree_root=None` $\Rightarrow$ never enters §1.1a's fresh-v3 ctor step $\Rightarrow$ its file stays v2 $\Rightarrow$ an
+`enable_lockfree()`s only for $`V \in {(), u64}`$; `enable_lockfree` is the only `lockfree_root` setter `:160`) $`\Rightarrow`$
+arbitrary-V keeps `lockfree_root=None` $`\Rightarrow`$ never enters §1.1a's fresh-v3 ctor step $`\Rightarrow`$ its file stays v2 $`\Rightarrow`$ an
 arbitrary-V unranked record never lands in a v3 file. **Load-bearing coupling — D2.6 mandates invariant
-`V3WalImpliesOverlayLive`** (a v3 active WAL $\implies$ `route_overlay()` true): `debug_assert!(self.route_overlay())` at
+`V3WalImpliesOverlayLive`** (a v3 active WAL $`\implies`$ `route_overlay()` true): `debug_assert!(self.route_overlay())` at
 every overlay producer's WAL-append + a ctor assert that the fresh-v3 step ran iff `route_overlay()`.
 
 **THREE genuine hazards (guarded, not hand-waved):**
 1. **`merge_lockfree_values_to_persistent:1897` + `merge_lockfree_to_persistent` write UNRANKED records, NOT
    route_overlay-gated.** They drain the overlay into the OWNED tree via `append_to_wal(BatchInsert/BatchIncrement)`
    (no rank). Callers today: tests only (`dict_impl_char.rs:3134`, vocab `:1539`). HAZARD: a merge while the active
-   WAL is v3 writes an unranked v3 record $\Rightarrow$ §2 DROPS it $\Rightarrow$ silent loss. **Guard:** fail-closed at the top of both —
+   WAL is v3 writes an unranked v3 record $`\Rightarrow`$ §2 DROPS it $`\Rightarrow`$ silent loss. **Guard:** fail-closed at the top of both —
    `if self.route_overlay() { return Err(InvalidOperation("merge_lockfree_*_to_persistent is owned-regime only")) }`.
    Cite `lockfree_cas.rs:1872-1914`.
 2. **Idempotent insert/remove arms emit a CommitRank** (`:383` `generation = lockfree_root.load().version()`,
@@ -321,18 +321,18 @@ every overlay producer's WAL-append + a ctor assert that the fresh-v3 step ran i
    have none; the flip forces a file boundary so a segment is version-homogeneous by C1). ✓
 
 **Other paths:** Checkpoint records are markers → `vec![]` (`:359`), unranked irrelevant. **Eviction emits NO WAL
-record** (grep `*evict*` empty) — mutates the buffer/registry, not the WAL $\Rightarrow$ cannot inject an unranked v3 record. ✓
-Group-commit (S#7): a rank batched into an un-synced batch $\Rightarrow$ `append_commit_rank` Err $\Rightarrow$ NOT acked $\Rightarrow$ orphan $\Rightarrow$
+record** (grep `*evict*` empty) — mutates the buffer/registry, not the WAL $`\Rightarrow`$ cannot inject an unranked v3 record. ✓
+Group-commit (S#7): a rank batched into an un-synced batch $`\Rightarrow`$ `append_commit_rank` Err $`\Rightarrow`$ NOT acked $`\Rightarrow`$ orphan $`\Rightarrow`$
 dropped. ✓
 
-**Verdict:** "v3 $\iff$ ranked overlay" HOLDS conditional on three guards: (i) the fresh-v3 ctor step gates on
+**Verdict:** "v3 $`\iff`$ ranked overlay" HOLDS conditional on three guards: (i) the fresh-v3 ctor step gates on
 `route_overlay()`; (ii) `merge_lockfree_*` reject under `route_overlay()`; (iii) cas/commit_document already reject.
-With these, every v3 record is a ranked overlay op or a marker. Unranked-in-v3 $\iff$ a two-append orphan $\iff$ correctly
+With these, every v3 record is a ranked overlay op or a marker. Unranked-in-v3 $`\iff`$ a two-append orphan $`\iff`$ correctly
 dropped.
 
 ### 7.2 Other attacks
-- **S-A — flip's fresh-v3 ctor step crashes mid-rotate.** Crash between rename and new-header-write $\Rightarrow$ no active WAL
-  $\Rightarrow$ reopen `open_or_create` creates a fresh file; the ctor re-runs §1.1a (`route_overlay()` true $\Rightarrow$ v3); the v2
+- **S-A — flip's fresh-v3 ctor step crashes mid-rotate.** Crash between rename and new-header-write $`\Rightarrow`$ no active WAL
+  $`\Rightarrow`$ reopen `open_or_create` creates a fresh file; the ctor re-runs §1.1a (`route_overlay()` true $`\Rightarrow`$ v3); the v2
   archive recovers per-segment (KEEP). ✓ (the rotate is the primitive the owned checkpoint already trusts).
 - **S-B — floor carry across truncate writes a STALE floor.** D2.6 sets `header.commit_seq_floor = reclaimed_max`
   IN the checkpoint path before truncate/rotate (§4.1); monotone `set_commit_seq_floor` guards (floor-too-high is
@@ -340,7 +340,7 @@ dropped.
 - **S-C — map-bound scan fallback misses rotated ranks.** Only ranks already reclaimed (covered by a prior monotone
   floor) get rotated; the active-WAL scan covers the un-rotated tail. ✓
 - **S-D — IncrementalRecovery per-window reorders across windows.** Windows are LSN-contiguous and commit_seq
-  monotone $\Rightarrow$ order preserved; never-checkpoint-v3 fail-closed avoids OOM. ✓
+  monotone $`\Rightarrow`$ order preserved; never-checkpoint-v3 fail-closed avoids OOM. ✓
 - **S-E — D6 changes `RecoveredOperation` (pub type).** Source-compat break for external consumers; internal
   recovery type, no documented external use, gated by DG-DECODE + codec round-trip tests. Acceptable (pre-flip).
 
@@ -352,7 +352,7 @@ per-file/segment `version`). Model: `version: [Files -> {1,2,3}]` (immutable per
 3); `value: [Terms -> Int]`; drop = `ranked ⇒ keep@commit_seq ; (¬ranked ∧ version≥3) ⇒ drop ; (¬ranked ∧
 version≤2) ⇒ keep@lsn`; `floor' = Max({commit_seq(r): r ∈ committedOps, r.data_lsn ≤ checkpoint_lsn})`; `Restart`
 seeds `nextCommitSeq' = Max(floor, scanMax)`; `Archive` unions segments tagged by file version, reconciles with
-`checkpoint_lsn=0`; $IncrementOutcome \in {Delta, Absolute}$.
+`checkpoint_lsn=0`; $`IncrementOutcome \in {Delta, Absolute}`$.
 **Invariants:** carried `ReplayEqualsCommittedVisible`, `NoLostNetWrite`, `NoResurrectionOnReplay`, `DurablePrefix`,
 `CommitSeqMonotone` (UNCHANGED), `ReplayEqualsCommittedValue`, `FloorDominatesSubsumed`, `SeedAboveDurable`,
 `NoUnconfirmedWins`, `ArchiveNoResurrection`, `AckImpliesRanked`, `NoUncommittedTxReplay`, `NoVersionMix`. NEW:
@@ -397,7 +397,7 @@ idempotent-arm commit_seq claim.
 - `src/persistent_artrie_core/wal/writer.rs` — R5 guard `open:116`; D4 floor-carry `rotate_to_archive:458`
   (preserve version+floor) + `truncate:352-356`; `set/get_commit_seq_floor` (mirror `set_min_lsn:269`); §1.1a
   fresh-v3 create.
-- `src/persistent_artrie_core/wal/header.rs` — $VERSION 2\to 3$ `:38` (DG-RECON, one-way); `commit_seq_floor` bytes
+- `src/persistent_artrie_core/wal/header.rs` — $`VERSION 2\to 3`$ `:38` (DG-RECON, one-way); `commit_seq_floor` bytes
   20..28 (`to_bytes:66`/`from_bytes:91`); NO Checkpoint regime stamp.
 - `src/persistent_artrie_char/mmap_ctor.rs` — §1.1a fresh-v3 ctor step (after `open_or_create_async_wal:327`);
   thread `wal_version` into `replay_records_lww:403,597`; `recover_from_archives:1106-1160` per-segment +

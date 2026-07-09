@@ -8,12 +8,12 @@ makes `increment`/`fetch_add` return `Result<V>`.
 
 ## The helper (DONE — use it, do not re-create)
 `crate::persistent_artrie_core::counter_codec`:
-- `counter_leaf_to_i128::<V>(&[u8]) -> Option<i128>` — decode 8-LE-byte leaf (u64/i64; None else/len$\ne$8)
+- `counter_leaf_to_i128::<V>(&[u8]) -> Option<i128>` — decode 8-LE-byte leaf (u64/i64; None else/len$`\ne`$8)
 - `counter_value_to_i128::<V>(&V) -> Option<i128>` — decode a typed V (confines `serialize`)
 - `i128_to_counter_leaf::<V>(i128) -> Option<Vec<u8>>` — encode → leaf bytes, range-checked
   (u64: `[0,u64::MAX]`; i64: `[i64::MIN,i64::MAX]`); byte-identical to `serialize(&(n as V))`
 - `i128_to_counter_value::<V>(i128) -> Option<V>` — encode → typed V (confines `deserialize`)
-- `split_u64_delta_to_i64_chunks(u64) -> Vec<i64>` — $\le$3 i64-bounded chunks summing to the u64 (merge)
+- `split_u64_delta_to_i64_chunks(u64) -> Vec<i64>` — $`\le`$3 i64-bounded chunks summing to the u64 (merge)
 - `counter_return_i64(i128) -> i64` — bit-pattern narrow (kept ONLY for any i64-typed internal seam;
   NOT used on the public `Result<V>` path)
 
@@ -75,13 +75,13 @@ arms. (Widening `as i128` is NOT forbidden — it is lossless.) Use the helper e
    `new_value_i128 = current_i128 + delta_i128` in i128, bound via `i128_to_counter_leaf::<u64>`
    (reject overflow), prepared value via `i128_to_counter_value::<u64>`; for the WAL delta, replace
    `lockfree_delta_to_i64` (:1519, which i64::try_from-rejects >i64::MAX) with
-   `split_u64_delta_to_i64_chunks(delta)` pushing $\le$3 `(key, chunk)` wal_entries. `prepared_values`
+   `split_u64_delta_to_i64_chunks(delta)` pushing $`\le`$3 `(key, chunk)` wal_entries. `prepared_values`
    stays one entry/key (the final u64 value). `collect_lockfree_entries_recursive` (:1531): leaf is
    u64 → drop `value as u64` (:1538).
-9. The in-file `#[cfg(test)] mod` ($\approx$:1640+): the counter tests use `PersistentARTrie::<i64,_>` and
+9. The in-file `#[cfg(test)] mod` ($`\approx`$:1640+): the counter tests use `PersistentARTrie::<i64,_>` and
    `try_increment_cas_durable(b"..", N)`. These test the byte COUNTER → migrate to `<u64,_>` and
    `delta` as u64 where the durable sig now takes u64. The `c4_negative_value_is_rejected_not_wrapped`
-   test ($\approx$:1909) tested the i64 reject; reframe it to assert the value-domain reject still holds for
+   test ($`\approx`$:1909) tested the i64 reject; reframe it to assert the value-domain reject still holds for
    u64 (a value-CAS decrement below 0 is rejected; the durable add-only seam rejects a negative delta
    via `bound_increment_delta`). KEEP every test GREEN; adjust expected types i64→u64.
 
@@ -188,7 +188,7 @@ counter path.
 1. `cargo check --features persistent-artrie` AND `--no-default-features` (feature-off) — 0 errors.
 2. The v6 gate grep (see above) returns ZERO outside counter_codec.rs. Tee the grep output as proof.
 3. `cargo nextest run --features persistent-artrie --no-fail-fast` — full suite green (baseline was
-   ~2474; expect $\ge$ that, +the new test). Tee FULL output (not just tail).
+   ~2474; expect $`\ge`$ that, +the new test). Tee FULL output (not just tail).
 4. Sibling build-check (READ-ONLY, no edits): `cargo check` in ../libgrammstein and
    ../liblevenshtein-rust — stay green (they use the public API; libgrammstein's `<i64>` char counter
    now returns `Result<i64>` via Result<V>, unchanged).

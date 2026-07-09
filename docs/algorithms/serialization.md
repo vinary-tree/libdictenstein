@@ -25,7 +25,7 @@ round trip, not just the term itself.
 | Term | Definition |
 |------|-----------|
 | **serialize / deserialize** | Encode an in-memory value into a byte stream (serialize) and decode a byte stream back into an equivalent in-memory value (deserialize). |
-| **round trip** | The composition *deserialize $\circ$ serialize*: serialize a dictionary, then deserialize the bytes. A serializer is *lossless* for a property if the round trip preserves it. |
+| **round trip** | The composition *deserialize $`\circ`$ serialize*: serialize a dictionary, then deserialize the bytes. A serializer is *lossless* for a property if the round trip preserves it. |
 | **[serde](https://serde.rs/)** | Rust's de-facto serialization *framework*. A type that is `#[derive(Serialize, Deserialize)]` can be encoded by any serde-compatible *format* (bincode, JSON, …). `libdictenstein`'s value types only need to be serde-serializable to survive a value-preserving round trip. |
 | **[bincode](https://docs.rs/bincode)** | A compact binary serde *format* (not human-readable). Fast and space-efficient; the recommended production format here. |
 | **wire format** | The exact byte layout a serializer emits. Two serializers with different wire formats are mutually unreadable even if they carry the same logical data. |
@@ -42,7 +42,7 @@ by the other.
 | Path | Trait / entry point | Wire payload | Preserves values? | Use when |
 |------|--------------------|--------------|-------------------|----------|
 | **Terms-only** | `DictionarySerializer::serialize` / `deserialize` | a list of terms (`Vec<String>`) | ❌ no — values are dropped | the dictionary is a *set* (`V = ()`), or you only need the keys back |
-| **Value-preserving** | the `*_with_values` methods | a list of `(term, value)` pairs (`Vec<(String, V)>`) | ✅ yes | the dictionary is a *map* ($V \ne ()$) and the values must survive |
+| **Value-preserving** | the `*_with_values` methods | a list of `(term, value)` pairs (`Vec<(String, V)>`) | ✅ yes | the dictionary is a *map* ($`V \ne ()`$) and the values must survive |
 
 The terms-only path is governed by the `DictionarySerializer` trait:
 
@@ -89,7 +89,7 @@ feature except where noted.
 | **JSON** | `JsonSerializer` | `serialization` | ✅ text | ⭐⭐ | Debugging, manual inspection, interop with non-Rust tools. Pretty-printed. |
 | **Plain text** | `PlainTextSerializer` | `serialization` | ✅ text | ⭐⭐⭐ | One term per line; ideal for version control, manual editing, `grep`. |
 | **Protobuf** | `ProtobufSerializer`, `OptimizedProtobufSerializer`, `DatProtobufSerializer`, `SuffixAutomatonProtobufSerializer` | `protobuf` | ❌ binary | ⭐⭐⭐⭐ | Cross-language interchange via a stable `.proto` schema. |
-| **Gzip wrapper** | `GzipSerializer<S>` | `compression` | ❌ binary | ⭐⭐⭐⭐⭐⭐ | Wraps *any* `DictionarySerializer` `S` and gzip-compresses its output ($\approx$40–60% smaller). |
+| **Gzip wrapper** | `GzipSerializer<S>` | `compression` | ❌ binary | ⭐⭐⭐⭐⭐⭐ | Wraps *any* `DictionarySerializer` `S` and gzip-compresses its output ($`\approx`$40–60% smaller). |
 
 ### Bincode — the production default
 

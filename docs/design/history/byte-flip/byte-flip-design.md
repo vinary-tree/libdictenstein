@@ -9,17 +9,17 @@
 > only Phase A/B (the overlay node + `enable_lockfree` + NO-WAL CAS). Blocking defects:
 > - **C1 (CRITICAL):** byte's `insert_cas`/`increment_cas`/`try_increment_cas` (lockfree_cas.rs:112/461/595)
 >   are NO-WAL; byte has ZERO `*_cas_durable`. Routing production writes to them = total loss on reopen.
->   $\Rightarrow$ must build a byte Order-A durable-overlay-write layer first.
+>   $`\Rightarrow`$ must build a byte Order-A durable-overlay-write layer first.
 > - **C2 (CRITICAL):** `persist_to_disk` reads `self.root` (serialize_impl.rs:112) + `term_count`; NO
 >   overlay-capture route-split (char S5-9). First post-reestablish checkpoint persists the EMPTY owned tree
->   + authorizes WAL truncation = total loss. $\Rightarrow$ must build a byte `capture_snapshot_immutable` + route-split.
+>   + authorizes WAL truncation = total loss. $`\Rightarrow`$ must build a byte `capture_snapshot_immutable` + route-split.
 > - **C3 (CRITICAL):** no WAL-retention/commit_seq floor/watermark (0 byte matches). Checkpoint truncates
->   below the overlay frontier. $\Rightarrow$ must port the retaining publisher + floor.
+>   below the overlay frontier. $`\Rightarrow`$ must port the retaining publisher + floor.
 > - **H3 (HIGH):** no regime-aware recovery / `reconcile_lww` / A2 (0 byte matches); dumb in-order replay.
->   Once durable writers emit CommitRank, recovery resurrects orphans. $\Rightarrow$ must thread `rank_regime` +
+>   Once durable writers emit CommitRank, recovery resurrects orphans. $`\Rightarrow`$ must thread `rank_regime` +
 >   `reconcile_lww` through byte's 3 sinks BEFORE the durable writers land.
 > - **C4 (CRITICAL):** byte i64 counters CAN be negative (`increment_bytes`/`fetch_add`/recovery take
->   `delta: i64`); the seam's `v as u64` wraps a negative → `increment_cas` PANICS. $\Rightarrow$ reject negatives on
+>   `delta: i64`); the seam's `v as u64` wraps a negative → `increment_cas` PANICS. $`\Rightarrow`$ reject negatives on
 >   every overlay-write + reestablish path; use `try_increment_cas` (never the panicking `increment_cas`).
 > - **C5/C6 (CRITICAL):** missing write routes (6 `insert_batch*`, bare `remove_prefix`, `fetch_add`, ALL
 >   `SharedARTrie`/`Dictionary`/`MappedDictionary` writers) + missing read routes (the trait impls +
@@ -27,7 +27,7 @@
 >   real byte public surface is the trait impls + `*_bytes` wrappers, NOT char-shaped inherent methods.
 > - **H1/H2 (HIGH):** the owned_* seam needs UN-ROUTED, UNCAPPED enumerators; byte's only enumerators
 >   (`arena_iter.rs:354/497`) get routed in B1 AND cap at 100k (silent reestablish truncation).
-> - **H4 (HIGH):** byte has NO overlay remove primitive $\Rightarrow$ `remove`/`remove_prefix*` MUST reject (not route).
+> - **H4 (HIGH):** byte has NO overlay remove primitive $`\Rightarrow`$ `remove`/`remove_prefix*` MUST reject (not route).
 >
 > Confirmed NON-defects: the `overlay_write_mode` field is serialization-benign (the struct isn't
 > serialized, only `self.root`); the i64=CounterValue TypeId identity is sound (read-back lossless); the 3
@@ -51,7 +51,7 @@
 `LockFreeOverlay<K,V,S>` trait). DATA-LOSS-CRITICAL, IRREVERSIBLE at the write/regime layer.** Inputs:
 `docs/design/byte-flip-reachability-audit.md` (the hazard set), `docs/design/overlay-flip-genericization.md`
 (§5 Step 2), and the char precedent (`docs/design/s5-12-e1-readflip-design.md`). The byte flip = the char
-flip applied via the trait, V $\in$ {(), i64}, plus 3 char-absent hazards.
+flip applied via the trait, V $`\in`$ {(), i64}, plus 3 char-absent hazards.
 
 ## 0. Sequence — reversible foundation, THEN the gated irreversible flip (char's proven path)
 - **Phase B1 (REVERSIBLE):** the byte seam impl + `overlay_write_mode` field + owned readers + public
@@ -64,7 +64,7 @@ flip applied via the trait, V $\in$ {(), i64}, plus 3 char-absent hazards.
 
 ## 1. The seam impl `impl LockFreeOverlay<ByteKey, V, S> for PersistentARTrie<V, S>`
 `type CounterValue = i64` (the byte counter trie is `PersistentARTrie<i64>`). The i64↔u64 conversion lives
-in the publisher/getter seams (byte's overlay primitives speak u64; the counter is $\ge$0, bounded by
+in the publisher/getter seams (byte's overlay primitives speak u64; the counter is $`\ge`$0, bounded by
 LOCKFREE_COUNTER_MAX = i64::MAX, so both directions are lossless):
 - `overlay_publish_counter(units, v: i64)` → `self.increment_cas(units, v as u64)` (no-WAL publisher).
 - `overlay_counter_get(units) -> Option<i64>` → `self.get_lockfree(units).map(|u| u as i64)`.
@@ -131,7 +131,7 @@ at the top of: `merge_from`, `merge_from_batched_with_options`, `merge_from_para
 - B2 gate: + a byte reestablish-survival test (build owned, checkpoint, reopen→reestablish, assert EVERY
   term+value survives) + the create-flip gate tests (create→write→reopen, old-owned-file-stays-owned,
   compact-rejects-under-overlay) + the byte red-team cleared. Then the irreversible commit (diff shown).
-- The reestablish Rocq spec `OverlayReestablishSpec.v` is variant-agnostic $\Rightarrow$ byte inherits the D1 guard
+- The reestablish Rocq spec `OverlayReestablishSpec.v` is variant-agnostic $`\Rightarrow`$ byte inherits the D1 guard
   (a one-line doc note, no new proof).
 
 ## 7. Top risks (for the red-team)
@@ -141,7 +141,7 @@ at the top of: `merge_from`, `merge_from_batched_with_options`, `merge_from_para
    durable file. The compact-rejects test is the guard.
 3. `iter_with_values` mixed-read (§C.2) — must use the value-carrying overlay route, not
    enumerate-then-owned-value. The correspondence test pins it.
-4. The i64↔u64 CounterValue conversion — verify the counter domain is $\ge$0 (LOCKFREE_COUNTER_MAX) so both
+4. The i64↔u64 CounterValue conversion — verify the counter domain is $`\ge`$0 (LOCKFREE_COUNTER_MAX) so both
    directions are lossless; the correspondence test reads back i64 counters.
 5. The write-flip route checklist (§D) — any missed route = silent under-count. Each owned read in a
    write method is a tripwire; the reject-guard/route tests + the correspondence suite catch a miss.

@@ -30,7 +30,7 @@ sequences whose natural unit is a **64-bit word**, not a character:
   concatenated into one sequence.
 
 `PersistentARTrieU64` is the durable Adaptive Radix Trie for exactly these: a
-crash-safe, lock-free, write-ahead-logged $&[u64] \to V$ map where **one trie edge
+crash-safe, lock-free, write-ahead-logged $`&[u64] \to V`$ map where **one trie edge
 carries one whole `u64`**.
 
 ---
@@ -45,13 +45,13 @@ Consider a key of `n` sixty-four-bit words.
 
 | Aspect | Byte-expanded into a `u8` ARTrie | Native `u64` ARTrie |
 |--------|----------------------------------|---------------------|
-| **Edges traversed per lookup** | up to $8 \cdot n$ (one per byte) | `n` (one per word) |
-| **Interior nodes on the spine** | up to $8 \cdot n$ node hops | `n` node hops |
+| **Edges traversed per lookup** | up to $`8 \cdot n`$ (one per byte) | `n` (one per word) |
+| **Interior nodes on the spine** | up to $`8 \cdot n`$ node hops | `n` node hops |
 | **Label comparison** | byte-at-a-time descent | one 64-bit equality test per hop |
 | **Fan-out alphabet** | 256 (byte values) | the set of distinct next-words |
 | **Wasted structure** | 7 "filler" nodes per word for non-branching bytes | none — words are atomic |
 
-Byte expansion turns every key into an $8\times$-longer path and forces the trie to
+Byte expansion turns every key into an $`8\times`$-longer path and forces the trie to
 spend interior nodes resolving *within* a word that never actually branches there.
 Native `u64` labels keep each transition **atomic**: the descent length is the
 number of *words*, the per-hop test is a single machine-word compare, and the

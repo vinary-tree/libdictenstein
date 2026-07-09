@@ -54,11 +54,11 @@ These md files are not `include_str!` doctests, so grep verification is the gate
 | README counts | `67→69` Rocq `.v`, `52→55` TLA⁺ (headline + formal table + module count); props `1,283→1,301`; verified 0 real Admitted/Axiom/Parameter | ☑ | `find … -name '*.v'`=69; `*.tla`=55; props grep=1301 |
 | README math | bare `Rᵤ` → backtick-wrapped `` `Rᵤ` `` | ☑ | — |
 | README doc-map | "Diagram sources (PlantUML)" → "…(PlantUML · D2 · Graphviz · bytefield · gnuplot)" → `docs/diagrams/README.md` | ☑ | — |
-| Diagram #17 durable-write **sequence** (PlantUML) | authored from `durable_write.rs` Order-A header; embedded in README "Order-A protocol" section | ☑ | render clean 1220$\times$933; embed resolves |
+| Diagram #17 durable-write **sequence** (PlantUML) | authored from `durable_write.rs` Order-A header; embedded in README "Order-A protocol" section | ☑ | render clean 1220$`\times`$933; embed resolves |
 | `src/lib.rs` Architecture | new `# Architecture` section + trait diagram embed (raw-GitHub URL, master); intra-doc links use plain code for feature-gated `ARTrie`/`KeyEncoding` | ☑ | `cargo doc --all-features -D warnings` → exit 0 |
-| Diagram #1 trait class diagram (PlantUML) | `traits.svg` — read/mutation/persistent families + assoc-type edges | ☑ | render clean 1841$\times$665 |
+| Diagram #1 trait class diagram (PlantUML) | `traits.svg` — read/mutation/persistent families + assoc-type edges | ☑ | render clean 1841$`\times`$665 |
 | Diagram #4 factory dispatch (PlantUML) | `factory-dispatch.svg`; embedded in user-guide In-Memory section | ☑ | render clean; embed resolves |
-| Persistent file-lifecycle (PlantUML state) | `persistent-lifecycle.svg`; embedded in user-guide Persistent section | ☑ | render clean 839$\times$882; embed resolves |
+| Persistent file-lifecycle (PlantUML state) | `persistent-lifecycle.svg`; embedded in user-guide Persistent section | ☑ | render clean 839$`\times`$882; embed resolves |
 
 **Note**: git remote IS present (`github.com/vinary-tree/libdictenstein`, also in
 Cargo.toml) — the memory "local-only (no git remote)" is stale; raw-GitHub `master`
@@ -71,7 +71,7 @@ rendered + verified all diagrams.
 
 | Item | Action | Status | Verification |
 |------|--------|--------|--------------|
-| Svgbob wired into pipeline | `.bob` branch in `render-diagrams.sh` (+ headless-`DISPLAY` fix for JVM renderers), CI `cargo install svgbob_cli@0.7.6`, README row | ☑ | all `.bob` render 648$\times$7xx |
+| Svgbob wired into pipeline | `.bob` branch in `render-diagrams.sh` (+ headless-`DISPLAY` fix for JVM renderers), CI `cargo install svgbob_cli@0.7.6`, README row | ☑ | all `.bob` render 648$`\times`$7xx |
 | 10 new diagrams | node-header (bytefield, parent) + node-layouts/path-compression/swizzled-ptr/burst-trie (Svgbob) + node-state/swizzled-ptr-states/clone-on-split/dawg-minimization (PlantUML) + scdawg-structure/suffix-links (Graphviz) | ☑ | 19/19 idempotent; 0 render-error markers |
 | Inline DOIs | added across the body of **15** theory files from the README's Crossref-verified list (was ~0 inline) | ☑ | `grep doi.org` = 15 files |
 | Backtick prose math | `O(·)`, `∣q∣`, `Σ`, `≤ 2·∣T∣−1` etc. wrapped in sentences across disk-tries + scdawg + algorithms (fences left as-is) | ☑ | sampled; balanced fences |
@@ -85,13 +85,13 @@ over disjoint files; parent authored the WAL byte layouts + rendered/verified al
 
 | Item | Action | Status | Verification |
 |------|--------|--------|--------------|
-| WAL byte layouts | `wal-header.bob` (64 B header) + `wal-record.bob` (17 B frame + 15 type codes), Svgbob (bytefield can't span rows) — exact offsets from `wal/{header,codec}.rs` | ☑ | render 656$\times$320 / 672$\times$400 |
+| WAL byte layouts | `wal-header.bob` (64 B header) + `wal-record.bob` (17 B frame + 15 type codes), Svgbob (bytefield can't span rows) — exact offsets from `wal/{header,codec}.rs` | ☑ | render 656$`\times`$320 / 672$`\times`$400 |
 | `docs/persistence/wal-format.md` (NEW) | full on-disk codec doc: header/record figures, 15-type table, dual-magic+version tripwire, RankRegime drop-rule, Order-A, recovery, CAS-walk; Mohan DOI | ☑ | 376 lines; embeds resolve |
 | WAL/write/recovery diagrams | `wal-segment-lifecycle`, `rank-regime-replay`, `recovery-flow`, `cas-walk` (PlantUML) | ☑ | render clean |
 | Persistence architecture | `mmap-architecture.md` + `architecture/persistence/README.md` prose; `persistence-stack.d2`, `mmap-vs-iouring.d2`, `checkpoint-flip.puml`, `layering-invariant.dot`; Driscoll+Mohan DOIs | ☑ | embeds resolve; io_uring tables untouched |
 | Eviction | `eviction/README.md` glossary + what/how/why; `buffer-page-lifecycle`, `epoch-reclamation` (sequence), `eviction-pipeline` (PlantUML); corrected stale `core/eviction/` paths + Pressure-vs-Urgency conflation | ☑ | renders clean |
 | Formal-verification | reconciled counts to 69 `.v` / 1,301 props / 55 TLA⁺ / 65 `.cfg` / 43+31 unsafe (0 Admitted/Axiom/Parameter) across 4 files; restructured VERIFICATION_RESULTS change-log into bulleted history (snapshot-vs-live totals labeled); F1–F5 diagrams | ☑ | no contradicting stale counts; snapshot clearly framed |
-| D2 layout fix | added per-file `# d2-layout: elk` directive support (concentric trust-zones need elk, not dagre) | ☑ | unsafe-trust-zones renders 2689$\times$1357 |
+| D2 layout fix | added per-file `# d2-layout: elk` directive support (concentric trust-zones need elk, not dagre) | ☑ | unsafe-trust-zones renders 2689$`\times`$1357 |
 
 **Result**: 37 diagrams total, all idempotent, 0 render-error markers, 0 broken embeds/links.
 ## Phase 5 — New conceptual docs  ☑
@@ -124,14 +124,14 @@ header cites its source ledger + table.
 
 | Chart | Source ledger | Type |
 |-------|---------------|------|
-| persistence-construction-throughput | persistence-enhancements Exp 0 | line, throughput-vs-size $\times$3 backends |
+| persistence-construction-throughput | persistence-enhancements Exp 0 | line, throughput-vs-size $`\times`$3 backends |
 | pernode-recovery-speedup | persistence-enhancements Exp 5 | log-y clustered bars |
 | iouring-vs-mmap-latency | io_uring_migration Phase 3 | clustered bars (p50/p99) |
 | iouring-batch-read | io_uring_migration Phase 3 | bars |
 | loading-strategy-comparison | loading-optimization summary | log-y bars (accept/reject) |
 | loading-open-time-before-after | loading-optimization Exp 1 | log-y clustered bars |
 | lockfree-flip-throughput | lockfree-flip-benchmark | clustered bars (%-gain) |
-| disktrie-durable-throughput | disk-tries/07 snapshot | line $\times$2 series |
+| disktrie-durable-throughput | disk-tries/07 snapshot | line $`\times`$2 series |
 | u64-native-vs-byte-latency | persistent-u64 …2026-06-13 | clustered bars |
 
 - gnuplot pipeline: added `<desc>Produced by GNUPLOT …</desc>` version-stripping for
@@ -152,7 +152,7 @@ holds the `.dat` + `.gp` sources + rendered SVGs.
 | Inbound links | verified: ZERO markdown-link references to moved files existed (only inline-code mentions) — no fixes needed | ☑ | whole-tree link check = 0 |
 | `docs/README.md` enrich | 7 new conceptual docs wired into the map; reading-order diagram embedded | ☑ | links resolve |
 | `docs/algorithms/README.md` | "Related Documentation" links the 5 new sibling docs + abstractions + wal-format | ☑ | no `*_char::`/`../0X` reintroduced |
-| `docs-reading-order.dot` (Graphviz) | colored documentation reading-path graph (4 tracks) | ☑ | renders 3679$\times$676 |
+| `docs-reading-order.dot` (Graphviz) | colored documentation reading-path graph (4 tracks) | ☑ | renders 3679$`\times`$676 |
 
 **Result**: 53 committed artifacts (44 diagrams + 9 plots), all idempotent; ZERO
 broken links across `docs/` + `formal-verification/` + `README.md` + `CHANGELOG.md`.

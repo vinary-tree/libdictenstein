@@ -32,7 +32,7 @@ indexed text, and where?"*. The classic structures for that are:
 The three **persistent** variants give each of these a **durable, crash-safe,
 concurrently-readable** home on disk, under the `persistent-artrie` feature. They
 are the substring counterpart to the persistent ARTrie key→value family: where
-`PersistentARTrie` durably stores $term \to value$, these durably store *a text and
+`PersistentARTrie` durably stores $`term \to value`$, these durably store *a text and
 an index over all of its substrings*.
 
 Typical uses: full-text search over a corpus that must survive process restarts;
@@ -235,14 +235,14 @@ only in the `apply_op`/traversal semantics of the underlying graph.
 | `PersistentScdawg` / `…Char` | symmetric compact DAWG | `contains_substring`, `locations` | `bool` / `Vec<(String, usize)>` |
 
 The deep theory of each graph — construction, suffix links, minimality, the
-$O(\mid pattern\mid )$ substring bound, and the symmetric (bidirectional) extension that
+$`O(\mid pattern\mid )`$ substring bound, and the symmetric (bidirectional) extension that
 makes the SCDAWG special — is in [`../theory/scdawg/`](../theory/scdawg/):
 [suffix automaton](../theory/scdawg/02-suffix-automaton.md),
 [CDAWG](../theory/scdawg/03-cdawg.md), and [SCDAWG](../theory/scdawg/04-scdawg.md).
 
 ### 6.1 Why the persistent SCDAWG is the workhorse
 
-The **SCDAWG** is the most space-efficient of the three ($\approx$ 20–30% fewer states than
+The **SCDAWG** is the most space-efficient of the three ($`\approx`$ 20–30% fewer states than
 a plain suffix automaton) and the only one supporting **left** extension as well as
 **right**. Its on-line symmetric construction is due to
 [Inenaga et al. (2005)](https://doi.org/10.1016/j.dam.2004.04.012), *On-line
@@ -319,7 +319,7 @@ let (index, report) = PersistentSuffixTreeChar::<()>::open_with_recovery("docs.p
 |----------|-----------|-----------|
 | **Reads never block writes** | lock-free, wait-free per traversal | immutable `Arc` snapshot via `ArcSwap::load_full` |
 | **Writes are atomic & linearizable** | all-or-nothing snapshot swap | pointer-identity CAS (`Arc::ptr_eq`), single winner |
-| **Acknowledged $\implies$ durable** | survives crash up to last `Commit` | `Prepare` `fsync`'d before publish; replay needs durable `Commit` |
+| **Acknowledged $`\implies`$ durable** | survives crash up to last `Commit` | `Prepare` `fsync`'d before publish; replay needs durable `Commit` |
 | **Bounded reopen cost** | `O(image) + O(committed tail)` | checkpoint folds ops into a dense image, prunes segments |
 | **Backward-compatible recovery** | old files still open | also replays the historical monolithic WAL format |
 | **One native graph, two encodings** | byte (`u8`) and Unicode (`char`) | each family's unit trait (`PersistentSuffixUnit` / `PersistentSuffixTreeUnit` / `PersistentScdawgUnit`) selects suffix splitting + magic |

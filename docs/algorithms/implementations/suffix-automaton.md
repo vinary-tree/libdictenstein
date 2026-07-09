@@ -21,7 +21,7 @@
 ### Key Advantages
 
 - 🔍 **Substring matching**: Find patterns anywhere, not just at word boundaries
-- 💾 **Space-efficient**: $\le$ 2n-1 states for n characters
+- 💾 **Space-efficient**: $`\le`$ 2n-1 states for n characters
 - ⚡ **Fast construction**: `O(n)` online construction
 - 🔄 **Dynamic updates**: Insert and remove text at runtime
 - 📍 **Position tracking**: Know where matches occur in source text
@@ -124,7 +124,7 @@ Substrings ending at position 5 (all suffixes):
 States in suffix automaton ≈ equivalence classes of endpos sets
 ```
 
-**Minimality**: This grouping ensures $\le$ 2n-1 states for n characters.
+**Minimality**: This grouping ensures $`\le`$ 2n-1 states for n characters.
 
 ### Suffix Links
 
@@ -237,10 +237,10 @@ struct SuffixNode<U: CharUnit, V: DictionaryValue = ()> {
 | Total per state | ~57 bytes | ~57 bytes |
 
 **For text of n characters**:
-- States: $\le$ 2n-1 (typically ~1.5n)
+- States: $`\le`$ 2n-1 (typically ~1.5n)
 - Total memory: ~85n bytes
 
-**Example**: 10,000-character document $\approx$ 850 KB
+**Example**: 10,000-character document $`\approx`$ 850 KB
 
 ## Construction Algorithm
 
@@ -525,7 +525,7 @@ if dict.text_count() > 1000 && dict.needs_compaction() {
 | **Construction** | O(n) | n = text length |
 | **Insert character** | O(1) amortized | Online construction |
 | **Contains (exact)** | O(m) | m = query length |
-| **Fuzzy search** | O(m$\times$d²$\times$b) | d = distance, b = branching |
+| **Fuzzy search** | O(m$`\times`$d²$`\times`$b) | d = distance, b = branching |
 | **Compact** | O(s) | s = number of states |
 
 ### Benchmark Results

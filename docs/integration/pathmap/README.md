@@ -84,7 +84,7 @@ PhoneticNormalizedDictionary<V, D>
 ```
 
 **Key Optimizations:**
-- **Exact match fast path (d=0)**: Direct trie lookup is **100-300$\times$ faster** than automaton traversal
+- **Exact match fast path (d=0)**: Direct trie lookup is **100-300$`\times`$ faster** than automaton traversal
 - **FuzzyMultiMap**: O(k log n) fuzzy queries via Levenshtein automaton pruning
 - **Thread-local NormalizeBuffers (H3)**: Reuses buffers to reduce allocations
 - **O(1) vowel classification**: Bitmask lookup instead of linear array search
@@ -180,9 +180,9 @@ src/phonetic/
 
 | Query Type | Complexity | Notes |
 |------------|------------|-------|
-| Exact (d=0) | O(k) | Direct trie lookup, 100-300$\times$ faster |
-| Fuzzy (d$\ge$1) | O(k log n) | Levenshtein automaton pruning |
-| Regex | O(n $\times$ k) | Scans normalized forms |
+| Exact (d=0) | O(k) | Direct trie lookup, 100-300$`\times`$ faster |
+| Fuzzy (d$`\ge`$1) | O(k log n) | Levenshtein automaton pruning |
+| Regex | O(n $`\times`$ k) | Scans normalized forms |
 
 Where k = query length, n = dictionary size.
 
@@ -823,7 +823,7 @@ Uncompressed trie:    Prefix-compressed PathMap:
 |-----------|------------|-----------------|
 | Exact lookup | O(k) | <1 μs |
 | Prefix scan | O(k + m) | <10 μs |
-| Fuzzy query (d=2) | O(k $\times$ 3^d) | <100 μs |
+| Fuzzy query (d=2) | O(k $`\times`$ 3^d) | <100 μs |
 
 Where:
 - k = key length
@@ -997,7 +997,7 @@ src/wfst/                 # PROPOSED - Future Implementation
 |---------|----------------------------------------|---------------|
 | Location | `src/dictionary/phonetic_normalized/` | `src/wfst/` |
 | Weights | Levenshtein distance (integer) | Arbitrary semiring |
-| Composition | FuzzyMultiMap with automaton pruning | General WFST $\times$ WFST |
+| Composition | FuzzyMultiMap with automaton pruning | General WFST $`\times`$ WFST |
 | Primary Type | `PhoneticNormalizedDictionary` | `WeightedTransducer` |
 
 See **WFST Composition** (MORK project) for the full proposal.

@@ -16,10 +16,10 @@ boundaries: the first/never-checkpointed window, the multi-regime archive, and c
 persisted).** Regime must be a DURABLE, per-record (or per-segment-header) INTRINSIC property.
 
 **A#1 [CRITICAL] — first-window regime UNDEFINED.** A v3 overlay trie that wrote ranked records but NEVER
-checkpointed has no bounding Checkpoint $\Rightarrow$ the per-checkpoint stamp (S#1) has nothing to read. The `else`
+checkpointed has no bounding Checkpoint $`\Rightarrow`$ the per-checkpoint stamp (S#1) has nothing to read. The `else`
 inference (`any CommitRank DATA_LSN > checkpoint_lsn ⇒ Overlay`) FAILS for a window with ZERO ranks (e.g.
-increment-only — which emits no rank today, A#8; or all-writes-mid-two-append-at-crash) $\Rightarrow$ inference yields
-`Owned` $\Rightarrow$ KEEPS overlay orphans (silent resurrection of never-acked first-window writes). S#1 relocates the
+increment-only — which emits no rank today, A#8; or all-writes-mid-two-append-at-crash) $`\Rightarrow`$ inference yields
+`Owned` $`\Rightarrow`$ KEEPS overlay orphans (silent resurrection of never-acked first-window writes). S#1 relocates the
 gap to "no checkpoint exists yet," does not close it. Cite `mmap_ctor.rs:301,312,320`, `d2.5 §1.3:155-157`.
 
 **A#2 [CRITICAL] — FALSE PREMISE: the base `redo_phase`/`RecoveryManager` NEVER calls `reconcile_lww`.**
@@ -32,9 +32,9 @@ overlay-regime file (and vice-versa) — they recover different trie types, so u
 
 **A#3 [CRITICAL, highest-value] — the multi-regime archive is NOT handled; union-reconcile applies ONE regime
 to ALL segments.** Across an Owned→Overlay flip: segment 1 = Owned (unranked, must KEEP), segment 5 = Overlay
-(orphans must DROP). With `checkpoint_lsn=0` the union's Overlay ranks $\Rightarrow$ inference returns Overlay $\Rightarrow$ the
-v3-drop applies to ALL segments $\Rightarrow$ **every unranked Owned record in segment 1 DROPPED (total loss of pre-flip
-owned history)**; inverting $\Rightarrow$ resurrects segment-5 orphans. The per-checkpoint stamp doesn't save it (union
+(orphans must DROP). With `checkpoint_lsn=0` the union's Overlay ranks $`\Rightarrow`$ inference returns Overlay $`\Rightarrow`$ the
+v3-drop applies to ALL segments $`\Rightarrow`$ **every unranked Owned record in segment 1 DROPPED (total loss of pre-flip
+owned history)**; inverting $`\Rightarrow`$ resurrects segment-5 orphans. The per-checkpoint stamp doesn't save it (union
 collapses windows into one regime decision). Cite `d2.5 §1.4:201-202`, `§1.2:106`.
 
 **A#4 [CRITICAL] — base owned checkpoint writes NO regime stamp.** `WalRecord::Checkpoint` (`codec.rs:120,280,449`)
@@ -43,7 +43,7 @@ has only `{checkpoint_lsn, timestamp}`. S#1's `regime: u8` is unimplemented AND 
 
 **A#5 [HIGH] — REGIME-CHECKPOINT assert uses the WRONG domain.** The proposed `next_lsn-1 == checkpoint_lsn`
 assert in `set_overlay_write_mode` assumes the OWNED domain, but the overlay checkpoint's `checkpoint_lsn` is a
-WATERMARK $\le$ `next_lsn-1` (the overlay RETAINS un-reclaimed tail > watermark, `persist.rs:579`). So the assert
+WATERMARK $`\le`$ `next_lsn-1` (the overlay RETAINS un-reclaimed tail > watermark, `persist.rs:579`). So the assert
 FIRES on a legitimate Overlay→Owned flip (or, relaxed, lets a gap through). §1.3 only reasoned Owned→Overlay.
 Cite `persist.rs:153,568,579`.
 
@@ -57,10 +57,10 @@ whole tx/document atomically** (`recovery.rs:343-346` expands to N same-LSN ops)
 
 **A#8 [HIGH, R3 live gap] — `try_increment_cas_durable` emits NO CommitRank today** (`lockfree_cas.rs` 6 rank
 sites are insert/remove/insert-value/upsert; increment absent). So if the v3-drop ships ahead of the increment
-rank (DG ordering), every acked increment is unranked $\Rightarrow$ DROPPED. D2.5 R3/DG1 adds it — sequencing must hold.
+rank (DG ordering), every acked increment is unranked $`\Rightarrow`$ DROPPED. D2.5 R3/DG1 adds it — sequencing must hold.
 
 **A#9–A#11 [MED] —** S#3 contiguity check undefined for an empty/zero-record segment (`writer.rs:415`); the
-archive inference is degenerate at `checkpoint_lsn=0` (`DATA_LSN > 0` always true $\Rightarrow$ always Overlay — the
+archive inference is degenerate at `checkpoint_lsn=0` (`DATA_LSN > 0` always true $`\Rightarrow`$ always Overlay — the
 mechanism behind A#3); the clean forward Owned→Overlay crash case IS sound (documents the boundary).
 
 **Confirmation vs §8 hardenings: S#1 BROKEN (no checkpoint in first window; only char-wired; collapsed by archive
@@ -72,7 +72,7 @@ union), S#2 no-op for the archive (cp=0), S#3 incomplete (empty-segment).**
    each archive segment's header carries its own regime. Closes A#1 (first window has a header), A#6 (durable
    across reopen), A#4 (header not a separate Checkpoint stamp).
 2. **A mode flip FORCES a new WAL file** (checkpoint+rotate the old, create new with the new regime in its
-   header). Replaces the wrong-domain REGIME-CHECKPOINT assert (A#5) with "flip $\Rightarrow$ new file" — cleaner.
+   header). Replaces the wrong-domain REGIME-CHECKPOINT assert (A#5) with "flip $`\Rightarrow`$ new file" — cleaner.
 3. **Recovery applies the drop rule PER-RECORD using that record's SEGMENT-header regime, with a GLOBAL rank map
    (built across all segments) for cross-segment rank visibility.** Closes A#3 (multi-regime archive: each
    segment keeps its own regime), A#10 (no cp=0 inference).
@@ -88,21 +88,21 @@ union), S#2 no-op for the archive (cp=0), S#3 incomplete (empty-segment).**
 `reconcile_lww` (`recovery.rs:253-298`) builds the rank map (Pass 1), then expands EVERY in-scope record,
 stamps each with `generation_of(lsn)=rank.unwrap_or(lsn)`, pushes ALL to `stamped`, STABLE-sorts by
 `(generation,lsn)`, and returns ALL (`:287-297`). **NO per-term collapse.** Increments are all emitted and the
-applier accumulates them; LWW for membership/value is EMERGENT from apply-all-in-order. $\Rightarrow$ **R1a (increments-sum)
+applier accumulates them; LWW for membership/value is EMERGENT from apply-all-in-order. $`\Rightarrow`$ **R1a (increments-sum)
 is ALREADY satisfied; D2.5 §1.1's "reset-point applier" is a fiction — the correct statement is simply
 "apply all KEPT records in (commit_seq,lsn) order"; the drop rule only FILTERS which are kept.** This collapses
 R1a to a description fix + the filter.
 
 **B#1c-residual [CRITICAL, PRE-EXISTING] — `result==0` sentinel collision.** `recovered_operations_from_record`
-(`:347-354`) emits $BatchIncrement \to Increment{result:0}$ (delta/accumulate); a non-batch `Increment` carries
-`result:new_value` (absolute). A signed delta landing a counter at 0 emits `Increment{delta,result:0}` $\Rightarrow$ applier
-(`mutation_core.rs:326`/`persistent_artrie/mutation_core.rs:405`) hits the `result==0` ACCUMULATE arm $\Rightarrow$ an
-absolute-0 is misclassified as a delta $\Rightarrow$ counter divergence. Pre-existing; D2.6 must fix the encoding (explicit
+(`:347-354`) emits $`BatchIncrement \to Increment{result:0}`$ (delta/accumulate); a non-batch `Increment` carries
+`result:new_value` (absolute). A signed delta landing a counter at 0 emits `Increment{delta,result:0}` $`\Rightarrow`$ applier
+(`mutation_core.rs:326`/`persistent_artrie/mutation_core.rs:405`) hits the `result==0` ACCUMULATE arm $`\Rightarrow`$ an
+absolute-0 is misclassified as a delta $`\Rightarrow`$ counter divergence. Pre-existing; D2.6 must fix the encoding (explicit
 is_absolute flag / `Option<i64>` result, not the 0-sentinel).
 
 **B#5 [CRITICAL — confirms C#5a] DG1 crash-window REAL.** DG1 ships single-LP insert + claim-commit_seq +
 increment-rank at VERSION=2 with the OLD ungated reconcile; an unranked Insert-orphan (data@`:329` before CAS@`:367`,
-crash between) sorts at `generation_of=lsn` (LARGE) $\Rightarrow$ WINS $\Rightarrow$ resurrects a removed term. DG1's "still-v2 reader
+crash between) sorts at `generation_of=lsn` (LARGE) $`\Rightarrow`$ WINS $`\Rightarrow`$ resurrects a removed term. DG1's "still-v2 reader
 works" holds only for RANKED records. **Fix: the producer change + the gated reader + header bump must be ONE
 ATOMIC GATE** (a v3 record can't exist before its gating reader). B#3a reinforces: the CommitRank.generation
 carries `root.version()` today (`:363` etc.); repurposing to a global commit_seq is an 8-site producer rewrite,
@@ -116,16 +116,16 @@ the §3 `append_commit_rank(lsn,key,generation)` won't compile (`generation` out
 
 **B#2a [HIGH] floor-carry is MANDATORY, not optional.** The OWNED checkpoint TRUNCATES/rotates the WAL
 (`persist.rs:170`→`writer.rs:458` fresh `WalHeader::new()` drops the floor), so a "recompute the map from the WAL
-scan" fallback (S#4) UNDER-computes (the reclaimed ranks are now in an archive, gone from the active WAL). $\Rightarrow$ the
+scan" fallback (S#4) UNDER-computes (the reclaimed ranks are now in an archive, gone from the active WAL). $`\Rightarrow`$ the
 header-floor-carry across rotate/truncate (`writer.rs:458/:353`) is the ONLY thing preventing floor regression —
 it is load-bearing, not a nicety. **B#2b [MED-HIGH]** Overlay→checkpoint→reopen-Owned: the overlay RETAINS its
-WAL (`persist.rs:599`), so overlay ranks are still active at the next owned checkpoint $\Rightarrow$ `range(..=next_lsn)`
-yields a non-zero floor from overlay seqs the owned image LACKS $\Rightarrow$ the B#4c domain-mismatch RESURFACES at the
+WAL (`persist.rs:599`), so overlay ranks are still active at the next owned checkpoint $`\Rightarrow`$ `range(..=next_lsn)`
+yields a non-zero floor from overlay seqs the owned image LACKS $`\Rightarrow`$ the B#4c domain-mismatch RESURFACES at the
 switch-back seam. **B#2c [MED]** the `commit_seq_by_data_lsn` map grows unbounded between rare/absent checkpoints
 (overlay retains WAL; never-checkpoint soak) — memory unbounded.
 
 **B#4-residuals [MED] —** `migrate_v2_to_v3` is VAPORWARE (cited as the one-way bridge / C#6 answer; `rg` finds 0
-occurrences) $\Rightarrow$ the rollback story rests on a non-existent tool. `IncrementalRecovery` (`recovery.rs:932-969`) is
+occurrences) $`\Rightarrow`$ the rollback story rests on a non-existent tool. `IncrementalRecovery` (`recovery.rs:932-969`) is
 fully ungated (no rank, no sort, no drop) and §8 never re-attacks it — the most-exposed never-checkpoint-v3 path.
 
 **B verified SOUND:** S#7 (group-commit rank-sync — Err-not-ack), S#5 (increment+remove narrowly), S#4 (overlay-
@@ -133,19 +133,19 @@ retain only), #1d (V=() degenerates — increment producers are u64-monomorph-on
 
 ---
 
-## SYNTHESIS → D2.6 (materially SIMPLER; the regime cluster collapses to "regime $\equiv$ version")
+## SYNTHESIS → D2.6 (materially SIMPLER; the regime cluster collapses to "regime $`\equiv`$ version")
 
-The (1a) write-path spine is PROVEN (untouched). The reconcile is ALREADY apply-all-in-order (R1a $\approx$ no-op). The
+The (1a) write-path spine is PROVEN (untouched). The reconcile is ALREADY apply-all-in-order (R1a $`\approx`$ no-op). The
 two cycle-3 mechanisms that broke (inferred regime + split DG) both simplify:
 
-**D1 — regime $\equiv$ WAL VERSION (collapses A's entire cluster).** A v3 WAL is PURE overlay (all confirmed ops ranked);
+**D1 — regime $`\equiv`$ WAL VERSION (collapses A's entire cluster).** A v3 WAL is PURE overlay (all confirmed ops ranked);
 v1/v2 is owned/legacy (unranked-norm). **No mixed v3 WAL** — the flip creates a FRESH v3 WAL, the owned path never
-writes v3 (enforced by the R5 `WalWriter::open` version guard), so v3 $\iff$ overlay-regime. The drop is purely
-version-gated: v3-unranked $\Rightarrow$ DROP (orphan), v1/v2-unranked $\Rightarrow$ KEEP@lsn (legacy). NO regime field, NO per-window
+writes v3 (enforced by the R5 `WalWriter::open` version guard), so v3 $`\iff`$ overlay-regime. The drop is purely
+version-gated: v3-unranked $`\Rightarrow`$ DROP (orphan), v1/v2-unranked $`\Rightarrow`$ KEEP@lsn (legacy). NO regime field, NO per-window
 inference (closes A#1 first-window, A#6 cross-restart). **Archive: drop PER-SEGMENT by that segment's header
 VERSION** (v2 segments keep, v3 segments drop), one global rank map for cross-segment visibility (closes A#3
 multi-regime archive). Base codebase recovers owned (v2) files in-order, unchanged; the version guard prevents
-cross-opening (closes A#2 — don't force base through reconcile). Floor lives only in v3 files $\Rightarrow$ one domain $\Rightarrow$
+cross-opening (closes A#2 — don't force base through reconcile). Floor lives only in v3 files $`\Rightarrow`$ one domain $`\Rightarrow`$
 B#2b switch-back domain-mismatch VANISHES (owned=v2 file, overlay=v3 file, separate).
 
 **D2 — reconcile: keep apply-all-in-(commit_seq,lsn)-order; ADD the version-gated drop FILTER** (R1b). No
@@ -164,5 +164,5 @@ domain; bound the `commit_seq_by_data_lsn` map (B#2c — e.g. cap + fall back to
 
 This is SIMPLER than D2.5 (no regime field/inference, no per-op-merge coder, reconcile mostly as-is). The (1a)
 spine + R3 ack + R5 chokepoint + R6 tx + R7 errata carry from D2/D2.5. Next: a Plan agent produces D2.6 with these
-6 decisions pre-made (filling in mechanics, not re-deriving), then ONE final narrow red-team (regime$\equiv$version +
+6 decisions pre-made (filling in mechanics, not re-deriving), then ONE final narrow red-team (regime$`\equiv`$version +
 atomic-gate + result-sentinel), then foreground implementation.

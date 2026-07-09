@@ -13,8 +13,8 @@ paths, and why both are correct with **zero `unsafe`**.
 | Term | Definition |
 |------|-----------|
 | **immutable / persistent (data structure)** | A structure whose nodes are never mutated after publication; an update produces a *new* version that shares unchanged subtrees with the old one (Driscoll et al. 1989). "Persistent" here is the data-structure sense, distinct from "persistent" = on-disk. |
-| **path copying** | The technique that realizes persistence: to change a leaf, copy just the root-to-leaf spine ($O(m)$ nodes for a key of length $m$) and share everything else by pointer. |
-| **CAS** | *Compare-And-Swap* — atomically replace $x_{\text{old}}$ with $x_{\text{new}}$ only if the cell still holds $x_{\text{old}}$. |
+| **path copying** | The technique that realizes persistence: to change a leaf, copy just the root-to-leaf spine ($`O(m)`$ nodes for a key of length $`m`$) and share everything else by pointer. |
+| **CAS** | *Compare-And-Swap* — atomically replace $`x_{\text{old}}`$ with $`x_{\text{new}}`$ only if the cell still holds $`x_{\text{old}}`$. |
 | **arc-swap** | `arc_swap::ArcSwapOption<T>` — a genuinely-atomic, lock-free cell holding an `Option<Arc<T>>`; readers `load` without a lock, writers replace by CAS, and reclamation is hazard-protected. |
 | **fault-in** | Loading an evicted, on-disk child back into memory on access. |
 
@@ -129,8 +129,8 @@ cannot be re-published — is in
 
 | Property | Statement |
 |----------|-----------|
-| Insert allocation | $O(m)$ new node versions for a key of length $m$; all other subtrees shared by `Arc`. |
-| Read | $O(m)$ pointer chases on an immutable snapshot; wait-free, lock-free, no allocation. |
+| Insert allocation | $`O(m)`$ new node versions for a key of length $`m`$; all other subtrees shared by `Arc`. |
+| Read | $`O(m)`$ pointer chases on an immutable snapshot; wait-free, lock-free, no allocation. |
 | Reclamation | `Arc` refcount; a version is freed when its last reader drops it. No `unsafe`, no epoch needed *for correctness*. |
 | Linearizability | the winning root CAS is the single linearization point; proved in `LockFreeARTrieLinearizability.tla` and Loom. |
 

@@ -2,7 +2,7 @@
 
 **Repo:** `/home/dylon/Workspace/f1r3fly.io/libdictenstein` · 2026-06-06 · supersedes V8
 (`tool-results/toolu_01GKFczksRv4QueaqK35mXKS.json`) per the owner's
-$plan \to red-team \to refine \to repeat-until-converge \to final-red-team$ instruction.
+$`plan \to red-team \to refine \to repeat-until-converge \to final-red-team`$ instruction.
 
 This document records **red-team round 1** (4 adversarial agents) and the **V8→V9 refinements** that
 answer every finding. The headline change: V8's carve-out **category 2 ("multi-key fold into ONE
@@ -19,8 +19,8 @@ already-phantom-safe `compare_and_swap_cas_durable` primitive**).
 |---|---|---|---|
 | A1 | increment trait removal (cat 1) | **SAFE** — zero generic/`dyn`/Shared/downstream callers of `.increment()`; `ARTrie` is intentionally not object-safe (`artrie_trait.rs:717`); `fetch_add` is inherent-only; sibling uses only `ARTrie::create` | framing fixes only |
 | A2 | multi-key overlay fold (cat 2) | **REFUTED — 3 BLOCKERS** — `BatchInsert` can't encode removals/increments (resurrects deleted terms on reopen); one generation for N terms is outside the TLA envelope (GAP_LEDGER #88; `CommitRank` carries ONE term); merge-via-Upsert drops concurrent writes. **Contradicts `f0-hack-fixes.md` §1.1.** | BLOCKER |
-| A3 | F4 lock collapse (deadlock + audit) | **SOUND** — graph $CK\to OR$, $CK\to EC$, $OR\to EC$, EC leaf = DAG, acyclic; CK at exactly 2 sites, no reentrancy; 8-field audit COMPLETE (per-variant **union**: byte=5, char=7) | 2 gaps (below) |
-| A4 | F2 activation + triage | **PARTLY REFUTED** — real feature-on failures = **124, not 246**; **$\ge$24 orphans** outside the 5 buckets, incl. a real semantic bug (`insert_with_value` insert-once vs upsert); `get()` confirmed trait-free | BLOCKER (orphans) |
+| A3 | F4 lock collapse (deadlock + audit) | **SOUND** — graph $`CK\to OR`$, $`CK\to EC`$, $`OR\to EC`$, EC leaf = DAG, acyclic; CK at exactly 2 sites, no reentrancy; 8-field audit COMPLETE (per-variant **union**: byte=5, char=7) | 2 gaps (below) |
+| A4 | F2 activation + triage | **PARTLY REFUTED** — real feature-on failures = **124, not 246**; **$`\ge`$24 orphans** outside the 5 buckets, incl. a real semantic bug (`insert_with_value` insert-once vs upsert); `get()` confirmed trait-free | BLOCKER (orphans) |
 
 Full agent transcripts: this session's tool results (agents `a4b54fb06…`, `a6b9ac561…`, `a8bab96b4…`,
 `a1aa89e89…`). Empirical artifacts under `docs/benchmarks/redteam-f2-*.txt`.
@@ -29,9 +29,9 @@ Full agent transcripts: this session's tool results (agents `a4b54fb06…`, `a6b
 The working tree (indexed 2026-06-06) is **far ahead of `f0-hack-fixes.md` (2026-06-02)**. Already
 present and proven:
 - `compare_and_swap_cas_durable_default` (`overlay/durable_write.rs:461-529`) — **and its
-  append-before-failed-CAS phantom hole is ALREADY closed**: mismatch $\Rightarrow$ `Ok(false)` no WAL
-  (`:495-498`); match $\Rightarrow$ append `Upsert{new}` durable $\Rightarrow$ publish with per-iteration `expected`-recheck
-  $\Rightarrow$ **on recheck-miss `mark_committed_burned(lsn)` (NEVER ranks)** (`:524-527`). Unranked records are
+  append-before-failed-CAS phantom hole is ALREADY closed**: mismatch $`\Rightarrow`$ `Ok(false)` no WAL
+  (`:495-498`); match $`\Rightarrow`$ append `Upsert{new}` durable $`\Rightarrow`$ publish with per-iteration `expected`-recheck
+  $`\Rightarrow`$ **on recheck-miss `mark_committed_burned(lsn)` (NEVER ranks)** (`:524-527`). Unranked records are
   **dropped on Overlay reopen** (`recovery.rs:332` `RankRegime::Overlay => continue`, per-segment at
   `:265-284`). **"burn = unranked = dropped" is the mechanism that makes conditional/recomputed value
   writes phantom-safe.**
@@ -41,7 +41,7 @@ present and proven:
 - TLA models: `LockFreeOverlayDurableReplay.tla`(+`_Unsafe`), `LockFreeOverlayRemoveCas.tla`(+`_Unsafe`),
   `OverlayEvictionCas.tla`(+`_Unsafe`), `LockFreeCounterMergeAtomicity.tla`, `LockFreeIndexedOverlay*`.
 
-$\Rightarrow$ **C2 is mostly "wire the already-built primitives into the rejecting call sites," not "design a new
+$`\Rightarrow`$ **C2 is mostly "wire the already-built primitives into the rejecting call sites," not "design a new
 batch protocol."**
 
 ---
@@ -76,17 +76,17 @@ reusing proven primitives) + the `insert_with_value` upsert fix + a minimal merg
 `BatchInsert` fold, no batch-rank codec variant, no "one generation for N", zero on-disk/codec change.**
 
 ### 2.0 `insert_with_value` upsert bug (A4 BLOCKER) — fix FIRST
-Owned `insert_with_value` **overwrites** on duplicate (`mutation_core.rs:151-154`: already-final $\Rightarrow$
+Owned `insert_with_value` **overwrites** on duplicate (`mutation_core.rs:151-154`: already-final $`\Rightarrow`$
 `node.value = Some(value); Ok(false)`), matching `upsert`, the map laws (`dictionary_law_correspondence`),
 and `test_value_update_persistence`. The overlay routes to `insert_cas_with_value_durable_default`
-(**insert-once**) in BOTH char (`mutation_api.rs:72`) and byte (`mutation_api.rs:62`) $\Rightarrow$ stale values via
-`get_value()` $\Rightarrow$ owned↔overlay divergence. **Fix: route overlay `insert_with_value` →
+(**insert-once**) in BOTH char (`mutation_api.rs:72`) and byte (`mutation_api.rs:62`) $`\Rightarrow`$ stale values via
+`get_value()` $`\Rightarrow`$ owned↔overlay divergence. **Fix: route overlay `insert_with_value` →
 `upsert_cas_durable_default`** (overwrite), both variants. Correct the dedicated test
 (`persistent_arbitrary_v_overlay.rs:110-119`) which currently asserts the buggy insert-once contract.
 
 ### 2.1 batch (f0-hack-fixes Fix A) — N per-op records
 `insert_batch` + **`insert_batch_bytes` (currently has NO overlay route — latent F5 data-loss gap)** →
-loop per entry: membership $\Rightarrow$ `insert_cas_durable`; valued $\Rightarrow$ **`upsert_cas_durable`** (match §2.0). Count
+loop per entry: membership $`\Rightarrow`$ `insert_cas_durable`; valued $`\Rightarrow`$ **`upsert_cas_durable`** (match §2.0). Count
 `Ok(true)`; first `Err` stops and returns the count so far (the failed entry's record is durable, replays).
 Per-op durable, **not batch-atomic** (matches owned `insert_batch`). `_chars/_sorted/_grouped` inherit.
 
@@ -107,7 +107,7 @@ The atomic primitive `get_or_insert_durable_default` already exists. Verify the 
 ### 2.4 compare_and_swap — ALREADY DONE; verify + formalize
 Implemented + phantom-safe (§0.1). Action: **confirm** the burned-record drop is covered by
 `LockFreeOverlayDurableReplay.tla`; add an explicit `LockFreeOverlayValueCas.tla` +
-`NoPhantomConditionalWrite` + `_Unsafe.cfg` (negative control: NOT burning $\Rightarrow$ phantom write appears) so
+`NoPhantomConditionalWrite` + `_Unsafe.cfg` (negative control: NOT burning $`\Rightarrow`$ phantom write appears) so
 CAS+merge are formally pinned (owner: "formal verification of Phase F + G5"; no-deferral).
 
 ### 2.5 merge_from / merge_replace / parallel_merge (A2 BLOCKER-3) — per-key CAS-retry-loop
@@ -132,8 +132,8 @@ fn merge_value_cas_durable(&self, key, other_val, merge_fn) -> Result<()> {
   fn; **parallel** variants resolve `merge_fn` in parallel (rayon, disjoint key partitions — A2 TASK H:
   resolve-only parallelism confirmed race-free) then funnel each key through `merge_value_cas_durable`
   (per-key atomic; **not batch-atomic**, matches owned).
-- **Crash-safety:** every lost attempt's `Upsert` is unranked $\Rightarrow$ dropped on Overlay reopen $\Rightarrow$ no phantom
-  merge. The winning attempt is ranked $\Rightarrow$ survives. Same envelope as CAS (§2.4 TLA covers it).
+- **Crash-safety:** every lost attempt's `Upsert` is unranked $`\Rightarrow`$ dropped on Overlay reopen $`\Rightarrow`$ no phantom
+  merge. The winning attempt is ranked $`\Rightarrow`$ survives. Same envelope as CAS (§2.4 TLA covers it).
 - **Signature stays `&mut self`** for now (works: `&mut self` can call the `&self`-CAS internally) — A4's
   "C2 depends on F4" is **over-stated**; routing the body needs no `&self` conversion. F4 later collapses
   the signature.
@@ -141,7 +141,7 @@ fn merge_value_cas_durable(&self, key, other_val, merge_fn) -> Result<()> {
 ### 2.6 The per-op semantics decision (explicit, not a deferral)
 doc-tx/batch/merge on the overlay are **per-op durable, not all-or-nothing crash-atomic** — because
 **that is exactly what the owned path delivers** (`reconcile_lww` ignores tx brackets). This achieves the
-Phase-F goal (overlay $\equiv$ owned). All-or-nothing (tx-i) would make the overlay *better than* owned and is a
+Phase-F goal (overlay $`\equiv`$ owned). All-or-nothing (tx-i) would make the overlay *better than* owned and is a
 separate task. **Surface to owner; do not bury.**
 
 ---
@@ -156,7 +156,7 @@ trait-surface change.
 
 ## 4. F2 activation — the REAL 124 failures, 6 remediation buckets (A4)
 Real: `2618 run, 2494 passed, 124 failed, 3 skipped` (build compiles clean feature-on). The 5 V8 buckets
-miss $\ge$24 orphans. **Six** remediation categories:
+miss $`\ge`$24 orphans. **Six** remediation categories:
 1. **eligibility/flip asserts** (8) → cfg-gate / invert assertion.
 2. **increment carve-out** (13) → retype to `Counter` handles (§1).
 3. **doc-tx + merge carve-out** (16+9) → succeed via §2.2/§2.5 (flip assert `InvalidOperation`→success).
@@ -182,7 +182,7 @@ than "feature into default set." This is the **F2-default-on irreversible flip (
 ---
 
 ## 5. F4 — lock collapse (A3: SOUND; 2 gaps to close)
-Graph $CK\to OR$, $CK\to EC$, $OR\to EC$, EC leaf — **acyclic**, CK at exactly 2 sites, no reentrancy. Field audit
+Graph $`CK\to OR`$, $`CK\to EC`$, $`OR\to EC`$, EC leaf — **acyclic**, CK at exactly 2 sites, no reentrancy. Field audit
 COMPLETE as a **per-variant union**: **byte = 5** (`root`(OR), `eviction_coordinator`(EC),
 `overlay_write_mode`(AtomicU8), `durability_policy`, `dirty_prefixes`); **char = 7** (`root`(OR),
 `eviction_coordinator`(EC), `overlay_write_mode`, `durability_policy`, `memory_monitor`,
@@ -199,7 +199,7 @@ wrap does NOT auto-preserve it.
 **GAP 2 (MAJOR):** the 3 sister subsystems also `join()` a thread in `Drop`; their `disable_*`
 (`memory_monitor` `observability.rs:224`, `group_commit` `:154`, `epoch_checkpointing` `:103`) need the
 **same drop-before-join temporary**. Critical for `memory_monitor`: its **user-supplied callback can
-re-enter the trie** (`force_eviction` → OR/EC) $\Rightarrow$ holding the field mutex across the join is a real
+re-enter the trie** (`force_eviction` → OR/EC) $`\Rightarrow`$ holding the field mutex across the join is a real
 cross-subsystem deadlock.
 
 Plus the existing F4 mechanics (V8 §6): `&mut self`→`&self` ripple, ~266 `.read()/.write()` shared-handle
@@ -224,7 +224,7 @@ debug-assert fix. **IRREVERSIBLE — owner GO #2.** No new unsafe.
 ## 7. Formal-verification obligations (owner: "formal verification of Phase F + G5")
 | Obligation | Model | New? | Phase |
 |---|---|---|---|
-| conditional/recomputed value write (CAS + merge) phantom-safety | `LockFreeOverlayValueCas.tla` + `NoPhantomConditionalWrite` + `_Unsafe` (don't-burn $\Rightarrow$ phantom) | **NEW** | §2.4/2.5 |
+| conditional/recomputed value write (CAS + merge) phantom-safety | `LockFreeOverlayValueCas.tla` + `NoPhantomConditionalWrite` + `_Unsafe` (don't-burn $`\Rightarrow`$ phantom) | **NEW** | §2.4/2.5 |
 | per-op batch/doc-tx replay ordering | `LockFreeOverlayDurableReplay.tla` (existing) + a deterministic `batch_overlay_replay_orders_by_commit_rank` regression | existing | §2.1/2.2 |
 | lock-collapse no-lost-write (no writer-exclusion) | `LockFreeDurableCheckpoint.tla` (existing; already no-writer-exclusion) — re-run as regression | existing | F4 |
 | concurrent-checkpoint serialization (CK) | `ConcurrentCheckpointSerialization.tla` (committed F3) — re-run + real-disk 2-checkpoint+reopen test | existing | F4 |
@@ -232,7 +232,7 @@ debug-assert fix. **IRREVERSIBLE — owner GO #2.** No new unsafe.
 | compaction WAL bound | `synced_frontier ≤ watermark` assert + post-rename-retain disk test | existing reasoning | F6 |
 Each phase gate: full suite green + `scripts/verify-formal-correspondence.sh` exit 0 (SANY + TLC +
 `_Unsafe` negative controls MUST fire) + `verify-unsafe-boundary-inventory.sh` exit 0 + 0 new unsafe.
-TLC under `systemd-run … MemoryMax`; loom $\le$3 threads/2 keys; disk tests real-disk (never tmpfs).
+TLC under `systemd-run … MemoryMax`; loom $`\le`$3 threads/2 keys; disk tests real-disk (never tmpfs).
 
 ---
 
@@ -251,7 +251,7 @@ TLC under `systemd-run … MemoryMax`; loom $\le$3 threads/2 keys; disk tests re
 
 Each irreversible flip = isolated commit behind its own owner GO, after a soak. **C1 before F4** is
 defensible (specialize before the collapse moves methods) but the V8 "&mut→&self ripple" justification is
-imprecise (increment is already `&self`; the ripple is F4's). The only true cross-dep is **F2 bucket 4 $\vdash$
+imprecise (increment is already `&self`; the ripple is F4's). The only true cross-dep is **F2 bucket 4 $`\vdash`$
 F6**.
 
 ---
@@ -300,7 +300,7 @@ gaps + one genuinely-new concern (merge termination). Convergence trajectory: ro
   merge-vs-merge livelock). merge‖{insert,increment,upsert,remove} stays obstruction-free but practically
   terminating (those ops are quick; the CAS wins between them) — document the residual: a bulk merge under
   *sustained single-key external writes* is obstruction-free (unrealistic workload; the system is making
-  progress, just this merge is slow). WAL amplification $\le$ backoff-bounded.
+  progress, just this merge is slow). WAL amplification $`\le`$ backoff-bounded.
 - **`merge_replace` = direct per-key `upsert_cas_durable`** (no read-compare needed; absent-key already
   inserts `other`, present-key overwrites) — cheaper than the CAS loop.
 - **parallel_merge:** resolve `other`'s entries in parallel (read-only, race-free), collect, then apply via
@@ -360,7 +360,7 @@ gaps + one genuinely-new concern (merge termination). Convergence trajectory: ro
   durable, per-iteration expected), `WinAndRank` (expected==fresh-current → publish+rank), `BurnOnLoss`
   (refused → durable-but-unranked), recovery ranging over durable-WAL-incl-burned with the regime-drop +
   checkpoint-skip, invariants `NoPhantomConditionalWrite` + `NoLostConditionalWrite`, and `_Unsafe.cfg`
-  (don't-burn $\Rightarrow$ phantom MUST fire). Include a `Checkpoint(watermark)` action so burn-drop is checked via
+  (don't-burn $`\Rightarrow`$ phantom MUST fire). Include a `Checkpoint(watermark)` action so burn-drop is checked via
   BOTH regime AND checkpoint-skip. Covers CAS + merge. Wire into `verify-formal-correspondence.sh`.
 
 ## V10.6 — round-3 red-team targets (the NEW/uncertain pieces)
@@ -384,7 +384,7 @@ right-approach-fix-sites → R3 fix-deadlock-discipline-sites (narrowing).
 
 ## V11.1 — cross-instance merge deadlock (R3-1 BLOCKER) — the load-bearing fix
 char `union_with` (`mod.rs:1130-1132`) holds `other.read()` + `self.write()` SIMULTANEOUSLY (other-then-self)
-$\Rightarrow$ `A.union_with(&B)` ‖ `B.union_with(&A)` = AB/BA deadlock. **Pre-existing in committed code** (the reject
+$`\Rightarrow`$ `A.union_with(&B)` ‖ `B.union_with(&A)` = AB/BA deadlock. **Pre-existing in committed code** (the reject
 is inside `merge_from`, AFTER both locks taken); merge wiring WIDENS the held-both window to O(terms).
 `merge_lock` does NOT fix it. **FIX (the vocab pattern, already correct at `persistent_vocab_artrie/mod.rs:476-483`):
 snapshot `other` fully into an owned `Vec` under `other.read()`, DROP `other`'s guard, THEN take self's
@@ -408,7 +408,7 @@ under repeated short read-locks (still never two OR locks at once).
   ACCEPTABLE (matches the shipped lock-free writers; system makes progress; merge_lock kills only
   merge‖merge livelock). `merge_replace` = direct per-key `upsert_cas_durable` (no read-compare).
 - parallel_merge: parallelize ONLY the read of `other`; apply serially (the parallel write was illusory).
-  Drop the "4-6$\times$" docstring (byte `parallel_merge.rs:50`).
+  Drop the "4-6$`\times`$" docstring (byte `parallel_merge.rs:50`).
 
 ## V11.3 — F4 drop-before-join: 2 ADDED sites/classes (R3-2 SWEEP C)
 The complete drop-before-join set (statement-temporary: `let x=self.field.lock().take(); /*drop guard*/ if
@@ -416,12 +416,12 @@ let Some(c)=x { c.shutdown(); }`):
 1-2. `disable_eviction` [byte+char]; 3-4. `close()`/`Drop` [byte+char] (bare-read 5th site, every teardown);
 5-7. char `disable_{memory_monitor,group_commit,epoch_checkpointing}`.
 **ADDED — 8. vocab `disable_eviction` (`persistent_vocab_artrie/mod.rs:795-803`)** — holds `self.write()`
-LIVE across `shutdown()`/join; the vocab eviction callback re-enters via `trie.write()` $\Rightarrow$ **latent deadlock
+LIVE across `shutdown()`/join; the vocab eviction callback re-enters via `trie.write()` $`\Rightarrow`$ **latent deadlock
 TODAY** (fix now regardless of F4; vocab is otherwise out of byte+char F4 scope).
 **ADDED — 9 (a CLASS). the `enable_*` re-arm path** — `enable_{memory_monitor,group_commit,epoch_checkpointing,
 eviction}` do `self.field = Some(new)`; if already enabled, the assignment drops the OLD `Arc` → its `Drop`
-joins the old worker $\Rightarrow$ post-F4 `*self.field.lock() = Some(new)` joins UNDER the held guard (re-entrant
-callback $\Rightarrow$ deadlock on re-arm). FIX: `let old = { let mut g=self.field.lock(); g.replace(new) }; drop(old);`
+joins the old worker $`\Rightarrow`$ post-F4 `*self.field.lock() = Some(new)` joins UNDER the held guard (re-entrant
+callback $`\Rightarrow`$ deadlock on re-arm). FIX: `let old = { let mut g=self.field.lock(); g.replace(new) }; drop(old);`
 (take-old-then-drop-guard-then-let-old-drop). Apply to all enable_* (both variants where the field exists).
 Benign (hygiene only): byte `compact` `wal_writer=None`; `close()` `wal stop_sync`.
 
@@ -442,7 +442,7 @@ Round 4 verifies V11 has converged: (T1) any OTHER pre-existing cross-instance /
 focused sweeps missed (byte/vocab merge wrappers, any op taking two tries' locks); (T2) the
 snapshot-other-then-release fix is correct + complete + memory-safe for large `other`; (T3) the enable_*
 re-arm + vocab disable_eviction fixes are correctly specified; (T4) a final no-data-loss re-confirm that
-V11's refinements didn't reintroduce a hole. If round 4 is clean (only confirmations) $\Rightarrow$ CONVERGED $\Rightarrow$ one
+V11's refinements didn't reintroduce a hole. If round 4 is clean (only confirmations) $`\Rightarrow`$ CONVERGED $`\Rightarrow`$ one
 final confirming round-5 per the owner's "red-team once more."
 
 ---
@@ -468,15 +468,15 @@ CONFIRMED converged + data-loss-sound (both agents failed to break the merge/CAS
 - **B2 — F5/F7 Option A (load_root_immutable) is XL + data-loss-critical, erased to a 1-liner.** Source doc
   `phase-f-g5-delete-owned-tree.md` §3.1/§3.4: Option A = new arena→OverlayNode parser reading EVERY legacy
   on-disk format = "weeks of parser + back-compat work", and RECOMMENDS Option B (keep owned dormant +
-  retain kill-switch; "almost nothing owned is deletable"). F7 deletes the kill-switch in the same arc $\Rightarrow$
-  new single-soak parser becomes the ONLY reopen path with NO fallback $\Rightarrow$ misread any legacy format = brick.
+  retain kill-switch; "almost nothing owned is deletable"). F7 deletes the kill-switch in the same arc $`\Rightarrow`$
+  new single-soak parser becomes the ONLY reopen path with NO fallback $`\Rightarrow`$ misread any legacy format = brick.
 
 ## Other round-4 findings (fold into the chosen path)
 - pre-existing live deadlocks to fix NOW (independent of F-flips): char `union_with` mod.rs:1130-1132
   (AB/BA, both modes), vocab `disable_eviction` mod.rs:796-800 (guard across join). Out-of-scope but real:
   DynamicDawg/DynamicDawgChar `union_with` (same AB/BA).
 - merge_lock is the POST-F4 serializer (pre-F4 the Shared OR-write already serializes ALL writers, even
-  overlay ones) $\Rightarrow$ introduce merge_lock AT F4 (it replaces OR-write's role); resolves the "merge_lock>OR
+  overlay ones) $`\Rightarrow`$ introduce merge_lock AT F4 (it replaces OR-write's role); resolves the "merge_lock>OR
   impossible" inconsistency. merge_lock needs a loom schedule (merge‖checkpoint‖insert/remove‖disable_evict).
 - doc-tx "matches owned": a 2nd recovery path `ln_phase` (recovery.rs:768-856) HONORS tx brackets; must
   prove it's unreachable on every production reopen (else overlay per-op is a real atomicity downgrade).

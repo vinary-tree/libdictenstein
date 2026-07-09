@@ -2,7 +2,7 @@
 
 This document presents the **Adaptive Radix Tree (ART)** — an in-memory trie whose nodes change their internal representation according to how many children they hold — introduced by Leis, Kemper, and Neumann (2013, [DOI: 10.1109/ICDE.2013.6544812](https://doi.org/10.1109/ICDE.2013.6544812)). ART achieves both excellent space efficiency and lookup performance, making it an ideal foundation for our persistent trie design.
 
-Throughout, **SIMD** (Single Instruction, Multiple Data) denotes CPU vector instructions that apply one operation to several lanes of a register in parallel; ART uses SIMD to compare many child keys at once. We write key length as `m` (bytes), alphabet as $\Sigma$, and alphabet size as $\mid \Sigma \mid$.
+Throughout, **SIMD** (Single Instruction, Multiple Data) denotes CPU vector instructions that apply one operation to several lanes of a register in parallel; ART uses SIMD to compare many child keys at once. We write key length as `m` (bytes), alphabet as $`\Sigma`$, and alphabet size as $`\mid \Sigma \mid`$.
 
 ## Table of Contents
 
@@ -170,10 +170,10 @@ fn find_child_node48(node: &Node48, key: u8) -> Option<&Node> {
 ```
 
 **Space analysis** (child storage):
-- 256-byte index array + $48 \times 8 = 384$ bytes of pointers $= 640$ bytes of child storage
-  (the whole node is $\approx 668$ B once the 16-byte `NodeHeader` + 12-byte `CompressedPrefix` are added)
-- A full `Node256` child array would need $256 \times 8 = 2048$ bytes
-- Savings: `~69%` on child storage for nodes with 17-48 children ($640$ vs $2048$)
+- 256-byte index array + $`48 \times 8 = 384`$ bytes of pointers $`= 640`$ bytes of child storage
+  (the whole node is $`\approx 668`$ B once the 16-byte `NodeHeader` + 12-byte `CompressedPrefix` are added)
+- A full `Node256` child array would need $`256 \times 8 = 2048`$ bytes
+- Savings: `~69%` on child storage for nodes with 17-48 children ($`640`$ vs $`2048`$)
 
 ### Node256 (49-256 children)
 
@@ -217,7 +217,7 @@ Path compression eliminates chains of single-child nodes, reducing tree height a
 
 <img src="../../diagrams/path-compression.svg" alt="Before and after path compression for the term metamorphosis: a 14-node unary chain (one node per byte) collapses into a single final node carrying an inline 12-byte partial prefix, turning up to 14 page faults into 1." width="720"/>
 
-*Figure: path compression for `"metamorphosis"`. Collapsing the unary chain turns up to 14 page faults (one per node) into one read. In this crate the byte variant stores up to **12 inline prefix bytes** per node (`MAX_PREFIX_LEN = 12`); all 12 are compared pessimistically during descent and any tail beyond the inline cap is verified at the leaf. A run longer than the inline cap is split into $\lceil len / 13\rceil$ such nodes rather than degenerating back into a per-byte chain.*
+*Figure: path compression for `"metamorphosis"`. Collapsing the unary chain turns up to 14 page faults (one per node) into one read. In this crate the byte variant stores up to **12 inline prefix bytes** per node (`MAX_PREFIX_LEN = 12`); all 12 are compared pessimistically during descent and any tail beyond the inline cap is verified at the leaf. A run longer than the inline cap is split into $`\lceil len / 13\rceil`$ such nodes rather than degenerating back into a per-byte chain.*
 
 ### The Problem with Uncompressed Tries
 
@@ -563,8 +563,8 @@ This matches natural language patterns where certain character transitions are r
 ### 2. SIMD is Worth the Complexity
 
 Node16 with SIMD lookup provides:
-- $~5\times$ speedup over linear scan
-- Better than binary search for $\le 16$ elements
+- $`~5\times`$ speedup over linear scan
+- Better than binary search for $`\le 16`$ elements
 - Critical for inner loop performance
 
 For persistent storage, we'll ensure Node16 keys are 16-byte aligned in page layouts.
@@ -576,7 +576,7 @@ Without path compression:
 - Many single-child nodes waste space
 
 With compression:
-- Height $\approx$ number of branching points
+- Height $`\approx`$ number of branching points
 - Dramatic reduction for string keys with shared prefixes
 
 ### 4. Node Type Field Enables Polymorphism

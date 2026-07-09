@@ -1,14 +1,14 @@
 # Symmetric Compact Directed Acyclic Word Graph (SCDAWG)
 
-This documentation provides a comprehensive, pedagogical treatment of the **Symmetric Compact DAWG** (SCDAWG), a data structure that enables $O(\mid pattern\mid )$ substring searching with bidirectional navigation capabilities.
+This documentation provides a comprehensive, pedagogical treatment of the **Symmetric Compact DAWG** (SCDAWG), a data structure that enables $`O(\mid pattern\mid )`$ substring searching with bidirectional navigation capabilities.
 
 ## Overview
 
 The SCDAWG, also known as **C2S** (Compact Symmetric), is the most space-efficient index structure that supports:
 
-1. **Substring search** in $O(\mid pattern\mid )$ time
-2. **Right extension**: given a pattern `V`, navigate to `V` followed by character $\sigma$
-3. **Left extension**: given a pattern `V`, navigate to character $\sigma$ followed by `V`
+1. **Substring search** in $`O(\mid pattern\mid )`$ time
+2. **Right extension**: given a pattern `V`, navigate to `V` followed by character $`\sigma`$
+3. **Left extension**: given a pattern `V`, navigate to character $`\sigma`$ followed by `V`
 4. **Occurrence enumeration**: find all positions where a pattern occurs
 
 These capabilities make the SCDAWG ideal for applications like the **WallBreaker** algorithm (Gerdjikov et al. 2013; see [07-references](07-references.md)), which requires bidirectional pattern growth during dictionary-based fuzzy string matching.
@@ -37,22 +37,22 @@ Index:  0 1 2 3 4 5 6 7
 ```
 
 Key properties of this example:
-- Length $\mid w\mid = 8$
-- Alphabet $\Sigma = {a, b, c}$
-- Contains repeated patterns: "ab" (3$\times$), "abc" (2$\times$), "bc" (2$\times$), "cab" (2$\times$)
+- Length $`\mid w\mid = 8`$
+- Alphabet $`\Sigma = {a, b, c}`$
+- Contains repeated patterns: "ab" (3$`\times`$), "abc" (2$`\times`$), "bc" (2$`\times`$), "cab" (2$`\times`$)
 - No unique end marker in raw form (added during construction)
 
 ## Complexity Summary
 
 | Structure | States | Transitions | Space | Query Time |
 |-----------|--------|-------------|-------|------------|
-| Suffix Trie | $O(n^2)$ | $O(n^2)$ | $O(n^2)$ | `O(m)` |
+| Suffix Trie | $`O(n^2)`$ | $`O(n^2)`$ | $`O(n^2)`$ | `O(m)` |
 | Suffix Tree | `O(n)` | `O(n)` | `O(n)` | `O(m)` |
-| Suffix Automaton (DAWG) | $\le 2n − 1$ | $\le 3n − 4$ | `O(n)` | `O(m)` |
-| CDAWG | $\le n + 1$ | $\le 2n − 2$ | `O(n)` | `O(m)` |
-| **SCDAWG** | $\le n + 1$ | $\le 4n − 4$ | `O(n)` | `O(m)` |
+| Suffix Automaton (DAWG) | $`\le 2n − 1`$ | $`\le 3n − 4`$ | `O(n)` | `O(m)` |
+| CDAWG | $`\le n + 1`$ | $`\le 2n − 2`$ | `O(n)` | `O(m)` |
+| **SCDAWG** | $`\le n + 1`$ | $`\le 4n − 4`$ | `O(n)` | `O(m)` |
 
-Where $n = \mid w\mid$ (text length) and $m = \mid pattern\mid$ (query length).
+Where $`n = \mid w\mid`$ (text length) and $`m = \mid pattern\mid`$ (query length).
 
 ## Key Concepts at a Glance
 

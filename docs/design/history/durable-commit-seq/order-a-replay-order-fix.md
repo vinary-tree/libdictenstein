@@ -17,7 +17,7 @@ visible membership. **s019 trace:** WAL `…Insert@352, Remove@356`; CAS last-wr
 highest-LSN record = Remove → replay ends absent → acknowledged net-present key LOST = data loss. REAL bug (the
 quiesced overlay is a well-defined committed history), not a test-oracle bug.
 **Why insert-only is accidentally safe:** inserts are idempotent+monotone (any replay order → same set); the
-existing `concurrent_durable_writers_all_survive_reopen` passes. Remove makes $insert\cup remove$ order-sensitive +
+existing `concurrent_durable_writers_all_survive_reopen` passes. Remove makes $`insert\cup remove`$ order-sensitive +
 non-monotone → divergence becomes loss. **General Order-A hazard for ANY non-monotone op (remove, future
 upsert/decrement-increment).** Existing specs miss it: `LockFreeOverlayRemoveCas` has no WAL/replay;
 `LockFreeDurableCheckpoint!NoLostWriteUnderLockFreeCommit` tracks LSNs as opaque tokens, never collapses two LSNs
@@ -32,8 +32,8 @@ takes the file lock (`writer.rs:170` vs `:207`) → WAL physical order can diffe
 - **B (per-key lock around append+CAS):** correct + zero-format-change BUT gives up lock-free publication +
   serializes the contended same-key workload. **FALLBACK only.**
 - **D (content-only replay reconciliation):** CONFIRMED IMPOSSIBLE — `≺_CAS` is not recorded anywhere durable; the
-  natural "highest-LSN per term" rule gives the WRONG answer (picks Remove@356). Any real fix must add $\ge$1 ordering
-  datum to the durable record $\Rightarrow$ that IS approach C.
+  natural "highest-LSN per term" rule gives the WRONG answer (picks Remove@356). Any real fix must add $`\ge`$1 ordering
+  datum to the durable record $`\Rightarrow`$ that IS approach C.
 - **E (defer remove to owned path):** blocks R-B/flip. REJECT.
 - **C′ (RECOMMENDED): per-term commit generation in a versioned record** — lock-free-preserving, general,
   additive/back-compat. Below.
@@ -41,8 +41,8 @@ takes the file lock (`writer.rs:170` vs `:207`) → WAL physical order can diffe
 ## (3) RECOMMENDED FIX — C′
 **Idea:** durably record enough of `≺_CAS` to recover per-term LWW. The minimal statistic is a **per-term commit
 generation** assigned at CAS-success; replay picks, per term, the record with **max generation** (ties by lsn) and
-applies only its effect. Generation in `≺_CAS` order $\Rightarrow$ "max gen per term" == CAS-order last-writer == committed
-visible $\Rightarrow$ `ReplayEqualsCommittedVisible` by construction, for ALL mixed histories (future-proofs upsert/increment).
+applies only its effect. Generation in `≺_CAS` order $`\Rightarrow`$ "max gen per term" == CAS-order last-writer == committed
+visible $`\Rightarrow`$ `ReplayEqualsCommittedVisible` by construction, for ALL mixed histories (future-proofs upsert/increment).
 
 **Realization (single data append + a conditional rank marker; Order-A preserved):**
 1. Step 1 (unchanged): append+sync the data record `Insert{term,value}`/`Remove{term}` → `lsn` (durable before
@@ -71,16 +71,16 @@ and wins replay — the no-op being out-ordered is harmless. Loom-checked + TLA 
 
 **Signatures/sites:** (a) `codec.rs` — add `WalRecordType::CommitRank=15` + variant `CommitRank{data_lsn:Lsn,
 term:Vec<u8>, generation:u64}` + serialize/deserialize/`serialized_size`/`TryFrom` arms + `WalHeader` version bump.
-Existing variants byte-identical $\Rightarrow$ existing WALs read unchanged. (b) `wal_helpers.rs` — reuse
+Existing variants byte-identical $`\Rightarrow`$ existing WALs read unchanged. (b) `wal_helpers.rs` — reuse
 `append_to_wal_returning_lsn` (optional thin `append_commit_rank` wrapper). (c) `insert_cas_durable:289`/(d)
 `remove_cas_durable:439` — emit CommitRank after CAS (read published-leaf version), mark both LSNs; extend
 `LockfreeRemoveResult::Removed(Arc<OverlayNode<V>>)` to carry the leaf. (e) `mmap_ctor.rs:400-423`+`:688-709` →
-shared `replay_records_lww` (removes the duplication = no-drift). (f) `recovery.rs:182` — $CommitRank \Rightarrow vec![]$
+shared `replay_records_lww` (removes the duplication = no-drift). (f) `recovery.rs:182` — $`CommitRank \Rightarrow vec![]`$
 no-op arm (preserves REC-A replay-completeness). (g) `mark_committed` UNCHANGED (keys on data LSN; watermark/
 `NoLostWriteUnderLockFreeCommit` untouched).
 
 **§3.4 WAL-format change is REAL + REQUIRED** (§2D proves visibility order isn't otherwise durable). Additive +
-back-compat: **backward** (new code, old WAL) — no CommitRank $\Rightarrow$ `generation_of=lsn` fallback = today's behavior;
+back-compat: **backward** (new code, old WAL) — no CommitRank $`\Rightarrow`$ `generation_of=lsn` fallback = today's behavior;
 existing logs are insert-only/pre-remove so the fallback is safe for every log that can exist; NO migration.
 **forward** (old code, new WAL) — bump `WalHeader` version so an old binary refuses the file fail-closed (not
 silent truncation). Opt-in (enable_lockfree + durable policy), pre-flip; document the one-way header bump in
@@ -93,34 +93,34 @@ rank, watermark not advanced → recovery replays under `gen=lsn` fallback (corr
 rebuilds from corrected owned replay); fix touches ONLY the owned replay; REC-B must reuse the reconcile.
 
 ## (4) Formal re-proof
-**NEW spec `LockFreeOverlayDurableReplay.tla` (+`.cfg`+`_Unsafe.cfg`)** — bounded (Terms={a,b}, MaxOps$\approx$4, lsns/gens
+**NEW spec `LockFreeOverlayDurableReplay.tla` (+`.cfg`+`_Unsafe.cfg`)** — bounded (Terms={a,b}, MaxOps$`\approx`$4, lsns/gens
 1..6). Vars: `nextLsn`,`nextGen`,`wal`(seq of Insert/Remove/Rank), `present`/`removed` (visible, same abstraction as
 `LockFreeOverlayRemoveCas`), `committed`, `replayed`. Actions: `Append(t,kind)` (step1, no visibility change);
 `CommitCas(t)` (step2, update present/removed LWW + assign `gen'=nextGen[t]+1`); `AppendRank(t)` (step2.5, then
-$committed'\cup ={lsn,rankLsn}$); `CrashRecover` (replayed[t]=effect of max-gen data record, gen=rank else lsn, ties by
-lsn, over committed $\le$ frontier). **`USE_COMMIT_RANK=TRUE`** (design, replay by gen) / **`=FALSE`** (`_Unsafe.cfg`
-negative control, replay by lsn = the broken scheme). Invariants: **`ReplayEqualsCommittedVisible`** ($\forall$t:
-(t$\in$replayed)<=>(t$\in$present)) [headline]; `NoLostNetWrite` (present$\Rightarrow$replayed, the s019 direction); 
-`NoResurrectionOnReplay` ($\neg$present$\Rightarrow$$\neg$replayed); reuse `DurablePrefix`. **The `_Unsafe.cfg` MUST violate
+$`committed'\cup ={lsn,rankLsn}`$); `CrashRecover` (replayed[t]=effect of max-gen data record, gen=rank else lsn, ties by
+lsn, over committed $`\le`$ frontier). **`USE_COMMIT_RANK=TRUE`** (design, replay by gen) / **`=FALSE`** (`_Unsafe.cfg`
+negative control, replay by lsn = the broken scheme). Invariants: **`ReplayEqualsCommittedVisible`** ($`\forall`$t:
+(t$`\in`$replayed)<=>(t$`\in`$present)) [headline]; `NoLostNetWrite` (present$`\Rightarrow`$replayed, the s019 direction); 
+`NoResurrectionOnReplay` ($`\neg`$present$`\Rightarrow`$$`\neg`$replayed); reuse `DurablePrefix`. **The `_Unsafe.cfg` MUST violate
 `ReplayEqualsCommittedVisible` via the s019 trace** (Append Insert@a, Append Remove@b>a, CommitCas(Remove) then
-CommitCas(Insert) $\Rightarrow$ present={s} but lsn-replay ends Remove $\Rightarrow$ replayed={} $\Rightarrow$ FALSE<=>TRUE). If the unsafe cfg passes,
-the control is broken $\Rightarrow$ fail the gate. Register in `verify-formal-correspondence.sh` SANY(`:252`)+TLC(`:303`)+
+CommitCas(Insert) $`\Rightarrow`$ present={s} but lsn-replay ends Remove $`\Rightarrow`$ replayed={} $`\Rightarrow`$ FALSE<=>TRUE). If the unsafe cfg passes,
+the control is broken $`\Rightarrow`$ fail the gate. Register in `verify-formal-correspondence.sh` SANY(`:252`)+TLC(`:303`)+
 negative-control(`:335`). Do NOT weaken the existing specs (compose, don't replace).
 **Deterministic Rust regression** `replay_orders_by_commit_rank_not_lsn` (+ resurrection-polarity twin): force the
 s019 interleaving deterministically (two `Barrier`s / a controlled scheduler so WAL=Insert@a,Remove@b while CASes
 land Remove-then-Insert), drop-no-checkpoint, reopen, assert `contains("s019")==true`. FAILS pre-fix (OD2 reverted),
 PASSES post-fix — the differential proves the test has teeth. Seeded + `#[serial]`.
 **Empirical soak gate:** run `concurrent_durable_mixed_insert_remove_reopen_equals_live_set` (`lockfree_cas.rs:2213`)
-**$\ge$50$\times$ green** (Immediate + a GroupCommit twin). Pre-fix fails within ~48 attempts; post-fix $\ge$50$\times$ clean.
+**$`\ge`$50$`\times`$ green** (Immediate + a GroupCommit twin). Pre-fix fails within ~48 attempts; post-fix $`\ge`$50$`\times`$ clean.
 **Stay green:** `concurrent_durable_writers_all_survive_reopen` (insert-only), `recovery_replay_completeness_
 correspondence`, `persistent_{artrie,wal,vocab_wal}_*` atomicity/recovery; full gate exit 0; 0 new unsafe.
 
-## (5) Phased migration (each: nextest $\ge$2504 + verify-formal-correspondence exit 0 + unsafe-inventory exit 0; systemd 32G + real-disk; RUN_TLC=1 for the gate)
+## (5) Phased migration (each: nextest $`\ge`$2504 + verify-formal-correspondence exit 0 + unsafe-inventory exit 0; systemd 32G + real-disk; RUN_TLC=1 for the gate)
 - **OD0** — WAL record (codec only): `CommitRank=15` type+variant+ser/de/size+TryFrom + `WalHeader` version bump +
   `recovery.rs` no-op arm + codec round-trip unit test (old-record bytes unchanged). No producer/replay change.
   Rollback: delete variant.
 - **OD1** — Replay reconcile (consumer) behind fallback: both `mmap_ctor` sites → shared `replay_records_lww` with
-  `(gen,lsn)` ordering, `gen=lsn` when no rank $\Rightarrow$ behavior IDENTICAL for existing WALs. Unit tests on hand-built
+  `(gen,lsn)` ordering, `gen=lsn` when no rank $`\Rightarrow`$ behavior IDENTICAL for existing WALs. Unit tests on hand-built
   record vectors (incl. a synthetic rank). Gate: all recovery/atomicity correspondence green (proves behavior-
   preserving). Rollback: revert to in-order loop.
 - **OD2** — Producers emit rank: wire insert/remove durable to append CommitRank after CAS (read published-leaf
@@ -128,7 +128,7 @@ correspondence`, `persistent_{artrie,wal,vocab_wal}_*` atomicity/recovery; full 
 - **OD3 — FORMAL re-proof (HARD GATE):** add `LockFreeOverlayDurableReplay.tla`+cfgs; `ReplayEqualsCommittedVisible`
   passes; `USE_COMMIT_RANK=FALSE` negative control FIRES on s019. If not → fix is wrong, STOP.
 - **OD4 — Deterministic regression** (+resurrection twin): confirm it fails with OD2 reverted, passes with OD2.
-- **OD5 — Soak gate:** the mixed soak $\ge$50$\times$ green (Immediate + GroupCommit). Unblocks R-B + the flip.
+- **OD5 — Soak gate:** the mixed soak $`\ge`$50$`\times`$ green (Immediate + GroupCommit). Unblocks R-B + the flip.
 OD0-OD2 reversible by deletion; OD3-OD5 verification-only. **No irreversible step** except the `WalHeader` version
 bump (fail-closed downgrade, gates an opt-in pre-flip feature — no released format broken).
 
@@ -141,7 +141,7 @@ bump (fail-closed downgrade, gates an opt-in pre-flip feature — no released fo
    `benches/lockfree_flip_benchmark.rs`, gate on acceptable regression. (B trades this for lock contention.)
 3. **Gen-monotonicity is load-bearing (§3.6):** read `g` from the exact published LEAF Arc (not a re-walk/ancestor);
    loom schedule ("rank monotonic under concurrent same-key insert‖remove") + TLA `CommitCas` check it.
-4. **Checkpoint/watermark/REC-A interaction:** watermark also marks rank LSNs (partial rank append $\Rightarrow$ watermark stalls
+4. **Checkpoint/watermark/REC-A interaction:** watermark also marks rank LSNs (partial rank append $`\Rightarrow`$ watermark stalls
    at data LSN, safe); checkpoint subsumes sub-watermark ranks (reclaim with data records); REC-A auto-fixed; REC-B
    must reuse the reconcile. `LockFreeDurableCheckpoint[Eviction]` specs stay green unchanged.
 5. **Increment/upsert share the hazard + the fix** (reconcile is content-agnostic; wire their durable paths to emit
@@ -159,4 +159,4 @@ bump (fail-closed downgrade, gates an opt-in pre-flip feature — no released fo
   checkpoint skip `:402`/`:690`)
 - NEW `formal-verification/tla+/LockFreeOverlayDurableReplay.tla`+`.cfg`+`_Unsafe.cfg` (`ReplayEqualsCommittedVisible`
   + s019 negative control; register in `scripts/verify-formal-correspondence.sh:252/303/335`)
-- `src/persistent_artrie_core/recovery.rs` (`recovered_operations_from_record:182` — $CommitRank \Rightarrow vec![]$)
+- `src/persistent_artrie_core/recovery.rs` (`recovered_operations_from_record:182` — $`CommitRank \Rightarrow vec![]`$)

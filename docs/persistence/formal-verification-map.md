@@ -45,8 +45,8 @@ all SANY-clean (SANY = the TLA⁺ syntactic analyzer). Many models ship a paired
 
 | Invariant | TLA⁺ model | Rocq proof | Doc |
 |-----------|-----------|-----------|-----|
-| acknowledged $\implies$ durable; `checkpoint_lsn` = committed prefix; no truncation loss | `LockFreeDurableCheckpoint.tla` (+ `_Unsafe`), `SharedPersistentConcurrency.tla` | `Spec/PublicDurabilityPolicySpec.v`, `Spec/PersistentWalAtomicitySpec.v` | [durability-and-recovery](durability-and-recovery.md) |
-| Checkpoint snapshot $\subseteq$ visible; publication serialized by `CK` | `ConcurrentCheckpointPublication.tla`, `ConcurrentCheckpointSerialization.tla` (+ `_Unsafe` `NoTornDescriptor`) | `Spec/PersistentCheckpointRetentionSpec.v`, `Spec/PersistentDirtyCheckpointSpec.v` | [durability-and-recovery](durability-and-recovery.md) |
+| acknowledged $`\implies`$ durable; `checkpoint_lsn` = committed prefix; no truncation loss | `LockFreeDurableCheckpoint.tla` (+ `_Unsafe`), `SharedPersistentConcurrency.tla` | `Spec/PublicDurabilityPolicySpec.v`, `Spec/PersistentWalAtomicitySpec.v` | [durability-and-recovery](durability-and-recovery.md) |
+| Checkpoint snapshot $`\subseteq`$ visible; publication serialized by `CK` | `ConcurrentCheckpointPublication.tla`, `ConcurrentCheckpointSerialization.tla` (+ `_Unsafe` `NoTornDescriptor`) | `Spec/PersistentCheckpointRetentionSpec.v`, `Spec/PersistentDirtyCheckpointSpec.v` | [durability-and-recovery](durability-and-recovery.md) |
 | Durable checkpoint under eviction | `LockFreeDurableCheckpointEviction.tla` (+ `_Unsafe`) | `Spec/PersistentDirtyCheckpointSpec.v` | [durability-and-recovery](durability-and-recovery.md) |
 
 ### Recovery & crash-safety
@@ -89,7 +89,7 @@ A model that only checks the *safe* configuration proves nothing if its invarian
 vacuous. Most durability/eviction models therefore ship an `_Unsafe.cfg` that deliberately
 breaks the mechanism (e.g. a frontier-bounded reclaim instead of the watermark, or eviction
 without the stamp) and asserts the checker **finds the violation**. The pair
-"safe cfg passes $\land$ `_Unsafe` cfg fails" is what makes the safe result meaningful — a
+"safe cfg passes $`\land`$ `_Unsafe` cfg fails" is what makes the safe result meaningful — a
 falsifiable experiment in the scientific sense.
 
 ## The CI correspondence gate
@@ -116,5 +116,5 @@ RUN_TLC=1 scripts/verify-formal-correspondence.sh
 ## See also
 
 - [`formal-verification/README.md`](../../formal-verification/README.md) — the properties table and theorem list.
-- [`formal-verification/VERIFICATION_RESULTS.md`](../../formal-verification/VERIFICATION_RESULTS.md) — the full model-checking + proof results and the spec $\leftrightarrow$ Rust correspondence tables.
+- [`formal-verification/VERIFICATION_RESULTS.md`](../../formal-verification/VERIFICATION_RESULTS.md) — the full model-checking + proof results and the spec $`\leftrightarrow`$ Rust correspondence tables.
 - [`formal-verification/GAP_LEDGER.md`](../../formal-verification/GAP_LEDGER.md) — the tracked verification gaps and footguns (e.g. the `#41` watermark hazard).

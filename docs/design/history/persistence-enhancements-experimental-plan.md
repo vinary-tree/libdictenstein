@@ -37,7 +37,7 @@ The current `PersistentARTrie` persistence layer has these characteristics:
 
 | Component | Current Implementation | Limitation |
 |-----------|----------------------|------------|
-| Buffer Pool | Fixed size (default 16 frames $\times$ 256KB) | Cannot adapt to available memory |
+| Buffer Pool | Fixed size (default 16 frames $`\times`$ 256KB) | Cannot adapt to available memory |
 | Eviction | Clock algorithm (reactive) | No proactive flushing under memory pressure |
 | WAL Writes | Buffered `BufWriter`, no auto-sync | Small durability window without explicit `sync()` |
 | WAL Sync | Per-operation or manual | High fsync overhead for write-heavy workloads |
@@ -921,7 +921,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
 | fsync calls/sec | ~10K | ~100-1K | `perf stat -e syscalls:sys_enter_fsync` |
 | P50 write latency | ~0.1ms | ~1-2ms | Histogram in stats |
 | P99 write latency | ~0.5ms | ~10-15ms | Histogram in stats |
-| Durability window | 0 (with sync) | $\le$max_batch_delay_us | Configuration |
+| Durability window | 0 (with sync) | $`\le`$max_batch_delay_us | Configuration |
 | Batching efficiency | 1.0 | 10-100 | avg_batch_size metric |
 
 ### 2.7 Verification Strategy
@@ -1927,11 +1927,11 @@ pub struct RecoveryInfo {
 
 | Metric | Baseline | Expected | Measurement |
 |--------|----------|----------|-------------|
-| WAL size (unbounded workload) | Unbounded | $\le$64MB (configurable) | File size |
+| WAL size (unbounded workload) | Unbounded | $`\le`$64MB (configurable) | File size |
 | Recovery time (1M ops) | ~10s (full replay) | ~1s (from checkpoint) | Benchmark |
-| Durability guarantee | Manual | $\le$epoch_duration | Configuration |
+| Durability guarantee | Manual | $`\le`$epoch_duration | Configuration |
 | Checkpoint overhead | N/A | <5% throughput | Benchmark |
-| Data loss window | 0 (with sync) | $\le$2 epochs | By design |
+| Data loss window | 0 (with sync) | $`\le`$2 epochs | By design |
 
 ### 3.7 Verification
 

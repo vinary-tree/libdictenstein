@@ -11,14 +11,14 @@ rather than copy-pasting; vocab is excluded by correctness.
 ## 0. Verified ground truth (the 4 load-bearing facts)
 1. **Byte's counter overlay is `V = i64`** (`impl<S: BlockStorage> PersistentARTrie<i64, S>`,
    `src/persistent_artrie/lockfree_cas.rs:425`; `get_lockfree(&[u8]) -> Option<u64>` :434). Char's is
-   `u64`. $\Rightarrow$ the eligible counter monomorph is per-variant (char `{(),u64}`, byte `{(),i64}`).
+   `u64`. $`\Rightarrow`$ the eligible counter monomorph is per-variant (char `{(),u64}`, byte `{(),i64}`).
 2. **Vocab's overlay value is an allocator-assigned index** (`next_index.fetch_add(1, AcqRel)` INSIDE
    the vocab overlay insert, `src/persistent_artrie/vocab/mutation_api.rs`). Replaying inserts during a
    reestablish would allocate FRESH indices, corrupting the durable term↔index bijection + the `.idx`
-   reverse index. $\Rightarrow$ vocab CANNOT use the flip/reestablish; it is flip-safe by never flipping.
+   reverse index. $`\Rightarrow`$ vocab CANNOT use the flip/reestablish; it is flip-safe by never flipping.
 3. **Byte's `enable_lockfree` does NOT stamp the WAL regime** (`src/persistent_artrie/lockfree_cas.rs:93`
    sets `lockfree_root` but no `set_overlay_regime`); char's does (`persistent_artrie/char/lockfree_cas.rs:210`).
-   $\Rightarrow$ the generic `flip_to_overlay`'s `current_lsn()==1` Overlay-restamp must cover byte.
+   $`\Rightarrow`$ the generic `flip_to_overlay`'s `current_lsn()==1` Overlay-restamp must cover byte.
 4. **Byte's public iter API is shaped differently** (`iter_prefix(&[u8]) -> Option<impl Iterator<Item=
    Vec<u8>>>`, `src/persistent_artrie/public_iter.rs:64`), vs char's `Result<Option<Vec<String>>>`. ⇒
    the public-method routing glue is irreducibly per-variant.
@@ -58,7 +58,7 @@ constructor args with a lifetime mess across the `&self`-iter-before-`&mut`-clea
   `reestablish_overlay_membership`/`_counter`, `reject_under_overlay`.
 - The public-method routing (`if route_overlay() { adapt(overlay_collect_units) } else { owned_* }`)
   stays per-variant + thin (the adapter is the per-variant skin).
-- Coherence: trait in core, impls in variant modules, **one crate** $\Rightarrow$ no orphan-rule problem (same as
+- Coherence: trait in core, impls in variant modules, **one crate** $`\Rightarrow`$ no orphan-rule problem (same as
   the existing `TrieRoot for OverlayNode` blanket).
 
 ## 3. `KeyEncoding` additions (reverse conversion)

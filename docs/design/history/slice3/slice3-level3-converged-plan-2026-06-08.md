@@ -114,7 +114,7 @@ red-team #1 proved it subsumes counter semantics incl. u64>i64::MAX (counter_lea
   THEN delete owned replay_records_lww + apply_*_recovered_operation_no_wal + recompute_recovered_increment +
   value_from_recovered_i64 (prove unreachable first). KEEP *_impl_no_wal (staging/reestablish; die L2/L3). UNSAFE rows
   23-24 live in KEPT *_impl_no_wal → NO prune at L1 (re-run set-equality to confirm 0 delta).
-  **Red-team focus:** recover-via-drain $\equiv$ recover-via-owned-then-convert across V$\times$archive-layout$\times$crash-point; the
+  **Red-team focus:** recover-via-drain $`\equiv`$ recover-via-owned-then-convert across V$`\times`$archive-layout$`\times`$crash-point; the
   recover-family uses rebuild_from_wal_segments_regime_aware (its own tx-resolution) — verify SAME tx-filter the owned
   path applied (else aborted-tx records resurrect). Perf: bulk overlay path-copy rebuild vs owned dense. New TLA
   RecoveryRebuildOverlay (archive-rebuild-into-overlay sink + tx-filter parity).
@@ -125,10 +125,10 @@ red-team #1 proved it subsumes counter semantics incl. u64>i64::MAX (counter_lea
   Node-record format serialize_root produces (collapse single-child chains → compressed prefixes; leaf runs →
   StringBucket; ROOT_TYPE_BUCKET vs ART_NODE per the owned heuristics) via serialize_node_to_disk_with_value_len. Do
   NOT touch serialize_overlay_node_to_disk (the un-compressed production checkpoint — STAYS). Proof: byte-identity (or
-  reopen-equivalence incl. compacted_bytes density bound) vs owned serialize_root over V$\times${valued,term-only,""}$\times$deep key.
+  reopen-equivalence incl. compacted_bytes density bound) vs owned serialize_root over V$`\times`${valued,term-only,""}$`\times`$deep key.
 - **CX.2 byte loader** load_overlay_root_compressed: read the dense path-compressed format, EXPAND multi-unit prefixes +
   buckets directly into Arc<OverlayNode<ByteKey,V>>, never materializing TrieRoot. Reuse load_overlay_node_from_disk
-  (single-node). Proof: load(serialize(overlay))$\equiv$overlay AND load_compressed(legacy_owned_image) $\equiv$
+  (single-node). Proof: load(serialize(overlay))$`\equiv`$overlay AND load_compressed(legacy_owned_image) $`\equiv`$
   build_overlay_root_from_owned(load_root_from_disk(legacy_owned_image)) — back-compat vs the owned loader (the
   "B2 brick-risk" mitigation: prove BEFORE it's the only path).
 - **CX.3 char twins** (serialize_char_*_compressed / load_overlay_char_root_compressed). Same proofs.
@@ -188,7 +188,7 @@ red-team #1 proved it subsumes counter semantics incl. u64>i64::MAX (counter_lea
   insert_cas_durable forbids acknowledging a 0-LSN as durable) — prove a WAL-less in-memory overlay is
   correctness-equivalent to the owned tree for insert/contains/get/iter/zipper across arbitrary V before this lands.
   **Red-team:** the formal gate's PublicDictionaryNodeTraversal + zipper correspondence (wrong overlay-zipper = silent
-  wrong query results); + the `::new()`-overlay equivalence across V$\in${(),i32,String,u64}; + no green-gate window where
+  wrong query results); + the `::new()`-overlay equivalence across V$`\in`${(),i32,String,u64}; + no green-gate window where
   reads are overlay-only while any ctor still yields route_overlay()==false.
 - **L3.3 delete owned root field + holder TYPES + owned readers/converters** ⚠️RT (biggest risk). Delete: root field
   (dict_impl.rs:280, mod.rs:429); TrieRoot/CharTrieRoot/CharTrieNodeInner; owned loaders load_root_from_disk(_with_arena);

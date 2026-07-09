@@ -35,13 +35,13 @@ the reclaimable WAL watermark (see [durability-and-recovery.md](durability-and-r
 | `PersistentARTrieU64Prefix3Compat<V>` | native `u64` sequences | `U64Key<3>` | `b"AR64"` | prefix-3 compatibility / benchmark baseline |
 | `PersistentVocabARTrie` | Unicode terms | `CharKey`, `V = u64` | `b"ARTC"` (vocab header) | durable `term $\leftrightarrow$ u64` bijection |
 
-Here $V$ is the caller's value type; membership-only dictionaries use $V = ()$, counting
+Here $`V`$ is the caller's value type; membership-only dictionaries use $`V = ()`$, counting
 dictionaries use a `u64` counter, and mapped dictionaries use an arbitrary construction-time
-`Option<V>`. Exact lookup costs $O(m)$ in the term length $m$ regardless of profile.
+`Option<V>`. Exact lookup costs $`O(m)`$ in the term length $`m`$ regardless of profile.
 
-`PersistentVocabARTrie` is specialized: its **forward** lookup ($\text{term} \to \text{id}$)
-walks the overlay in $O(k)$ for a term of $k$ units; its **reverse** lookup
-($\text{id} \to \text{term}$) is $O(1)$ through an in-memory `reverse_term_map` that is
+`PersistentVocabARTrie` is specialized: its **forward** lookup ($`\text{term} \to \text{id}`$)
+walks the overlay in $`O(k)`$ for a term of $`k`$ units; its **reverse** lookup
+($`\text{id} \to \text{term}`$) is $`O(1)`$ through an in-memory `reverse_term_map` that is
 **rebuilt from the checkpoint image on reopen** (the reverse direction is not itself logged —
 it is a derived index). See [../algorithms/vocab-trie.md](../algorithms/vocab-trie.md).
 

@@ -14,7 +14,7 @@ corruption. Fix: read/write the counter leaf as `u64` everywhere; apply the `i64
 ## 1. Two code-reality corrections (load-bearing)
 - **C-A:** byte counter monomorph is `<i64>` on the FAST seam (`CounterValue=i64`
   `overlay_write_mode.rs:407`, block `lockfree_cas.rs:1151`, downcast `lockfree_value_route.rs:54`);
-  char is `<u64>`. So byte $CounterValue i64\to u64$ moves byte `<i64>` increments from the fast seam
+  char is `<u64>`. So byte $`CounterValue i64\to u64`$ moves byte `<i64>` increments from the fast seam
   to value-CAS, making byte==char. **byte `<u64>` becomes the canonical fast counter.**
 - **C-B:** `overlay_eligible_v()` is `true` for ALL V at HEAD (`overlay_write_mode.rs:126/476`);
   the `{(),u64}`/`{(),i64}` comments are STALE. A `create::<i64>()` DOES flip; char `<i64>`
@@ -26,7 +26,7 @@ corruption. Fix: read/write the counter leaf as `u64` everywhere; apply the `i64
    11 reinterpret sites.** New shared helper (zero `unsafe`, safe `TypeId` branch):
    `counter_leaf_to_i128<V>(bytes)->i128` + `i128_to_counter_leaf<V>(i128)->Option<V>` (u64:
    reject `<0` (0-floor) / `>u64::MAX`; i64: reject `∉[i64::MIN,i64::MAX]`; else→loud). Replaces
-   every $serialize(i64)\to deserialize(V)$ reinterpret + every `i64::from_le_bytes` counter read.
+   every $`serialize(i64)\to deserialize(V)`$ reinterpret + every `i64::from_le_bytes` counter read.
    11 sites enumerated in §7 (overlay-permanent: `flip.rs:1119` counter_value_from_i64, value-CAS
    read/write char `atomic_ops.rs:139/162` + byte `:142/164`; owned-interim/F7-deletes:
    mutation_core `value_from_i64`/`recompute_recovered_increment`, document_tx `value_from_i64_checked`).
@@ -35,7 +35,7 @@ corruption. Fix: read/write the counter leaf as `u64` everywhere; apply the `i64
 3. **WAL `BatchIncrement` delta + `RecoveredOperation::Increment.delta` STAY `i64`** — a single
    delta is i64-bounded by the public API; only the ACCUMULATOR (leaf) is u64. NO shared-trait sig
    change (RT-B BLOCKER-1 N/A).
-4. **byte $CounterValue i64\to u64$**, block $<i64,S>\to <u64,S>$, seam downcasts $<i64,S>\to <u64,S>$
+4. **byte $`CounterValue i64\to u64`$**, block $`<i64,S>\to <u64,S>`$, seam downcasts $`<i64,S>\to <u64,S>`$
    (publisher/get/publish_inner/route_increment_bytes). byte fast seam now serves `<u64>`.
 5. **KEEP `Counter={i64,u64}`** (RT-2 BLOCKER-2). libgrammstein `accumulator.rs:80`
    `PersistentARTrieChar<i64>` + `.increment`/`.increment_by(-k)` routes to value-CAS (V-generic,
@@ -148,7 +148,7 @@ NO change: WAL codec BatchIncrement i64, `RecoveredOperation::Increment.{delta,r
   in the OWNED increment bodies (char `atomic_ops.rs:68/204`, byte `:78`) + recovery appliers
   (`mutation_core` `recompute_recovered_increment`/`value_from_i64`) + doc-tx folds + the
   lockfree-merge readers (char `lockfree_cas.rs:2098/2113/2123`). Per-type range: `u64`→`[0,u64::MAX]`,
-  `i64`→`[i64::MIN,i64::MAX]`. $\Rightarrow$ full-range u64 for `<u64>`, i64 semantics for `<i64>`, everywhere.
+  `i64`→`[i64::MIN,i64::MAX]`. $`\Rightarrow`$ full-range u64 for `<u64>`, i64 semantics for `<i64>`, everywhere.
   The i64-overflow recovery-stop tests (`persistent_transaction_increment_correspondence.rs:148/183`)
   STILL PASS (their tries are `<i64>` → helper's i64-branch keeps the i64::MAX stop).
 - **BLOCKER-3 (route `as i64` silent wrap):** char `lockfree_value_route.rs:100` `v as i64` + byte
@@ -173,7 +173,7 @@ else `(n as i64).to_le_bytes()`; else → `None`. Used by EVERY counter leaf rea
 value-CAS, owned increment, recovery, doc-tx, merge). The fast commutative seam stays add-only
 `u64` (`checked_add` vs `u64::MAX`); decrement routes to value-CAS (the i128 helper + 0-floor,
 per-CAS-iteration on the same fresh read = LP-safe). WAL `BatchIncrement` delta stays `i64`
-(single delta $\le$ i64::MAX); `RecoveredOperation::Increment.delta` stays `i64`.
+(single delta $`\le`$ i64::MAX); `RecoveredOperation::Increment.delta` stays `i64`.
 
 ## Verification (final gate)
 The §6 v3 list, plus: the i64-overflow recovery-stop tests pass (helper i64-branch); the migrated
@@ -256,7 +256,7 @@ intermediate is i128 (not i64), the compiler itself flags any residual i64-typed
 mismatch) — the gate + the type system together are the completeness proof.
 
 ## Why v6 is CONVERGED (no third mechanism can exist)
-8 on-disk bytes $\implies$ read/written by manual byte ops OR a serde codec. The crate's only codec is
+8 on-disk bytes $`\implies`$ read/written by manual byte ops OR a serde codec. The crate's only codec is
 `bincode_compat` (legacy/fixint). Both are now gated. The scan for alternative byte decoders is 0.
 ∴ the gate's pattern set is complete over the access-mechanism space — closed enumeration, not a
 "we think we got them all." Implementation routes all funnels through the i128 helper; the v6 gate

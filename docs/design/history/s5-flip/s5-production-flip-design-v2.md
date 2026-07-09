@@ -23,41 +23,41 @@ act (the ctor flip, S5-12) changes ~6 lines and is last.
 
 ## 1. V1 — open()-time overlay re-establishment (HIGH)
 Both ctors construct `lockfree_root:None`, mode `OwnedTree`, replay into the OWNED tree, NEVER re-enable
-the overlay for an Overlay file $\Rightarrow$ post-reopen production writes go owned/unranked on an Overlay WAL $\Rightarrow$
+the overlay for an Overlay file $`\Rightarrow`$ post-reopen production writes go owned/unranked on an Overlay WAL $`\Rightarrow`$
 DROPPED next reopen; reads also miss recovered data. FIX: new `reestablish_overlay_after_recovery(&mut
 self)` called from BOTH ctors' `open` IFF active-header regime == Overlay: (1) the owned tree already
-holds the fully-reconciled state $\Sigma$ (load image + `replay_records_lww(…,Overlay)`); (2) `enable_lockfree`
-(stamp is a no-op on the already-Overlay non-empty file — §5 predicate prevents a restamp); (3) drain $\Sigma$
+holds the fully-reconciled state $`\Sigma`$ (load image + `replay_records_lww(…,Overlay)`); (2) `enable_lockfree`
+(stamp is a no-op on the already-Overlay non-empty file — §5 predicate prevents a restamp); (3) drain $`\Sigma`$
 into the overlay NON-DURABLY: `iter_with_values()` → `insert_cas` (membership) / a NEW
 `insert_cas_with_value_nodurable` (u64, build_value_path + CAS, NO WAL append); (4) clear owned
 (`root=Empty`); (5) `set_overlay_write_mode(LockFreeOverlay)`; (6) asserts. Proof: the rebuild writes
-NOTHING durable (RA-1) $\Rightarrow$ crash mid-rebuild = disk byte-identical to pre-open $\Rightarrow$ re-derives $\Sigma$. Reopen→write
-W (ranked Order-A overlay producer)→reopen keeps W (no drop). Reads return $\Sigma$ (overlay). The reopen path is
+NOTHING durable (RA-1) $`\Rightarrow`$ crash mid-rebuild = disk byte-identical to pre-open $`\Rightarrow`$ re-derives $`\Sigma`$. Reopen→write
+W (ranked Order-A overlay producer)→reopen keeps W (no drop). Reads return $`\Sigma`$ (overlay). The reopen path is
 the SUFFIX of the flip path (§6) — one mechanism, two entry points.
 
 ## 2. H1/V5/N1/N2 — owned-fallback u64 de-route (HIGH)
-The ONLY residual de-routes on a u64+Overlay trie: $increment(t, \delta <0)$ (route_increment returns None for
-negative $\Rightarrow$ owned body appends unranked Increment; also via `fetch_add` = N2) and `insert_batch_bytes`
+The ONLY residual de-routes on a u64+Overlay trie: $`increment(t, \delta <0)`$ (route_increment returns None for
+negative $`\Rightarrow`$ owned body appends unranked Increment; also via `fetch_add` = N2) and `insert_batch_bytes`
 (NO route guard at all = N1). (`upsert`/`get_or_insert`/`insert_with_value` u64 always route; CAS/doc-tx
-already `Err` under overlay.) FIX: (2.2) `increment` under `route_overlay()`: if route returns None $\Rightarrow$
+already `Err` under overlay.) FIX: (2.2) `increment` under `route_overlay()`: if route returns None $`\Rightarrow`$
 `return Err("negative-delta increment unsupported under the add-only overlay")` (NOT fall through);
 `fetch_add` inherits. (2.3) `insert_batch_bytes`+`_sorted`/`_grouped` get the overlay prologue
 (delegate to routed single-op). (2.4) STAMP INVARIANT: `enable_lockfree` refuses to stamp Overlay for
-$V \notin {(),u64}$ (TypeId check) — so no arbitrary-V file is ever MAGIC_OVERLAY. Closing: every
+$`V \notin {(),u64}`$ (TypeId check) — so no arbitrary-V file is ever MAGIC_OVERLAY. Closing: every
 `append_to_wal` caller on a u64 Overlay trie either routes-to-ranked or `Err`s before the append. Gate:
 a grep test asserts each `append_to_wal(` in the 4 routing files is route-guarded (RA-3 lexical).
 
 ## 3. V2 — merge drains (HIGH)
 `merge_lockfree_values_to_persistent` (char + byte + vocab) appends unranked BatchIncrement + drains to
-owned $\Rightarrow$ dropped + invisible on Overlay. FIX: hard-REJECT under Overlay (`route_overlay()` or
+owned $`\Rightarrow`$ dropped + invisible on Overlay. FIX: hard-REJECT under Overlay (`route_overlay()` or
 `rank_regime()==Overlay`) — NOT emit-ranked (post-flip every increment is ALREADY durable per-op via
 `try_increment_cas_durable`; a drain would double-count). Data-availability cost ZERO (data already
-durable+visible in overlay). Owned/un-flipped: guard false $\Rightarrow$ unchanged.
+durable+visible in overlay). Owned/un-flipped: guard false $`\Rightarrow`$ unchanged.
 
 ## 4. H2/A2 — corruption-rebuild regime+generation awareness (HIGH, conditional)
 `rebuild_from_wal_segments` (core) + `RecoveryManager::rebuild_from_wal` (char) bypass `reconcile_lww`
-(raw order, no regime/gen/drop) $\Rightarrow$ mixed-segment archive resurrects/double-applies. `publish_snapshot`
-never writes `checkpoint_lsn` to the data header $\Rightarrow$ corruption path double-applies the folded prefix.
+(raw order, no regime/gen/drop) $`\Rightarrow`$ mixed-segment archive resurrects/double-applies. `publish_snapshot`
+never writes `checkpoint_lsn` to the data header $`\Rightarrow`$ corruption path double-applies the folded prefix.
 FIX: (4.2) ONE global `reconcile_lww` over all segments, each record tagged with ITS segment's header
 regime (segments are single-regime; generalize `reconcile_lww` to per-record regime), generation-ordered
 globally (LSNs are globally monotone across segments — `rotate_to_archive` carries next_lsn HIGH, RA-7),
@@ -65,43 +65,43 @@ using the data-header `checkpoint_lsn` skip. (4.3) `publish_snapshot` writes `ch
 24–32, same fsync as the descriptor, RA-14). (4.4) populate `commit_seq_floor` at checkpoint
 (`set_commit_seq_floor(commit_seq@capture)`, monotone, carried across rotate) so post-checkpoint ops
 out-rank survivors. (4.5) break-glass fail-closed-on-Overlay-segment feature flag. **RA-6 RESOLVED:**
-real removes ARE ranked (`remove_cas_durable` Removed arm emits `append_commit_rank` — verified) $\Rightarrow$ never
+real removes ARE ranked (`remove_cas_durable` Removed arm emits `append_commit_rank` — verified) $`\Rightarrow`$ never
 dropped under Overlay; only idempotent no-op removes are unranked (safe to drop). v2 ALSO exempts
 `WalRecord::Remove` from the Overlay unranked-drop as harmless defense-in-depth (a spurious remove is a
 no-op; a dropped remove resurrects).
 
 ## 5. H3 — flip emptiness predicate (MEDIUM-HIGH)
 The stamp gates on `current_lsn()==1`, FALSE after checkpoint+`rotate_to_archive` (carries next_lsn HIGH;
-file is empty length-64) $\Rightarrow$ stamp SILENTLY SKIPPED $\Rightarrow$ Overlay-intent trie on an Owned WAL $\Rightarrow$ NO-RANK orphans
-KEPT $\Rightarrow$ resurrection. FIX: gate on FILE LENGTH == `WalHeader::SIZE` (`is_empty_after_header()`);
+file is empty length-64) $`\Rightarrow`$ stamp SILENTLY SKIPPED $`\Rightarrow`$ Overlay-intent trie on an Owned WAL $`\Rightarrow`$ NO-RANK orphans
+KEPT $`\Rightarrow`$ resurrection. FIX: gate on FILE LENGTH == `WalHeader::SIZE` (`is_empty_after_header()`);
 `set_overlay_regime` internally length-guards; post-stamp `assert!(rank_regime()==Overlay)` (release).
-RA-8: the fresh active is exactly a 64-byte header write+fsync (length-64 $\iff$ truly empty).
+RA-8: the fresh active is exactly a 64-byte header write+fsync (length-64 $`\iff`$ truly empty).
 
 ## 6. V4 — flip PERFORMS the checkpoint (MEDIUM)
-Emptiness $\ne$ folded. `flip_to_overlay(&mut self)` (construction): `checkpoint()` [owned, folds WAL into
+Emptiness $`\ne`$ folded. `flip_to_overlay(&mut self)` (construction): `checkpoint()` [owned, folds WAL into
 data file, writes checkpoint_lsn §4.3, rotates spent WAL→archive, fresh active empty] → assert empty →
 `enable_lockfree`+stamp (§5) → assert Overlay → **rebuild overlay from the just-folded owned tree (§1)**
 → clear owned → `LockFreeOverlay`. RA-9: post-flip same-process reads of pre-flip data work because the
-flip ENDS with the §1 rebuild (overlay=$\Sigma$), NOT because an empty overlay faults the data image (a fresh
+flip ENDS with the §1 rebuild (overlay=$`\Sigma`$), NOT because an empty overlay faults the data image (a fresh
 enable_lockfree root has no OnDisk children). Reopen path = the §1 SUFFIX of the flip path.
 
 ## 7. A6 — kill-switch symmetry (HIGH for completeness)
-Reverting mode alone leaves MAGIC_OVERLAY $\Rightarrow$ owned writes dropped. FIX: `WalWriter::set_owned_regime()`
+Reverting mode alone leaves MAGIC_OVERLAY $`\Rightarrow`$ owned writes dropped. FIX: `WalWriter::set_owned_regime()`
 (inverse, length-guarded, post-assert Owned). `kill_switch_to_owned(&mut self)`: overlay-checkpoint (fold
 overlay→data) → rotate → set_owned_regime on the empty active → drop lockfree_root → mode OwnedTree.
 Crash-safe at each step (table in §10). Archived Overlay segments stay Overlay (recovered per-segment by
 §4); irreversibility boundary = existence of any Overlay archive segment (RA-10).
 
 ## 8. H4/A7 — promote asserts (MEDIUM)
-persist.rs:464 (watermark$\le$synced_frontier, #41 guard), persist.rs:140 (next_lsn-unchanged), mod.rs:1312
+persist.rs:464 (watermark$`\le`$synced_frontier, #41 guard), persist.rs:140 (next_lsn-unchanged), mod.rs:1312
 (lockfree_root.is_none, → owned arm of the route-split): `debug_assert*` → `assert*` (unconditional).
-RA-11: the watermark advances strictly AFTER WAL append+sync (Order-A) $\Rightarrow$ no spurious release panic.
+RA-11: the watermark advances strictly AFTER WAL append+sync (Order-A) $`\Rightarrow`$ no spurious release panic.
 
 ## 9. H5 — fault-in-before-append stall (MEDIUM, not deadlock)
 `remove_cas_durable` (lockfree_cas.rs:554) faults BEFORE the append (buffer lock) — the 75-min-hang CLASS
 (no cycle found, but stalls vs a checkpoint's buffer.write). FIX: non-faulting-FIRST pre-flight
-(`find_leaf_lockfree`): present-in-memory $\Rightarrow$ append (no fault); absent-via-non-OnDisk-edge $\Rightarrow$ skip; hit an
-OnDisk edge $\Rightarrow$ THEN fault. Shrinks the faulting window to cold-prefix removes only. The N-S4-3 isolated
+(`find_leaf_lockfree`): present-in-memory $`\Rightarrow`$ append (no fault); absent-via-non-OnDisk-edge $`\Rightarrow`$ skip; hit an
+OnDisk edge $`\Rightarrow`$ THEN fault. Shrinks the faulting window to cold-prefix removes only. The N-S4-3 isolated
 soak stays MANDATORY (empirical gate; RA-12: mitigated not eliminated).
 
 ## 11. Ordered edit list (reversible S5-1..S5-11 land before owner GO; only S5-12 irreversible)
@@ -121,7 +121,7 @@ soak stays MANDATORY (empirical gate; RA-12: mitigated not eliminated).
   `insert_cas_with_value_nodurable`; **wire reestablish into BOTH ctors gated on Overlay regime** (the
   V1 close — byte-identical for Owned files). Reversible (no construction flip yet).
 - S5-11: the new gate tests. Reversible.
-- **S5-12 — THE FLIP (IRREVERSIBLE, ~6 lines):** the V$\in${(),u64} ctors call `flip_to_overlay` (create) /
+- **S5-12 — THE FLIP (IRREVERSIBLE, ~6 lines):** the V$`\in`${(),u64} ctors call `flip_to_overlay` (create) /
   reestablish handles open. Arbitrary-V UNCHANGED. Owner GO + full gate.
 
 ## 12. Gate sequence (timeout-wrapped, tee'd, REAL-disk scratch)
@@ -142,10 +142,10 @@ verify-formal-correspondence.sh. Owner GO consumed BETWEEN gate-pass and committ
 - RA-5: the dual `CharTrieFileHeader` defs agree on bytes 24–32.
 - RA-6 (was HIGHEST): RESOLVED — real removes ARE ranked (verified); v2 also exempts Remove from drop.
 - RA-7: `rotate_to_archive` carries next_lsn HIGH (LSNs globally monotone; only `truncate` resets to 1).
-- RA-8: the fresh active is exactly a 64-byte header write+fsync (length-64 $\iff$ empty).
+- RA-8: the fresh active is exactly a 64-byte header write+fsync (length-64 $`\iff`$ empty).
 - RA-9: post-flip same-process reads work via the §1 rebuild ending the flip (not empty-overlay-faults).
 - RA-10: archived Overlay segments are permanently Overlay; boundary = first Overlay archive segment.
-- RA-11: watermark advances AFTER sync (Order-A) $\Rightarrow$ no spurious release panic from the promoted assert.
+- RA-11: watermark advances AFTER sync (Order-A) $`\Rightarrow`$ no spurious release panic from the promoted assert.
 - RA-12 (MEDIUM stall): H5 mitigated not eliminated; cold-prefix remove can still stall vs checkpoint.
 - RA-13: the IRREVERSIBLE flip is CHAR-ONLY; byte/vocab stay Owned (holes latent-safe); a future
   byte/vocab flip must repeat this design.
@@ -162,29 +162,29 @@ a from-scratch redesign.
   on-disk header is `FileHeader` ("PART" magic, FNV-checksummed, `disk_manager.rs:76`; opened via
   `DiskManager::open`, `mmap_ctor.rs:288`), NOT `CharTrieFileHeader` ("ARTC", which is `#[cfg(test)]`-only).
   In `FileHeader`, bytes 24..32 = `block_count`(u32)+`_pad1`, covered by the FNV checksum. v2 §4.3's
-  "write checkpoint_lsn at bytes 24..32" would CLOBBER `block_count` + invalidate the checksum $\Rightarrow$ the
-  next `DiskManager::open` fails `verify_checksum` $\Rightarrow$ UNOPENABLE file; and `get_checkpoint_lsn`
-  (`char recovery.rs:574`) reads `CharTrieFileHeader` (wrong struct) $\Rightarrow$ garbage. **REDESIGN: put
+  "write checkpoint_lsn at bytes 24..32" would CLOBBER `block_count` + invalidate the checksum $`\Rightarrow`$ the
+  next `DiskManager::open` fails `verify_checksum` $`\Rightarrow`$ UNOPENABLE file; and `get_checkpoint_lsn`
+  (`char recovery.rs:574`) reads `CharTrieFileHeader` (wrong struct) $`\Rightarrow`$ garbage. **REDESIGN: put
   `checkpoint_lsn` into `FileHeader`'s reserved bytes 56..64, INSIDE its FNV checksum; make
   `get_checkpoint_lsn` read `FileHeader`. NEVER write bytes 24..32. Add a round-trip-through-
   `DiskManager::open` test (file stays openable).** Single highest-risk residual.
 - **Rebuild I/O-error swallow (MED-HIGH):** `iter_with_values()` does `.ok().unwrap_or_default()`
-  (`mod.rs:625`) $\Rightarrow$ an I/O fault during the rebuild yields an EMPTY Vec $\Rightarrow$ overlay left empty, owned
-  cleared $\Rightarrow$ TOTAL LOSS. `reestablish_overlay_after_recovery` MUST use fallible `iter_prefix_with_values("")?`
+  (`mod.rs:625`) $`\Rightarrow`$ an I/O fault during the rebuild yields an EMPTY Vec $`\Rightarrow`$ overlay left empty, owned
+  cleared $`\Rightarrow`$ TOTAL LOSS. `reestablish_overlay_after_recovery` MUST use fallible `iter_prefix_with_values("")?`
   (or streaming per-first-char) and ABORT open/flip on `Err`.
-- **RA-2 NEEDS-CODE-FIX (showstopper at scale):** eager rebuild = full term Vec + owned + overlay $\approx$
-  2.5–3$\times$ resident + faults EVERY evicted page + O(N) at EVERY open $\Rightarrow$ OOM/stall near the 32GB cap.
+- **RA-2 NEEDS-CODE-FIX (showstopper at scale):** eager rebuild = full term Vec + owned + overlay $`\approx`$
+  2.5–3$`\times`$ resident + faults EVERY evicted page + O(N) at EVERY open $`\Rightarrow`$ OOM/stall near the 32GB cap.
   Stream the rebuild (chunk+drop) or block S5-12 to small tries until lazy-fault reopen (Phase F).
 - **Overlay-checkpoint fns are `cfg(any(test, bench-internals))`** (`capture_snapshot_immutable`,
   `publish_immutable_snapshot_retaining_wal[_with_eviction]`, `overlay_to_inner`, `count_overlay_finals`
-  — persist.rs:342/547/654/1142/1250) $\Rightarrow$ won't compile in prod; S5-9 "un-gate" is a non-trivial subtask
+  — persist.rs:342/547/654/1142/1250) $`\Rightarrow`$ won't compile in prod; S5-9 "un-gate" is a non-trivial subtask
   + an unsafe-inventory re-run (no NEW unsafe token — `overlay_to_inner`'s `Box::into_raw` is safe).
 - **`set_overlay_regime` has NO length guard today** (sync writer.rs:373 + async :603) — §5's
   "internally length-guards" is aspirational; must be implemented + the caller enforce `is_empty_after_header()`.
 - **§9 non-faulting-first remove pre-flight NOT implemented** — `remove_cas_durable` still faults-first
   (`lockfree_cas.rs:553`); the N-S4-3 soak stays mandatory.
 - **NEW LOW: `begin_document` burns an un-watermarked LSN under overlay** (`document_tx.rs:40`, no route
-  guard) $\Rightarrow$ the committed-watermark stalls there $\Rightarrow$ checkpoint reclaim can't advance. Reject under
+  guard) $`\Rightarrow`$ the committed-watermark stalls there $`\Rightarrow`$ checkpoint reclaim can't advance. Reject under
   `route_overlay()` (symmetry with `commit_document`).
 - **VALIDATED CLOSED:** RA-1 (rebuild durable-free), RA-6 (real removes ranked), RA-7 (LSN monotone
   across rotate), RA-8 (fresh active == header size), RA-9 (post-flip reads via the §1 suffix), RA-10

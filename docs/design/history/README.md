@@ -44,5 +44,5 @@ A few documents do not belong to a multi-document campaign and live directly und
 | Document | What it records |
 |----------|-----------------|
 | [`f0-hack-fixes.md`](f0-hack-fixes.md) | Principled replacements for the four "F0" hacks/gaps (`batch_insert` fan-out, `commit_document` errors, `compare_and_swap`/`get_or_insert` routes) ahead of the lock-free flip. |
-| [`rb-overlay-delete.md`](rb-overlay-delete.md) | Design "R-B": the proven overlay `DELETE` for the lock-free char-ARTrie overlay, including the loom/proptest/TLA re-proof that insert $\cup$ remove stays linearizable once finality is no longer monotone. |
+| [`rb-overlay-delete.md`](rb-overlay-delete.md) | Design "R-B": the proven overlay `DELETE` for the lock-free char-ARTrie overlay, including the loom/proptest/TLA re-proof that insert $`\cup`$ remove stays linearizable once finality is no longer monotone. |
 | [`persistence-enhancements-experimental-plan.md`](persistence-enhancements-experimental-plan.md) | The original PersistentARTrie persistence-enhancements experimental plan (group commit, epoch checkpointing, memory-pressure eviction, adaptive buffer pool, per-node logging). |

@@ -26,7 +26,7 @@ Without left extension, WallBreaker cannot efficiently grow pattern matches towa
 
 ## Left Context and Right Context
 
-The two contexts below are sometimes called the **right language** and **left language** of a factor — the sets of words that may legally follow it (append) or precede it (prepend) inside `w`. Right contexts drive standard (right-extension) navigation; left contexts are what the SCDAWG additionally indexes, over the alphabet $\Sigma$.
+The two contexts below are sometimes called the **right language** and **left language** of a factor — the sets of words that may legally follow it (append) or precede it (prepend) inside `w`. Right contexts drive standard (right-extension) navigation; left contexts are what the SCDAWG additionally indexes, over the alphabet $`\Sigma`$.
 
 ### Right Context (Review)
 
@@ -95,9 +95,9 @@ In other words, imps(x) is the longest string that occurs exactly where x occurs
 
 *Proof*: By definition, `imps(x)` occurs exactly where `x` occurs, so they have identical end-positions (`endpos` sets).
 
-**Lemma 3**: $\mid imps(x)\mid \ge \mid x\mid$
+**Lemma 3**: $`\mid imps(x)\mid \ge \mid x\mid`$
 
-*Proof*: `imps(x)` contains `x` ($\gamma x\beta \supseteq x$).
+*Proof*: `imps(x)` contains `x` ($`\gamma x\beta \supseteq x`$).
 
 ### Example: Implications for "abcabcab"
 
@@ -136,12 +136,12 @@ P(w) = {x ∈ F(w) : x is prime} = {imps(y) : y ∈ F(w)}
 
 *Proof*:
 - If `x = longest([x])`, then no extension of `x` shares the same end-positions.
-- Therefore $\gamma = \beta = \epsilon$ in the implication.
+- Therefore $`\gamma = \beta = \epsilon`$ in the implication.
 - So `imps(x) = x`, making `x` prime.
 
-**Lemma 5**: $\mid P(w)\mid \le \mid w\mid + 1$ (same bound as CDAWG nodes).
+**Lemma 5**: $`\mid P(w)\mid \le \mid w\mid + 1`$ (same bound as CDAWG nodes).
 
-**Lemma 6**: For any factor `x`, $imps(x) \in P(w)$.
+**Lemma 6**: For any factor `x`, $`imps(x) \in P(w)`$.
 
 ### Prime Subwords for "abcabcab"
 
@@ -209,7 +209,7 @@ Each prime subword has:
 - Right edges for each valid right extension character.
 - Left edges for each valid left extension character.
 
-The figure below renders the full SCDAWG for the running example `abcabcab`. Solid dark edges are the CDAWG's right-extension transitions; the dashed blue edges are the **symmetric left-extension edges** the SCDAWG adds. Together they let a matched factor be grown to the right (append) or to the left (prepend) in $O(\mid label\mid )$ per step — the bidirectional capability the plain CDAWG lacks.
+The figure below renders the full SCDAWG for the running example `abcabcab`. Solid dark edges are the CDAWG's right-extension transitions; the dashed blue edges are the **symmetric left-extension edges** the SCDAWG adds. Together they let a matched factor be grown to the right (append) or to the left (prepend) in $`O(\mid label\mid )`$ per step — the bidirectional capability the plain CDAWG lacks.
 
 <img src="../../diagrams/scdawg-structure.svg" alt="SCDAWG for abcabcab over the prime-subword nodes v0=ε through v6=abcabcab. Solid dark-slate edges are right-extension (CDAWG) transitions labelled by their substrings; dashed blue edges are the symmetric left-extension edges that distinguish the SCDAWG, enabling prepend navigation and thus bidirectional search." width="860"/>
 
@@ -250,8 +250,8 @@ This symmetry means:
 
 *Proof sketch*:
 - `slink(x) = y` means `y` is a suffix of `x`.
-- $x = \alpha \cdot y$ for some non-empty $\alpha$.
-- The first character of $\alpha$ provides the left extension from `y` to `x`.
+- $`x = \alpha \cdot y`$ for some non-empty $`\alpha`$.
+- The first character of $`\alpha`$ provides the left extension from `y` to `x`.
 
 ### Building Left Extensions from Suffix Links
 
@@ -370,7 +370,7 @@ The SCDAWG satisfies all WallBreaker requirements from Gerdjikov et al. (2013, s
 | **(1b)** | Right extend V → V·σ | Follow right extension edge labeled with σ |
 | **(1c)** | Left extend V → σ·V | Follow left extension edge labeled with σ |
 
-All operations complete in $O(\mid label\mid )$ time, where `label` is the edge-label length.
+All operations complete in $`O(\mid label\mid )`$ time, where `label` is the edge-label length.
 
 ## Summary
 

@@ -28,7 +28,7 @@ Traditional concurrent trie implementations use locks (RwLock) which serialize w
 > 2. **Children are owned, not smuggled (the leak fix).** `PersistentCharNode`'s
 >    child slots are `Child = InMem(Arc<PersistentCharNode>) | OnDisk(SwizzledPtr)`
 >    (now the shared `core/overlay/node.rs`), stored in a tiered `ChildStore`
->    ($Inline[\le 4]$ zero-alloc / `Heap[5+]`) — **not** `im::Vector`. Previously an
+>    ($`Inline[\le 4]`$ zero-alloc / `Heap[5+]`) — **not** `im::Vector`. Previously an
 >    in-memory child was an `Arc::into_raw` pointer smuggled through `SwizzledPtr`'s
 >    `u64`; because that `u64` has no `Drop`, **every superseded node version leaked
 >    its children**. With owned `Child::InMem`, reclamation is ordinary `Arc`
@@ -56,7 +56,7 @@ Traditional concurrent trie implementations use locks (RwLock) which serialize w
 >    oracle + contended finalization + post-*merge* data-loss witnesses),
 >    `tests/persistent_lockfree_overlay_loom.rs` (no-lost-update, prefix single-
 >    arbiter, reader-no-UAF), and an in-crate `reclaim_tests` module in
->    `lockfree_cas.rs` (`Arc::strong_count == 1` after drop $\Rightarrow$ no leaked references).
+>    `lockfree_cas.rs` (`Arc::strong_count == 1` after drop $`\Rightarrow`$ no leaked references).
 >
 > **Scope:** char overlay = fully converted (atomic root + owned children + fix).
 > **Byte overlay = now also fully converted** — `im::Vector` → tiered `ChildStore`

@@ -84,7 +84,7 @@ Crucially, this does **not** re-open the *create-vs-create* hole: a second **cre
 still fails at the WAL's `O_EXCL`, independent of the lock. So `test_concurrent_opens_same_path`
 (which holds one handle and expects a second **create** to fail) and the crash-recovery **open**
 tests are both satisfied. Let `P` be the set of processes and, for a fixed file, `n_p` the count of
-live handles in process `p`; the OS lock is held **iff** $\sum_{p \in P} n_p > 0$ and is owned by
+live handles in process `p`; the OS lock is held **iff** $`\sum_{p \in P} n_p > 0`$ and is owned by
 exactly the one process with `n_p > 0` — any *other* process observes `EWOULDBLOCK`.
 
 ---

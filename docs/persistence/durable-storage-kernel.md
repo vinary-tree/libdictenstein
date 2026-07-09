@@ -24,9 +24,9 @@ and how to build a **new persistent file layer** on it that is not a dictionary 
 |------|-----------|
 | **seam** | A trait whose *implementation* you supply so generic kernel code can call into your structure. `BlockStorage` and `KeyEncoding` are seams. |
 | **Template Method** | A design pattern (Gamma et al. 1994) where an invariant algorithm skeleton is fixed in a base and only named steps vary. The kernel fixes the *Order-A* write ordering and lets you vary the node-building step. |
-| **Order-A** | The kernel's fixed durable-write ordering: *append+sync WAL $\to$ publish via CAS $\to$ commit-rank + mark watermark*. Its inverse, "publish then log" (Order-B), is rejected because it can expose a visible-but-not-durable write. |
+| **Order-A** | The kernel's fixed durable-write ordering: *append+sync WAL $`\to`$ publish via CAS $`\to`$ commit-rank + mark watermark*. Its inverse, "publish then log" (Order-B), is rejected because it can expose a visible-but-not-durable write. |
 | **LSN** | Log-Sequence Number — a WAL record's monotone position. |
-| **watermark** | The largest LSN $L$ with every $\ell \in 1..=L$ committed — the only safe checkpoint bound under out-of-order commit. |
+| **watermark** | The largest LSN $`L`$ with every $`\ell \in 1..=L`$ committed — the only safe checkpoint bound under out-of-order commit. |
 | **arc-swap** | A single-word atomic cell holding an `Arc<T>` that readers load without a lock and writers replace by CAS. |
 
 ---
@@ -49,13 +49,13 @@ layer* connects to the durable-storage kernel (`core/`)'s three service groups:
 `BlockStorage` (`core/block_storage.rs`) is the interface every layer above is generic
 over (`S: BlockStorage`). It abstracts a file as an array of fixed-size **blocks**:
 
-- Block $0$ holds a 64-byte `FileHeader` (magic, version, root pointer, entry count,
+- Block $`0`$ holds a 64-byte `FileHeader` (magic, version, root pointer, entry count,
   free-list head, checksum, and the image-coverage frontier `image_checkpoint_lsn`).
-- Blocks $1..N$ each hold `BLOCK_SIZE` = $256\text{ KB}$ of data.
+- Blocks $`1..N`$ each hold `BLOCK_SIZE` = $`256\text{ KB}`$ of data.
 - Block IDs are 24-bit (`MAX_BLOCK_COUNT = 2^{24}`), so a single file addresses up to
-  $2^{24}$ blocks $= 4\text{ TB}$. (A *swizzled* child pointer packs `block_id` in only
-  23 bits, so nodes reached through swizzled links occupy the first $2^{23} = 8\text{ M}$
-  blocks, $2\text{ TB}$ — see [storage-backends.md](storage-backends.md#pointer-swizzling).)
+  $`2^{24}`$ blocks $`= 4\text{ TB}`$. (A *swizzled* child pointer packs `block_id` in only
+  23 bits, so nodes reached through swizzled links occupy the first $`2^{23} = 8\text{ M}`$
+  blocks, $`2\text{ TB}`$ — see [storage-backends.md](storage-backends.md#pointer-swizzling).)
 
 The trait is `Send + Sync + 'static` (backends own their resources and carry no borrowed
 lifetime, so a whole structure can be erased behind a `dyn` object). Its surface:
@@ -160,20 +160,20 @@ services directly, as in [Recipe B](#recipe-b--a-non-tree-snapshot-layer) below.
 
 ### The guarantees these services enforce (and prove)
 
-$$
+```math
 \text{visible}(x) \;\implies\; \text{WAL-durable}(x)\ \text{at}\ \mathrm{lsn}(x) \le \mathrm{syncedLsn}
 \qquad(\textbf{acknowledged} \implies \textbf{durable})
-$$
+```
 
-$$
+```math
 \text{checkpoint\_lsn} \;=\; \max\{\,L : \forall\,\ell \in 1..=L,\ \text{committed}(\ell)\,\}
 \qquad(\text{a committed contiguous prefix})
-$$
+```
 
-$$
+```math
 \text{Recovered} \;=\; \text{durableCheckpoint} \,\cup\, \text{WAL-tail} \;=\; \text{visible}
 \qquad(\text{no lost writes, no invented state})
-$$
+```
 
 These hold for *any* client of the kernel, because the machinery that enforces them is
 generic. They are model-checked in TLA⁺ (`LockFreeDurableCheckpoint.tla`,

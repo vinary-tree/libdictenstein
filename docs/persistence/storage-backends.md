@@ -16,7 +16,7 @@ this — the overlay, durability, and checkpoint machinery — are in
 |------|-----------|
 | **mmap** | *Memory-mapped file I/O* (`mmap(2)`): the block file is mapped into the process address space, so the kernel page cache faults pages in on access and writes them back lazily. |
 | **`O_DIRECT`** | A Linux `open(2)` flag that bypasses the kernel page cache, transferring data directly between device and aligned user buffers — so durability is device-level rather than page-cache-deferred. |
-| **block** | The fixed I/O unit: $\text{BLOCK\_SIZE} = 256\text{ KB}$. Block $0$ is the header; blocks $1..N$ hold data. |
+| **block** | The fixed I/O unit: $`\text{BLOCK\_SIZE} = 256\text{ KB}`$. Block $`0`$ is the header; blocks $`1..N`$ hold data. |
 | **arena** | A block subdivided into fixed-size *slots* that pack many small nodes, amortizing per-node allocation and I/O. |
 | **bucket** | A B-trie leaf page holding many short suffixes with binary search, so a subtree of tiny leaves collapses to one page (Askitis & Zobel 2009). |
 | **swizzling** | Encoding a child link as *either* an in-memory pointer *or* an on-disk block location in one 64-bit word, so subtrees load lazily. |
@@ -26,14 +26,14 @@ this — the overlay, durability, and checkpoint machinery — are in
 Everything above the disk is generic over `S: BlockStorage` (`core/block_storage.rs`), so a
 trie runs unchanged over mmap, `io_uring`, or a custom backend (see
 [durable-storage-kernel.md](durable-storage-kernel.md#seam-1--blockstorage-the-storage-backend)).
-The seam models a file as blocks: block $0$ carries the 64-byte `FileHeader`; blocks
-$1..N$ each hold $256\text{ KB}$; block IDs are 24-bit (`MAX_BLOCK_COUNT = 2^{24}`), so a
-single file addresses $2^{24}$ blocks $= 4\text{ TB}$. (A *swizzled child pointer* is a
+The seam models a file as blocks: block $`0`$ carries the 64-byte `FileHeader`; blocks
+$`1..N`$ each hold $`256\text{ KB}`$; block IDs are 24-bit (`MAX_BLOCK_COUNT = 2^{24}`), so a
+single file addresses $`2^{24}`$ blocks $`= 4\text{ TB}`$. (A *swizzled child pointer* is a
 narrower reach: it encodes `block_id` in **23 bits** — see [Pointer swizzling](#pointer-swizzling) —
-so nodes reached through swizzled links live in the first $2^{23} = 8\text{ M}$ blocks,
-$2\text{ TB}$.) All I/O buffers are `AlignedBlock`s
+so nodes reached through swizzled links live in the first $`2^{23} = 8\text{ M}`$ blocks,
+$`2\text{ TB}`$.) All I/O buffers are `AlignedBlock`s
 (`#[repr(C, align(4096))]`) — 4096-byte alignment satisfies `O_DIRECT`, and because
-$256\text{ KB}$ is already a multiple of 4096 the alignment costs zero padding, so one
+$`256\text{ KB}`$ is already a multiple of 4096 the alignment costs zero padding, so one
 buffer pool serves both backends.
 
 ### The two backends — a workload-driven choice
@@ -80,7 +80,7 @@ bytes of block 0 hold the durable checkpoint descriptor. Per-field layout:
 | `free_list_head` | 32–39 | head of the free-block list (`0` = none). |
 | `entry_count` | 40–47 | dictionary entry count. |
 | `checksum` | 48–55 | a 64-bit content checksum of the header (excluding this field) — **computed with FNV-1a** (`disk_manager.rs::compute_checksum`; the field's code doc-comment mislabels it "CRC-64"). |
-| `image_checkpoint_lsn` | 56–63 | **#48** image-coverage frontier — the max WAL LSN folded into *this* image, written atomically with it, so reopen's $\max(\text{wal\_record}, \text{this})$ avoids double-apply. Folded into the checksum only for v2+ files, so v1 files still validate byte-identically. |
+| `image_checkpoint_lsn` | 56–63 | **#48** image-coverage frontier — the max WAL LSN folded into *this* image, written atomically with it, so reopen's $`\max(\text{wal\_record}, \text{this})`$ avoids double-apply. Folded into the checksum only for v2+ files, so v1 files still validate byte-identically. |
 
 ### Data blocks — arenas, buckets, and node headers
 
@@ -135,7 +135,7 @@ absurd), using inline, sorted, or sparse-indexed storage instead:
 | dense | `Node256` — direct 256-slot array | `SparseIndexed` (positions + entries); char high fan-out uses `CharBucket` (no `Node256` — a `u32` dense array would be 4 GB) |
 
 Path compression collapses single-child chains: a node stores a compressed prefix capped at
-`KeyEncoding::MAX_PREFIX_LEN` — $12$ bytes for `ByteKey`, $6$ code points ($24$ bytes) for
+`KeyEncoding::MAX_PREFIX_LEN` — $`12`$ bytes for `ByteKey`, $`6`$ code points ($`24`$ bytes) for
 `CharKey`, and `PREFIX` units for `U64Key<PREFIX>`. The theory is in
 [disk-trie foundations](../theory/disk-tries/03-adaptive-radix-tree.md).
 
@@ -152,15 +152,15 @@ snapshot. See [native-u64-and-cx.md](../algorithms/native-u64-and-cx.md).
 ## Benchmark evidence
 
 Fixed-sample `u64` experiments (seeded time-series workload, Welch's unequal-variance
-$t$-test) measured the compact prefix-4 profile at a $656{,}679$-byte checkpoint versus
-$1{,}585{,}249$ bytes for byte-encoded `u64` keys, and lookup at $350.72\text{ ns/query}$
-versus $455.01\text{ ns/query}$ for the encoded control; prefix-4 also cut bytes-per-entry
-versus prefix-3 ($320.97$ vs $336.74$). After native `u64` was aligned with the byte/char
+$`t`$-test) measured the compact prefix-4 profile at a $`656{,}679`$-byte checkpoint versus
+$`1{,}585{,}249`$ bytes for byte-encoded `u64` keys, and lookup at $`350.72\text{ ns/query}`$
+versus $`455.01\text{ ns/query}`$ for the encoded control; prefix-4 also cut bytes-per-entry
+versus prefix-3 ($`320.97`$ vs $`336.74`$). After native `u64` was aligned with the byte/char
 Order-A WAL discipline, the 2026-06-13 registered run reconfirmed the native prefix-4
-profile beating byte-encoded `u64` lookup ($357.25$ vs $455.35\text{ ns/query}$,
-$p = 2.82\times10^{-35}$) and the 8-reader/1-writer read path
-($148.35$ vs $204.30\text{ ns/read}$, $p = 4.42\times10^{-9}$), with prefix-4 checkpoint
-density beating prefix-3 ($453.98$ vs $469.76$ bytes/entry, $p = 4.61\times10^{-127}$). Raw
+profile beating byte-encoded `u64` lookup ($`357.25`$ vs $`455.35\text{ ns/query}`$,
+$`p = 2.82\times10^{-35}`$) and the 8-reader/1-writer read path
+($`148.35`$ vs $`204.30\text{ ns/read}`$, $`p = 4.42\times10^{-9}`$), with prefix-4 checkpoint
+density beating prefix-3 ($`453.98`$ vs $`469.76`$ bytes/entry, $`p = 4.61\times10^{-127}`$). Raw
 ledger: [`persistent-u64-watermark-commitrank-2026-06-13.md`](../experiments/persistent-u64-watermark-commitrank-2026-06-13.md).
 
 ## References

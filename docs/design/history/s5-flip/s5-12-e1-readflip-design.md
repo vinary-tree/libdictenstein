@@ -19,7 +19,7 @@ The parked write-flip makes a fresh `create::<V∈{(),u64}>()` route WRITES to t
 (`route_overlay() == true`). On an Overlay-regime REOPEN, EDIT 2 moves the recovered owned tree into
 the overlay and **clears `self.root` + `self.len`** (`reestablish_overlay_*_after_recovery`,
 lockfree_cas.rs:314-315 / 2107-2108 — confirmed). Every owned-trait READ still reads
-`self.root`/`self.len`, now empty $\Rightarrow$ ~58 tests see an empty tree. E1 routes the reads to the overlay,
+`self.root`/`self.len`, now empty $`\Rightarrow`$ ~58 tests see an empty tree. E1 routes the reads to the overlay,
 symmetric to the write guards. `route_overlay() == uses_overlay() && lockfree_root.is_some()`
 (overlay_write_mode.rs:71).
 
@@ -108,20 +108,20 @@ with those two. Every enumerator carries a code comment: **NON-FAULTING — must
    Backs `len`/`term_count`. `is_empty` = a cheaper any-final early-out walk (NOT `overlay_len()==0`,
    to stay O(1)-ish on a huge overlay).
 2. `overlay_navigate_prefix(&self, prefix) -> Option<Arc<PersistentCharNode<V>>>` — descend
-   `lockfree_root` by `prefix.chars()`, `as_in_mem` only; `None` $\iff$ a prefix char has no in-mem edge.
+   `lockfree_root` by `prefix.chars()`, `as_in_mem` only; `None` $`\iff`$ a prefix char has no in-mem edge.
    Overlay is NOT path-compressed (one node per char), so one char = one edge.
 3. `overlay_collect_finals(node, acc, out)` — DFS over in-mem children, push `acc` on `is_final`.
    Backs `iter_prefix`. RECOMMENDED (not required): heap work-stack instead of recursion as
    defense-in-depth — depth == key length (overlay un-path-compressed), same as today's production
-   point-reads ($\le$500 in tests), so NO new crash risk; the stack is belt-and-suspenders.
+   point-reads ($`\le`$500 in tests), so NO new crash risk; the stack is belt-and-suspenders.
 4. `route_get_value<V,S>(&self, term) -> Option<Option<V>>` — the `Any`-downcast value-route (the
-   `lockfree_value_route.rs` pattern, zero-unsafe, `V:'static`): `V==u64` $\Rightarrow$ `get_lockfree(term)`
-   re-wrapped as `V`; `V==()` $\Rightarrow$ membership via `contains_lockfree`; else `None` (caller runs owned).
+   `lockfree_value_route.rs` pattern, zero-unsafe, `V:'static`): `V==u64` $`\Rightarrow`$ `get_lockfree(term)`
+   re-wrapped as `V`; `V==()` $`\Rightarrow`$ membership via `contains_lockfree`; else `None` (caller runs owned).
 
 ### Prefix semantics parity (None vs Some(empty)) — pin with a correspondence test
 Owned `iter_prefix` returns `Ok(None)` when the prefix PATH is absent vs `Ok(Some(vec![]))` when the
-prefix node exists but has no finals. `overlay_navigate_prefix` must reproduce this EXACTLY: `None` $\iff$ no
-in-mem edge; the empty-prefix `iter_prefix("")` (backing `iter()`) $\Rightarrow$ root $\Rightarrow$ `Ok(Some(...))` even on an
+prefix node exists but has no finals. `overlay_navigate_prefix` must reproduce this EXACTLY: `None` $`\iff`$ no
+in-mem edge; the empty-prefix `iter_prefix("")` (backing `iter()`) $`\Rightarrow`$ root $`\Rightarrow`$ `Ok(Some(...))` even on an
 empty overlay. Test `test_disk_char_iter_prefix_not_found` asserts `.is_none()` for an absent prefix.
 
 ---
@@ -129,15 +129,15 @@ empty overlay. Test `test_disk_char_iter_prefix_not_found` asserts `.is_none()` 
 ## 4. D4 / D6 / D9 — the remaining read defects
 
 - **D4 (HIGH):** `get_optimistic`/`try_get_optimistic` (query_api.rs:154/168) compute
-  `self.get(term).cloned()` $\Rightarrow$ `Some(None)` under overlay (consistent read of WRONG data). They already
+  `self.get(term).cloned()` $`\Rightarrow`$ `Some(None)` under overlay (consistent read of WRONG data). They already
   return owned `Option<V>` (no signature gap), so VALUE-ROUTE them (call the routed inherent
   `get_value`). `contains_optimistic` is safe (delegates to inherent `contains`).
 - **D6 (MED, coverage):** the deep-key test (integration.rs:703 + unicode twin) asserts via
   `if let Some(value) = reopened.get(&long_key) { assert_eq!(*value, i) }`. Under overlay inherent `get`
-  → None $\Rightarrow$ the `if let` body never runs $\Rightarrow$ the value check VANISHES (vacuous pass). Swap
+  → None $`\Rightarrow`$ the `if let` body never runs $`\Rightarrow`$ the value check VANISHES (vacuous pass). Swap
   `get`→`get_value` to KEEP the assertion live. Not optional — it preserves coverage.
 - **D9 (HIGH):** `iter_prefix_with_arena`/`iter_prefix_with_values_and_arena` (prefix_api.rs:75/123) have
-  NO overlay analogue (overlay nodes carry no per-node arena id). Today they read `self.root` (Empty) $\Rightarrow$
+  NO overlay analogue (overlay nodes carry no per-node arena id). Today they read `self.root` (Empty) $`\Rightarrow`$
   `Ok(None)`, which makes `remove_prefix`/`remove_prefix_batched` (prefix_api.rs:154/172) a **silent
   no-op** on a non-empty overlay (treats a real prefix as absent). FAIL-LOUD: under `route_overlay()`
   the arena-iter methods and `remove_prefix*` return `Err(InvalidOperation("arena iteration / prefix
@@ -148,7 +148,7 @@ empty overlay. Test `test_disk_char_iter_prefix_not_found` asserts `.is_none()` 
 ## 5. D8 — DEFER surfaces (zipper / `root()` / transducer), documented + signalled
 
 `root()` (mod.rs:596/996/1031), the zipper (mod.rs:1118-1194), and `DictionaryNode`/
-`MappedDictionaryNode` (mod.rs:890/976) walk `self.root` (Empty under overlay) $\Rightarrow$ a flipped trie looks
+`MappedDictionaryNode` (mod.rs:890/976) walk `self.root` (Empty under overlay) $`\Rightarrow`$ a flipped trie looks
 like an EMPTY dictionary to a transducer/zipper. This is the E1-iter-B / Phase-F surface (overlay-backed
 `DictionaryNode`), out of E1 scope. For THIS commit:
 - Document loudly on `root()`/zipper that fuzzy/zipper queries over a flipped (overlay) trie are
@@ -220,12 +220,12 @@ its own route. DEFER = E1-iter-B (owned `root` walk). OWNED-ONLY = must read own
 | Test(s) | File:line | Handling |
 |---|---|---|
 | ~45 owned-read-back (`test_create_and_open`, `concurrent_durable_writers_all_survive_reopen`, `test_disk_char_iter_prefix*`, recovery/archive) | various | FIXED-UNCHANGED by E1 — but ONLY after D1 (bootstrap) + D2 (trait bodies). Any that assert via trait `len`/`is_empty`/`get_value` need D2 or stay red. |
-| 9$\times$ `test_document_transaction_*` | dict_impl_char.rs:1288-1601 | REFRAME → expect `InvalidOperation` reject under overlay. Verify each reaches the reject; `_empty`/`_recovery` may pass untouched — check individually. |
+| 9$`\times`$ `test_document_transaction_*` | dict_impl_char.rs:1288-1601 | REFRAME → expect `InvalidOperation` reject under overlay. Verify each reaches the reject; `_empty`/`_recovery` may pass untouched — check individually. |
 | `char_lockfree_value_merge_overflow_is_all_or_nothing` | merge_corr.rs:117 | REFRAME (larger): fix the `"overflow"` message assert (now "overlay") AND the `get().copied()` value checks → `get_lockfree` (D5). |
 | `char_lockfree_value_merge_appends_one_batch...` | merge_corr.rs:180 | REFRAME (larger): line 194 `.expect()` currently PANICS on the reject — rewrite to expect the overlay-reject; `get()`→`get_lockfree` (D5). |
 | `flip_to_overlay_then_kill_switch...` | overlay_write_mode.rs:163 | REFRAME: fresh `create<u64>` now `route_overlay()==true`; fix the line-173 precondition. |
 | `test_deep_trie_no_stack_overflow` (+ unicode) | integration.rs:607/713 | COVERAGE: swap line 703/twin `get`→`get_value` to keep the value assertion live (D6, vacuous-pass otherwise). |
-| `s5_12_old_owned_file_stays_owned_on_reopen` (ineligible V) | parked | SAFE — proves E1 INERTNESS for arbitrary V (no flip $\Rightarrow$ owned arm). |
+| `s5_12_old_owned_file_stays_owned_on_reopen` (ineligible V) | parked | SAFE — proves E1 INERTNESS for arbitrary V (no flip $`\Rightarrow`$ owned arm). |
 | ineligible-V (`<i32>`/`<String>`) read-backs | integration.rs:181-197/514-516 | SAFE (no flip). |
 
 ---
@@ -233,7 +233,7 @@ its own route. DEFER = E1-iter-B (owned `root` walk). OWNED-ONLY = must read own
 ## 9. DO-NOT list (forbidden wrong-fixes)
 
 1. DO NOT wrap the reestablish-internal `iter`/`iter_prefix*`/`get_value` with `route_overlay()` — reads
-   the empty overlay then clears owned $\Rightarrow$ total irreversible loss (D1). Reestablish reads OWNED-ONLY.
+   the empty overlay then clears owned $`\Rightarrow`$ total irreversible loss (D1). Reestablish reads OWNED-ONLY.
 2. DO NOT make the new enumerators fault OnDisk children via `find_leaf_faulting`/
    `load_overlay_node_from_disk` to "fix" the eviction undercount — that is the 75-min soak deadlock +
    O(N) root churn. Stay `as_in_mem`/non-faulting.
@@ -262,7 +262,7 @@ D4/D9 + the test reframes (D5/D6) + the D8 docs/warn.
 - Full `cargo nextest run --features persistent-artrie` green (the 58 now pass; baseline otherwise
   unchanged). Tee to a file.
 - INERT-PRE-FLIP audit: for ineligible V / non-flipped paths, every E1 `false` arm is the verbatim owned
-  body $\Rightarrow$ byte-for-byte unchanged. Prove via the ineligible-V tests passing unchanged + a diff audit that
+  body $`\Rightarrow`$ byte-for-byte unchanged. Prove via the ineligible-V tests passing unchanged + a diff audit that
   each routed method's `false` arm is the prior body.
 - `scripts/verify-formal-correspondence.sh` exit 0 (E1 adds no `unsafe`; the overlay walks are safe
   `Arc`/`as_in_mem`).
@@ -325,7 +325,7 @@ recovered_owned` + clear-last abort-safety; `systemd-run` resource-limited; 0 ad
   archive): one line `kill_switch_to_owned()` after `create()` (force the owned path the feature needs —
   doc-tx/merge/version/archive are owned-regime behaviors). The `kill_switch` WAL-restamp makes the
   reopen-recovery ones (`increment_recovery`, `merge_appends`) survive.
-- **3 flip gate tests** (`s5_9`, `s5_10b`$\times$2): the owned-empty assertion uses the new in-crate
+- **3 flip gate tests** (`s5_9`, `s5_10b`$`\times`$2): the owned-empty assertion uses the new in-crate
   `owned_try_contains` (E1 routes `Dictionary::contains` to the overlay now); `s5_10b` restructured to
   the AUTOMATIC reestablish (the flip's `open()` runs it — the function under test).
 - **counter_overlay_rebuilt**: restructured (the manual `enable_lockfree`+`increment_cas` rebuild
