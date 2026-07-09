@@ -784,38 +784,40 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // Collect arena slots from SwizzledPtrs
         let mut slots: Vec<ArenaSlot> = Vec::with_capacity(child_ptrs.len());
         for (_, ptr) in child_ptrs {
-            // Get disk location from SwizzledPtr
-            let loc = match ptr.disk_location() {
-                Some(loc) => loc,
-                None => return None, // All children must be on disk
-            };
-            let arena_id = loc.block_id;
-            let slot_id = loc.offset;
+            // All children must be on disk to use the disk-slot sequential encoding.
+            let loc = ptr.disk_location()?;
+            // Canonical arena-space id: arena N lives in block N+1 (block 0 is the file
+            // header). This matches ptr_to_arena_slot / collect_char_child_slots (the reader
+            // that validate_v2_serialization_context walks) and the byte twin's as_arena_slot().
+            // Reading loc.block_id verbatim (the historical bug) placed first_child one arena
+            // too high, so the writer's own contiguity self-check rejected the node as
+            // "char v2 sequential child mismatch".
+            // `?` declines sequential if block_id == 0 (the header block, never a child).
+            let arena_id = loc.block_id.checked_sub(1)?;
             if arena_id != parent_arena_id {
                 // All children must be in the same arena as parent
                 return None;
             }
-            slots.push(ArenaSlot::new(arena_id, slot_id));
+            slots.push(ArenaSlot::new(arena_id, loc.offset));
         }
 
-        // Sort by slot ID
-        slots.sort_by_key(|s| s.slot_id);
-
-        // Check if consecutive
+        // Children arrive in key order (`child_ptrs` follows iter_children, sorted-ascending;
+        // see the contract on serialize_one_char_node_to_disk). The sequential decoder
+        // reconstructs child `i` as `(first_child.arena_id, first_child.slot_id + i)` and pairs
+        // it with the i-th key, so the `(first_child, count)` encoding is valid ONLY when the
+        // children occupy consecutive ascending slots IN KEY ORDER. Verify that directly — do
+        // NOT sort by slot_id, or a same-arena set that is consecutive but out of key order
+        // would be mis-paired on decode (and rejected by validate_v2_serialization_context).
+        // The per-index checked_add also subsumes the old first_slot + (count-1) overflow guard.
         let first = slots[0];
         for (i, slot) in slots.iter().enumerate() {
-            if slot.slot_id != first.slot_id + i as u32 {
+            // `?` declines sequential on u32 overflow (subsumes the old count-1 overflow guard).
+            if slot.slot_id != first.slot_id.checked_add(i as u32)? {
                 return None;
             }
         }
 
-        // Verify first_slot + count won't overflow u32.
-        // This prevents decode_sequential_siblings() from generating invalid slot IDs.
-        // The last slot is first + (count - 1), so we check that doesn't overflow.
         let count = slots.len() as u32;
-        if first.slot_id.checked_add(count.saturating_sub(1)).is_none() {
-            return None; // Would overflow u32, use non-sequential encoding
-        }
 
         // Verify last slot is within arena bounds.
         // This aligns with formal spec: first + count - 1 < arena_node_count
@@ -1311,6 +1313,54 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCompressedSerialize<CharKey, V>
 
     fn stamp_durable(live: &super::nodes::PersistentCharNode<V>, raw: u64) {
         live.set_durable_stamp(raw);
+    }
+
+    fn register_reused(
+        &self,
+        ptr: &SwizzledPtr,
+        path: &[u32],
+        registry: &mut DiskLocationRegistry,
+    ) -> Result<()> {
+        // The live node is durable-clean: its bytes already sit at `ptr` from a prior checkpoint
+        // (the arena is append-only, so the slot is still valid). Record it in the freshly rebuilt
+        // registry with the EXACT on-disk size so the resident census — and hence resident-budget
+        // eviction — stays faithful, WITHOUT re-appending (dirty-skip's growth fix).
+        let arena_manager = self
+            .arena_manager
+            .as_ref()
+            .ok_or_else(|| PersistentARTrieError::internal("register_reused: no arena manager"))?;
+        let loc = ptr.disk_location().ok_or_else(|| {
+            PersistentARTrieError::internal(
+                "register_reused: reused ptr is not an on-disk location",
+            )
+        })?;
+        // Canonical arena id (arena N ⇔ block N+1).
+        let arena_id = loc.block_id.checked_sub(1).ok_or_else(|| {
+            PersistentARTrieError::internal("register_reused: reused ptr names block 0 (header)")
+        })?;
+        // `slot_data_range` returns (offset_in_arena, length); the length is the exact byte count
+        // `allocate` stored == what `serialize_one_char_node_to_disk` originally registered.
+        let size_bytes = {
+            let mgr = arena_manager.read();
+            let arena = mgr.get_arena(arena_id).ok_or_else(|| {
+                PersistentARTrieError::internal("register_reused: reused ptr names a missing arena")
+            })?;
+            let (_offset, len) = arena.slot_data_range(loc.offset)?;
+            len
+        };
+        // char-trie units are valid codepoints; lower the u32 path to `char` for the registry hash.
+        let path_chars: Vec<char> = path
+            .iter()
+            .map(|&u| char::from_u32(u).expect("char-trie unit is a valid codepoint"))
+            .collect();
+        registry.register_char(
+            path_chars,
+            ptr.clone(),
+            size_bytes,
+            path.len(),
+            loc.node_type,
+        );
+        Ok(())
     }
 }
 
@@ -2830,5 +2880,177 @@ mod cx_compressed_serialize {
             "CX #6: a COMPRESSED (prefix_len>0) chunk must be stamped == its disk_ptr on fault (re-evictable)"
         );
         let _ = u2;
+    }
+}
+
+#[cfg(test)]
+mod sequential_sibling_decision_tests {
+    //! Deterministic + property regression for the arena-space off-by-one in
+    //! [`super::PersistentARTrieChar::check_sequential_char_children`] — the
+    //! "char v2 sequential child mismatch" bug.
+    //!
+    //! A child's on-disk `block_id` is `arena_id + 1` (block 0 is the file header),
+    //! so the decision must compare against and emit CANONICAL arena ids
+    //! (`block_id - 1`), matching `ptr_to_arena_slot` / `collect_char_child_slots`
+    //! (the reader `validate_v2_serialization_context` walks) and the byte twin.
+    //! Pre-fix it read `block_id` verbatim, which (a) NEVER selected sequential for
+    //! genuinely same-arena children and (b) wrongly selected it for children one
+    //! arena behind the parent — which the writer's own self-check then rejected.
+    //! These pin the corrected, key-order-aware behavior.
+
+    use crate::persistent_artrie::char::arena_manager::ArenaSlot;
+    use crate::persistent_artrie::char::PersistentARTrieChar;
+    use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr};
+    use proptest::prelude::*;
+
+    /// A child on-disk pointer in canonical arena `arena_id`, arena slot `slot_id`
+    /// (stored on disk as `block_id = arena_id + 1`), exactly as
+    /// `serialize_one_char_node_to_disk` emits it.
+    fn child(key: u32, arena_id: u32, slot_id: u32) -> (u32, SwizzledPtr) {
+        (
+            key,
+            SwizzledPtr::on_disk(arena_id + 1, slot_id, NodeType::CharNode4),
+        )
+    }
+
+    fn decide(
+        children: &[(u32, SwizzledPtr)],
+        parent_arena_id: u32,
+        arena_node_count: u32,
+    ) -> Option<ArenaSlot> {
+        PersistentARTrieChar::<u64>::check_sequential_char_children(
+            children,
+            parent_arena_id,
+            arena_node_count,
+        )
+    }
+
+    #[test]
+    fn selects_same_arena_consecutive_children_with_canonical_arena() {
+        // Children in canonical arena 0 (block 1), consecutive slots 5,6,7 in KEY
+        // order, parent also in arena 0. Pre-fix this returned None (block_id 1 !=
+        // parent arena 0) — the silent-disable half of the bug. Post-fix it selects
+        // sequential with the CANONICAL first-child arena.
+        let children = [child(0, 0, 5), child(1, 0, 6), child(2, 0, 7)];
+        assert_eq!(
+            decide(&children, 0, 100),
+            Some(ArenaSlot::new(0, 5)),
+            "same-arena consecutive children must select sequential with canonical arena_id"
+        );
+    }
+
+    #[test]
+    fn declines_children_one_arena_behind_parent() {
+        // Children in canonical arena 0 (block 1); parent predicted in arena 1 — the
+        // layout incremental-checkpoint + eviction produces (a parent re-serialized
+        // into a later arena than its already-evicted children). Pre-fix, block_id
+        // (1) == parent_arena_id (1) spuriously matched → sequential selected → the
+        // writer's validator raised "char v2 sequential child mismatch". Post-fix it
+        // declines (canonical arena 0 != parent arena 1) → relative/cross-arena.
+        let children = [child(0, 0, 5), child(1, 0, 6)];
+        assert_eq!(
+            decide(&children, 1, 100),
+            None,
+            "children one arena behind the parent must NOT select sequential (cross-arena)"
+        );
+    }
+
+    #[test]
+    fn declines_consecutive_set_out_of_key_order() {
+        // Same arena, slot SET {5,6,7} is consecutive but NOT ascending in KEY order
+        // (5,7,6). The decoder reconstructs first+idx and pairs with the i-th key, so
+        // this must decline rather than mis-pair (the removed sort_by_key hid this).
+        let children = [child(0, 0, 5), child(1, 0, 7), child(2, 0, 6)];
+        assert_eq!(
+            decide(&children, 0, 100),
+            None,
+            "consecutive-but-out-of-key-order must decline sequential"
+        );
+    }
+
+    #[test]
+    fn declines_non_consecutive_gap() {
+        let children = [child(0, 0, 5), child(1, 0, 6), child(2, 0, 8)];
+        assert_eq!(
+            decide(&children, 0, 100),
+            None,
+            "a slot gap must decline sequential"
+        );
+    }
+
+    #[test]
+    fn declines_mixed_arenas() {
+        let children = [child(0, 0, 5), child(1, 1, 6)];
+        assert_eq!(
+            decide(&children, 0, 100),
+            None,
+            "children spread across arenas must decline sequential"
+        );
+    }
+
+    #[test]
+    fn declines_when_last_slot_exceeds_arena_bounds() {
+        // Consecutive same-arena slots 5,6,7 but the arena only has 6 slots (last 7 >= 6).
+        let children = [child(0, 0, 5), child(1, 0, 6), child(2, 0, 7)];
+        assert_eq!(
+            decide(&children, 0, 6),
+            None,
+            "a last slot beyond arena bounds must decline sequential"
+        );
+    }
+
+    #[test]
+    fn declines_fewer_than_two_children() {
+        let children = [child(0, 0, 5)];
+        assert_eq!(
+            decide(&children, 0, 100),
+            None,
+            "sequential needs at least two children"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 96, ..ProptestConfig::default() })]
+
+        /// PROPERTY: for >=2 disk children in one canonical arena `parent_arena`
+        /// with strictly-ascending KEY-ordered slots, the decision returns
+        /// `Some(ArenaSlot::new(parent_arena, start))` IFF the slots are exactly
+        /// `start, start+1, ...` (consecutive in key order) and within bounds, else
+        /// `None`. This pins both halves of the fix: the canonical arena id AND the
+        /// key-order (unsorted) consecutiveness.
+        #[test]
+        fn decision_matches_canonical_consecutive_in_key_order(
+            parent_arena in 0u32..8,
+            start in 0u32..1000,
+            gaps in proptest::collection::vec(1u32..5, 1..12),
+        ) {
+            // Ascending key-order slots: start, start+gaps[0], start+gaps[0]+gaps[1], ...
+            let mut slots = Vec::with_capacity(gaps.len() + 1);
+            let mut s = start;
+            slots.push(s);
+            for g in &gaps {
+                s = s.saturating_add(*g);
+                slots.push(s);
+            }
+            let children: Vec<(u32, SwizzledPtr)> = slots
+                .iter()
+                .enumerate()
+                .map(|(i, &slot)| child(i as u32, parent_arena, slot))
+                .collect();
+            // node_count chosen so the bounds guard never fires → isolate the
+            // consecutiveness property.
+            let node_count = slots.last().copied().unwrap_or(0).saturating_add(1);
+            let result = decide(&children, parent_arena, node_count);
+
+            let is_consecutive = slots
+                .iter()
+                .enumerate()
+                .all(|(i, &slot)| slot == start + i as u32);
+            if is_consecutive {
+                prop_assert_eq!(result, Some(ArenaSlot::new(parent_arena, start)));
+            } else {
+                prop_assert_eq!(result, None);
+            }
+        }
     }
 }

@@ -1171,3 +1171,341 @@ fn phase7_resident_budget_checkpoint_tail_evicts_to_budget() {
         "the budgeted run must retain fewer resident nodes than the unbudgeted control ({t2} < {c2})"
     );
 }
+
+// ─────── Sequential-sibling corruption regression (arena-convention fix) ───────
+//
+// The pgmcp report: enabling `resident_budget_bytes` on a char trie and calling
+// `checkpoint()` REPEATEDLY WHILE INSERTING corrupted the on-disk layout — the next
+// checkpoint failed with "char v2 sequential child mismatch". Root cause: an
+// arena-space vs block-space off-by-one in `check_sequential_char_children`. These
+// tests drive the exact workload through the PRODUCTION `checkpoint()` entry point
+// (which routes to the eviction budget tail once a coordinator is installed) and
+// assert no corruption + full completeness after reopen. Pre-fix they panic; post-fix
+// they pass. The deterministic decision-function unit tests live in
+// `persist::sequential_sibling_decision_tests`.
+
+/// Incremental checkpointing interleaved with inserts under a small resident budget:
+/// eviction registers cold subtrees on disk, then a later checkpoint re-serializes
+/// their parents into a NEWER arena, so a parent's children sit one arena behind it —
+/// the exact cross-arena layout the off-by-one mishandled. Must not corrupt, and every
+/// term must survive a drop + reopen.
+#[test]
+fn interleaved_checkpoint_with_resident_budget_eviction_preserves_all_terms() {
+    let dir = scratch("seqsib-interleaved");
+    let path = dir.path().join("interleaved.artc");
+    let n: i64 = 3_000;
+    let checkpoint_every: i64 = 300;
+
+    {
+        let mut owned: PersistentARTrieChar<i64> =
+            PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive())
+                .expect("create");
+        // Immediate: insert_with_value routes through upsert_cas_durable, which requires
+        // Immediate (or GroupCommit) durability. Counts are modest so per-insert fsync stays
+        // fast while still rolling over multiple arenas and firing budget eviction.
+        owned.set_durability_policy(DurabilityPolicy::Immediate);
+        owned.install_overlay();
+        owned
+            .bench_enable_eviction(EvictionConfig {
+                resident_budget_bytes: Some(64 * 1024),
+                ..EvictionConfig::without_memory_monitor()
+            })
+            .expect("enable eviction");
+
+        for i in 0..n {
+            // Long shared prefix + trailing digits → interior nodes whose 0..9 children
+            // occupy consecutive arena slots: the sequential-sibling encoding's target.
+            let term = format!("symbol_{i:08}");
+            owned.insert_with_value(&term, i).expect("insert");
+            if i % checkpoint_every == 0 {
+                // Production public checkpoint() → routes through the eviction budget tail
+                // (has_eviction_coordinator) → the same serialize path pgmcp exercises.
+                owned
+                    .checkpoint()
+                    .expect("interleaved checkpoint must not corrupt the sequential layout");
+            }
+        }
+        owned.checkpoint().expect("final checkpoint");
+
+        // Eviction actually fired: the resident registry is bounded far below the term
+        // count (without eviction it would exceed it), so the cross-arena post-eviction
+        // re-serialization path — the bug's trigger — was exercised.
+        let resident = owned.evictable_node_count().unwrap_or(usize::MAX);
+        assert!(
+            resident < n as usize,
+            "resident-budget eviction must reclaim (resident {resident} should be well below {n} terms)"
+        );
+
+        // Completeness in-process (faults evicted subtrees back).
+        for i in 0..n {
+            let term = format!("symbol_{i:08}");
+            assert_eq!(
+                owned.get_value(&term),
+                Some(i),
+                "term {term} lost in-process"
+            );
+        }
+    }
+
+    // Durability regression: reopen and confirm every term survived eviction + checkpoints.
+    {
+        let reopened: PersistentARTrieChar<i64> =
+            PersistentARTrieChar::open(&path).expect("reopen after interleaved eviction");
+        for i in 0..n {
+            let term = format!("symbol_{i:08}");
+            assert_eq!(
+                reopened.get_value(&term),
+                Some(i),
+                "term {term} lost after reopen"
+            );
+        }
+    }
+}
+
+mod seqsib_property {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        /// Insert a fresh batch of prefix-sharing terms.
+        InsertBatch,
+        /// Checkpoint (routes through the eviction budget tail).
+        Checkpoint,
+    }
+
+    fn op_strategy() -> impl Strategy<Value = Op> {
+        // Weight inserts higher so runs accumulate terms across several checkpoints.
+        prop_oneof![3 => Just(Op::InsertBatch), 1 => Just(Op::Checkpoint)]
+    }
+
+    proptest! {
+        // Disk-backed → keep the case count modest but meaningful.
+        #![proptest_config(ProptestConfig { cases: 12, ..ProptestConfig::default() })]
+
+        /// PROPERTY: under a small resident budget, ANY interleaving of insert batches
+        /// and checkpoints (the pgmcp incremental-build pattern) must never raise the
+        /// "sequential child mismatch" corruption and must preserve every inserted
+        /// (term, value) across a drop + reopen.
+        #[test]
+        fn interleaved_insert_checkpoint_reopen_loses_nothing(
+            ops in prop::collection::vec(op_strategy(), 1..32)
+        ) {
+            let dir = scratch("seqsib-prop");
+            let path = dir.path().join("seqsib-prop.artc");
+            let mut inserted: Vec<(String, i64)> = Vec::new();
+            {
+                let mut owned: PersistentARTrieChar<i64> =
+                    PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive())
+                        .expect("create");
+                owned.set_durability_policy(DurabilityPolicy::Immediate);
+                owned.install_overlay();
+                owned
+                    .bench_enable_eviction(EvictionConfig {
+                        resident_budget_bytes: Some(4 * 1024),
+                        ..EvictionConfig::without_memory_monitor()
+                    })
+                    .expect("enable eviction");
+
+                let mut next: i64 = 0;
+                for op in &ops {
+                    match op {
+                        Op::InsertBatch => {
+                            for _ in 0..8 {
+                                let term = format!("symbol_{next:08}");
+                                owned.insert_with_value(&term, next).expect("insert");
+                                inserted.push((term, next));
+                                next += 1;
+                            }
+                        }
+                        Op::Checkpoint => {
+                            owned
+                                .checkpoint()
+                                .expect("checkpoint must not corrupt the sequential layout");
+                        }
+                    }
+                }
+                owned.checkpoint().expect("final checkpoint");
+                for (term, val) in &inserted {
+                    prop_assert_eq!(owned.get_value(term), Some(*val));
+                }
+            }
+            let reopened: PersistentARTrieChar<i64> =
+                PersistentARTrieChar::open(&path).expect("reopen");
+            for (term, val) in &inserted {
+                prop_assert_eq!(reopened.get_value(term), Some(*val));
+            }
+        }
+    }
+}
+
+// ─────────── Dirty-skip growth fix (Part 2A) regression tests ───────────
+//
+// Dirty-skip reuses a durable-CLEAN node's existing on-disk ptr instead of re-appending a fresh
+// arena slot every checkpoint. This bounds the previously-unbounded per-checkpoint file growth
+// (≈ O(#checkpoints × resident_set)) to ≈ O(dirty nodes), WITHOUT changing RAM (full registration
+// is kept so the resident-budget census stays faithful).
+
+/// Headline: re-checkpointing an UNCHANGED trie appends ~nothing (every node is durable-clean and
+/// its ptr is reused). Pre-dirty-skip, each idempotent checkpoint re-appended the whole resident
+/// set. Measured on the `.artc` data file.
+#[test]
+fn dirty_skip_bounds_growth_across_idempotent_checkpoints() {
+    let dir = scratch("dirtyskip-idem");
+    let path = dir.path().join("idem.artc");
+    let mut owned: PersistentARTrieChar<i64> =
+        PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
+    owned.set_durability_policy(DurabilityPolicy::Immediate);
+    owned.install_overlay();
+    owned
+        .bench_enable_eviction(EvictionConfig {
+            resident_budget_bytes: Some(64 * 1024),
+            ..EvictionConfig::without_memory_monitor()
+        })
+        .expect("enable eviction");
+
+    for i in 0..3_000i64 {
+        owned
+            .insert_with_value(&format!("symbol_{i:08}"), i)
+            .expect("insert");
+    }
+    // Checkpoint #1 serializes the trie AND its eviction tail path-copies the spine to install
+    // OnDisk children; checkpoint #2 re-serializes that ONE-TIME churned spine and re-stamps it.
+    // After a few checkpoints the churn SETTLES — every node is durable-clean again.
+    for _ in 0..5 {
+        owned.checkpoint().expect("settle checkpoint");
+    }
+    let settled = std::fs::metadata(&path).expect("stat").len();
+
+    // Now 20 further idempotent checkpoints must append ~NOTHING: every node is clean, so its ptr
+    // is reused and no arena slot is allocated. Pre-dirty-skip each of these 20 would re-append the
+    // whole ~64 KB resident set (>1 MB / several arenas). The plateau — growth INDEPENDENT of
+    // checkpoint count — is the fix.
+    for _ in 0..20 {
+        owned.checkpoint().expect("plateau checkpoint");
+    }
+    let after_plateau = std::fs::metadata(&path).expect("stat").len();
+    let plateau_growth = after_plateau - settled;
+    assert!(
+        plateau_growth < 256 * 1024,
+        "20 post-settle idempotent checkpoints grew the .artc data file by {plateau_growth} bytes \
+         (settled at {settled}); dirty-skip must plateau (re-checkpoints append ~nothing)"
+    );
+
+    // Still lossless.
+    for i in 0..3_000i64 {
+        assert_eq!(
+            owned.get_value(&format!("symbol_{i:08}")),
+            Some(i),
+            "term {i} lost"
+        );
+    }
+}
+
+/// Census faithfulness (dirty-skip's highest risk): dirty-skip keeps FULL registration, so the
+/// resident-estimate census stays accurate and the budget tail keeps converging. A dropped-node
+/// census would under-count → under-evict → resident bytes climb unbounded across checkpoints.
+#[test]
+fn dirty_skip_keeps_resident_bytes_within_budget_across_interleaved_checkpoints() {
+    let dir = scratch("dirtyskip-census");
+    let path = dir.path().join("census.artc");
+    let budget = 64 * 1024usize;
+    let mut owned: PersistentARTrieChar<i64> =
+        PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
+    owned.set_durability_policy(DurabilityPolicy::Immediate);
+    owned.install_overlay();
+    owned
+        .bench_enable_eviction(EvictionConfig {
+            resident_budget_bytes: Some(budget),
+            ..EvictionConfig::without_memory_monitor()
+        })
+        .expect("enable eviction");
+
+    let resident_bytes = |t: &PersistentARTrieChar<i64>| -> usize {
+        t.eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+            .map(|c| c.char_resident_estimate_bytes())
+            .unwrap_or(0)
+    };
+
+    let mut max_resident = 0usize;
+    for i in 0..6_000i64 {
+        owned
+            .insert_with_value(&format!("symbol_{i:08}"), i)
+            .expect("insert");
+        if i % 200 == 0 {
+            owned.checkpoint().expect("checkpoint");
+            max_resident = max_resident.max(resident_bytes(&owned));
+        }
+    }
+    owned.checkpoint().expect("final");
+    max_resident = max_resident.max(resident_bytes(&owned));
+
+    // The hot spine (root→cursor) cannot be evicted (the 1c guard refuses nodes overwritten since
+    // their checkpoint), so allow a generous multiple of the budget — the point is it stays
+    // BOUNDED, not O(#terms). A broken census would climb to ~all-6000-terms resident.
+    assert!(
+        max_resident <= budget * 8,
+        "resident census peaked at {max_resident} bytes vs budget {budget}; dirty-skip must keep \
+         the census faithful so eviction converges (an under-count would grow this unbounded)"
+    );
+    for i in 0..6_000i64 {
+        assert_eq!(
+            owned.get_value(&format!("symbol_{i:08}")),
+            Some(i),
+            "term {i} lost"
+        );
+    }
+}
+
+mod dirty_skip_property {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 12, ..ProptestConfig::default() })]
+
+        /// PROPERTY: after building a fixed trie + one checkpoint, N ADDITIONAL idempotent
+        /// checkpoints add ~nothing to the data file regardless of N — growth is INDEPENDENT of
+        /// checkpoint count (the essence of the dirty-skip fix) — and the trie stays lossless.
+        #[test]
+        fn dirty_skip_growth_independent_of_checkpoint_count(extra_checkpoints in 0u32..30) {
+            let dir = scratch("dirtyskip-prop");
+            let path = dir.path().join("p.artc");
+            let mut owned: PersistentARTrieChar<i64> =
+                PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive())
+                    .expect("create");
+            owned.set_durability_policy(DurabilityPolicy::Immediate);
+            owned.install_overlay();
+            owned
+                .bench_enable_eviction(EvictionConfig {
+                    resident_budget_bytes: Some(32 * 1024),
+                    ..EvictionConfig::without_memory_monitor()
+                })
+                .expect("enable eviction");
+            for i in 0..1_500i64 {
+                owned
+                    .insert_with_value(&format!("symbol_{i:08}"), i)
+                    .expect("insert");
+            }
+            owned.checkpoint().expect("first");
+            let base = std::fs::metadata(&path).expect("stat").len();
+            for _ in 0..extra_checkpoints {
+                owned.checkpoint().expect("idempotent");
+            }
+            let after = std::fs::metadata(&path).expect("stat").len();
+            prop_assert!(
+                after - base < 256 * 1024,
+                "growth {} after {} idempotent checkpoints (base {})",
+                after - base,
+                extra_checkpoints,
+                base
+            );
+            for i in 0..1_500i64 {
+                prop_assert_eq!(owned.get_value(&format!("symbol_{i:08}")), Some(i));
+            }
+        }
+    }
+}

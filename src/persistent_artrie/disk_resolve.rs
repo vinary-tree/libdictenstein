@@ -161,11 +161,16 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             return None;
         }
 
-        child_slots.sort_by_key(|slot| slot.slot_id);
-
+        // Consecutive ascending slots IN KEY ORDER (child_slots follows iter_children); do NOT
+        // sort by slot_id. The sequential decoder reconstructs child `i` as first_child + i and
+        // pairs it with the i-th key, so choosing this encoding for a same-arena set that is
+        // consecutive-but-out-of-key-order would mis-pair on decode. Byte has no per-index
+        // contiguity re-check at serialize time (unlike char), so declining here is the primary
+        // guard against silent mis-pairing; validate_v2_serialization_context now backs it up.
         let first = child_slots[0];
         for (i, slot) in child_slots.iter().enumerate() {
-            if slot.slot_id != first.slot_id + i as u32 {
+            // `?` declines sequential on u32 overflow (byte has no separate overflow guard).
+            if slot.slot_id != first.slot_id.checked_add(i as u32)? {
                 return None;
             }
         }

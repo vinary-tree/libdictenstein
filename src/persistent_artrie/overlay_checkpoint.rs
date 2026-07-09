@@ -1197,6 +1197,49 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCompressedSerialize<ByteKey, V>
     fn stamp_durable(live: &OverlayNode<ByteKey, V>, raw: u64) {
         live.set_durable_stamp(raw);
     }
+
+    fn register_reused(
+        &self,
+        ptr: &SwizzledPtr,
+        path: &[u8],
+        registry: &mut DiskLocationRegistry,
+    ) -> Result<()> {
+        // Byte twin of char's register_reused (dirty-skip): the live node is durable-clean, so its
+        // bytes already sit at `ptr` from a prior checkpoint (append-only arena ⇒ still valid).
+        // Record it with the EXACT on-disk size so the resident census — and hence resident-budget
+        // eviction — stays faithful, WITHOUT re-appending a fresh arena slot.
+        let arena_manager = self
+            .arena_manager
+            .as_ref()
+            .ok_or_else(|| PersistentARTrieError::internal("register_reused: no arena manager"))?;
+        let loc = ptr.disk_location().ok_or_else(|| {
+            PersistentARTrieError::internal(
+                "register_reused: reused ptr is not an on-disk location",
+            )
+        })?;
+        // Canonical arena id (arena N ⇔ block N+1).
+        let arena_id = loc.block_id.checked_sub(1).ok_or_else(|| {
+            PersistentARTrieError::internal("register_reused: reused ptr names block 0 (header)")
+        })?;
+        // `slot_data_range` returns (offset_in_arena, length); the length is the exact byte count
+        // `allocate` stored == what `serialize_one_byte_node_to_disk` originally registered.
+        let size_bytes = {
+            let mgr = arena_manager.read();
+            let arena = mgr.get_arena(arena_id).ok_or_else(|| {
+                PersistentARTrieError::internal("register_reused: reused ptr names a missing arena")
+            })?;
+            let (_offset, len) = arena.slot_data_range(loc.offset)?;
+            len
+        };
+        registry.register(
+            path.to_vec(),
+            ptr.clone(),
+            size_bytes,
+            path.len(),
+            loc.node_type,
+        );
+        Ok(())
+    }
 }
 
 /// Count the final (terminal) overlay nodes reachable from `root` — the overlay

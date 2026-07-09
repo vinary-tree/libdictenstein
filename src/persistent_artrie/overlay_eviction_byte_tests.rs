@@ -423,3 +423,188 @@ fn phase7_byte_resident_budget_checkpoint_tail_evicts_to_budget() {
         "byte budgeted retains fewer than control ({t2} < {c2})"
     );
 }
+
+// ─────── Sequential-sibling corruption regression — BYTE twin ───────
+//
+// Byte does NOT have char's arena-space off-by-one (it uses `as_arena_slot()`), but it
+// shared the key-order-vs-slot-order assumption AND, unlike char, had no per-index
+// contiguity re-check in `validate_v2_serialization_context` — so a mis-selected
+// sequential encoding would SILENTLY corrupt rather than fail loud. These byte twins of
+// char's regression drive the incremental-checkpoint + resident-budget-eviction workload
+// (the cross-arena post-eviction re-serialization that exercises the sequential path) and
+// assert full completeness after reopen.
+
+#[test]
+fn byte_interleaved_checkpoint_with_resident_budget_eviction_preserves_all_terms() {
+    let dir = scratch("seqsib-byte-interleaved");
+    let path = dir.path().join("interleaved.artb");
+    let n: i64 = 3_000;
+    let checkpoint_every: i64 = 300;
+
+    {
+        let mut owned = PersistentARTrie::<i64>::create(&path).expect("create");
+        owned.set_durability_policy(DurabilityPolicy::Immediate);
+        owned.install_overlay();
+        owned
+            .bench_enable_eviction(EvictionConfig {
+                resident_budget_bytes: Some(64 * 1024),
+                ..EvictionConfig::without_memory_monitor()
+            })
+            .expect("enable eviction");
+
+        for i in 0..n {
+            let term = format!("symbol_{i:08}");
+            owned.insert_with_value(&term, i);
+            if i % checkpoint_every == 0 {
+                owned
+                    .checkpoint()
+                    .expect("interleaved checkpoint must not corrupt the sequential layout");
+            }
+        }
+        owned.checkpoint().expect("final checkpoint");
+
+        let resident = owned.evictable_node_count().unwrap_or(usize::MAX);
+        assert!(
+            resident < n as usize,
+            "byte resident-budget eviction must reclaim (resident {resident} well below {n} terms)"
+        );
+
+        for i in 0..n {
+            let term = format!("symbol_{i:08}");
+            assert_eq!(
+                MappedDictionary::get_value(&owned, term.as_str()),
+                Some(i),
+                "byte term {term} lost in-process"
+            );
+        }
+    }
+
+    {
+        let reopened =
+            PersistentARTrie::<i64>::open(&path).expect("reopen after interleaved eviction");
+        for i in 0..n {
+            let term = format!("symbol_{i:08}");
+            assert_eq!(
+                MappedDictionary::get_value(&reopened, term.as_str()),
+                Some(i),
+                "byte term {term} lost after reopen"
+            );
+        }
+    }
+}
+
+mod byte_seqsib_property {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        InsertBatch,
+        Checkpoint,
+    }
+
+    fn op_strategy() -> impl Strategy<Value = Op> {
+        prop_oneof![3 => Just(Op::InsertBatch), 1 => Just(Op::Checkpoint)]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 12, ..ProptestConfig::default() })]
+
+        /// PROPERTY (byte twin): any interleaving of insert batches and checkpoints under
+        /// a small resident budget must never corrupt and must preserve every inserted
+        /// (term, value) across a drop + reopen.
+        #[test]
+        fn byte_interleaved_insert_checkpoint_reopen_loses_nothing(
+            ops in prop::collection::vec(op_strategy(), 1..32)
+        ) {
+            let dir = scratch("seqsib-byte-prop");
+            let path = dir.path().join("seqsib-byte-prop.artb");
+            let mut inserted: Vec<(String, i64)> = Vec::new();
+            {
+                let mut owned = PersistentARTrie::<i64>::create(&path).expect("create");
+                owned.set_durability_policy(DurabilityPolicy::Immediate);
+                owned.install_overlay();
+                owned
+                    .bench_enable_eviction(EvictionConfig {
+                        resident_budget_bytes: Some(4 * 1024),
+                        ..EvictionConfig::without_memory_monitor()
+                    })
+                    .expect("enable eviction");
+
+                let mut next: i64 = 0;
+                for op in &ops {
+                    match op {
+                        Op::InsertBatch => {
+                            for _ in 0..8 {
+                                let term = format!("symbol_{next:08}");
+                                owned.insert_with_value(&term, next);
+                                inserted.push((term, next));
+                                next += 1;
+                            }
+                        }
+                        Op::Checkpoint => {
+                            owned
+                                .checkpoint()
+                                .expect("checkpoint must not corrupt the sequential layout");
+                        }
+                    }
+                }
+                owned.checkpoint().expect("final checkpoint");
+                for (term, val) in &inserted {
+                    prop_assert_eq!(MappedDictionary::get_value(&owned, term.as_str()), Some(*val));
+                }
+            }
+            let reopened = PersistentARTrie::<i64>::open(&path).expect("reopen");
+            for (term, val) in &inserted {
+                prop_assert_eq!(
+                    MappedDictionary::get_value(&reopened, term.as_str()),
+                    Some(*val)
+                );
+            }
+        }
+    }
+}
+
+/// Dirty-skip growth fix — BYTE twin of the headline: re-checkpointing an unchanged trie appends
+/// ~nothing (every node durable-clean and its ptr reused), so the `.artb` data file barely grows
+/// regardless of checkpoint count. Pre-dirty-skip each idempotent checkpoint re-appended the
+/// whole resident set.
+#[test]
+fn byte_dirty_skip_bounds_growth_across_idempotent_checkpoints() {
+    let dir = scratch("dirtyskip-byte-idem");
+    let path = dir.path().join("idem.artb");
+    let mut owned = PersistentARTrie::<i64>::create(&path).expect("create");
+    owned.set_durability_policy(DurabilityPolicy::Immediate);
+    owned.install_overlay();
+    owned
+        .bench_enable_eviction(EvictionConfig {
+            resident_budget_bytes: Some(64 * 1024),
+            ..EvictionConfig::without_memory_monitor()
+        })
+        .expect("enable eviction");
+
+    for i in 0..3_000i64 {
+        owned.insert_with_value(&format!("symbol_{i:08}"), i);
+    }
+    owned.checkpoint().expect("first checkpoint");
+    let size_after_first = std::fs::metadata(&path).expect("stat").len();
+
+    for _ in 0..20 {
+        owned.checkpoint().expect("idempotent checkpoint");
+    }
+    let size_after_idempotent = std::fs::metadata(&path).expect("stat").len();
+    let growth = size_after_idempotent - size_after_first;
+    assert!(
+        growth < 256 * 1024,
+        "byte: 20 idempotent checkpoints grew the .artb data file by {growth} bytes (from \
+         {size_after_first}); dirty-skip must make re-checkpoints append ~nothing"
+    );
+
+    for i in 0..3_000i64 {
+        assert_eq!(
+            MappedDictionary::get_value(&owned, format!("symbol_{i:08}").as_str()),
+            Some(i),
+            "byte term {i} lost"
+        );
+    }
+}

@@ -794,10 +794,44 @@ pub mod v2 {
                     "byte v2 sequential serialization requires at least one child",
                 ));
             }
-            if ctx.first_child_slot.is_none() {
-                return Err(PersistentARTrieError::corrupted(
-                    "byte v2 sequential serialization missing first child slot",
-                ));
+            let first_child = match ctx.first_child_slot {
+                Some(first_child) => first_child,
+                None => {
+                    return Err(PersistentARTrieError::corrupted(
+                        "byte v2 sequential serialization missing first child slot",
+                    ));
+                }
+            };
+            // Per-index contiguity re-check (parity with char's serializer; defense-in-depth).
+            // The sequential decoder reconstructs child `i` as (first_child.arena_id,
+            // first_child.slot_id + i) and pairs it with the i-th key/node-type (written here in
+            // `child_slots` order), so the collected child slots MUST equal that progression.
+            // Fail loud rather than silently writing a (first_child, count) record whose children
+            // the reader would mis-resolve. (check_sequential_children now only selects sequential
+            // when the children are consecutive in this order, so this should never fire.)
+            for (idx, slot) in child_slots.iter().enumerate() {
+                let offset = match u32::try_from(idx) {
+                    Ok(offset) => offset,
+                    Err(_) => {
+                        return Err(PersistentARTrieError::corrupted(
+                            "byte v2 sequential child index exceeds u32 slot range",
+                        ));
+                    }
+                };
+                let expected_slot = match first_child.slot_id.checked_add(offset) {
+                    Some(expected_slot) => expected_slot,
+                    None => {
+                        return Err(PersistentARTrieError::corrupted(
+                            "byte v2 sequential child range overflows u32 slot range",
+                        ));
+                    }
+                };
+                if slot.arena_id != first_child.arena_id || slot.slot_id != expected_slot {
+                    return Err(PersistentARTrieError::corrupted(format!(
+                        "byte v2 sequential child mismatch at index {}: got {:?}, expected arena {} slot {}",
+                        idx, slot, first_child.arena_id, expected_slot
+                    )));
+                }
             }
         }
         Ok(())

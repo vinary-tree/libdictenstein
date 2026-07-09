@@ -8,87 +8,17 @@
 //! `CompactionStats`) live in `super::compaction`.
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 use super::compaction::{CompactionConfig, CompactionProgress, CompactionStats};
+use super::compaction_paths::{
+    in_place_temp_path, remove_file_if_exists, stale_wal_backup_path, wal_sidecar_path,
+};
 use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
 use crate::value::DictionaryValue;
 
 type SerializedSnapshot = BTreeMap<Vec<u8>, Option<Vec<u8>>>;
-
-pub(super) fn wal_sidecar_path(path: &Path) -> PathBuf {
-    path.with_extension("wal")
-}
-
-pub(super) fn in_place_temp_path(original_path: &Path) -> PathBuf {
-    let mut file_name = original_path
-        .file_name()
-        .map(OsString::from)
-        .unwrap_or_else(|| OsString::from("compact"));
-    file_name.push(".compacting");
-    original_path.with_file_name(file_name)
-}
-
-pub(super) fn stale_wal_backup_path(original_wal_path: &Path) -> PathBuf {
-    let mut file_name = original_wal_path
-        .file_name()
-        .map(OsString::from)
-        .unwrap_or_else(|| OsString::from("compact.wal"));
-    file_name.push(".compacting-stale");
-    original_wal_path.with_file_name(file_name)
-}
-
-fn remove_file_if_exists(path: &Path, operation: &'static str) -> Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(PersistentARTrieError::io_error(
-            operation,
-            path.display().to_string(),
-            e,
-        )),
-    }
-}
-
-pub(super) fn recover_in_place_compaction_finalization(original_path: &Path) -> Result<()> {
-    let original_wal_path = wal_sidecar_path(original_path);
-    let stale_wal_backup_path = stale_wal_backup_path(&original_wal_path);
-
-    if !stale_wal_backup_path.exists() {
-        return Ok(());
-    }
-
-    let temp_path = in_place_temp_path(original_path);
-    let temp_wal_path = wal_sidecar_path(&temp_path);
-
-    if temp_path.exists() {
-        if !original_wal_path.exists() {
-            std::fs::rename(&stale_wal_backup_path, &original_wal_path).map_err(|e| {
-                PersistentARTrieError::io_error(
-                    "compact_restore_stale_wal",
-                    original_wal_path.display().to_string(),
-                    e,
-                )
-            })?;
-        } else {
-            remove_file_if_exists(&stale_wal_backup_path, "compact_remove_duplicate_stale_wal")?;
-        }
-
-        remove_file_if_exists(&temp_wal_path, "compact_recover_remove_temp_wal")?;
-        remove_file_if_exists(&temp_path, "compact_recover_remove_temp")?;
-    } else {
-        remove_file_if_exists(&original_wal_path, "compact_recover_remove_stale_wal")?;
-        remove_file_if_exists(
-            &stale_wal_backup_path,
-            "compact_recover_remove_stale_wal_backup",
-        )?;
-    }
-
-    Ok(())
-}
 
 impl<V: DictionaryValue> PersistentARTrie<V> {
     /// Compact the trie, eliminating orphaned nodes and fragmentation.

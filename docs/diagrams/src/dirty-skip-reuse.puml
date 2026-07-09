@@ -1,0 +1,54 @@
+@startuml dirty-skip-reuse
+' ============================================================================
+' dirty-skip-reuse.puml — the per-node emit decision in the shared checkpoint
+' serialize loop (core/overlay/compressed_serialize.rs). When eviction is ON and
+' a live node is durable-CLEAN (its serial_disk_ptr stamp still names its last
+' checkpoint's slot), the node's whole subtree is byte-identical (M-2a invariant),
+' so REUSE that slot instead of appending a fresh one — this bounds the previously
+' unbounded per-checkpoint file growth. FULL registration is retained either way,
+' so the resident-budget census stays faithful.
+' Source: §2 of checkpoint-growth-sequential-sibling-fixes.md.
+' Color key: teal overlay engine, indigo checkpoint/dense image, green reuse
+' (no growth), orange the growth-causing append.
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam ActivityBorderColor #37474F
+skinparam ActivityBorderThickness 1.3
+skinparam ActivityDiamondBorderColor #37474F
+skinparam NoteBackgroundColor #ECEFF1
+skinparam NoteBorderColor #37474F
+
+title Dirty-skip — per-node emit decision (checkpoint serialize loop)
+
+start
+:pop next live overlay node\n(post-order, terminus or chunk);
+if (eviction ON\n**and** node.durable_stamp() ≠ 0 ?) then (yes — CLEAN)
+  #C8E6C9:**REUSE** the existing slot\nptr := SwizzledPtr::from_raw(stamp);
+  #C8E6C9:register_reused(ptr, path)\nsize := arena slot_data_range(ptr).len;
+  note right
+    NO arena allocate → NO growth.
+    M-2a: a set stamp ⇒ this node was
+    not path-copied since it was written
+    ⇒ its subtree is byte-identical, and
+    its clean children are themselves
+    reused with their old ptrs.
+  end note
+else (no — DIRTY / eviction OFF)
+  #FFCC80:project_node → serialize → **allocate**\na fresh arena slot (append);
+  #FFCC80:register + set_durable_stamp(new_ptr);
+  note right
+    Only genuinely-changed nodes (the
+    insert / eviction-churned spine) are
+    re-appended. Per-checkpoint growth:
+    <latex>O(\\text{dirty nodes})</latex>, not
+    <latex>O(\\text{resident set})</latex>.
+  end note
+endif
+:record child ptr into parent frame;
+stop
+
+@enduml

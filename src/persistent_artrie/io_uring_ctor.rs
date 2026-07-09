@@ -136,7 +136,7 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             ));
         }
 
-        super::compaction_impl::recover_in_place_compaction_finalization(path)?;
+        super::compaction_paths::recover_in_place_compaction_finalization(path)?;
 
         let disk_manager = IoUringDiskManager::open(path)?;
 

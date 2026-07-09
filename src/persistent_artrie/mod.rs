@@ -243,6 +243,8 @@ pub mod dictionary_traits;
 
 // PersistentARTrie::compact (file-rewrite compaction) — Phase-5 split out of dict_impl.
 pub mod compaction_impl;
+// Shared file-path + crash-recovery helpers for in-place compaction (byte + char).
+pub(crate) mod compaction_paths;
 
 // Persistence/durability/stats public API (Phase-5 split out of dict_impl).
 pub mod persistence_api;

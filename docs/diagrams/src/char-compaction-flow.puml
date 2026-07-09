@@ -1,0 +1,58 @@
+@startuml char-compaction-flow
+' ============================================================================
+' char-compaction-flow.puml — PersistentARTrieChar::compact() reclaims the dead
+' space incremental checkpointing accumulates, by rebuilding a dense image of the
+' live term set and atomically swapping it in. Enumeration uses the FAULTING
+' overlay reader, so evicted (Child::OnDisk) terms are recovered — compaction is
+' correct even on an evicted trie. It is NOT RAM-bounded (materializes the live
+' set), so it is an explicit maintenance op guarded by a post-enumeration RAM check.
+' Source: §3 of checkpoint-growth-sequential-sibling-fixes.md.
+' Color key: teal overlay/live, indigo dense image/checkpoint, blue disk/rename,
+' red the RAM guard, green success.
+' ============================================================================
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam ActivityBorderColor #37474F
+skinparam ActivityBorderThickness 1.3
+skinparam ActivityDiamondBorderColor #37474F
+skinparam NoteBackgroundColor #ECEFF1
+skinparam NoteBorderColor #37474F
+
+title PersistentARTrieChar::compact() — dense-rebuild file-rewrite compaction
+
+start
+#B2DFDB:**Enumerate** live (term, value) set\niter_prefix_with_values("") — FAULTS Child::OnDisk;
+note right
+  Faulting reader recovers EVICTED terms,
+  so compaction never drops them. self.len()
+  (resident-only count) is NOT the oracle.
+end note
+:serialize each value → build `expected` snapshot\naccumulate <latex>live\\_data\\_bytes</latex>;
+if (<latex>4 \\times live\\_data\\_bytes > </latex> available RAM ?) then (yes)
+  #FFCDD2:**fail loud** — InvalidOperation\n(compaction is NOT RAM-bounded);
+  stop
+else (no)
+endif
+#C5CAE9:**Rebuild** a fresh dense trie at <name>.compacting\ninsert every (term, value) → checkpoint();
+if (verify_after_compact ?) then (yes)
+  #C5CAE9:**Verify by reopen** — reopened (term→value)\nmap must equal `expected`;
+  if (mismatch ?) then (yes)
+    #FFCDD2:fail — CheckpointVerificationFailed\n(clean up temp);
+    stop
+  else (no)
+  endif
+else (no)
+endif
+#BBDEFB:**Atomic finalize** (in-place):\nstash <name>.wal → .compacting-stale\nrename .compacting → <name>\nreopen self onto the dense image;
+note right
+  Crash before rename ⇒ the reopen
+  recovery finalizer rolls back
+  (restore stashed WAL, drop temp).
+end note
+#C8E6C9:return CompactionStats\n(terms, before/after bytes, space saved);
+stop
+
+@enduml

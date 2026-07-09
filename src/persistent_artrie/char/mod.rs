@@ -169,6 +169,9 @@ pub mod atomic_ops;
 
 // On-disk persistence (checkpoint + persist_to_disk + serialize_*) — Phase-6 split.
 pub mod persist;
+// Char file-rewrite compaction (`PersistentARTrieChar::compact`), reclaiming the dead space
+// incremental checkpointing accumulates. Twin of byte's `compaction_impl`.
+pub mod compaction_char;
 
 // Prefetch helpers (stats + bounded depth) — Phase-6 split out of dict_impl_char.
 pub mod prefetch_api;

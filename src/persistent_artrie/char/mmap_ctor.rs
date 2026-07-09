@@ -341,6 +341,10 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         #[allow(unused_imports)]
         use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
 
+        // Finalize (roll forward/back) any in-place compaction that a crash interrupted, before
+        // opening the (possibly stale) file. No-op when no compaction was in flight.
+        crate::persistent_artrie::compaction_paths::recover_in_place_compaction_finalization(path)?;
+
         // Open disk manager
         let disk_manager = DiskManager::open(path)?;
 

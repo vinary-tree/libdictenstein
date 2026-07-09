@@ -346,7 +346,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
             ));
         }
 
-        super::compaction_impl::recover_in_place_compaction_finalization(path)?;
+        super::compaction_paths::recover_in_place_compaction_finalization(path)?;
 
         // Open disk manager
         let disk_manager = DiskManager::open(path)?;

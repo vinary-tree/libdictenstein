@@ -170,6 +170,34 @@ pub(crate) trait OverlayCompressedSerialize<K: KeyEncoding, V: DictionaryValue> 
     /// `live.set_durable_stamp(raw)`; vocab: NO-OP (vocab is never evicted, always passes `None`).
     fn stamp_durable(live: &OverlayNode<K, V>, raw: u64);
 
+    /// Register an ALREADY-serialized, durable-CLEAN node that dirty-skip is REUSING this
+    /// checkpoint: record its existing `ptr` + on-disk size in the (freshly rebuilt) eviction
+    /// `registry` WITHOUT re-appending a fresh arena slot.
+    ///
+    /// Called ONLY when eviction is ON (`registry.is_some()`) and the live node's
+    /// `durable_stamp()` is nonzero — i.e. the node's bytes already sit at `ptr` from a prior
+    /// checkpoint and (by the M-2a stamp invariant) its whole subtree is byte-identical. Retaining
+    /// FULL registration here (size = the EXACT on-disk slot length, so it equals what a fresh
+    /// serialize would have recorded) keeps the resident-budget census faithful while the
+    /// growth-causing arena `allocate` is elided.
+    ///
+    /// Default: unreachable — a variant that durable-stamps its nodes AND threads an eviction
+    /// registry (char, byte) MUST override this. Eviction-OFF variants (u64, vocab) never stamp
+    /// and always pass `None`, so the dirty-skip branch never reaches this for them.
+    fn register_reused(
+        &self,
+        _ptr: &SwizzledPtr,
+        _path: &[K::Unit],
+        _registry: &mut DiskLocationRegistry,
+    ) -> Result<()> {
+        Err(
+            crate::persistent_artrie::error::PersistentARTrieError::internal(
+                "register_reused (dirty-skip) has no default impl; a variant that durable-stamps \
+                 its nodes and threads an eviction registry must override it",
+            ),
+        )
+    }
+
     /// THE shared post-order loop + chain-collapse. Byte-faithful to the three inlined originals.
     fn serialize_compressed_loop(
         &self,
@@ -242,16 +270,39 @@ pub(crate) trait OverlayCompressedSerialize<K: KeyEncoding, V: DictionaryValue> 
 
             // (1) The terminus node — NO prefix. Registers at the FULL `path`; #6-stamps the LIVE
             // terminus when eviction-ON.
-            let projected = Self::project_node(frame.node.as_ref(), &child_disk_ptrs)?;
-            let terminus_ptr = self.serialize_projected_node(
-                &projected,
-                &child_disk_ptrs,
-                &path,
-                registry.as_deref_mut(),
-            )?;
-            if registry.is_some() {
-                Self::stamp_durable(frame.node.as_ref(), terminus_ptr.to_raw());
-            }
+            //
+            // DIRTY-SKIP: when eviction is ON and the LIVE terminus is durable-CLEAN (its
+            // `durable_stamp()` still names the disk ptr a prior checkpoint wrote it to), the M-2a
+            // invariant guarantees the whole subtree is byte-identical to that image (any write
+            // path-copies + stamp-clears every ancestor). So REUSE that ptr instead of re-appending
+            // a fresh arena slot — the fix for the unbounded per-checkpoint growth. FULL
+            // registration is retained (`register_reused`) so the resident census stays faithful;
+            // only the growth-causing `allocate` is elided. Cross-arena children this leaves behind
+            // are handled by the relative/full encoding (see check_sequential_char_children).
+            let reuse_ptr: Option<SwizzledPtr> = if registry.is_some() {
+                let stamp = frame.node.durable_stamp();
+                (stamp != 0).then(|| SwizzledPtr::from_raw(stamp))
+            } else {
+                None
+            };
+            let terminus_ptr = if let Some(ptr) = reuse_ptr {
+                if let Some(reg) = registry.as_deref_mut() {
+                    self.register_reused(&ptr, &path, reg)?;
+                }
+                ptr
+            } else {
+                let projected = Self::project_node(frame.node.as_ref(), &child_disk_ptrs)?;
+                let ptr = self.serialize_projected_node(
+                    &projected,
+                    &child_disk_ptrs,
+                    &path,
+                    registry.as_deref_mut(),
+                )?;
+                if registry.is_some() {
+                    Self::stamp_durable(frame.node.as_ref(), ptr.to_raw());
+                }
+                ptr
+            };
 
             // (2) Collapse the peeled chain into a chunk stack ABOVE the terminus (bottom-up). Each
             // chunk carries <= K::MAX_PREFIX_LEN inter-edge units as its prefix + one out-edge. Empty
@@ -276,22 +327,42 @@ pub(crate) trait OverlayCompressedSerialize<K: KeyEncoding, V: DictionaryValue> 
                 let synth = Self::new_synth_node();
                 let mut child_ptr = terminus_ptr;
                 for (c, chunk) in chunks.iter().enumerate().rev() {
-                    let child_slots = [(chunk.edge, child_ptr.clone())];
-                    let chunk_proj = Self::project_chunk(&synth, &child_slots, chunk.prefix)?;
+                    // idx = ends[c] - base - 1 = Σ_{i<c}(|P_i|+1) = this chunk's top-of-span live node.
+                    let idx = ends[c] - frame.base_depth - 1;
+                    let top_live = frame.live_spine.get(idx);
                     let chunk_path = &path[..ends[c]];
-                    let next_ptr = self.serialize_projected_node(
-                        &chunk_proj,
-                        &child_slots,
-                        chunk_path,
-                        registry.as_deref_mut(),
-                    )?;
-                    if registry.is_some() {
-                        // idx = ends[c] - base - 1 = Σ_{i<c}(|P_i|+1) = this chunk's top-of-span live node.
-                        let idx = ends[c] - frame.base_depth - 1;
-                        if let Some(top_live) = frame.live_spine.get(idx) {
-                            Self::stamp_durable(top_live.as_ref(), next_ptr.to_raw());
+                    // DIRTY-SKIP (chunk twin of the terminus reuse above): a durable-clean chain
+                    // link's stamp names the chunk ptr a prior checkpoint wrote; the M-2a invariant
+                    // makes the whole span-below byte-identical, so reuse it rather than re-serialize.
+                    let reuse_ptr: Option<SwizzledPtr> = if registry.is_some() {
+                        top_live
+                            .map(|n| n.durable_stamp())
+                            .filter(|&stamp| stamp != 0)
+                            .map(SwizzledPtr::from_raw)
+                    } else {
+                        None
+                    };
+                    let next_ptr = if let Some(ptr) = reuse_ptr {
+                        if let Some(reg) = registry.as_deref_mut() {
+                            self.register_reused(&ptr, chunk_path, reg)?;
                         }
-                    }
+                        ptr
+                    } else {
+                        let child_slots = [(chunk.edge, child_ptr.clone())];
+                        let chunk_proj = Self::project_chunk(&synth, &child_slots, chunk.prefix)?;
+                        let np = self.serialize_projected_node(
+                            &chunk_proj,
+                            &child_slots,
+                            chunk_path,
+                            registry.as_deref_mut(),
+                        )?;
+                        if registry.is_some() {
+                            if let Some(tl) = top_live {
+                                Self::stamp_durable(tl.as_ref(), np.to_raw());
+                            }
+                        }
+                        np
+                    };
                     child_ptr = next_ptr;
                 }
                 child_ptr

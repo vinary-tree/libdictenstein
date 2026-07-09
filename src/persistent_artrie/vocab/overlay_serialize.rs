@@ -639,26 +639,29 @@ fn check_sequential_char_children(
     }
     let mut slots: Vec<ArenaSlot> = Vec::with_capacity(child_ptrs.len());
     for (_, ptr) in child_ptrs {
-        let loc = match ptr.disk_location() {
-            Some(loc) => loc,
-            None => return None,
-        };
-        if loc.block_id != parent_arena_id {
+        let loc = ptr.disk_location()?;
+        // Canonical arena-space id (arena N ⇔ block N+1); mirrors char's
+        // check_sequential_char_children fix. Reading loc.block_id verbatim placed first_child
+        // one arena too high relative to the reader/decoder's arena-space slots. `?` declines
+        // sequential if block_id == 0 (the header block, never a child).
+        let arena_id = loc.block_id.checked_sub(1)?;
+        if arena_id != parent_arena_id {
             return None;
         }
-        slots.push(ArenaSlot::new(loc.block_id, loc.offset));
+        slots.push(ArenaSlot::new(arena_id, loc.offset));
     }
-    slots.sort_by_key(|s| s.slot_id);
+    // Consecutive ascending slots IN KEY ORDER (child_ptrs follows iter_children); do NOT sort,
+    // so the (first_child, count) encoding is only chosen when key-order == slot-order (the
+    // order the decoder reconstructs + pairs with keys). The per-index checked_add subsumes the
+    // old first_slot + (count-1) overflow guard.
     let first = slots[0];
     for (i, slot) in slots.iter().enumerate() {
-        if slot.slot_id != first.slot_id + i as u32 {
+        // `?` declines sequential on u32 overflow (subsumes the old count-1 overflow guard).
+        if slot.slot_id != first.slot_id.checked_add(i as u32)? {
             return None;
         }
     }
     let count = slots.len() as u32;
-    if first.slot_id.checked_add(count.saturating_sub(1)).is_none() {
-        return None;
-    }
     let last_slot = first.slot_id + count - 1;
     if last_slot >= arena_node_count {
         return None;
