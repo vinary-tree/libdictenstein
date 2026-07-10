@@ -47,52 +47,61 @@
 	<path stroke='rgb(204, 204, 204)' stroke-dasharray='2,4' class="gridline"  d='M66.48,417.20 L736.92,417.20  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<path stroke='black'  d='M66.48,417.20 L74.73,417.20  '/>	<g transform="translate(58.79,420.78)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
-		<text><tspan font-family="DejaVu Sans" > 0</tspan></text>
+		<text><tspan font-family="DejaVu Sans" > 5</tspan></text>
 	</g>
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 </g>
 <g fill="none" color="gray" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
-	<path stroke='rgb(204, 204, 204)' stroke-dasharray='2,4' class="gridline"  d='M66.48,346.96 L736.92,346.96  '/></g>
+	<path stroke='rgb(204, 204, 204)' stroke-dasharray='2,4' class="gridline"  d='M66.48,370.32 L736.92,370.32  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
-	<path stroke='black'  d='M66.48,346.96 L74.73,346.96  '/>	<g transform="translate(58.79,350.54)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
+	<path stroke='black'  d='M66.48,370.32 L74.73,370.32  '/>	<g transform="translate(58.79,373.90)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
+		<text><tspan font-family="DejaVu Sans" > 10</tspan></text>
+	</g>
+</g>
+<g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
+</g>
+<g fill="none" color="gray" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
+	<path stroke='rgb(204, 204, 204)' stroke-dasharray='2,4' class="gridline"  d='M66.48,323.45 L736.92,323.45  '/></g>
+<g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
+	<path stroke='black'  d='M66.48,323.45 L74.73,323.45  '/>	<g transform="translate(58.79,327.03)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
+		<text><tspan font-family="DejaVu Sans" > 20</tspan></text>
+	</g>
+</g>
+<g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
+</g>
+<g fill="none" color="gray" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
+	<path stroke='rgb(204, 204, 204)' stroke-dasharray='2,4' class="gridline"  d='M66.48,261.48 L736.92,261.48  '/></g>
+<g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
+	<path stroke='black'  d='M66.48,261.48 L74.73,261.48  '/>	<g transform="translate(58.79,265.06)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
 		<text><tspan font-family="DejaVu Sans" > 50</tspan></text>
 	</g>
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 </g>
 <g fill="none" color="gray" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
-	<path stroke='rgb(204, 204, 204)' stroke-dasharray='2,4' class="gridline"  d='M66.48,276.72 L736.92,276.72  '/></g>
+	<path stroke='rgb(204, 204, 204)' stroke-dasharray='2,4' class="gridline"  d='M66.48,214.60 L736.92,214.60  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
-	<path stroke='black'  d='M66.48,276.72 L74.73,276.72  '/>	<g transform="translate(58.79,280.30)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
+	<path stroke='black'  d='M66.48,214.60 L74.73,214.60  '/>	<g transform="translate(58.79,218.18)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
 		<text><tspan font-family="DejaVu Sans" > 100</tspan></text>
 	</g>
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 </g>
 <g fill="none" color="gray" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
-	<path stroke='rgb(204, 204, 204)' stroke-dasharray='2,4' class="gridline"  d='M66.48,206.49 L736.92,206.49  '/></g>
+	<path stroke='rgb(204, 204, 204)' stroke-dasharray='2,4' class="gridline"  d='M66.48,167.73 L736.92,167.73  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
-	<path stroke='black'  d='M66.48,206.49 L74.73,206.49  '/>	<g transform="translate(58.79,210.07)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
-		<text><tspan font-family="DejaVu Sans" > 150</tspan></text>
-	</g>
-</g>
-<g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
-</g>
-<g fill="none" color="gray" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
-	<path stroke='rgb(204, 204, 204)' stroke-dasharray='2,4' class="gridline"  d='M66.48,136.25 L736.92,136.25  '/></g>
-<g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
-	<path stroke='black'  d='M66.48,136.25 L74.73,136.25  '/>	<g transform="translate(58.79,139.83)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
+	<path stroke='black'  d='M66.48,167.73 L74.73,167.73  '/>	<g transform="translate(58.79,171.31)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
 		<text><tspan font-family="DejaVu Sans" > 200</tspan></text>
 	</g>
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 </g>
 <g fill="none" color="gray" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
-	<path stroke='rgb(204, 204, 204)' stroke-dasharray='2,4' class="gridline"  d='M66.48,66.01 L736.92,66.01  '/></g>
+	<path stroke='rgb(204, 204, 204)' stroke-dasharray='2,4' class="gridline"  d='M66.48,105.76 L74.17,105.76 M436.16,105.76 L736.92,105.76  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
-	<path stroke='black'  d='M66.48,66.01 L74.73,66.01  '/>	<g transform="translate(58.79,69.59)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
-		<text><tspan font-family="DejaVu Sans" > 250</tspan></text>
+	<path stroke='black'  d='M66.48,105.76 L74.73,105.76  '/>	<g transform="translate(58.79,109.34)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
+		<text><tspan font-family="DejaVu Sans" > 500</tspan></text>
 	</g>
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
@@ -118,113 +127,113 @@
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
-	<path stroke='black'  d='M66.48,66.01 L66.48,417.20 L736.92,417.20 M736.92,66.01 M66.48,66.01  '/>	<g transform="translate(171.74,363.94)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="9.00"  text-anchor="middle">
-		<text><tspan font-family="DejaVu Sans" >32</tspan></text>
+	<path stroke='black'  d='M66.48,66.01 L66.48,417.20 L736.92,417.20 M736.92,66.01 M66.48,66.01  '/>	<g transform="translate(171.74,356.03)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="9.00"  text-anchor="middle">
+		<text><tspan font-family="DejaVu Sans" >10.9</tspan></text>
 	</g>
-	<g transform="translate(229.40,320.39)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="9.00"  text-anchor="middle">
-		<text><tspan font-family="DejaVu Sans" >61</tspan></text>
+	<g transform="translate(229.40,163.91)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="9.00"  text-anchor="middle">
+		<text><tspan font-family="DejaVu Sans" >187</tspan></text>
 	</g>
-	<g transform="translate(305.83,279.65)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="9.00"  text-anchor="middle">
-		<text><tspan font-family="DejaVu Sans" >90</tspan></text>
+	<g transform="translate(305.83,329.14)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="9.00"  text-anchor="middle">
+		<text><tspan font-family="DejaVu Sans" >16.3</tspan></text>
 	</g>
-	<g transform="translate(363.48,111.08)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="9.00"  text-anchor="middle">
-		<text><tspan font-family="DejaVu Sans" >210</tspan></text>
+	<g transform="translate(363.48,152.40)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="9.00"  text-anchor="middle">
+		<text><tspan font-family="DejaVu Sans" >222</tspan></text>
 	</g>
-	<g transform="translate(439.92,344.27)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="9.00"  text-anchor="middle">
-		<text><tspan font-family="DejaVu Sans" >44</tspan></text>
+	<g transform="translate(439.92,195.75)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="9.00"  text-anchor="middle">
+		<text><tspan font-family="DejaVu Sans" >117</tspan></text>
 	</g>
-	<g transform="translate(497.57,302.13)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="9.00"  text-anchor="middle">
-		<text><tspan font-family="DejaVu Sans" >74</tspan></text>
+	<g transform="translate(497.57,211.09)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="9.00"  text-anchor="middle">
+		<text><tspan font-family="DejaVu Sans" >93</tspan></text>
 	</g>
-	<g transform="translate(574.00,237.51)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="9.00"  text-anchor="middle">
-		<text><tspan font-family="DejaVu Sans" >120</tspan></text>
+	<g transform="translate(574.00,190.11)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="9.00"  text-anchor="middle">
+		<text><tspan font-family="DejaVu Sans" >127</tspan></text>
 	</g>
-	<g transform="translate(631.66,90.01)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="9.00"  text-anchor="middle">
-		<text><tspan font-family="DejaVu Sans" >225</tspan></text>
+	<g transform="translate(631.66,92.53)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="9.00"  text-anchor="middle">
+		<text><tspan font-family="DejaVu Sans" >538</tspan></text>
 	</g>
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
-	<path stroke='black'  d='M74.17,107.26 L74.17,74.26 L428.47,74.26 L428.47,107.26 L74.17,107.26 Z  '/></g>
+	<path stroke='black'  d='M74.17,107.26 L74.17,74.26 L436.16,74.26 L436.16,107.26 L74.17,107.26 Z  '/></g>
 	<g id="gnuplot_plot_1" ><title>mmap (MmapDiskManager)</title>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g stroke='none' shape-rendering='crispEdges'>
-		<polygon fill = 'rgb(249, 174,  54)' points = '158.11,417.20 198.34,417.20 198.34,372.24 158.11,372.24 '/>
+		<polygon fill = 'rgb(249, 174,  54)' points = '158.11,417.20 198.34,417.20 198.34,364.49 158.11,364.49 '/>
 	</g>
-	<path stroke='rgb( 68,  68,  68)'  d='M158.11,417.20 L158.11,372.25 L198.33,372.25 L198.33,417.20 L158.11,417.20 Z  '/></g>
+	<path stroke='rgb( 68,  68,  68)'  d='M158.11,417.20 L158.11,364.50 L198.33,364.50 L198.33,417.20 L158.11,417.20 Z  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g stroke='none' shape-rendering='crispEdges'>
-		<polygon fill = 'rgb(249, 174,  54)' points = '292.19,417.20 332.43,417.20 332.43,290.76 292.19,290.76 '/>
+		<polygon fill = 'rgb(249, 174,  54)' points = '292.19,417.20 332.43,417.20 332.43,337.27 292.19,337.27 '/>
 	</g>
-	<path stroke='rgb( 68,  68,  68)'  d='M292.19,417.20 L292.19,290.77 L332.42,290.77 L332.42,417.20 L292.19,417.20 Z  '/></g>
+	<path stroke='rgb( 68,  68,  68)'  d='M292.19,417.20 L292.19,337.28 L332.42,337.28 L332.42,417.20 L292.19,417.20 Z  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g stroke='none' shape-rendering='crispEdges'>
-		<polygon fill = 'rgb(249, 174,  54)' points = '426.28,417.20 466.52,417.20 466.52,355.38 426.28,355.38 '/>
+		<polygon fill = 'rgb(249, 174,  54)' points = '426.28,417.20 466.52,417.20 466.52,203.98 426.28,203.98 '/>
 	</g>
-	<path stroke='rgb( 68,  68,  68)'  d='M426.28,417.20 L426.28,355.39 L466.51,355.39 L466.51,417.20 L426.28,417.20 Z  '/></g>
+	<path stroke='rgb( 68,  68,  68)'  d='M426.28,417.20 L426.28,203.99 L466.51,203.99 L466.51,417.20 L426.28,417.20 Z  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g stroke='none' shape-rendering='crispEdges'>
-		<polygon fill = 'rgb(249, 174,  54)' points = '560.37,417.20 600.61,417.20 600.61,248.62 560.37,248.62 '/>
+		<polygon fill = 'rgb(249, 174,  54)' points = '560.37,417.20 600.61,417.20 600.61,198.43 560.37,198.43 '/>
 	</g>
-	<path stroke='rgb( 68,  68,  68)'  d='M560.37,417.20 L560.37,248.63 L600.60,248.63 L600.60,417.20 L560.37,417.20 Z  '/></g>
+	<path stroke='rgb( 68,  68,  68)'  d='M560.37,417.20 L560.37,198.44 L600.60,198.44 L600.60,417.20 L560.37,417.20 Z  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 </g>
 	</g>
-	<g id="gnuplot_plot_2" ><title>iouring + O_DIRECT (IoUringDiskManager)</title>
+	<g id="gnuplot_plot_2" ><title>io_uring + O_DIRECT (IoUringDiskManager)</title>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g stroke='none' shape-rendering='crispEdges'>
-		<polygon fill = 'rgb( 39, 113, 197)' points = '202.80,417.20 243.04,417.20 243.04,331.50 202.80,331.50 '/>
+		<polygon fill = 'rgb( 39, 113, 197)' points = '202.80,417.20 243.04,417.20 243.04,172.26 202.80,172.26 '/>
 	</g>
-	<path stroke='rgb( 68,  68,  68)'  d='M202.80,417.20 L202.80,331.51 L243.03,331.51 L243.03,417.20 L202.80,417.20 Z  '/></g>
+	<path stroke='rgb( 68,  68,  68)'  d='M202.80,417.20 L202.80,172.27 L243.03,172.27 L243.03,417.20 L202.80,417.20 Z  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g stroke='none' shape-rendering='crispEdges'>
-		<polygon fill = 'rgb( 39, 113, 197)' points = '336.89,417.20 377.13,417.20 377.13,122.19 336.89,122.19 '/>
+		<polygon fill = 'rgb( 39, 113, 197)' points = '336.89,417.20 377.13,417.20 377.13,160.66 336.89,160.66 '/>
 	</g>
-	<path stroke='rgb( 68,  68,  68)'  d='M336.89,417.20 L336.89,122.20 L377.12,122.20 L377.12,417.20 L336.89,417.20 Z  '/></g>
+	<path stroke='rgb( 68,  68,  68)'  d='M336.89,417.20 L336.89,160.67 L377.12,160.67 L377.12,417.20 L336.89,417.20 Z  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g stroke='none' shape-rendering='crispEdges'>
-		<polygon fill = 'rgb( 39, 113, 197)' points = '470.98,417.20 511.22,417.20 511.22,313.24 470.98,313.24 '/>
+		<polygon fill = 'rgb( 39, 113, 197)' points = '470.98,417.20 511.22,417.20 511.22,219.50 470.98,219.50 '/>
 	</g>
-	<path stroke='rgb( 68,  68,  68)'  d='M470.98,417.20 L470.98,313.25 L511.21,313.25 L511.21,417.20 L470.98,417.20 Z  '/></g>
+	<path stroke='rgb( 68,  68,  68)'  d='M470.98,417.20 L470.98,219.51 L511.21,219.51 L511.21,417.20 L470.98,417.20 Z  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g stroke='none' shape-rendering='crispEdges'>
-		<polygon fill = 'rgb( 39, 113, 197)' points = '605.07,417.20 645.30,417.20 645.30,101.12 605.07,101.12 '/>
+		<polygon fill = 'rgb( 39, 113, 197)' points = '605.07,417.20 645.30,417.20 645.30,100.80 605.07,100.80 '/>
 	</g>
-	<path stroke='rgb( 68,  68,  68)'  d='M605.07,417.20 L605.07,101.13 L645.29,101.13 L645.29,417.20 L605.07,417.20 Z  '/></g>
+	<path stroke='rgb( 68,  68,  68)'  d='M605.07,417.20 L605.07,100.81 L645.29,100.81 L645.29,417.20 L605.07,417.20 Z  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 </g>
 	</g>
 	<g stroke='none' shape-rendering='crispEdges'>
-		<polygon fill = '#FFFFFF' points = '74.17,107.26 428.47,107.26 428.47,74.26 74.17,74.26 '/>
+		<polygon fill = '#FFFFFF' points = '74.17,107.26 436.16,107.26 436.16,74.26 74.17,74.26 '/>
 	</g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
-	<path stroke='black'  d='M74.17,107.26 L74.17,74.26 L428.47,74.26 L428.47,107.26 L74.17,107.26 Z  '/></g>
+	<path stroke='black'  d='M74.17,107.26 L74.17,74.26 L436.16,74.26 L436.16,107.26 L74.17,107.26 Z  '/></g>
 	<g id="gnuplot_plot_1" ><title>mmap (MmapDiskManager)</title>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
-	<g transform="translate(374.08,86.09)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
+	<g transform="translate(381.77,86.09)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
 		<text><tspan font-family="DejaVu Sans" >mmap (MmapDiskManager)</tspan></text>
 	</g>
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g stroke='none' shape-rendering='crispEdges'>
-		<polygon fill = 'rgb(249, 174,  54)' points = '381.77,86.63 420.78,86.63 420.78,78.38 381.77,78.38 '/>
+		<polygon fill = 'rgb(249, 174,  54)' points = '389.46,86.63 428.47,86.63 428.47,78.38 389.46,78.38 '/>
 	</g>
-	<path stroke='rgb( 68,  68,  68)'  d='M381.77,86.63 L420.78,86.63 L420.78,78.39 L381.77,78.39 L381.77,86.63 Z  '/></g>
+	<path stroke='rgb( 68,  68,  68)'  d='M389.46,86.63 L428.47,86.63 L428.47,78.39 L389.46,78.39 L389.46,86.63 Z  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 </g>
 	</g>
-	<g id="gnuplot_plot_2" ><title>iouring + O_DIRECT (IoUringDiskManager)</title>
+	<g id="gnuplot_plot_2" ><title>io_uring + O_DIRECT (IoUringDiskManager)</title>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
-	<g transform="translate(374.08,102.59)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
-		<text><tspan font-family="DejaVu Sans" >io</tspan><tspan font-family="DejaVu Sans"  font-size="8.8" dy="3.30px">u</tspan><tspan font-family="DejaVu Sans"  dy="-3.30px">ring + O_DIRECT (IoUringDiskManager)</tspan></text>
+	<g transform="translate(381.77,102.59)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
+		<text><tspan font-family="DejaVu Sans" >io_uring + O_DIRECT (IoUringDiskManager)</tspan></text>
 	</g>
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g stroke='none' shape-rendering='crispEdges'>
-		<polygon fill = 'rgb( 39, 113, 197)' points = '381.77,103.13 420.78,103.13 420.78,94.88 381.77,94.88 '/>
+		<polygon fill = 'rgb( 39, 113, 197)' points = '389.46,103.13 428.47,103.13 428.47,94.88 389.46,94.88 '/>
 	</g>
-	<path stroke='rgb( 68,  68,  68)'  d='M381.77,103.13 L420.78,103.13 L420.78,94.89 L381.77,94.89 L381.77,103.13 Z  '/></g>
+	<path stroke='rgb( 68,  68,  68)'  d='M389.46,103.13 L428.47,103.13 L428.47,94.89 L389.46,94.89 L389.46,103.13 Z  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 </g>
 	</g>
@@ -236,7 +245,7 @@
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<path stroke='black'  d='M66.48,66.01 L66.48,417.20 L736.92,417.20 M736.92,66.01 M66.48,66.01  '/>	<g transform="translate(17.58,241.61) rotate(270.00)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="middle">
-		<text><tspan font-family="DejaVu Sans" >Latency (microseconds, lower is better)</tspan></text>
+		<text><tspan font-family="DejaVu Sans" >Latency (microseconds, log scale, lower is better)</tspan></text>
 	</g>
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
@@ -248,10 +257,10 @@
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g transform="translate(401.70,28.34)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="middle">
-		<text><tspan font-family="DejaVu Sans" >Single-block I/O: mmap wins on per-operation latency (1.7-2.3x)</tspan></text>
+		<text><tspan font-family="DejaVu Sans" >Single-block latency on real NVMe (log scale): mmap wins reads 17x</tspan></text>
 	</g>
 	<g transform="translate(401.70,44.84)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="middle">
-		<text><tspan font-family="DejaVu Sans"  font-size="8.8">Source: io</tspan><tspan font-family="DejaVu Sans"  font-size="7.0" dy="2.64px">u</tspan><tspan font-family="DejaVu Sans"  font-size="8.8" dy="-2.64px">ring</tspan><tspan font-family="DejaVu Sans"  font-size="7.0" dy="2.64px">m</tspan><tspan font-family="DejaVu Sans"  font-size="8.8" dy="-2.64px">igration/benchmark</tspan><tspan font-family="DejaVu Sans"  font-size="7.0" dy="2.64px">r</tspan><tspan font-family="DejaVu Sans"  font-size="8.8" dy="-2.64px">esults.md Phase 3 (2026-02-20); summary-report averages, 256 KB blocks</tspan></text>
+		<text><tspan font-family="DejaVu Sans"  font-size="8.8">Source: io_uring_migration/benchmark_results.md Phase 6 (2026-07-10); cmp_summary_report percentiles, 256 KB blocks</tspan></text>
 	</g>
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">

@@ -1,12 +1,16 @@
 # Batch read (64 blocks) throughput (Kelem/s) by I/O strategy.
 # SOURCE: docs/io_uring_migration/benchmark_results.md
-#   "Phase 3: Head-to-Head Comparison" -> "Batch Read (64 blocks)" table
-#   ("Throughput" row): mmap sequential 21.0, io_uring batch SQE 29.8,
-#   io_uring sequential 16.7 (Kelem/s). io_uring batch is "1.41x faster" vs mmap
-#   per that table. 256 KB blocks, Samsung 990 PRO NVMe, 2026-02-20.
-# NO re-run, NO interpolation.
+#   "Phase 6: Real-disk re-run on AMD Threadripper PRO 5975WX (2026-07-10)" ->
+#   "Batch read (cmp_batch_read, 64 x 256 KB blocks)" table (Throughput row):
+#   mmap sequential 87.2, io_uring batch SQE 13.0, io_uring sequential 4.9
+#   (Kelem/s). On real disk mmap's cache-served batch leads 6.7x; io_uring's
+#   SQE batching still beats its own sequential path 2.65x. 256 KB blocks,
+#   Samsung 990 PRO NVMe, ext4 /dev/nvme0n1p4 (real O_DIRECT), 2026-07-10.
+# Re-run on current hardware; supersedes the 2026-02-20 Phase 3 figure.
+# NOTE: label underscores are enhanced-text-escaped (\\_) so gnuplot renders a
+# literal "_" rather than a subscript; \n stays a single backslash (newline).
 #
 # index  strategy_label              throughput_kelems  color_id
-0   "mmap\n(sequential)"            21.0   1
-1   "io_uring\n(batch SQE)"         29.8   2
-2   "io_uring\n(sequential)"        16.7   3
+0   "mmap\n(sequential)"            87.2   1
+1   "io\\_uring\n(batch SQE)"       13.0   2
+2   "io\\_uring\n(sequential)"      4.9    3

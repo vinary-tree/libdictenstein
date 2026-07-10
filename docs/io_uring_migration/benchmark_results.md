@@ -20,6 +20,13 @@ exactly where each backend leads; the rule of thumb is to keep the mmap default
 for cached, latency-sensitive serving and reach for `io_uring` for eviction-heavy
 or batch-flush workloads that also need durability without the page-cache gap.
 
+> **2026-07-10 update.** Phases 1–5 were recorded on an Intel Xeon (2026-02-20/21). A
+> full real-disk re-run on the current AMD Threadripper workstation — [**Phase 6**](#phase-6-real-disk-re-run-on-amd-threadripper-pro-5975wx-2026-07-10) — confirms the
+> workload-shaped split and sharpens it: on real NVMe (not the earlier RAM-speed scratch)
+> mmap's cached-read/eviction lead is much larger (13–32x), and **io_uring's true-durability
+> win becomes decisive (~34x on `fsync`)** — a result the earlier run's RAM-speed `sync`
+> hid. See Phase 6 for the current-hardware numbers, plots, and `perf` counters.
+
 ## Test Environment
 
 | Component | Specification |
@@ -105,9 +112,10 @@ or batch-flush workloads that also need durability without the page-cache gap.
 | mean | ~49 us | ~84 us | 1.7x slower |
 | ops/s | ~20,600 | ~11,900 | 0.58x |
 
-<img src="../benchmarks/artifacts/iouring-vs-mmap-latency.svg" alt="Clustered bar chart (microseconds) comparing mmap versus io_uring single-block latency for Read p50/p99 and Write p50/p99. mmap (amber) is lower in every group (Read 32/90, Write 44/120 us) than io_uring (blue: Read 61/210, Write 74/225 us)." width="680"/>
-
-*Figure: Single-block random read/write latency, mmap versus io_uring, from the two Phase 3 head-to-head tables above (io_uring_migration/benchmark_results.md, 2026-02-20). Values are the ledger's "summary report averages" (recorded with a leading ~); mmap leads per-operation latency by 1.7-2.3x.*
+> *The single-block latency figure has been refreshed to the current-hardware re-run and now
+> lives in [Phase 6](#phase-6-real-disk-re-run-on-amd-threadripper-pro-5975wx-2026-07-10). The
+> Phase 3 values (mmap Read 32/90, Write 44/120 µs; io_uring Read 61/210, Write 74/225 µs)
+> remain in the two tables above as recorded history.*
 
 ### Sync Latency
 
@@ -139,9 +147,11 @@ or batch-flush workloads that also need durability without the page-cache gap.
 | Throughput | 21.0 Kelem/s | 29.8 Kelem/s | 16.7 Kelem/s |
 | vs mmap | 1.0x | **1.41x faster** | 0.79x |
 
-<img src="../benchmarks/artifacts/iouring-batch-read.svg" alt="Bar chart of batch read throughput in Kelem/s for 64 blocks. mmap sequential (amber) 21.0; io_uring batch SQE (blue) 29.8 — the fastest; io_uring sequential (grey) 16.7 — the slowest." width="600"/>
-
-*Figure: Batch read (64 x 256 KB blocks) throughput by I/O strategy, from the Batch Read table above (io_uring_migration/benchmark_results.md Phase 3, 2026-02-20). SQE batching makes io_uring 1.41x faster than mmap — the one workload where io_uring's amortization wins.*
+> *The batch-read throughput figure has been refreshed to the current-hardware re-run and now
+> lives in [Phase 6](#phase-6-real-disk-re-run-on-amd-threadripper-pro-5975wx-2026-07-10),
+> where the result reverses (on real disk mmap's cache-served batch leads). The Phase 3 values
+> (mmap 21.0, io_uring batch 29.8, io_uring seq 16.7 Kelem/s) remain in the table above as
+> recorded history.*
 
 ### WAL fsync Comparison
 
@@ -627,3 +637,239 @@ The AlignedBlock pool provided the most significant measurable improvement:
 This eliminates 64 $`\times`$ `alloc_zeroed(256KB)` calls per batch, replacing them with
 a single `Mutex::lock` + `Vec::split_off`. The pool is pre-populated at construction
 time, so the first batch read is also fast.
+
+---
+
+## Phase 6: Real-disk re-run on AMD Threadripper PRO 5975WX (2026-07-10)
+
+Phases 1–5 above were recorded 2026-02-20/21 on an Intel Xeon E5-2699 v3. This phase
+re-runs the **entire** comparison — every group, including the Phase 5 eviction path — on
+the current workstation, and it makes one methodological correction that reshapes the
+durability numbers.
+
+**The scratch-directory correction.** All three harnesses build their scratch files with
+`tempfile::tempdir()`, which lands under `$TMPDIR` (default `/tmp`). On this workstation
+`/tmp` is **tmpfs (RAM)**, where (a) `O_DIRECT` — required by the io_uring backend — fails
+outright, and (b) a durability `sync` never reaches a device, so it returns at RAM speed. A
+run left as-is would therefore either fail io_uring setup or measure memory rather than
+disk. Phase 6 pins `TMPDIR` to a scratch directory on the repository's **ext4 volume
+(`/dev/nvme0n1p4`, real NVMe)**, which makes `tempdir()` write to the SSD and lets
+`O_DIRECT` succeed (smoke-verified before any measurement). Every number below is measured
+against the physical device. This is why the sync and trie-insert figures move by orders of
+magnitude from Phase 3: those earlier figures (mmap sync ~1.5 µs; trie insert ~19 ms) were
+**RAM-speed and did not exercise real-device durability**, whereas Phase 6 does. Treat Phase
+6 as authoritative for current hardware; the Phase 1–5 tables are retained verbatim as
+dated history.
+
+### Test Environment (Phase 6)
+
+| Component | Specification |
+|-----------|--------------|
+| CPU | AMD Ryzen Threadripper PRO 5975WX (32 cores, SMT off = 32 threads, max 4561 MHz) |
+| RAM | 125 GiB |
+| Storage | Samsung 990 PRO 4TB NVMe (firmware 8B2QJXD7) |
+| Filesystem (scratch) | ext4 on `/dev/nvme0n1p4` (`TMPDIR=$PWD/target/bench-scratch`) |
+| OS | Linux 7.0.13-arch1-1 (Arch Linux) |
+| Rust | Stable, release profile (optimized) |
+| CPU Governor | `performance` (all cores) |
+| CPU Affinity | `taskset -c 0-3` (both backends) |
+| Block Size | 256 KB |
+| `perf_event_paranoid` | 2 (no root; `LLC-load-misses` unavailable — noted below) |
+| Date | 2026-07-10 |
+
+### Block-level I/O — full-dataset iteration (`io_backend_benchmarks`, 1024 blocks = 256 MB per iteration)
+
+Criterion median wall-time to sweep all 1024 blocks in one iteration.
+
+| Benchmark | mmap | io_uring | Ratio (io_uring / mmap) |
+|-----------|------|----------|-------------------------|
+| seq_read_block | 11.14 ms | 151.21 ms | 13.6x slower |
+| rand_read_block | 10.86 ms | 191.98 ms | 17.7x slower |
+| seq_write_block | 27.06 ms | 122.43 ms | 4.5x slower |
+| rand_write_block | 27.39 ms | 127.36 ms | 4.6x slower |
+| sync_latency | 14.51 ms | 4.76 ms | **0.33x — io_uring 3.0x faster** |
+| memory_pressure_read | 11.68 ms | 186.17 ms | 15.9x slower |
+| mixed_pressure (80/20) | 13.44 ms | 290.74 ms | 21.6x slower |
+| batch_read (64 blocks) | 712.9 µs | 4.24 ms | 5.9x slower |
+
+### Single-block per-operation latency (`cmp_summary_report`, per 256 KB block)
+
+HdrHistogram percentiles over the head-to-head summary pass (read/write n=1024, sync
+n=100), reported as the median across the three summary-report repeats. Run-to-run spread
+is mild except in io_uring's write tail (per-repeat: read p50 ~160–189 µs; write p99
+~526–687 µs). mmap's `sync` is `msync`; io_uring's is `IORING_OP_FSYNC`.
+
+| Operation | Backend | p50 | p99 | mean | ops/s |
+|-----------|---------|-----|-----|------|-------|
+| rand read | mmap | 10.9 µs | 16.3 µs | 11.1 µs | ~89,960 |
+| rand read | io_uring | 187 µs | 222 µs | 185 µs | ~5,410 |
+| rand write | mmap | 117 µs | 127 µs | 118 µs | ~8,470 |
+| rand write | io_uring | 93 µs | 538 µs | 131 µs | ~7,610 |
+| sync | mmap | 1.99 ms | 2.53 ms | 3.40 ms | ~294 |
+| sync | io_uring | 59 µs | 89 µs | 62 µs | ~16,190 |
+
+Two results dominate this table:
+
+- **mmap read is ~17x lower latency** (10.9 µs vs 187 µs) — the page cache serves the fault
+  from RAM, while every `O_DIRECT` read is a device round-trip.
+- **io_uring durable sync is ~34x lower latency** (59 µs vs 1.99 ms) and far tighter in the
+  tail: mmap's `msync` p999 reaches **~147 ms** (kernel writeback storms — the whole dirty
+  set flushed at once), whereas io_uring's `fdatasync` p999 stays under 105 µs. io_uring's
+  write-p50 is also lower than mmap's (93 µs vs 117 µs), though its write-p99 is worse
+  (538 µs vs 127 µs) from occasional completion-queue stalls.
+
+<img src="../benchmarks/artifacts/iouring-vs-mmap-latency.svg" alt="Clustered bar chart (microseconds, log scale) comparing mmap versus io_uring single-block latency for Read p50/p99 and Write p50/p99 on real NVMe. mmap (amber) reads are far lower (10.9/16.3) than io_uring (blue: 187/222); for writes io_uring p50 (93) is below mmap (117) but io_uring write p99 (538) towers over mmap (127)." width="680"/>
+
+*Figure: Single-block random read/write latency, mmap versus io_uring, from the Phase 6
+`cmp_summary_report` per-operation table above (2026-07-10, real ext4 NVMe scratch, 256 KB
+blocks). Log-scale y-axis. mmap wins reads by ~17x; io_uring edges write-p50 but its
+write-p99 tail is ~4x mmap's.*
+
+### Head-to-head under memory pressure (`io_uring_comparison`, 4096 blocks = 1 GB, 16-frame pool)
+
+| Benchmark | mmap | io_uring | Ratio |
+|-----------|------|----------|-------|
+| cmp_pressure_rand_read | 47.96 ms | 731.3 ms | 15.2x slower |
+| cmp_pressure_mixed (80/20) | 55.73 ms | 1.035 s | 18.6x slower |
+
+Under a working set 8x the pool, mmap's cache still absorbs most accesses while io_uring
+pays a device round-trip on every miss. This is the workload the `perf` section dissects.
+
+### Batch read (`cmp_batch_read`, 64 × 256 KB blocks)
+
+| Strategy | Criterion time | Throughput | vs mmap |
+|----------|---------------|------------|---------|
+| mmap (sequential) | 733.8 µs | 87.2 Kelem/s | 1.0x |
+| io_uring (batch SQE) | 4.91 ms | 13.0 Kelem/s | 0.15x |
+| io_uring (sequential) | 13.00 ms | 4.9 Kelem/s | 0.06x |
+
+SQE batching still helps *within* io_uring — the batch path is **2.65x faster than
+io_uring's own sequential path** (13.0 vs 4.9 Kelem/s). But against mmap's cache-served
+batch, io_uring no longer wins on this hardware: Phase 3 (on its RAM-speed scratch) had
+io_uring batch ahead 1.41x; on real disk mmap leads 6.7x. This is the one qualitative
+reversal against the Phase 3 headline.
+
+<img src="../benchmarks/artifacts/iouring-batch-read.svg" alt="Bar chart of batch read throughput in Kelem/s for 64 blocks on real NVMe. mmap sequential (amber) 87.2 — the fastest; io_uring batch SQE (blue) 13.0; io_uring sequential (grey) 4.9 — the slowest. io_uring batching still beats io_uring sequential 2.65x." width="600"/>
+
+*Figure: Batch read (64 × 256 KB blocks) throughput by I/O strategy, from the Phase 6
+`cmp_batch_read` table above (2026-07-10, real ext4 NVMe scratch). On real disk mmap's
+cache-served batch leads 6.7x; SQE batching still makes io_uring 2.65x faster than its own
+sequential path — the reversal versus Phase 3, where io_uring batch led.*
+
+### WAL fsync (`cmp_wal_fsync`)
+
+| Metric | StdFsync | IoUringFsync | Ratio |
+|--------|----------|--------------|-------|
+| Per-record sync | 48.76 ms | 56.24 ms | 1.15x slower |
+| Batched (100 records) | 71.2 µs | 86.8 µs | 1.22x slower |
+
+Both reach the device; `std`'s single `sync_all()` syscall edges out io_uring's SQE/CQE
+round-trip on both paths — consistent with Phase 3's qualitative call that `std` is at least
+as fast as io_uring for WAL fsync.
+
+### Trie-level operations (`cmp_trie_insert` / `cmp_trie_query`, 10,000 terms)
+
+| Operation | mmap | io_uring | Ratio |
+|-----------|------|----------|-------|
+| Insert (10K terms + durable sync) | 1.206 s | 1.204 s | tied (~0.2%) |
+| Query (10K lookups) | 427.8 µs | 424.4 µs | tied (~0.8%) |
+
+At the trie API the two backends are **statistically tied**, exactly as in Phase 3 — the
+buffer pool absorbs the access pattern and the backend only shows through on flush. The
+*absolute* insert cost is now ~1.2 s (vs ~19 ms in Phase 3) because the sync is a real
+device durability barrier here, not a RAM no-op; that the two backends remain tied confirms
+the cost is backend-independent (in-memory insert + durability), not an artifact of either
+storage path.
+
+### Fixed-buffer path — Phase 4 optimizations (`cmp_*_fixed`, cached, 16-block pool)
+
+| Benchmark | mmap | io_uring (fixed) | io_uring (standard) | Winner |
+|-----------|------|------------------|---------------------|--------|
+| single_block_read_fixed | 803.9 ns | 1.744 µs | 2.109 ms | mmap (2.2x vs fixed) |
+| single_block_write_fixed | 1.638 µs | 931.3 ns | — | **io_uring fixed (1.76x)** |
+| batch_flush_dirty (64) | 617.6 µs (`msync`) | 15.71 ms (`fdatasync`) | — | mmap 25x — but `msync` is not durable |
+| flush_all_fixed (16 pages) | 4.345 ms | 2.664 ms | — | **io_uring fixed (1.63x)** |
+
+The pre-registered fixed-buffer path pays off here: io_uring's cached fixed-buffer **write**
+(931 ns) beats mmap (1.64 µs), and `flush_all` over the fixed pool is 1.63x faster than
+mmap's — both **reversed in io_uring's favour versus Phase 3**. The `io_uring_standard`
+(non-fixed) read at 2.11 ms is the un-cached `O_DIRECT` cost, showing why buffer
+registration matters. `batch_flush_dirty` still favours mmap 25x, but the comparison is not
+apples-to-apples: mmap's `msync` only stages pages for the writeback daemon while io_uring's
+path is a real `fdatasync` durability barrier.
+
+### Eviction path (`eviction_benchmarks`, 128 blocks, 8-frame pool)
+
+Criterion median for the full 128-block eviction sweep; the bracketed p50 is the
+per-eviction HdrHistogram median.
+
+| Scenario | mmap | io_uring (fixed) | io_uring (standard) |
+|----------|------|------------------|---------------------|
+| read-only eviction | 1.059 ms (p50 21.3 µs) | 23.76 ms (p50 188 µs) | 25.53 ms (p50 191 µs) |
+| dirty write-back | 2.240 ms (p50 113 µs) | 71.54 ms (p50 270 µs) | 126.35 ms (p50 277 µs) |
+| concurrent (4 threads) | 4.846 ms | 92.65 ms | 93.03 ms (single-ring) |
+
+mmap dominates the eviction path on real disk — **22x** (read-only), **32x** (dirty
+write-back), **19x** (concurrent) — because eviction is a stream of single-block faults and
+write-backs that the page cache serves from RAM, exactly where `O_DIRECT` is weakest. The
+two io_uring ring strategies (per-thread `io_uring_4t` vs shared `single_ring_4t`) are tied
+at 4 threads, so ring-sharing contention is negligible at this concurrency.
+
+### `perf` counters — controlled A/B on the 1 GB pressure read
+
+Both backends run the **same** `cmp_pressure_rand_read` workload (4096 × 256 KB = 1 GB,
+16-frame pool) under `perf stat`, userspace counters (`:u`). This corrects Phase 3, which
+compared two *different* benchmarks. `LLC-load-misses` is unavailable at
+`perf_event_paranoid = 2` without root and is omitted.
+
+| Counter | mmap | io_uring | Interpretation |
+|---------|------|----------|----------------|
+| page-faults | 4,066,338 | 270,449 | io_uring **15x fewer** (`O_DIRECT` bypasses the page cache) |
+| major-faults | 184,335 | 11 | mmap faults in from the device 184K times; io_uring never does |
+| dTLB-load-misses | 151,161,981 | 5,789,844 | io_uring **26x fewer** (no giant mapped region to walk) |
+| instructions (`:u`) | 79.91 B | 40.64 B | io_uring runs ~half the instructions |
+| cycles (`:u`) | 98.47 B | 21.33 B | io_uring burns ~1/5 the cycles |
+| IPC (`:u`) | 0.81 | 1.91 | io_uring **2.35x higher** (direct I/O is more predictable) |
+| user + sys time | 45.66 s | 11.10 s | io_uring uses **4.1x less CPU** |
+| wall-clock (elapsed) | 42.14 s | 50.29 s | io_uring is **slower on the wall** despite less CPU |
+
+The last two rows are the crux, and they explain the whole comparison. **mmap is
+CPU-bound**: it burns cycles servicing 4 M page faults (184 K of them major, i.e. real
+device reads) and thrashing the dTLB (151 M misses) — 45.7 s of CPU — but the page cache
+keeps wall-clock low. **io_uring is I/O-wait-bound**: `O_DIRECT` means a tiny CPU/cache
+footprint (15x fewer faults, 26x fewer TLB misses, 2.35x IPC, 4.1x less CPU) but every block
+is a real device round-trip, so it spends the wall clock waiting on the SSD, not the CPU.
+mmap trades CPU and cache pressure for latency by leaning on the page cache; io_uring trades
+latency for a minimal CPU/cache footprint and true durability.
+
+### What Phase 6 changes about the conclusions
+
+The **workload-shaped split still holds and sharpens** on real disk, with three reversals
+and one correction versus Phase 3:
+
+1. **mmap's single-block / pressure / eviction lead is far larger than Phase 3 implied** —
+   13–32x on real disk, not 1.7–2.3x. The page cache is decisive when the working set is
+   cache-resident.
+2. **io_uring wins true durable sync decisively (~34x)** — the headline that Phase 3's
+   RAM-speed scratch hid entirely (it had shown mmap sync 1.5 µs, "4.9x faster"). Real
+   `msync` costs ~2 ms with ~147 ms writeback-storm tails; io_uring's `fdatasync` is ~59 µs.
+3. **The Phase-4 fixed-buffer path now wins for io_uring** on cached writes (1.76x) and
+   `flush_all` (1.63x) — both were mmap wins in Phase 3.
+4. **Batch read reverses to mmap** (6.7x) — io_uring's SQE batching still beats its own
+   sequential path 2.65x, but cannot beat the cache-served mmap batch on this hardware.
+
+Everything else is unchanged in character: trie-level ops tied, WAL fsync slightly favours
+`std`, and io_uring's `O_DIRECT` dramatically reduces the page-cache/CPU footprint. The
+revised rule of thumb: **keep the mmap default for cached, latency-sensitive serving; choose
+io_uring when you need real `fsync` durability, a minimal page-cache/CPU footprint
+(memory-constrained or cache-sensitive hosts), or the Phase-4 fixed-buffer flush path.**
+
+### Raw capture reference (Phase 6)
+
+All numbers above are extracted from single tee'd runs under
+`TMPDIR=$PWD/target/bench-scratch` (ext4 NVMe), `taskset -c 0-3`, governor `performance`:
+
+- `target/bench-scratch/io_backend.log` — `io_backend_benchmarks --features io-uring-backend`
+- `target/bench-scratch/io_uring_cmp.log` — `io_uring_comparison_benchmarks --features io-uring-backend`
+- `target/bench-scratch/eviction.log` — `eviction_benchmarks --features bench-internals`
+- `target/bench-scratch/perf_mmap_ctrl.txt`, `perf_iouring.txt` — controlled `perf stat` A/B on `cmp_pressure_rand_read`
