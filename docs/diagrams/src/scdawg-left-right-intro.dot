@@ -1,0 +1,39 @@
+// ============================================================================
+// scdawg-left-right-intro.dot — the concrete teaser for the SCDAWG's defining
+// feature: RIGHT extension appends a character (a native CDAWG edge) while LEFT
+// extension prepends one (the symmetric edge the SCDAWG adds).  They reach
+// DIFFERENT strings — a left extension is not a reversal of a right extension.
+// Source: §SCDAWG of 01-introduction.md.
+//
+//     "cab"  <--c-- (prepend)  "ab"  --c--> (append)  "abc"
+//
+// Color key (house palette + scdawg accents):
+//   teal   #B2DFDB  the current factor "ab"
+//   blue   #BBDEFB  left-extension target (prepend 'c' → "cab")
+//   green  #C8E6C9  right-extension target (append 'c' → "abc")
+//   dark slate #37474F  edges + node borders
+// ============================================================================
+digraph scdawg_left_right_intro {
+    rankdir=LR;
+    bgcolor="#FFFFFF";
+    fontname="DejaVu Sans";
+    fontsize=14;
+    labelloc="t";
+    fontcolor="#212121";
+    label="Left vs right extension of \"ab\" by 'c'\n(prepend → \"cab\", append → \"abc\" — different strings)";
+    nodesep=0.45;
+    ranksep=0.7;
+
+    node [shape=box, style="filled,rounded", fillcolor="#C8E6C9",
+          color="#37474F", fontname="DejaVu Sans", fontcolor="#212121",
+          penwidth=1.4, margin="0.16,0.09"];
+    edge [color="#37474F", fontname="DejaVu Sans", fontcolor="#37474F",
+          penwidth=1.4];
+
+    cab [label="cab", fillcolor="#BBDEFB"];
+    ab  [label="ab\n(current factor)", fillcolor="#B2DFDB", penwidth=2.0];
+    abc [label="abc", fillcolor="#C8E6C9"];
+
+    ab -> cab [label="prepend 'c'\n(left extension)", color="#1565C0", fontcolor="#1565C0", dir=back];
+    ab -> abc [label="append 'c'\n(right extension)"];
+}

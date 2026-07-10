@@ -1,0 +1,70 @@
+// ============================================================================
+// scdawg-linear-compaction.dot — the best case for compaction: a string of all
+// DISTINCT characters, "abcdefgh$".  Every intermediate DAWG state is a pure
+// pass-through (in-degree = out-degree = 1), so the entire 10-state chain
+// collapses to just the source and the sink.  Source: §When Compaction Helps
+// Most of 03-cdawg.md.
+//
+//   DAWG:  q0 -a-> q1 -b-> q2 -c-> … -h-> q8 -$-> q9      (10 states, 9 edges)
+//   CDAWG: q0 -abcdefgh$-> q9                             ( 2 states, 1 edge)
+//
+// Color key (house palette):
+//   grey   #ECEFF1  pass-through states removed by compaction (in=out=1)
+//   green  #C8E6C9  retained states (source q0, sink q9)
+//   dark slate #37474F  transitions + node borders
+// ============================================================================
+digraph scdawg_linear_compaction {
+    rankdir=TB;
+    bgcolor="#FFFFFF";
+    fontname="DejaVu Sans";
+    fontsize=14;
+    labelloc="t";
+    fontcolor="#212121";
+    label="Compaction of an all-distinct string \"abcdefgh$\"\n10-state DAWG chain collapses to a 2-state CDAWG";
+    nodesep=0.30;
+    ranksep=0.32;
+
+    node [shape=circle, style="filled", fillcolor="#C8E6C9",
+          color="#37474F", fontname="DejaVu Sans", fontcolor="#212121",
+          penwidth=1.4, width=0.46, fontsize=11];
+    edge [color="#37474F", fontname="DejaVu Sans", fontcolor="#37474F",
+          penwidth=1.3, fontsize=11];
+
+    subgraph cluster_dawg {
+        label="DAWG — 10 states";
+        fontname="DejaVu Sans";
+        color="#B0BEC5";
+        style="rounded";
+        d0 [label="q0"];
+        d1 [label="q1", fillcolor="#ECEFF1", style="filled,dashed"];
+        d2 [label="q2", fillcolor="#ECEFF1", style="filled,dashed"];
+        d3 [label="q3", fillcolor="#ECEFF1", style="filled,dashed"];
+        d4 [label="q4", fillcolor="#ECEFF1", style="filled,dashed"];
+        d5 [label="q5", fillcolor="#ECEFF1", style="filled,dashed"];
+        d6 [label="q6", fillcolor="#ECEFF1", style="filled,dashed"];
+        d7 [label="q7", fillcolor="#ECEFF1", style="filled,dashed"];
+        d8 [label="q8", fillcolor="#ECEFF1", style="filled,dashed"];
+        d9 [label="q9"];
+        d0 -> d1 [label="a"];
+        d1 -> d2 [label="b"];
+        d2 -> d3 [label="c"];
+        d3 -> d4 [label="d"];
+        d4 -> d5 [label="e"];
+        d5 -> d6 [label="f"];
+        d6 -> d7 [label="g"];
+        d7 -> d8 [label="h"];
+        d8 -> d9 [label="$"];
+    }
+
+    subgraph cluster_cdawg {
+        label="CDAWG — 2 states";
+        fontname="DejaVu Sans";
+        color="#B0BEC5";
+        style="rounded";
+        e0 [label="q0"];
+        e9 [label="q9"];
+        e0 -> e9 [label="abcdefgh$"];
+    }
+
+    d9 -> e0 [style=invis];
+}

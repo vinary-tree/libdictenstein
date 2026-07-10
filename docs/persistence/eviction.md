@@ -70,7 +70,7 @@ The eviction system implements SQLite-style bounded memory operation:
 
 **What.** Four cooperating components, all owned by `PersistentARTrie<V>`: a `MemoryPressureMonitor` that watches the OS, an `EvictionCoordinator` that queues and serializes work, a background *eviction thread* that performs the reclamation, and two indices — the `LruRegistry` (which nodes are cold) and the `DiskLocationRegistry` (which nodes have a current disk image and may therefore be evicted).
 
-**How.** The data flows in one direction: the monitor detects pressure and fires a callback; the callback maps the pressure *level* to an `EvictionUrgency` and enqueues a request; the eviction thread dequeues it, waits for epoch quiescence, asks the registries for the coldest evictable nodes, atomically unswizzles each ($`ChildNode \to DiskRef`$), and records statistics. The figure below traces that path end-to-end; the urgency bands are colored amber → red by severity.
+**How.** The data flows in one direction: the monitor detects pressure and fires a callback; the callback maps the pressure *level* to an `EvictionUrgency` and enqueues a request; the eviction thread dequeues it, waits for epoch quiescence, asks the registries for the coldest evictable nodes, atomically unswizzles each ($`\text{ChildNode} \to \text{DiskRef}`$), and records statistics. The figure below traces that path end-to-end; the urgency bands are colored amber → red by severity.
 
 <img src="../diagrams/eviction-pipeline.svg" alt="Eviction pipeline: pressure band to urgency to queue to async thread to quiescence to LRU select to unswizzle" width="980"/>
 
@@ -78,7 +78,7 @@ The eviction system implements SQLite-style bounded memory operation:
 
 **Why this shape.** Detection, policy, and mechanism are separated so each can be tuned independently: the monitor's thresholds bound *when* eviction starts, the LRU policy decides *what* leaves first, and the epoch machinery makes the *mechanism* safe. Making the eviction thread asynchronous (rather than evicting inline after each checkpoint, the way naïve bounded caches do) keeps client `insert`/`lookup`/`iterate` latency off the eviction critical path.
 
-> **Note — `MemoryPressureLevel` vs `EvictionUrgency`.** They are distinct enums. `MemoryPressureLevel` (`Normal`, `Low`, `Critical`) describes the *system*; `EvictionUrgency` (`Moderate`, `Urgent`, `Emergency`) describes *how hard a pass works*. The monitor callback in `coordinator.rs` performs the mapping: $`Normal \Rightarrow`$ no request, $`Low \Rightarrow Moderate`$, $`Critical \Rightarrow Emergency`$. (The `Urgent` rung exists for callers that invoke `request_eviction(EvictionUrgency::Urgent)` directly.)
+> **Note — `MemoryPressureLevel` vs `EvictionUrgency`.** They are distinct enums. `MemoryPressureLevel` (`Normal`, `Low`, `Critical`) describes the *system*; `EvictionUrgency` (`Moderate`, `Urgent`, `Emergency`) describes *how hard a pass works*. The monitor callback in `coordinator.rs` performs the mapping: $`\text{Normal} \Rightarrow`$ no request, $`\text{Low} \Rightarrow \text{Moderate}`$, $`\text{Critical} \Rightarrow \text{Emergency}`$. (The `Urgent` rung exists for callers that invoke `request_eviction(EvictionUrgency::Urgent)` directly.)
 
 ---
 
@@ -263,7 +263,7 @@ The end-to-end trigger-to-completion path is **Figure 1** above. In prose, the s
 2. **Cooldown check.** Skip (and `record_skip`) if the request is older than `5 s` or arrives inside the cooldown window.
 3. **Epoch quiescence.** `advance()` the epoch, then `wait_for_quiescence()`; on timeout, `record_quiescence_timeout` and skip the cycle.
 4. **Select cold nodes.** Ask the `DiskLocationRegistry` for the coldest evictable candidates, scored by the `LruRegistry` (see the algorithm below).
-5. **Unswizzle.** Invoke the callback, which atomically swaps each selected $`ChildNode \to DiskRef`$.
+5. **Unswizzle.** Invoke the callback, which atomically swaps each selected $`\text{ChildNode} \to \text{DiskRef}`$.
 6. **Record statistics.** `record_eviction(nodes, bytes, duration_ms)`.
 
 ### Node Selection Algorithm
@@ -299,9 +299,9 @@ DiskLocationRegistry.select_for_eviction(target_bytes, lru, min_depth, max_count
 
 <img src="../diagrams/epoch-reclamation.svg" alt="Epoch-based reclamation sequence: eviction defers the free until every old-epoch reader departs, then swaps and frees" width="900"/>
 
-*Figure 2 — Epoch-based reclamation. `Reader A` pins epoch 5 and may hold a raw `*const Node` into the victim. The eviction thread `advance()`s to epoch 6 and, seeing `A` still active, **defers** the free. After `A` calls `exit_read()` and quiescence is reached, the thread `unswizzle`s the victim ($`ChildNode \to DiskRef`$) and frees it. `Reader B`, which entered after the boundary, observes the already-published `DiskRef` and faults the node back in — it never touches freed memory.*
+*Figure 2 — Epoch-based reclamation. `Reader A` pins epoch 5 and may hold a raw `*const Node` into the victim. The eviction thread `advance()`s to epoch 6 and, seeing `A` still active, **defers** the free. After `A` calls `exit_read()` and quiescence is reached, the thread `unswizzle`s the victim ($`\text{ChildNode} \to \text{DiskRef}`$) and frees it. `Reader B`, which entered after the boundary, observes the already-published `DiskRef` and faults the node back in — it never touches freed memory.*
 
-**Guarantee:** a node is freed only after **all** readers from the pre-eviction epoch have completed. The ordering is $`advance \to wait for quiescence \to swap \to free`$.
+**Guarantee:** a node is freed only after **all** readers from the pre-eviction epoch have completed. The ordering is $`\text{advance} \to \text{wait for quiescence} \to \text{swap} \to \text{free}`$.
 
 **Memory-ordering note.** `enter_read`/`exit_read` use `SeqCst` on the `active_readers` counter, and the reclaimer's `has_active_readers()` check is also `SeqCst`. This is the StoreLoad barrier EBR requires: it guarantees that if the reclaimer's scan fails to observe a reader, that reader is guaranteed to observe the reclaimer's unlink (and re-fault a fresh node) rather than dereference a freed one. `AcqRel`/`Acquire` alone would permit the StoreLoad reordering and would **not** be sufficient (see the rationale comments on `EpochManager::enter_read` in `core/concurrency.rs`).
 
@@ -318,12 +318,12 @@ DiskLocationRegistry.select_for_eviction(target_bytes, lru, min_depth, max_count
 
 ### The Buffer-Pool Layer Underneath (Page Lifecycle)
 
-Node eviction (above) reclaims *trie nodes*; beneath it, the block-storage **buffer pool** manages fixed-size *pages* (256 KB frames) and is what physically reads a node in (*fault-in*) and writes a dirty node out (*flush*). Understanding the page lifecycle clarifies the $`DiskRef \to fault-in \to resident`$ round-trip that eviction reverses.
+Node eviction (above) reclaims *trie nodes*; beneath it, the block-storage **buffer pool** manages fixed-size *pages* (256 KB frames) and is what physically reads a node in (*fault-in*) and writes a dirty node out (*flush*). Understanding the page lifecycle clarifies the $`\text{DiskRef} \to \text{fault-in} \to \text{resident}`$ round-trip that eviction reverses.
 
 **What.** A buffer-pool frame's per-frame state (`FrameMetadata`, `core/buffer_manager.rs`) carries a `block_id`, a `lease_state` (a read-pin count or the exclusive `WRITE_LEASE`), a `dirty` flag, and a `reference_bit` for the CLOCK replacement algorithm. There is no single `enum PageState`; a page's condition is the product of $`\{\text{resident}, \text{on-disk}\} \times \{\text{clean}, \text{dirty}\} \times \{\text{pinned}, \text{unpinned}\}`$. **How.** `load_page`/`pin_page_data` fault a page in; `pin_read`/`pin_write` pin it; `mark_dirty` flags a write; `flush_page`/`flush_all` write it back and `clear_dirty`; and `get_free_frame` reuses an unpinned, unreferenced frame as a CLOCK victim. **Why.** Two invariants make this safe and are visible in the figure: a page is **never** a CLOCK victim while *pinned*, and a *dirty* page may **not** be flushed while a `WRITE_LEASE` is held (a dirty victim is written back before its frame is reused, so no acknowledged bytes are lost).
 
 <img src="../diagrams/buffer-page-lifecycle.svg" alt="Buffer-pool page lifecycle, part 1 of 2: the top-level Disk ⇄ Resident ⇄ eviction cycle — fault-in, pin/unpin, flush, and CLOCK write-back" width="520"/>
-<img src="../diagrams/buffer-page-lifecycle-2.svg" alt="Buffer-pool page lifecycle, part 2 of 2: the Resident frame's internal substates — Clean/Dirty × Pinned/Unpinned" width="590"/>
+<img src="../diagrams/buffer-page-lifecycle-2.svg" alt="Buffer-pool page lifecycle, part 2 of 2: the Resident frame's internal substates — Clean/Dirty crossed with Pinned/Unpinned" width="590"/>
 
 *Figure 3 — Buffer-pool page (frame) lifecycle. A page faults in from disk into a free frame, then cycles through `Clean ⇄ Dirty` (on write under a `WRITE_LEASE`) and `Pinned ⇄ Unpinned` (on lease acquire/release). A clean, unpinned frame whose `reference_bit` is clear is reused in place by the CLOCK algorithm; a dirty victim is written back (`clear_dirty`) first. In-memory states are green; the on-disk-only state is blue; fault-in / write-back I/O is amber.*
 

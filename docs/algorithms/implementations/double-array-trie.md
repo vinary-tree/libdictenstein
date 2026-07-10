@@ -17,7 +17,7 @@
 
 ## Overview
 
-`DoubleArrayTrie` (DAT) is the **recommended default dictionary** for most applications in liblevenshtein. It provides exceptional performance for fuzzy matching queries through a cache-efficient array-based representation of trie structures.
+`DoubleArrayTrie` (DAT) is the **recommended default read-mostly dictionary** for most applications. It is the container half; the companion crate [liblevenshtein](https://github.com/universal-automata/liblevenshtein-rust) supplies the Levenshtein transducer that walks it. It provides exceptional performance for fuzzy matching queries through a cache-efficient array-based representation of trie structures.
 
 ### Key Advantages
 
@@ -68,7 +68,7 @@ CHECK[t] = s       (verify that state t came from state s)
 ```
 
 **Advantages**:
-1. Constant-time transitions: `O(1)`
+1. Constant-time transitions: $`O(1)`$
 2. Sequential memory layout: cache-friendly
 3. Predictable access patterns: CPU prefetcher-friendly
 4. Compact representation: ~8 bytes per state
@@ -306,9 +306,9 @@ impl<V: DictionaryValue> DoubleArrayTrieBuilder<V> {
 - **Time**: $`O(N \times L \times M)`$ where:
   - N = number of terms
   - L = average term length
-  - M = average branching factor (~2-3 for natural language)
+  - M = average fanout (~2-3 for natural language)
 
-- **Space**: `O(S)` where S = number of states
+- **Space**: $`O(S)`$ where S = number of states
   - Typically S $`\approx`$ 0.5N to 2N depending on prefix sharing
 
 ### Optimization: Sorted Insertion
@@ -354,7 +354,7 @@ fn contains(&self, term: &str) -> bool {
 }
 ```
 
-**Complexity**: `O(L)` where L = term length
+**Complexity**: $`O(L)`$ where L = term length
 
 **Performance**: ~6.6µs for 10,000-term dictionary
 
@@ -377,7 +377,7 @@ let results: Vec<String> = automaton.query(&dict).collect();
 **Complexity**: $`O(L \times D \times B)`$ where:
 - L = query length
 - D = max distance
-- B = average branching factor
+- B = average fanout
 
 **Performance**: ~16.3µs for distance 2, 10,000-term dictionary
 
@@ -727,32 +727,28 @@ PathMapDictionary:   ~32 bytes
 
 ### Scaling Characteristics
 
-```
-Dictionary Size  │  Construction  │  Query Time  │  Memory
-─────────────────┼────────────────┼──────────────┼──────────
-1,000 terms      │  0.3ms         │  5.1µs       │  80 KB
-10,000 terms     │  3.2ms         │  6.6µs       │  800 KB
-100,000 terms    │  35ms          │  7.8µs       │  8 MB
-1,000,000 terms  │  420ms         │  9.2µs       │  80 MB
-```
+| Dictionary Size | Construction | Query Time | Memory |
+|-----------------|--------------|------------|--------|
+| 1,000 terms     | 0.3 ms       | 5.1 µs     | 80 KB  |
+| 10,000 terms    | 3.2 ms       | 6.6 µs     | 800 KB |
+| 100,000 terms   | 35 ms        | 7.8 µs     | 8 MB   |
+| 1,000,000 terms | 420 ms       | 9.2 µs     | 80 MB  |
 
 **Observations**:
-- Construction: `O(N log N)` due to sorting
-- Query: `O(L)` - independent of dictionary size!
+- Construction: $`O(N \log N)`$ due to sorting
+- Query: $`O(L)`$ - independent of dictionary size!
 - Memory: Linear with term count
 
 ### CPU Cache Impact
 
 Measured on typical modern CPU (32KB L1, 256KB L2, 8MB L3):
 
-```
-Working Set Size  │  Cache Level  │  Query Time
-──────────────────┼───────────────┼──────────────
-< 32 KB           │  L1           │  5.2µs
-< 256 KB          │  L2           │  6.8µs
-< 8 MB            │  L3           │  8.1µs
-> 8 MB            │  RAM          │  12.3µs
-```
+| Working Set Size | Cache Level | Query Time |
+|------------------|-------------|------------|
+| < 32 KB          | L1          | 5.2 µs     |
+| < 256 KB         | L2          | 6.8 µs     |
+| < 8 MB           | L3          | 8.1 µs     |
+| > 8 MB           | RAM         | 12.3 µs    |
 
 **Takeaway**: DAT benefits massively from cache locality.
 

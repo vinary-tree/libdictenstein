@@ -8,7 +8,7 @@ same trait and present the same persistent-dictionary APIs, so the question is
 purely *which backend wins which workload* — and the answer is workload-shaped
 rather than one-sided.
 
-<img src="../diagrams/mmap-vs-iouring.svg" alt="Side-by-side comparison of the two BlockStorage backends. MmapDiskManager (default): mmap + page cache, msync $\ne$ fsync, wins single-block I/O. IoUringDiskManager + O_DIRECT (feature io-uring-backend): batched submission bypassing the page cache, device-level durability, wins batch I/O and true durability. Both target the same NVMe SSD at a 256 KB block size." width="100%"/>
+<img src="../diagrams/mmap-vs-iouring.svg" alt="Side-by-side comparison of the two BlockStorage backends. MmapDiskManager (default): mmap + page cache, msync is not fsync, wins single-block I/O. IoUringDiskManager + O_DIRECT (feature io-uring-backend): batched submission bypassing the page cache, device-level durability, wins batch I/O and true durability. Both target the same NVMe SSD at a 256 KB block size." width="100%"/>
 
 **Headline finding.** *mmap wins single-block I/O* — the kernel page cache
 absorbs the fault, and `msync` only marks pages dirty (it is **not** an `fsync`),

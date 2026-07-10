@@ -90,7 +90,7 @@ is the marginal rate at the largest size, not the small-`n` averages.
 **What this is.** Time to reopen the file and rebuild a queryable trie: load the
 last checkpoint, then replay the WAL tail not covered by it.
 
-**Why it is $`\approx 1.5–2\times`$ slower than the initial build.** Recovery does strictly more
+**Why it is $`\approx 1.5\times`$ to $`2\times`$ slower than the initial build.** Recovery does strictly more
 work per entry than insertion: it must read and decode each WAL record *and* rebuild
 the in-memory overlay, where the original build only did the latter. Throughput
 scales sub-linearly because WAL replay is dominated by sequential record decode,
@@ -115,7 +115,7 @@ benign: a 1000-term dictionary is back online in under `1 ms`.
 records a safe `checkpoint_lsn` watermark rather than copying the data; its cost does
 not depend on entry count, so the apparent "throughput" grows linearly only because
 the denominator (entries) grows while the numerator (time) does not. The practical
-reading: checkpoints are `O(1)` enough to be taken frequently, keeping the WAL replay
+reading: checkpoints are $`O(1)`$ enough to be taken frequently, keeping the WAL replay
 tail — and therefore recovery time — short. (Full checkpoint *capture* that
 serializes the overlay into a dense CX image (the crate's compact snapshot codec) is a separate, size-dependent cost; see
 the registered experiments below for its measured density.)
@@ -133,7 +133,7 @@ representation from the cost of durability.
 | DynamicDawg | ~20 µs | ~200 µs | ~1.2 ms |
 | DoubleArrayTrie | ~15 µs | ~180 µs | ~1.0 ms |
 
-**Why PersistentARTrie is $`\approx 2–2.5\times`$ slower here.** Even with sync off, the persistent
+**Why PersistentARTrie is $`\approx 2\times`$ to $`2.5\times`$ slower here.** Even with sync off, the persistent
 path still maintains WAL records and the immutable overlay's path-copy discipline,
 which the pure in-memory `DynamicDawg`/`DoubleArrayTrie` skip entirely. This is the
 structural price of being *able* to become durable — the gap narrows once amortised
@@ -151,17 +151,17 @@ over larger builds, mirroring the fixed-cost story above.
 speed once a node is in memory (see [04-persistent-art](04-persistent-art.md)); the
 residual `~20–30%` overhead versus the leanest in-memory structure came from
 synchronization on the read path in this snapshot. Critically, lookup time grows only
-weakly with dictionary size — the `O(m)` (query-length-bound) property of the trie
+weakly with dictionary size — the $`O(m)`$ (query-length-bound) property of the trie
 holds across the persistent representation.
 
 ### Key Findings (snapshot)
 
 1. **Durability vs. performance trade-off.** `~3 M` inserts/sec *with* full durability
    makes the structure suitable for high-throughput workloads that also need crash
-   recovery, at a measured $`\approx 2–2.5\times`$ build-time tax over non-durable structures.
+   recovery, at a measured $`\approx 2\times`$ to $`2.5\times`$ build-time tax over non-durable structures.
 2. **Sub-millisecond recovery.** A 1000-term dictionary recovers in under `1 ms`,
    enabling fast restarts.
-3. **Near-`O(1)` checkpoints.** Checkpoint markers cost `~1.7 µs` independent of size,
+3. **Near-$`O(1)`$ checkpoints.** Checkpoint markers cost `~1.7 µs` independent of size,
    so they can be taken often to bound recovery work.
 4. **Competitive lookup.** Despite persistence, point-lookup latency stays within
    `~20–30%` of the leanest in-memory backend and remains query-length-bound.

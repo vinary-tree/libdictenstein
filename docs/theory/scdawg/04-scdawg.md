@@ -5,13 +5,13 @@ The **Symmetric Compact DAWG** (SCDAWG), also called **C2S** (Compact Symmetric)
 ## Motivation: Bidirectional Search
 
 The CDAWG supports efficient right extension:
-```
-Given pattern V, navigate to V·σ (append character σ)
+```math
+\text{Given pattern } V, \text{ navigate to } V \cdot \sigma \quad (\text{append character } \sigma)
 ```
 
 But many algorithms need **left extension**:
-```
-Given pattern V, navigate to σ·V (prepend character σ)
+```math
+\text{Given pattern } V, \text{ navigate to } \sigma \cdot V \quad (\text{prepend character } \sigma)
 ```
 
 ### WallBreaker Example
@@ -19,8 +19,8 @@ Given pattern V, navigate to σ·V (prepend character σ)
 The WallBreaker algorithm (Gerdjikov et al. 2013; see [07-references](07-references.md)) for fuzzy dictionary matching requires:
 
 1. **Substring check**: Is V a substring of some dictionary word?
-2. **Right extension**: From V, reach V·σ
-3. **Left extension**: From V, reach σ·V
+2. **Right extension**: from $`V`$, reach $`V \cdot \sigma`$
+3. **Left extension**: from $`V`$, reach $`\sigma \cdot V`$
 
 Without left extension, WallBreaker cannot efficiently grow pattern matches toward the left, limiting its applicability.
 
@@ -33,13 +33,13 @@ The two contexts below are sometimes called the **right language** and **left la
 The **right context** (right language) of factor `x` is the set of strings that can follow `x`:
 
 **Definition**:
-```
-right-context(x) = {y ∈ Σ* : xy ∈ F(w)}
+```math
+\text{right-context}(x) = \{\, y \in \Sigma^{*} : xy \in F(w) \,\}
 ```
 
 For single characters:
-```
-right-context₁(x) = {a ∈ Σ : xa ∈ F(w)}
+```math
+\text{right-context}_1(x) = \{\, a \in \Sigma : xa \in F(w) \,\}
 ```
 
 ### Left Context
@@ -47,28 +47,28 @@ right-context₁(x) = {a ∈ Σ : xa ∈ F(w)}
 The **left context** (left language) of factor `x` is the set of strings that can precede `x`:
 
 **Definition**:
-```
-left-context(x) = {y ∈ Σ* : yx ∈ F(w)}
+```math
+\text{left-context}(x) = \{\, y \in \Sigma^{*} : yx \in F(w) \,\}
 ```
 
 For single characters:
-```
-left-context₁(x) = {a ∈ Σ : ax ∈ F(w)}
+```math
+\text{left-context}_1(x) = \{\, a \in \Sigma : ax \in F(w) \,\}
 ```
 
 ### Example for "abcabcab"
 
-| Factor x | left-context₁(x) | right-context₁(x) |
+| Factor $`x`$ | $`\text{left-context}_1(x)`$ | $`\text{right-context}_1(x)`$ |
 |----------|------------------|-------------------|
-| a | {ε, c} | {b} |
-| b | {a} | {c, \$} |
-| c | {b} | {a, \$} |
-| ab | {ε, c} | {c, \$} |
-| bc | {a} | {a, \$} |
-| ca | {b} | {b} |
-| abc | {ε, c} | {a, \$} |
+| a | $`\{\varepsilon, c\}`$ | $`\{b\}`$ |
+| b | $`\{a\}`$ | $`\{c, \$\}`$ |
+| c | $`\{b\}`$ | $`\{a, \$\}`$ |
+| ab | $`\{\varepsilon, c\}`$ | $`\{c, \$\}`$ |
+| bc | $`\{a\}`$ | $`\{a, \$\}`$ |
+| ca | $`\{b\}`$ | $`\{b\}`$ |
+| abc | $`\{\varepsilon, c\}`$ | $`\{a, \$\}`$ |
 
-Where ε represents the empty context (factor at string boundary).
+Where $`\varepsilon`$ represents the empty context (factor at string boundary).
 
 ## Prime Subwords and Implications
 
@@ -77,15 +77,11 @@ Where ε represents the empty context (factor at string boundary).
 For any factor x, its **implication** is the maximal string where every occurrence of x is embedded:
 
 **Definition (Implication)**:
-```
-imps(x) = γxβ
+$`\text{imps}(x) = \gamma x \beta`$, where:
+- $`\gamma`$ is the longest string such that, if $`x`$ occurs at position $`i`$, then $`\gamma`$ occurs at position $`i - \lvert \gamma\rvert`$
+- $`\beta`$ is the longest string such that, if $`x`$ occurs at position $`i`$, then $`\beta`$ occurs at position $`i + \lvert x\rvert`$
 
-where:
-- γ is the longest string such that: if x occurs at position i, then γ occurs at position i-|γ|
-- β is the longest string such that: if x occurs at position i, then β occurs at position i+|x|
-```
-
-In other words, imps(x) is the longest string that occurs exactly where x occurs.
+In other words, $`\text{imps}(x)`$ is the longest string that occurs exactly where $`x`$ occurs.
 
 ### Properties of Implications
 
@@ -95,39 +91,39 @@ In other words, imps(x) is the longest string that occurs exactly where x occurs
 
 *Proof*: By definition, `imps(x)` occurs exactly where `x` occurs, so they have identical end-positions (`endpos` sets).
 
-**Lemma 3**: $`\mid imps(x)\mid \ge \mid x\mid`$
+**Lemma 3**: $`\lvert \text{imps}(x)\rvert \ge \lvert x\rvert`$
 
 *Proof*: `imps(x)` contains `x` ($`\gamma x\beta \supseteq x`$).
 
 ### Example: Implications for "abcabcab"
 
-| Factor x | Occurrences | γ | β | imps(x) |
+| Factor $`x`$ | Occurrences | $`\gamma`$ | $`\beta`$ | $`\text{imps}(x)`$ |
 |----------|-------------|---|---|---------|
-| a | 0,3,6 | ε | b | ab |
-| b | 1,4,7 | a | ε | ab |
-| ab | 0,3,6 | ε | ε | ab |
+| a | 0,3,6 | $`\varepsilon`$ | b | ab |
+| b | 1,4,7 | a | $`\varepsilon`$ | ab |
+| ab | 0,3,6 | $`\varepsilon`$ | $`\varepsilon`$ | ab |
 | c | 2,5 | ab | ab | abcab |
 | bc | 1,4 | a | a | abca |
-| abc | 0,3 | ε | a | abca |
+| abc | 0,3 | $`\varepsilon`$ | a | abca |
 | ca | 2,5 | ab | b | abcab |
 
-**Observation**: "a", "b", and "ab" all have imps = "ab". This is because:
+**Observation**: "a", "b", and "ab" all have $`\text{imps} = ab`$. This is because:
 - Every 'a' is followed by 'b'
 - Every 'b' is preceded by 'a'
-- So imps(a) = imps(b) = imps(ab) = "ab"
+- So $`\text{imps}(a) = \text{imps}(b) = \text{imps}(ab) = ab`$
 
 ### Prime Subwords
 
 A factor `x` is a **prime subword** (or simply **prime**) if it equals its own implication — equivalently, it is the *longest* representative of its equivalence class and cannot be extended on either side without changing its `endpos` set:
 
 **Definition (Prime Subword)**:
-```
-x is prime ⟺ imps(x) = x
+```math
+x \text{ is prime} \iff \text{imps}(x) = x
 ```
 
 **Definition (Prime Set)**:
-```
-P(w) = {x ∈ F(w) : x is prime} = {imps(y) : y ∈ F(w)}
+```math
+P(w) = \{\, x \in F(w) : x \text{ is prime} \,\} = \{\, \text{imps}(y) : y \in F(w) \,\}
 ```
 
 ### Properties of Prime Subwords
@@ -139,21 +135,21 @@ P(w) = {x ∈ F(w) : x is prime} = {imps(y) : y ∈ F(w)}
 - Therefore $`\gamma = \beta = \epsilon`$ in the implication.
 - So `imps(x) = x`, making `x` prime.
 
-**Lemma 5**: $`\mid P(w)\mid \le \mid w\mid + 1`$ (same bound as CDAWG nodes).
+**Lemma 5**: $`\lvert P(w)\rvert \le \lvert w\rvert + 1`$ (same bound as CDAWG nodes).
 
-**Lemma 6**: For any factor `x`, $`imps(x) \in P(w)`$.
+**Lemma 6**: For any factor `x`, $`\text{imps}(x) \in P(w)`$.
 
 ### Prime Subwords for "abcabcab"
 
 | Prime Subword | Equivalence Class |
 |---------------|-------------------|
-| ε | {ε} |
-| ab | {a, b, ab} |
-| abca | {bc, abc, bca, abca} |
-| abcab | {c, ca, cab, bcab, abcab} |
-| abcabc | {cabc, bcabc, abcabc} |
-| abcabca | {cabca, bcabca, abcabca} |
-| abcabcab | {cabcab, bcabcab, abcabcab} |
+| $`\varepsilon`$ | $`\{\varepsilon\}`$ |
+| ab | $`\{a, b, ab\}`$ |
+| abca | $`\{bc, abc, bca, abca\}`$ |
+| abcab | $`\{c, ca, cab, bcab, abcab\}`$ |
+| abcabc | $`\{cabc, bcabc, abcabc\}`$ |
+| abcabca | $`\{cabca, bcabca, abcabca\}`$ |
+| abcabcab | $`\{cabcab, bcabcab, abcabcab\}`$ |
 
 Each prime subword is the longest (and maximal) representative of its class.
 
@@ -167,17 +163,9 @@ The **Symmetric Compact DAWG** of string w is the structure **C2S(w) = (V, E_R, 
 
 - **V = P(w)** = set of prime subwords
 
-- **E_R** = Right extension edges:
-  ```
-  E_R = {(x, imps(xa)) : x ∈ P(w), a ∈ Σ, xa ∈ F(w)}
-  ```
-  Label: derived from transition (first character + suffix)
+- $`E_R`$ — right-extension edges: $`E_R = \{\, (x, \text{imps}(xa)) : x \in P(w),\ a \in \Sigma,\ xa \in F(w) \,\}`$; label derived from the transition (first character + suffix)
 
-- **E_L** = Left extension edges:
-  ```
-  E_L = {(x, imps(ax)) : x ∈ P(w), a ∈ Σ, ax ∈ F(w)}
-  ```
-  Label: derived from transition (prefix + first character)
+- $`E_L`$ — left-extension edges: $`E_L = \{\, (x, \text{imps}(ax)) : x \in P(w),\ a \in \Sigma,\ ax \in F(w) \,\}`$; label derived from the transition (prefix + first character)
 
 ### Edge Labels
 
@@ -190,7 +178,7 @@ Label = a || β_y
 where β_y is the right context suffix added by imps
 ```
 
-More precisely: if x·a leads to imps(xa) = γ(xa)β, then the label captures the transition.
+More precisely: if $`x \cdot a`$ leads to $`\text{imps}(xa) = \gamma (xa) \beta`$, then the label captures the transition.
 
 **Left Extension Edge** from x to y = imps(ax):
 ```
@@ -209,7 +197,7 @@ Each prime subword has:
 - Right edges for each valid right extension character.
 - Left edges for each valid left extension character.
 
-The figure below renders the full SCDAWG for the running example `abcabcab`. Solid dark edges are the CDAWG's right-extension transitions; the dashed blue edges are the **symmetric left-extension edges** the SCDAWG adds. Together they let a matched factor be grown to the right (append) or to the left (prepend) in $`O(\mid label\mid )`$ per step — the bidirectional capability the plain CDAWG lacks.
+The figure below renders the full SCDAWG for the running example `abcabcab`. Solid dark edges are the CDAWG's right-extension transitions; the dashed blue edges are the **symmetric left-extension edges** the SCDAWG adds. Together they let a matched factor be grown to the right (append) or to the left (prepend) in $`O(\lvert \text{label}\rvert )`$ per step — the bidirectional capability the plain CDAWG lacks.
 
 <img src="../../diagrams/scdawg-structure.svg" alt="SCDAWG for abcabcab over the prime-subword nodes v0=ε through v6=abcabcab. Solid dark-slate edges are right-extension (CDAWG) transitions labelled by their substrings; dashed blue edges are the symmetric left-extension edges that distinguish the SCDAWG, enabling prepend navigation and thus bidirectional search." width="860"/>
 
@@ -218,8 +206,8 @@ The figure below renders the full SCDAWG for the running example `abcabcab`. Sol
 The SCDAWG is "symmetric" in a precise sense:
 
 **Theorem 1 (Symmetry)**:
-```
-CDAWG(w) with left extension edges = CDAWG(w^rev) with reversed edge direction
+```math
+\text{CDAWG}(w) \text{ with left-extension edges} = \text{CDAWG}(w^{\text{rev}}) \text{ with reversed edge direction}
 ```
 
 Where w^rev is the reversal of w.
@@ -229,8 +217,8 @@ Where w^rev is the reversal of w.
 **Definition (Sext Link)**: The **shortest extension link** (sext link) from node `x` is the edge in `CDAWG(wʳᵉᵛ)` that corresponds to `x`, where `wʳᵉᵛ` denotes the reversal of `w`.
 
 **Theorem 2** (Inenaga et al. 2001, [10.1109/SPIRE.2001.989743](https://doi.org/10.1109/SPIRE.2001.989743)):
-```
-Left extension edges of CDAWG(w) = Edges of CDAWG(w^rev) (with reversed direction)
+```math
+\text{Left-extension edges of CDAWG}(w) = \text{Edges of CDAWG}(w^{\text{rev}}) \text{ (with reversed direction)}
 ```
 
 This is a crucial insight: **we can derive left extension edges from the CDAWG of the reversed string**.
@@ -262,7 +250,7 @@ x = α · y  (for some prefix α)
 Left extension edge: y --first(α)--> x
 ```
 
-Where first(α) is the first character of α.
+Where $`\text{first}(\alpha)`$ is the first character of $`\alpha`$.
 
 **Algorithm**:
 ```
@@ -278,39 +266,39 @@ for each node x in CDAWG:
 
 | Node | Prime Subword | Length |
 |------|---------------|--------|
-| v₀ | ε | 0 |
-| v₁ | ab | 2 |
-| v₂ | abca | 4 |
-| v₃ | abcab | 5 |
-| v₄ | abcabc | 6 |
-| v₅ | abcabca | 7 |
-| v₆ | abcabcab | 8 |
+| $`v_0`$ | $`\varepsilon`$ | 0 |
+| $`v_1`$ | ab | 2 |
+| $`v_2`$ | abca | 4 |
+| $`v_3`$ | abcab | 5 |
+| $`v_4`$ | abcabc | 6 |
+| $`v_5`$ | abcabca | 7 |
+| $`v_6`$ | abcabcab | 8 |
 
 ### Right Extension Edges
 
 | From | Char | To | Label |
 |------|------|----|-------|
-| v₀ | a | v₁ | ab |
-| v₀ | b | v₁ | ab |
-| v₀ | c | v₃ | abcab |
-| v₁ | c | v₂ | ca |
-| v₂ | b | v₃ | b |
-| v₃ | c | v₄ | c |
-| v₄ | a | v₅ | a |
-| v₅ | b | v₆ | b |
+| $`v_0`$ | a | $`v_1`$ | ab |
+| $`v_0`$ | b | $`v_1`$ | ab |
+| $`v_0`$ | c | $`v_3`$ | abcab |
+| $`v_1`$ | c | $`v_2`$ | ca |
+| $`v_2`$ | b | $`v_3`$ | b |
+| $`v_3`$ | c | $`v_4`$ | c |
+| $`v_4`$ | a | $`v_5`$ | a |
+| $`v_5`$ | b | $`v_6`$ | b |
 
 ### Left Extension Edges
 
 | From | Char | To | Label |
 |------|------|----|-------|
-| v₀ | a | v₁ | ab |
-| v₀ | b | v₁ | ab |
-| v₀ | c | v₃ | abcab |
-| v₁ | c | v₂ | ca |
-| v₂ | b | v₃ | b |
-| v₃ | c | v₄ | c |
-| v₄ | a | v₅ | a |
-| v₅ | b | v₆ | b |
+| $`v_0`$ | a | $`v_1`$ | ab |
+| $`v_0`$ | b | $`v_1`$ | ab |
+| $`v_0`$ | c | $`v_3`$ | abcab |
+| $`v_1`$ | c | $`v_2`$ | ca |
+| $`v_2`$ | b | $`v_3`$ | b |
+| $`v_3`$ | c | $`v_4`$ | c |
+| $`v_4`$ | a | $`v_5`$ | a |
+| $`v_5`$ | b | $`v_6`$ | b |
 
 Note: For this particular string, right and left extensions have similar structure due to its repetitive nature.
 
@@ -326,7 +314,7 @@ For string `w` of length `n`:
 - `SCDAWG(w)` has at most **`n + 1` nodes**.
 - `SCDAWG(w)` has at most **`4n − 4` edges** (`2n − 2` right + `2n − 2` left).
 
-Space is `O(n)`, same as the CDAWG but with a doubled edge count.
+Space is $`O(n)`$, same as the CDAWG but with a doubled edge count.
 
 ## Comparison: Left Extension vs Backward Edges
 
@@ -343,7 +331,7 @@ This just reverses the forward path. It does NOT implement left extension.
 
 ### Left Extension Edges (CORRECT)
 
-Left extension edge from A to B with label σ:
+Left extension edge from $`A`$ to $`B`$ with label $`\sigma`$:
 ```
 A represents pattern "xyz"
 B represents pattern "σxyz" (σ prepended, NOT appended)
@@ -367,10 +355,10 @@ The SCDAWG satisfies all WallBreaker requirements from Gerdjikov et al. (2013, s
 | Requirement | Operation | SCDAWG Support |
 |-------------|-----------|----------------|
 | **(1a)** | Is V a substring? | Follow right edges from root; success = found |
-| **(1b)** | Right extend V → V·σ | Follow right extension edge labeled with σ |
-| **(1c)** | Left extend V → σ·V | Follow left extension edge labeled with σ |
+| **(1b)** | Right extend $`V \to V \cdot \sigma`$ | Follow the right-extension edge labelled $`\sigma`$ |
+| **(1c)** | Left extend $`V \to \sigma \cdot V`$ | Follow the left-extension edge labelled $`\sigma`$ |
 
-All operations complete in $`O(\mid label\mid )`$ time, where `label` is the edge-label length.
+All operations complete in $`O(\lvert \text{label}\rvert )`$ time, where `label` is the edge-label length.
 
 ## Summary
 
@@ -378,7 +366,7 @@ All operations complete in $`O(\mid label\mid )`$ time, where `label` is the edg
 |---------|------------|
 | Left context | Characters that can precede a factor |
 | Right context | Characters that can follow a factor |
-| Implication imps(x) | Maximal γxβ with same occurrences as x |
+| Implication $`\text{imps}(x)`$ | Maximal $`\gamma x \beta`$ with the same occurrences as $`x`$ |
 | Prime subword | Factor equal to its implication |
 | Right extension edge | From x to imps(xa), appending |
 | Left extension edge | From x to imps(ax), prepending |

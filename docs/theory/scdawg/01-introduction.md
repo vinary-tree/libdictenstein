@@ -26,8 +26,8 @@ We want a data structure that answers substring queries in time proportional to 
 
 | Approach | Query Time | Space |
 |----------|------------|-------|
-| Naive scan | $`O(N \times m)`$ | `O(N)` |
-| Build index once, query many | **`O(m)`** | `O(N)` |
+| Naive scan | $`O(N \times m)`$ | $`O(N)`$ |
+| Build index once, query many | **$`O(m)`$** | $`O(N)`$ |
 
 The SCDAWG achieves this by precomputing all possible substrings into a graph structure where:
 - Each node represents an equivalence class of substrings
@@ -39,8 +39,8 @@ The SCDAWG achieves this by precomputing all possible substrings into a graph st
 Many applications need more than simple substring existence. The **WallBreaker algorithm** (Gerdjikov et al. 2013; see [07-references](07-references.md)) for fuzzy dictionary matching requires:
 
 1. **(1a) Substring check**: Is V a substring of some dictionary word?
-2. **(1b) Right extension**: Given V is a substring, navigate to V·σ (append character)
-3. **(1c) Left extension**: Given V is a substring, navigate to σ·V (prepend character)
+2. **(1b) Right extension**: Given V is a substring, navigate to $`V \cdot \sigma`$ (append character)
+3. **(1c) Left extension**: Given V is a substring, navigate to $`\sigma \cdot V`$ (prepend character)
 
 The WallBreaker algorithm works by:
 1. Finding all dictionary substrings matching a query segment
@@ -53,17 +53,7 @@ Standard substring indices (suffix trees, suffix arrays) support (1a) and (1b) e
 
 The SCDAWG represents the culmination of decades of research into space-efficient substring indexing:
 
-```
-Suffix Trie (1960s)
-    ↓ compact non-branching paths
-Suffix Tree (1973, Weiner; 1976, McCreight)
-    ↓ share common suffixes
-Suffix Automaton / DAWG (1985, Blumer et al.)
-    ↓ compact non-branching paths
-CDAWG (1997, Crochemore & Vérin)
-    ↓ add left extension edges
-SCDAWG (1987, Blumer et al.; 2001, Inenaga et al.)
-```
+<img src="../../diagrams/scdawg-evolution.svg" alt="Evolution lineage of substring-index structures as a top-down flow. Suffix Trie (1960s) is transformed by compacting non-branching paths into the Suffix Tree (1973 Weiner; 1976 McCreight); sharing common suffixes yields the Suffix Automaton / DAWG (1985 Blumer et al.); compacting non-branching paths again yields the CDAWG (1997 Crochemore and Verin); adding left-extension edges yields the SCDAWG (1987 Blumer et al.; 2001 Inenaga et al.), the target structure of this documentation." width="404"/>
 
 The load-bearing references on this path, with verified DOIs, are: the suffix
 automaton / DAWG (Blumer et al. 1985, [10.1016/0304-3975(85)90157-4](https://doi.org/10.1016/0304-3975(85)90157-4);
@@ -78,42 +68,17 @@ Weiner (1973) and McCreight (1976) are listed author-year in
 
 The suffix trie explicitly stores every suffix of the input:
 
-```
-Input: "abab$"
-Suffixes: "abab$", "bab$", "ab$", "b$", "$"
+<img src="../../diagrams/scdawg-suffix-trie-abab.svg" alt="Suffix trie of the string abab followed by the terminal sentinel. From the root, five independent root-to-leaf paths spell the five suffixes (abab$, bab$, ab$, b$, and $): the a-branch descends a, b, a, b, $ and the b-branch descends b, a, b, $, with no sharing between them. Every suffix owns a private path, illustrating the quadratic worst-case size." width="360"/>
 
-          (root)
-         /  |   \
-        a   b    $
-        |   |
-        b   a
-        |   |
-        a   b
-        |   |
-        b   $
-        |
-        $
-```
-
-**Problem**: $`O(n^2)`$ space for an `n`-length input. The string "aaa...a" (`n` copies of 'a') requires $`n + (n−1) + … + 1 = O(n^2)`$ nodes.
+**Problem**: $`O(n^2)`$ space for an `n`-length input. The string "aaa...a" (`n` copies of 'a') requires $`n + (n-1) + \dots + 1 = O(n^2)`$ nodes.
 
 ### Suffix Tree
 
 The suffix tree compacts chains of single-child nodes:
 
-```
-Input: "abab$"
+<img src="../../diagrams/scdawg-suffix-tree-abab.svg" alt="Suffix tree of abab followed by the terminal sentinel: the suffix trie with every non-branching chain collapsed into a single edge whose label is a (start, end) span into the original string. The root branches on the compacted edges ab$ and b; the b-branch splits again into ab$ and $. The result has O(n) nodes and edges." width="360"/>
 
-           (root)
-          /      \
-       ab$      b
-        |      / \
-       ab$   ab$ $
-              |
-              $
-```
-
-**Improvement**: `O(n)` nodes and edges by storing edge labels as `(start, end)` pairs into the original string.
+**Improvement**: $`O(n)`$ nodes and edges by storing edge labels as `(start, end)` pairs into the original string.
 
 **Problem**: Doesn't share common substrings between different suffixes. The substrings "ab" appearing in "abab\$" at positions 0 and 2 lead to separate tree locations.
 
@@ -121,41 +86,29 @@ Input: "abab$"
 
 The Directed Acyclic Word Graph shares common **prefixes** of suffixes:
 
-```
-Input: "abab"
-
-    (0) --a--> (1) --b--> (2) --a--> (3) --b--> (4)
-         \              /
-          `----- a ----'
-```
+<img src="../../diagrams/scdawg-dawg-abab.svg" alt="Suffix automaton (DAWG) of the string abab: states 0 through 4 chained left to right by edges labelled a, b, a, b, plus an extra a-edge that rejoins the shared path so substrings with the same end-position set collapse onto the same state. The sharing keeps the automaton to at most 2n-1 states and 3n-4 edges." width="420"/>
 
 Key insight: states represent **equivalence classes** of substrings sharing the same set of ending positions (`endpos` sets).
 
-**Space**: At most `2n − 1` states, `3n − 4` edges for an `n`-length input.
+**Space**: At most $`2n - 1`$ states, $`3n - 4`$ edges for an `n`-length input.
 
 ### CDAWG
 
 The Compact DAWG further compacts the suffix automaton by removing states with exactly one incoming and one outgoing edge:
 
-```
-Non-branching chain: (A) --x--> (B) --y--> (C)
-Compacted to: (A) --xy--> (C)
-```
+<img src="../../diagrams/scdawg-path-compaction.svg" alt="CDAWG path compaction: a non-branching chain of states A on edge x to B on edge y to C collapses into a single edge from A to C labelled xy, deleting the interior state B, which had exactly one incoming and one outgoing edge." width="440"/>
 
-**Space**: At most `n + 1` states, `2n − 2` edges.
+**Space**: At most $`n + 1`$ states, $`2n - 2`$ edges.
 
 ### SCDAWG
 
 The Symmetric Compact DAWG adds **left extension edges** to the CDAWG:
 
-```
-Right extension: "ab" --c--> "abc"  (append 'c')
-Left extension:  "ab" --c--> "cab"  (prepend 'c')
-```
+<img src="../../diagrams/scdawg-left-right-intro.svg" alt="SCDAWG left and right extension edges from the class 'ab': a right-extension edge labelled c appends to reach 'abc', while a left-extension edge labelled c prepends to reach 'cab'. The symmetric pair of edges is what enables bidirectional navigation." width="440"/>
 
 This enables bidirectional navigation required by algorithms like WallBreaker.
 
-**Space**: At most `n + 1` states, `4n − 4` edges (doubled due to left edges).
+**Space**: At most $`n + 1`$ states, $`4n - 4`$ edges (doubled due to left edges).
 
 ## Our Running Example: "abcabcab"
 

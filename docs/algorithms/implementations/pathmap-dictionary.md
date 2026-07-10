@@ -71,7 +71,7 @@ Only changed path from root is copied; rest is shared:
 
 <img src="../../diagrams/pathmap-cow-insert.svg" alt="Structural sharing when inserting 'team' into {test, testing}: the new tree reuses the shared t-e-s-t spine and the i-n-g ('testing') tail and allocates only the new 'a' and 'm' nodes for 'team', so an m-character insert costs O(m) new nodes." width="70%"/>
 
-**Memory**: Only `O(m)` new nodes for m-character insert
+**Memory**: Only $`O(m)`$ new nodes for m-character insert
 
 ## PathMap Library
 
@@ -415,11 +415,11 @@ let writer = {
 
 **Key Takeaways:**
 1. 🔗 `.clone()` creates **shallow copy** with two Arc increments (map + count)
-2. 🚀 **`O(1)`** time and space - just atomic reference counting
+2. 🚀 **$`O(1)`$** time and space - just atomic reference counting
 3. 🔄 **Mutations visible** across all clones (Arc-based sharing)
 4. 🌳 **Structural sharing** is separate (PathMap's persistent trie optimization)
 5. 🔒 **Thread-safe** with dual RwLocks for flexible granularity
-6. 📊 For **independence**, use serialization or rebuild from terms (`O(n)` cost)
+6. 📊 For **independence**, use serialization or rebuild from terms ($`O(n)`$ cost)
 
 ## Construction Methods
 
@@ -435,7 +435,7 @@ PathMapDictionary provides constructors optimized for simple use cases and rapid
 
 Where n = number of terms, m = dictionary size (grows with insertions)
 
-**Note**: PathMapDictionary uses `insert()` internally which is `O(log m)`, making bulk construction $`O(n\cdot log m)`$ vs $`O(n\cdot m)`$ for DAWG variants.
+**Note**: PathMapDictionary uses `insert()` internally which is $`O(\log m)`$, making bulk construction $`O(n\cdot \log m)`$ vs $`O(n\cdot m)`$ for DAWG variants.
 
 ### Empty Dictionary
 
@@ -458,7 +458,7 @@ valued_dict.insert_with_value("banana", 200);
 ```
 
 **Characteristics:**
-- **Time**: `O(1)` - Minimal initialization
+- **Time**: $`O(1)`$ - Minimal initialization
 - **Memory**: ~80 bytes (two Arc pointers + empty PathMap + term count)
 - **Simplicity**: Easiest to use, minimal boilerplate
 
@@ -485,7 +485,7 @@ let dict = PathMapDictionary::from_terms(term_set);
 ```
 
 **Characteristics:**
-- **Time**: $`O(n\cdot log m)`$ where m grows from 0 to n
+- **Time**: $`O(n\cdot \log m)`$ where m grows from 0 to n
 - **Memory**: ~32 bytes per node (HashMap-based)
 - **Structural sharing**: Minimal (PathMap not optimized for bulk insert)
 
@@ -655,12 +655,12 @@ PathMapDictionary accessor methods have **simpler** implementations but **slower
 
 | Method | PathMapDictionary | DynamicDawg | Performance Impact |
 |--------|-------------------|-------------|---------------------|
-| `contains(term)` | $`O(m\cdot log k)`$ | `O(m)` | ~2-3$`\times`$ slower |
-| `get_value(term)` | $`O(m\cdot log k)`$ | `O(m)` | ~2-3$`\times`$ slower |
-| `term_count()` | `O(1)` | `O(1)` | Similar |
-| `len()` / `is_empty()` | `O(1)` | `O(1)` | Similar |
+| `contains(term)` | $`O(m\cdot \log k)`$ | $`O(m)`$ | ~2-3$`\times`$ slower |
+| `get_value(term)` | $`O(m\cdot \log k)`$ | $`O(m)`$ | ~2-3$`\times`$ slower |
+| `term_count()` | $`O(1)`$ | $`O(1)`$ | Similar |
+| `len()` / `is_empty()` | $`O(1)`$ | $`O(1)`$ | Similar |
 
-*Where*: `m` = term length, `k` = average branching factor (~26 for English)
+*Where*: `m` = term length, `k` = average fanout (~26 for English)
 
 ### Quick Reference
 
@@ -808,10 +808,10 @@ where
 5. Update `self.term_count` for new entries
 
 **Complexity**:
-- **Time**: $`O(n\cdot log m)`$ where n = terms in `other`, m = terms in `self`
-  - `O(n)` for iteration over `other`
-  - `O(log m)` per PathMap insertion/lookup
-- **Space**: `O(log m)` for PathMap tree height (structural sharing reduces actual allocation)
+- **Time**: $`O(n\cdot \log m)`$ where n = terms in `other`, m = terms in `self`
+  - $`O(n)`$ for iteration over `other`
+  - $`O(\log m)`$ per PathMap insertion/lookup
+- **Space**: $`O(\log m)`$ for PathMap tree height (structural sharing reduces actual allocation)
 
 ### Why Iteration Instead of PathMap's join()?
 
@@ -828,7 +828,7 @@ pub fn join_into<V: Lattice>(&mut self, other: &PathMap<V>) { ... }
 - Idempotent: $`a \sqcup a = a`$
 
 **Our approach**: Uses **arbitrary merge functions** without algebraic constraints:
-- ✅ Supports non-commutative merges: $`(old, new) \to new`$ (last-writer-wins)
+- ✅ Supports non-commutative merges: $`(\text{old}, \text{new}) \to \text{new}`$ (last-writer-wins)
 - ✅ Supports non-idempotent merges: $`(a, b) \to a + b`$ (sum aggregation)
 - ✅ Flexible merge logic: Any `Fn(&V, &V) -> V`
 
@@ -1078,7 +1078,7 @@ dict1.union_with(&dict2, |a, b| a + b);
 **Benefits**:
 - 💾 **Memory efficient**: Only delta nodes allocated
 - 🔒 **Safe snapshots**: Old version still accessible
-- 🚀 **Fast clones**: `O(1)` shallow copy of Arc
+- 🚀 **Fast clones**: $`O(1)`$ shallow copy of Arc
 
 **Caveats**:
 - Lock contention on write during union
@@ -1414,6 +1414,50 @@ Consider switching to specialized dictionaries when:
 - [DynamicDawg](dynamic-dawg.md) - Faster dynamic alternative
 - [PathMapDictionaryChar](../../../src/pathmap/char.rs) - Unicode variant
 - [Value Storage](../serialization.md) - Using values
+
+## Read-only views: snapshots and zero-copy borrows
+
+Beyond the mutable `PathMapDictionary` / `PathMapDictionaryChar`, the backend exposes four
+**read-only** dictionary types (all feature-gated behind `pathmap-backend`). They exist so a
+consumer — most importantly MORK, whose `Space` owns a live PathMap — can query the trie as a
+`Dictionary` without cloning it or taking a write path.
+
+| Type | Ownership | Alphabet | Obtained by |
+|------|-----------|----------|-------------|
+| `PathMapSnapshot<V>` | owned $`O(1)`$ snapshot | `u8` | `dict.snapshot()` |
+| `PathMapSnapshotChar<V>` | owned $`O(1)`$ snapshot | `char` | `dict.snapshot()` |
+| `PathMapRef<'a, V>` | zero-copy borrow (`'a`) | `u8` | `PathMapRef::from_map(&map)` / `::from_trie_ref(map.trie_ref_at_path(prefix))` |
+| `PathMapRefChar<'a, V>` | zero-copy borrow (`'a`) | `char` | `PathMapRefChar::from_map(&map)` |
+
+Both families implement [`Dictionary`](../README.md) and [`MappedDictionary`](../README.md) but
+**not** the mutation traits — they are strictly for reading. The distinction between them is
+lifetime and ownership:
+
+- A **snapshot** takes PathMap's persistent-structure $`O(1)`$ snapshot: it owns an immutable view of
+  the trie *as of the call*, and outlives the source dictionary. Later writes to the source do not
+  affect it — proper snapshot isolation. Use it when the reader must persist independently of the
+  writer.
+- A **ref** borrows a live PathMap (or a sub-trie reached by a path) for the borrow's lifetime `'a`
+  with no allocation at all. Use it for a transient query against a map you already hold — e.g. a
+  fuzzy transducer walking MORK's `Space` in place. Because it borrows, it cannot outlive the map,
+  and the borrow checker forbids mutating the map while the ref is alive.
+
+```rust,ignore
+use libdictenstein::pathmap::PathMapDictionary;
+
+let dict: PathMapDictionary<u64> = PathMapDictionary::from_terms_with_values(
+    vec![("cat", 1u64), ("car", 2)],
+);
+
+// Owned snapshot: outlives `dict`, unaffected by later writes to `dict`.
+let snap = dict.snapshot();
+assert!(snap.contains("cat"));
+```
+
+`from_trie_ref` is the sub-trie entry point: it builds a `PathMapRef` rooted at an arbitrary path
+inside the source map, so a caller can hand a transducer a dictionary that is really a *prefix
+slice* of a larger structure — descent is $`O(1)`$ from that focus, with no root replay. See
+[`docs/integration/pathmap/`](../../integration/pathmap/README.md) for the MORK integration.
 
 ## References
 

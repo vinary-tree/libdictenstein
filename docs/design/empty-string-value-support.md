@@ -435,7 +435,7 @@ regression.
   dedup, accepting one redundant CAS).
 - **Increment RMW vs concurrent root path-copy:** `overlay_increment_root` reads the loaded root's count
   and CASes; a concurrent `insert("a")` advances the root → Err → rebase reads the NEW root's count
-  (still the empty-term count, carried by `with_child` which preserves `value`) → re-applies δ. Verify
+  (still the empty-term count, carried by `with_child` which preserves `value`) → re-applies $`\delta`$. Verify
   `with_child` preserves the parent's `value` field (node.rs) so a child insert does not clobber the
   root counter. **← Round-2 must verify this.**
 - **Does `as_non_final` (remove) drop a concurrently-set value?** remove is LWW with concurrent

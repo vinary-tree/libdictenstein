@@ -1,0 +1,67 @@
+// ============================================================================
+// scdawg-suffix-tree-abab.dot — the SUFFIX TREE of "abab$": the suffix trie
+// with every non-branching chain compacted into a single string-labelled edge.
+// Storing each edge label as a (start, end) slice into the text bounds the
+// structure at O(n) nodes and edges.  Source: §Suffix Tree of 01-introduction.md.
+//
+// The two interior branching nodes correspond to the repeated factors "ab" and
+// "b"; the five leaves are the five suffixes abab$, ab$, bab$, b$, $.  Edge
+// labels are the (compacted) substrings spelled along each edge.
+//
+// Color key (house palette):
+//   grey   #ECEFF1  the root ε
+//   green  #C8E6C9  interior BRANCHING nodes (shared factors "ab", "b")
+//   teal   #B2DFDB  leaves = complete suffixes
+//   dark slate #37474F  string-labelled edges + node borders
+// ============================================================================
+digraph scdawg_suffix_tree {
+    rankdir=TB;
+    bgcolor="#FFFFFF";
+    fontname="DejaVu Sans";
+    fontsize=14;
+    labelloc="t";
+    fontcolor="#212121";
+    label="Suffix tree of \"abab$\" — non-branching chains compacted\n(edge labels are substrings; leaves are the suffixes)";
+    nodesep=0.35;
+    ranksep=0.5;
+
+    node [shape=circle, style="filled", fillcolor="#C8E6C9",
+          color="#37474F", fontname="DejaVu Sans", fontcolor="#212121",
+          penwidth=1.4, width=0.45];
+    edge [color="#37474F", fontname="DejaVu Sans", fontcolor="#37474F",
+          penwidth=1.3];
+
+    root [label="ε", fillcolor="#ECEFF1", shape=doublecircle];
+    Iab  [label="ab"];   // branching node for the repeated factor "ab"
+    Ib   [label="b"];    // branching node for the repeated factor "b"
+
+    node [shape=box, style="filled", fillcolor="#B2DFDB", width=0.4];
+    Lababd [label="abab$"];
+    Labd   [label="ab$"];
+    Lbabd  [label="bab$"];
+    Lbd    [label="b$"];
+    Ldol   [label="$"];
+
+    root -> Iab    [label="ab"];
+    Iab  -> Lababd [label="ab$"];
+    Iab  -> Labd   [label="$"];
+
+    root -> Ib     [label="b"];
+    Ib   -> Lbabd  [label="ab$"];
+    Ib   -> Lbd    [label="$"];
+
+    root -> Ldol   [label="$"];
+
+    { rank=sink;
+      legend [shape=note, style="filled", fillcolor="#FFF9C4",
+              color="#FBC02D", fontsize=10, fontcolor="#212121",
+              label=<
+<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">
+<TR><TD ALIGN="LEFT"><B>Legend</B></TD></TR>
+<TR><TD ALIGN="LEFT">◎ ε = root (start of every suffix)</TD></TR>
+<TR><TD ALIGN="LEFT">○ green = interior branching node (shared factor)</TD></TR>
+<TR><TD ALIGN="LEFT">▢ teal = leaf = one complete suffix</TD></TR>
+<TR><TD ALIGN="LEFT">━━▶ edge labelled by a compacted substring</TD></TR>
+</TABLE>>];
+    }
+}

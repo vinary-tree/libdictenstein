@@ -35,17 +35,17 @@ skinparam rectangle {
   FontName "DejaVu Sans"
 }
 
-title Value-merge lattice — 𝒫({a,b,c}) ordered by ⊆\n(join = ∪ climbs up · meet = ∩ descends down)
+title Value-merge lattice — <latex>\mathcal{P}(\{a,b,c\})</latex> ordered by <latex>\subseteq</latex>\n(join = <latex>\cup</latex> climbs up · meet = <latex>\cap</latex> descends down)
 
 ' --- Lattice elements (levels low -> high) ----------------------------------
-rectangle "⊤ = {a,b,c}\n(JOIN {a}⊔{b,c})" as TOP #FFF59D
-rectangle "{a, b}" as AB #C8E6C9
-rectangle "{a, c}" as AC #C8E6C9
-rectangle "{b, c}" as BC #C8E6C9
-rectangle "{a}" as A #C8E6C9
-rectangle "{b}\n(MEET {a,b}⊓{b,c})" as B #BBDEFB
-rectangle "{c}" as C #C8E6C9
-rectangle "⊥ = ∅\n(bottom;\nmeet of disjoints)" as BOT #ECEFF1
+rectangle "<latex>\top = \{a,b,c\}</latex>\n(JOIN <latex>\{a\} \sqcup \{b,c\}</latex>)" as TOP #FFF59D
+rectangle "<latex>\{a, b\}</latex>" as AB #C8E6C9
+rectangle "<latex>\{a, c\}</latex>" as AC #C8E6C9
+rectangle "<latex>\{b, c\}</latex>" as BC #C8E6C9
+rectangle "<latex>\{a\}</latex>" as A #C8E6C9
+rectangle "<latex>\{b\}</latex>\n(MEET <latex>\{a,b\} \sqcap \{b,c\}</latex>)" as B #BBDEFB
+rectangle "<latex>\{c\}</latex>" as C #C8E6C9
+rectangle "<latex>\bot = \emptyset</latex>\n(bottom;\nmeet of disjoints)" as BOT #ECEFF1
 
 ' --- Cover relations (Hasse edges): lower ⊆ upper, drawn upward -------------
 BOT -up-> A

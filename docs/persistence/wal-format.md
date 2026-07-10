@@ -21,11 +21,11 @@ These symbols and acronyms are used throughout; each is defined here before use.
 
 | Term | Definition |
 |------|------------|
-| **WAL** (Write-Ahead Log) | A durable, append-only file of *intended* changes written **before** the change is made visible, so a crash can be repaired by replaying the log. The reconciling invariant of the whole subsystem is $`acknowledged \implies durable`$. |
+| **WAL** (Write-Ahead Log) | A durable, append-only file of *intended* changes written **before** the change is made visible, so a crash can be repaired by replaying the log. The reconciling invariant of the whole subsystem is $`\text{acknowledged} \implies \text{durable}`$. |
 | **LSN** (Log Sequence Number) | A monotonically increasing `u64` stamped on each WAL record. LSNs are globally monotone across segment rotation, so one global sort over `LSN` is a valid total order. |
 | **CRC** (Cyclic Redundancy Check) | A 32-bit checksum (`crc32`) over a record's `(length, lsn, type, payload)`. A mismatch marks the record (and everything after it) as a torn, non-durable tail. |
 | **Order-A** | The durability protocol "**log before publish**": append + fsync the WAL record **durable** *before* the visibility-publishing root CAS. Its antagonist, **Order-B** (CAS-then-log), is rejected — it can expose a visible-but-not-durable write. |
-| **Watermark** (committed prefix) | The largest LSN `L` such that **every** $`LSN \le L`$ is committed. Under out-of-order lock-free commit this contiguous frontier is the **only** safe `checkpoint_lsn`. |
+| **Watermark** (committed prefix) | The largest LSN `L` such that **every** $`\text{LSN} \le L`$ is committed. Under out-of-order lock-free commit this contiguous frontier is the **only** safe `checkpoint_lsn`. |
 | **CAS** (Compare-And-Swap) | The atomic root-pointer swap that publishes a new trie version. The winning CAS is the **linearization point** (the single visibility instant) of a write. |
 | **EBR** (Epoch-Based Reclamation) | Memory for a superseded node is freed only after every reader that *could* hold a pointer to it has departed its epoch — lock-free, bounded-latency, free of use-after-free. |
 | **Rank-regime** | A per-file marker (`Owned` / `Overlay`) recorded in header byte 28 that selects the **replay drop-rule** for *unranked* records. See [§5](#5-the-rank-regime-replay-drop-rule). |
@@ -221,7 +221,7 @@ branch is where the regime matters:
   (drops it).
 
 A **ranked** record is kept regardless of regime. A multi-segment archive rebuild
-that spans an $`Owned \to Overlay`$ flip passes a *per-segment* regime lookup, so an
+that spans an $`\text{Owned} \to \text{Overlay}`$ flip passes a *per-segment* regime lookup, so an
 Owned segment's unranked records are kept while an Overlay segment's unranked
 orphans are dropped — under one global `(generation, lsn)` order (LSNs are
 monotone across rotation). This is the `A2` correctness fix: it prevents an
@@ -262,7 +262,7 @@ order (`durable_write.rs`, the `DurableOverlayWrite` Template-Method skeleton):
    step 2 — it is never re-appended (re-appending would burn LSNs and punch a hole
    in the watermark).
 2. **Publish via the root CAS** — the visibility point = the linearization point
-   ([§8](#8-the-lock-free-cas-walk-publish)).
+   ([§9](#9-the-lock-free-cas-walk-publish)).
 3. **Bind the commit rank durable, then `mark_committed`.** Append a `CommitRank`
    for `(data_lsn, term, generation)`, then advance the committed **watermark** to
    cover **both** the data LSN and the rank LSN, so the contiguous committed prefix
@@ -275,7 +275,7 @@ exchange:
 
 **Why the watermark is the only safe `checkpoint_lsn`.** Under out-of-order
 lock-free commit, LSN `N+1` can reach disk before LSN `N`. A checkpoint may
-therefore only declare durable the largest `L` such that **every** $`LSN \le L`$ is
+therefore only declare durable the largest `L` such that **every** $`\text{LSN} \le L`$ is
 committed — the contiguous prefix. Stamping the *appended* frontier instead would
 checkpoint past a hole and lose the missing write. This watermark discipline ("no
 lost writes") is model-checked in
@@ -362,7 +362,7 @@ Salient points:
   — the buffer manager, WAL theory, ARIES recovery, and checkpoint management
   ([crash-recovery section](../theory/disk-tries/05-buffer-management.md#crash-recovery)).
 - [README — "Durable writes: the Order-A protocol"](../../README.md#durable-writes-the-order-a-protocol)
-  — the prose summary of the $`acknowledged \implies durable`$ contract.
+  — the prose summary of the $`\text{acknowledged} \implies \text{durable}`$ contract.
 - [`storage-backends.md`](storage-backends.md) — the storage substrate the WAL is written
   to (`mmap` default, `io_uring` + `O_DIRECT` alternative) and the on-disk block format.
 - [`durability-and-recovery.md`](durability-and-recovery.md) — the architecture-level

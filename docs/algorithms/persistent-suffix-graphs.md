@@ -32,7 +32,7 @@ indexed text, and where?"*. The classic structures for that are:
 The three **persistent** variants give each of these a **durable, crash-safe,
 concurrently-readable** home on disk, under the `persistent-artrie` feature. They
 are the substring counterpart to the persistent ARTrie key→value family: where
-`PersistentARTrie` durably stores $`term \to value`$, these durably store *a text and
+`PersistentARTrie` durably stores $`\text{term} \to \text{value}`$, these durably store *a text and
 an index over all of its substrings*.
 
 Typical uses: full-text search over a corpus that must survive process restarts;
@@ -64,7 +64,7 @@ This is the
 discipline (Driscoll et al. 1989) — "persistent" in the *immutable-versioned*
 sense — applied at the granularity of the **entire graph**. Copying the whole
 graph per write is deliberately simple: substring graphs are rebuilt from
-operation logs anyway, the copy is `O(graph size)` but happens off the read path,
+operation logs anyway, the copy is $`O(\text{graph size})`$ but happens off the read path,
 and it buys a read path that is completely lock-free.
 
 Durability is layered on top with a **write-ahead log of operations** (not of
@@ -130,8 +130,8 @@ never resurrect a write no caller ever saw succeed.
 A **checkpoint** writes the current committed graph to `<path>` as a dense
 serialized image and prunes every WAL segment whose `op_id` is now folded in. The
 image is the **base**; the WAL tail past it is the **delta**. Reopening loads the
-image, then replays only the durable committed tail — `O(image) + O(tail)`, not
-`O(history)`.
+image, then replays only the durable committed tail — $`O(\text{image}) + O(\text{tail})`$, not
+$`O(\text{history})`$.
 
 ---
 
@@ -235,7 +235,7 @@ only in the `apply_op`/traversal semantics of the underlying graph.
 | `PersistentScdawg` / `…Char` | symmetric compact DAWG | `contains_substring`, `locations` | `bool` / `Vec<(String, usize)>` |
 
 The deep theory of each graph — construction, suffix links, minimality, the
-$`O(\mid pattern\mid )`$ substring bound, and the symmetric (bidirectional) extension that
+$`O(\lvert \text{pattern} \rvert)`$ substring bound, and the symmetric (bidirectional) extension that
 makes the SCDAWG special — is in [`../theory/scdawg/`](../theory/scdawg/):
 [suffix automaton](../theory/scdawg/02-suffix-automaton.md),
 [CDAWG](../theory/scdawg/03-cdawg.md), and [SCDAWG](../theory/scdawg/04-scdawg.md).
@@ -320,7 +320,7 @@ let (index, report) = PersistentSuffixTreeChar::<()>::open_with_recovery("docs.p
 | **Reads never block writes** | lock-free, wait-free per traversal | immutable `Arc` snapshot via `ArcSwap::load_full` |
 | **Writes are atomic & linearizable** | all-or-nothing snapshot swap | pointer-identity CAS (`Arc::ptr_eq`), single winner |
 | **Acknowledged $`\implies`$ durable** | survives crash up to last `Commit` | `Prepare` `fsync`'d before publish; replay needs durable `Commit` |
-| **Bounded reopen cost** | `O(image) + O(committed tail)` | checkpoint folds ops into a dense image, prunes segments |
+| **Bounded reopen cost** | $`O(\text{image}) + O(\text{committed tail})`$ | checkpoint folds ops into a dense image, prunes segments |
 | **Backward-compatible recovery** | old files still open | also replays the historical monolithic WAL format |
 | **One native graph, two encodings** | byte (`u8`) and Unicode (`char`) | each family's unit trait (`PersistentSuffixUnit` / `PersistentSuffixTreeUnit` / `PersistentScdawgUnit`) selects suffix splitting + magic |
 

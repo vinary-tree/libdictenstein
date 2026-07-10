@@ -133,14 +133,12 @@ assert_eq!(char_dist, 1);  // ✅ Substitute one emoji for another
 **Unicode Code Point**: Abstract character identity (U+0000 to U+10FFFF)
 **UTF-8 Encoding**: Variable-length byte encoding (1-4 bytes per code point)
 
-```
-Character │ Code Point │ UTF-8 Bytes       │ Byte Count
-──────────┼────────────┼───────────────────┼────────────
-'A'       │ U+0041     │ 0x41              │ 1
-'é'       │ U+00E9     │ 0xC3 0xA9         │ 2
-'中'      │ U+4E2D     │ 0xE4 0xB8 0xAD    │ 3
-'🎉'      │ U+1F389    │ 0xF0 0x9F 0x8E 0x89│ 4
-```
+| Character | Code Point | UTF-8 Bytes           | Byte Count |
+|-----------|------------|-----------------------|------------|
+| `'A'`     | U+0041     | `0x41`                | 1          |
+| `'é'`     | U+00E9     | `0xC3 0xA9`           | 2          |
+| `'中'`    | U+4E2D     | `0xE4 0xB8 0xAD`      | 3          |
+| `'🎉'`    | U+1F389    | `0xF0 0x9F 0x8E 0x89` | 4          |
 
 ### Rust's char Type
 

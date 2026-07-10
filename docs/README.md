@@ -20,9 +20,10 @@ data-structure foundations) → **algorithms** (per-backend implementation and u
 
 | Area | Path | What's there |
 |------|------|--------------|
-| 🧮 **Theory** | [`theory/`](theory/) | Data-structure foundations: [disk-tries](theory/disk-tries/) (trie → B-trie → ART → persistent ART → buffer management) and [SCDAWG](theory/scdawg/) (suffix automaton → CDAWG → symmetric compact DAWG). Paper-grounded, with proofs. |
+| 🧮 **Theory** | [`theory/`](theory/) | Data-structure foundations: [disk-tries](theory/disk-tries/) (trie → B-trie → ART → persistent ART → buffer management), [SCDAWG](theory/scdawg/) (suffix automaton → CDAWG → symmetric compact DAWG), and [volatile automata](theory/volatile-automata/) (DAWG minimization, double-array tries, Bloom filters, bit-parallel child scan). Paper-grounded, with proofs. |
 | ⚙️ **Algorithms** | [`algorithms/`](algorithms/) | The dictionary-layer trait API and a per-backend deep-dive for each implementation ([`implementations/`](algorithms/implementations/)). Conceptual guides: [zippers](algorithms/zippers.md) (lazy set-algebra), [serialization](algorithms/serialization.md) (bincode/JSON/plaintext/protobuf + value-preserving), [persistent suffix graphs](algorithms/persistent-suffix-graphs.md) (durable substring indexes), [native `u64` + CX](algorithms/native-u64-and-cx.md) (`u64`-sequence profile + compact snapshot), and the [vocab trie](algorithms/vocab-trie.md) (term ↔ `u64` bijection). |
-| 🏗️ **Architecture** | [`architecture/`](architecture/) | Cross-cutting system design: the core [abstractions](architecture/abstractions.md) (`CharUnit` + `KeyEncoding` — one code path, three alphabets), the [optimization roadmap](architecture/optimization-roadmap.md), and the [persistence family overview](persistence/families.md). |
+| 🏗️ **Architecture** | [`architecture/`](architecture/) | Cross-cutting system design: the core [abstractions](architecture/abstractions.md) (`CharUnit` + `KeyEncoding` — one code path, three alphabets), the [in-memory dictionary architecture](architecture/in-memory-dictionaries.md) (monomorphized cores + the two lock-free strategies), the [optimization roadmap](architecture/optimization-roadmap.md), and the [persistence family overview](persistence/families.md). |
+| 📖 **User guide** | [`user-guide/`](user-guide/README.md) | Task-oriented usage: [getting started](user-guide/getting-started.md), [choosing a backend](user-guide/backends.md), the [in-memory tour](user-guide/in-memory-dictionaries.md), and the [cookbook](user-guide/cookbook.md). |
 | 💾 **Persistence** | [`persistence/`](persistence/README.md) | The durable, lock-free ARTrie engine end-to-end. Start at the [**architecture entry point**](persistence/README.md), then descend: the reusable [durable-storage kernel](persistence/durable-storage-kernel.md), the [families](persistence/families.md), the [lock-free overlay](persistence/lock-free-overlay.md), [durability & recovery](persistence/durability-and-recovery.md), the [concurrency model](persistence/concurrency-model.md), [storage backends](persistence/storage-backends.md) + [WAL format](persistence/wal-format.md), [eviction](persistence/eviction.md), [group commit](persistence/group-commit.md), and the [proof map](persistence/formal-verification-map.md). |
 | ♻️ **Eviction** | [`persistence/eviction.md`](persistence/eviction.md) | The memory-pressure eviction subsystem for the persistent ARTrie (part of the persistence corpus). |
 | 🔌 **Integration** | [`integration/`](integration/) | Backend integrations (e.g. [PathMap](integration/pathmap/README.md)). |
@@ -30,6 +31,8 @@ data-structure foundations) → **algorithms** (per-backend implementation and u
 | 🧪 **Experiments** | [`experiments/`](experiments/) | Per-optimization experiment ledgers (persistence enhancements, loading, lock-free flip). |
 | 📐 **Design** | [`design/`](design/) | Architecture/mechanism design records and the historical campaign ledger. |
 | ✅ **Formal verification** | [`../formal-verification/`](../formal-verification/) | Rocq theorems + TLA⁺ models + the CI-gated `unsafe` contract inventory. |
+| 🔒 **Security** | [`security/`](security/README.md) | Threat model, untrusted-input / DoS analysis, deserialization safety, and the `unsafe`-contract map. |
+| 🛠️ **Engineering** | [`engineering/`](engineering/testing-strategy.md) | Testing strategy, benchmarking methodology, and the feature-flag reference. |
 | 🎨 **Diagrams** | [`diagrams/`](diagrams/) | Diagrams-as-code sources and rendered SVGs; see [`diagrams/README.md`](diagrams/README.md) for the rendering pipeline. |
 
 ---
@@ -70,6 +73,11 @@ note in part 1 and re-attached from a `← from part 1` note in part 2.
 
 Prose math is MathJax; diagram labels use PlantUML-LaTeX (`<latex>` / `<math>`).
 **Which delimiters you use is not cosmetic — GitHub corrupts the obvious ones.**
+
+> This section is the authority on **delimiters** — the characters that wrap a math span. For
+> **which LaTeX goes inside** a span and **which word names each concept**, see the
+> [notation & terminology register](notation.md). In particular, a length bar is `\lvert x \rvert`
+> (never `\mid`), and big-O is inline math, never a code span.
 
 Before handing a math span to MathJax, GitHub's Markdown pass runs CommonMark
 backslash-escape processing *over the span's interior*. Inside `$…$` and `$$…$$`

@@ -1,0 +1,37 @@
+// ============================================================================
+// libdictenstein trust boundaries (threat model).
+// Color key (house palette, see docs/diagrams/README.md):
+//   #FFCDD2 red    — adversary-controlled inputs (untrusted)
+//   #C8E6C9 green  — libdictenstein's in-memory surface
+//   #BBDEFB blue   — libdictenstein's persistent (disk-backed) surface
+//   #CFD8DC slate  — out of scope (OS / disk / kernel / companion crate)
+//   #37474F        — borders / arrows
+// ============================================================================
+digraph trust_boundaries {
+  rankdir=LR;
+  bgcolor="#FFFFFF";
+  node [shape=box, style="filled,rounded", fontname="DejaVu Sans", fontsize=11,
+        color="#37474F", fontcolor="#263238"];
+  edge [color="#37474F", fontname="DejaVu Sans", fontsize=10];
+
+  subgraph cluster_adv {
+    label="adversary-controlled"; fontname="DejaVu Sans"; fontsize=12; color="#B71C1C"; style=rounded;
+    inputs [label="term set · queries\nserialized bytes · concurrent schedule", fillcolor="#FFCDD2"];
+  }
+  subgraph cluster_lib {
+    label="libdictenstein  (must fail safely at this boundary)";
+    fontname="DejaVu Sans"; fontsize=12; color="#37474F"; style=rounded;
+    inmem [label="in-memory dicts\n(memory-safe by construction)", fillcolor="#C8E6C9"];
+    deser [label="deserialize\n(fail-closed parse)", fillcolor="#C8E6C9"];
+    persist [label="persistent open\nWAL / checkpoint", fillcolor="#BBDEFB"];
+  }
+  subgraph cluster_oos {
+    label="out of scope"; fontname="DejaVu Sans"; fontsize=12; color="#607D8B"; style=rounded;
+    oos [label="OS · disk · io_uring kernel path\nliblevenshtein transducer", fillcolor="#CFD8DC"];
+  }
+
+  inputs -> inmem   [label="terms / queries"];
+  inputs -> deser   [label="bytes"];
+  inputs -> persist [label="schedule / bytes"];
+  persist -> oos    [label="syscalls", style=dashed];
+}

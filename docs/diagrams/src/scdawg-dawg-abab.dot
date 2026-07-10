@@ -1,0 +1,53 @@
+// ============================================================================
+// scdawg-dawg-abab.dot — the suffix automaton (DAWG) of "abab", the smaller
+// teaser example of §Suffix Automaton (DAWG) in 01-introduction.md.  It shows
+// the DAWG's defining economy: distinct suffixes that share a common PREFIX of
+// suffixes are merged into ONE state.  Here state q2 = {b, ab} (endpos {2,4})
+// is reached BOTH by q1 --b--> q2 (from "a") AND by q0 --b--> q2 (from ε), so
+// the two ways of spelling toward endpos {2,4} converge on a single state.
+//
+// Online construction of SA("abab") yields states q0..q4 with:
+//     spine     q0 -a-> q1 -b-> q2 -a-> q3 -b-> q4   (spells "abab")
+//     shortcut  q0 -b-> q2                            (the shared merge)
+// Accepting F = { states whose endpos contains |w| = 4 } = { q0, q2, q4 }.
+//
+// Color key (house palette):
+//   grey   #ECEFF1  the initial/root state q0 (ε)
+//   green  #C8E6C9  automaton states (endpos equivalence classes)
+//   dark slate #37474F  δ transitions + node borders
+// ============================================================================
+digraph scdawg_dawg_abab {
+    rankdir=LR;
+    bgcolor="#FFFFFF";
+    fontname="DejaVu Sans";
+    fontsize=14;
+    labelloc="t";
+    fontcolor="#212121";
+    label="Suffix automaton (DAWG) of \"abab\"\nq2 = {b, ab} is shared by q1–b→q2 and q0–b→q2 (double circle = accepting)";
+    nodesep=0.30;
+    ranksep=0.55;
+
+    node [shape=circle, style="filled", fillcolor="#C8E6C9",
+          color="#37474F", fontname="DejaVu Sans", fontcolor="#212121",
+          penwidth=1.4, width=0.5];
+    edge [color="#37474F", fontname="DejaVu Sans", fontcolor="#37474F",
+          penwidth=1.3];
+
+    start [shape=point, width=0.08, color="#37474F"];
+    start -> q0 [label="start"];
+
+    q0 [label="q0\nε", fillcolor="#ECEFF1", shape=doublecircle];
+    q1 [label="q1"];
+    q2 [label="q2", shape=doublecircle];
+    q3 [label="q3"];
+    q4 [label="q4", shape=doublecircle];
+
+    // spine — spells "abab"
+    q0 -> q1 [label="a"];
+    q1 -> q2 [label="b"];
+    q2 -> q3 [label="a"];
+    q3 -> q4 [label="b"];
+
+    // shortcut — the shared merge into q2
+    q0 -> q2 [label="b"];
+}

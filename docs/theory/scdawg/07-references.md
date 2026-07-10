@@ -181,8 +181,8 @@ update(c):
 **Used In This Implementation**:
 - Requirements specification (Remark 1.1):
   - (1a) Substring existence check
-  - (1b) Right extension: V → V·σ
-  - (1c) Left extension: V → σ·V
+  - (1b) Right extension: $`V \to V \cdot \sigma`$
+  - (1c) Left extension: $`V \to \sigma \cdot V`$
 - Validation criteria for our SCDAWG implementation
 
 **Key Requirements**:

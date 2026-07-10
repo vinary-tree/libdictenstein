@@ -20,7 +20,7 @@ rather than copy-pasting; vocab is excluded by correctness.
    sets `lockfree_root` but no `set_overlay_regime`); char's does (`persistent_artrie/char/lockfree_cas.rs:210`).
    $`\Rightarrow`$ the generic `flip_to_overlay`'s `current_lsn()==1` Overlay-restamp must cover byte.
 4. **Byte's public iter API is shaped differently** (`iter_prefix(&[u8]) -> Option<impl Iterator<Item=
-   Vec<u8>>>`, `src/persistent_artrie/public_iter.rs:64`), vs char's `Result<Option<Vec<String>>>`. ⇒
+   Vec<u8>>>`, `src/persistent_artrie/public_iter.rs:64`), vs char's `Result<Option<Vec<String>>>`. $`\Rightarrow`$
    the public-method routing glue is irreducibly per-variant.
 
 ## 1. Extraction surface (LOC-weighted over the ~620-LOC char flip)

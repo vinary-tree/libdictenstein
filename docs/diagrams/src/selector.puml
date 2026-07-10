@@ -32,7 +32,7 @@ else (in-memory)
   if (Static\n(build once)?) then (yes)
     :**Scdawg / …Char**\ncompact\nsymmetric DAWG\n(2-way index);<<#C8E6C9>>
   else (mutable)
-    :**Suffix**\n**Automaton**\n**(Char)**\n(≤ 2·n−1\nstates);<<#C8E6C9>>
+    :**Suffix**\n**Automaton**\n**(Char)**\n(<latex>\le 2 \cdot n - 1</latex>\nstates);<<#C8E6C9>>
   endif
 endif
 stop

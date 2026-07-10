@@ -1,0 +1,56 @@
+@startuml
+' ============================================================================
+' DynamicDawgU64 node representation.
+' Color key (house palette, see docs/diagrams/README.md):
+'   #C8E6C9 green  — in-memory volatile structure (the dictionary + its nodes)
+'   #B2DFDB teal   — lock-free atomic cells (ArcSwap / ArcSwapOption): CAS-published
+'   #F1F1F1 / #37474F — infrastructure / borders / arrows
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowColor #37474F
+skinparam nodesep 12
+skinparam ranksep 22
+top to bottom direction
+skinparam class {
+  BorderColor #37474F
+  FontColor #263238
+}
+
+object "DynamicDawgU64<V>" as dict #C8E6C9 {
+  nodes : Vec<Arc<DawgNodeU64<V>>>
+}
+
+object "DawgNodeU64<V>" as node #C8E6C9 {
+  is_final : AtomicBool
+}
+
+object "edges : ArcSwap<EdgeList<V>>" as edges #B2DFDB {
+  child list (CAS-published)
+}
+
+object "value : ArcSwapOption<V>" as val #B2DFDB {
+  optional value (CAS-published)
+}
+
+object "EdgeList<V>" as elist #C8E6C9 {
+  SmallVec<[(u64, Arc<child>); 4]>
+  inline up to 4 edges, then heap
+  label-sorted; scan < 16, else binary
+}
+
+dict --> node : root + arena
+node --> edges
+node --> val
+edges --> elist : loads snapshot
+elist ..> node : "Arc to child\n(one per u64 label)"
+
+note bottom of elist #F1F1F1
+  Reader: <latex>O(1)</latex> wait-free load of a
+  stable EdgeList snapshot — no lock.
+  Writer: build a new EdgeList, publish by
+  compare-and-swap; readers keep the
+  old snapshot until they reload.
+end note
+@enduml

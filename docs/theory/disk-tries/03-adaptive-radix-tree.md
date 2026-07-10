@@ -2,7 +2,7 @@
 
 This document presents the **Adaptive Radix Tree (ART)** — an in-memory trie whose nodes change their internal representation according to how many children they hold — introduced by Leis, Kemper, and Neumann (2013, [DOI: 10.1109/ICDE.2013.6544812](https://doi.org/10.1109/ICDE.2013.6544812)). ART achieves both excellent space efficiency and lookup performance, making it an ideal foundation for our persistent trie design.
 
-Throughout, **SIMD** (Single Instruction, Multiple Data) denotes CPU vector instructions that apply one operation to several lanes of a register in parallel; ART uses SIMD to compare many child keys at once. We write key length as `m` (bytes), alphabet as $`\Sigma`$, and alphabet size as $`\mid \Sigma \mid`$.
+Throughout, **SIMD** (Single Instruction, Multiple Data) denotes CPU vector instructions that apply one operation to several lanes of a register in parallel; ART uses SIMD to compare many child keys at once. We write key length as $`m`$ (bytes), alphabet as $`\Sigma`$, and alphabet size as $`\lvert \Sigma \rvert`$.
 
 ## Table of Contents
 
@@ -21,7 +21,7 @@ Throughout, **SIMD** (Single Instruction, Multiple Data) denotes CPU vector inst
 
 ### The Space Problem with Traditional Radix Trees
 
-A radix tree (also called radix trie) uses a fixed span—the number of bits examined at each level—to determine the branching factor. For byte-keyed data:
+A radix tree (also called radix trie) uses a fixed span—the number of bits examined at each level—to determine the fanout (the branching factor). For byte-keyed data:
 
 | Span | Bits per Level | Children per Node | Space per Node |
 |------|----------------|-------------------|----------------|
@@ -48,7 +48,7 @@ ART resolves this trade-off by using different node types depending on the actua
 
 <img src="../../diagrams/art-sparse-vs-dense.svg" alt="ART's adaptive answer to the span trade-off shown as two nodes side by side: a compact 48-byte Node4 holding 3 children in parallel key and child arrays for a sparse region, versus a 2080-byte Node256 with a direct 256-slot child array for a dense region." width="70%"/>
 
-This adaptivity provides near-optimal space for any fanout distribution while maintaining the `O(1)` child lookup that makes radix trees fast.
+This adaptivity provides near-optimal space for any fanout distribution while maintaining the $`O(1)`$ child lookup that makes radix trees fast.
 
 ---
 
@@ -62,8 +62,8 @@ A radix tree with span `s` processes keys `s` bits at a time. For span-8 (byte k
 
 | Aspect | Radix Tree | Comparison Tree (B-tree) |
 |--------|------------|--------------------------|
-| Key comparison | Never compares keys | `O(log n)` comparisons |
-| Height | `O(m)` where `m` = key length | `O(log n)` |
+| Key comparison | Never compares keys | $`O(\log n)`$ comparisons |
+| Height | $`O(m)`$ where $`m`$ = key length | $`O(\log n)`$ |
 | Cache behavior | One cacheline per level | Multiple per node |
 | SIMD potential | High (byte matching) | Limited |
 | Space efficiency | Variable | Generally good |
@@ -151,7 +151,7 @@ fn find_child_node16_simd(node: &Node16, key: u8) -> Option<&Node> {
 
 ### Node48 (17-48 children)
 
-Uses an index array for `O(1)` lookup without storing 256 pointers.
+Uses an index array for $`O(1)`$ lookup without storing 256 pointers.
 
 **Structure:**
 <img src="../../diagrams/art-node48-fields.svg" alt="The Node48 struct as a byte table: a 16-byte NodeHeader (node_type, prefix_len, flags, num_children as a u16, and a u64 version), a 12-byte inline CompressedPrefix, then a 256-byte child_index mapping each byte to a slot (255 meaning empty) and 48 SwizzledPtr child pointers (384 bytes); total about 668 bytes." width="70%"/>
@@ -393,9 +393,9 @@ fn add_child(node: &mut Node, key: u8, child: Node) {
 **Growth complexity:**
 | Transition | Copy Cost | Frequency |
 |------------|-----------|-----------|
-| Node4 → Node16 | `O(1)` | Common |
-| Node16 → Node48 | `O(1)` | Less common |
-| Node48 → Node256 | `O(48)` | Rare |
+| Node4 → Node16 | $`O(1)`$ | Common |
+| Node16 → Node48 | $`O(1)`$ | Less common |
+| Node48 → Node256 | $`O(48)`$ | Rare |
 
 ### Node Shrink (Contract)
 
@@ -538,10 +538,10 @@ ART is competitive with hash tables for point lookups while supporting ordered o
 
 | Operation | Cache Lines Touched | Branch Predictions |
 |-----------|---------------------|-------------------|
-| Node4 lookup | 1 | `O(1)` |
-| Node16 lookup (SIMD) | 1 | `O(1)` |
-| Node48 lookup | 2 | `O(1)` |
-| Node256 lookup | 1 | `O(1)` |
+| Node4 lookup | 1 | $`O(1)`$ |
+| Node16 lookup (SIMD) | 1 | $`O(1)`$ |
+| Node48 lookup | 2 | $`O(1)`$ |
+| Node256 lookup | 1 | $`O(1)`$ |
 
 All node types have excellent cache behavior, typically requiring just 1-2 cache line reads.
 
@@ -617,7 +617,7 @@ and the "one implementation, three alphabets" layering is in
 The Adaptive Radix Tree provides:
 
 1. **Adaptive structure**: Four node types optimize for actual fanout
-2. **`O(m)` lookup**: Performance independent of tree size
+2. **$`O(m)`$ lookup**: Performance independent of tree size
 3. **Path compression**: Reduces height for common prefix sharing
 4. **SIMD acceleration**: Node16 uses parallel byte comparison
 5. **Cache efficiency**: Most operations touch 1-2 cache lines

@@ -78,7 +78,7 @@ This crate's `SwizzledPtr` (source of truth: `src/persistent_artrie/core/swizzle
 
 <img src="../../diagrams/swizzled-ptr.svg" alt="Bit layout of the 64-bit SwizzledPtr state word, MSB on the left: bit 63 is the swizzle flag (1 = memory/transitional, 0 = on-disk); when the MSB is 0 the on-disk encoding packs block_id in bits 62 to 40 (23 bits), a location field in bits 39 to 18 (22 bits), and flags including the node type in bits 17 to 0 (18 bits). A separate memory_ptr AtomicPtr slot holds the live pointer when the MSB is set." width="760"/>
 
-*Figure: the `SwizzledPtr` state word plus its companion `memory_ptr` slot. When the MSB is `0` the word is an on-disk reference: bits `62..40` (23 bits) are the `block_id` ($`\le 8M − 1`$), bits `39..18` (22 bits) are a `location` field (a byte offset for raw references, or an arena slot id for arena-backed byte nodes), and bits `17..0` (18 bits) are flags that include the `NodeType`. When the MSB is `1` the word carries no address at all — the live pointer is read from the separate `memory_ptr: AtomicPtr` slot.*
+*Figure: the `SwizzledPtr` state word plus its companion `memory_ptr` slot. When the MSB is `0` the word is an on-disk reference: bits `62..40` (23 bits) are the `block_id` ($`\le 8M - 1`$), bits `39..18` (22 bits) are a `location` field (a byte offset for raw references, or an arena slot id for arena-backed byte nodes), and bits `17..0` (18 bits) are flags that include the `NodeType`. When the MSB is `1` the word carries no address at all — the live pointer is read from the separate `memory_ptr: AtomicPtr` slot.*
 
 ### Why the MSB Works
 

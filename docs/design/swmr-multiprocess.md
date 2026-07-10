@@ -58,7 +58,7 @@ is opened, covering byte/char/vocab uniformly. On contention it returns
 `PersistentARTrieError::FileLocked { path }`. The lock fd is held for the trie's lifetime and released
 automatically on drop.
 
-**Why a sidecar, not the data inode.** Tier-2's publication ([§4](#4-reader-safe-publication--option-a))
+**Why a sidecar, not the data inode.** Tier-2's publication ([§4](#4-reader-safe-publication--option-a-write-temp--fsync--rename))
 `rename`s a *fresh* data inode over the path each checkpoint, so a lock on the data inode would fail
 to exclude a second writer opening the *new* canonical inode. Locking a stable sidecar composes with
 Tier-2 and is forward-compatible. See [`os-level-locking.md`](os-level-locking.md) for the Tier-1
@@ -115,7 +115,7 @@ reads.
 lock-free primitive class as `AtomicNodePtr::load`) and serve entirely from the immutable snapshot. A
 background thread polls the monotonic, CRC-covered `checkpoint_lsn` (via `stat`/`pread`, or
 `inotify(IN_MOVED_TO)`); on a bump it rebuilds a fresh snapshot and `ArcSwap::store`s it — in-flight
-reads keep serving the old one until the swap. Equal `checkpoint_lsn` ⇒ no committed change ⇒ refresh
+reads keep serving the old one until the swap. Equal `checkpoint_lsn` $`\Rightarrow`$ no committed change $`\Rightarrow`$ refresh
 correctly skipped. Reads never poll or rebuild.
 
 **Lock protocol.** Writer holds `flock(.wlock, LOCK_EX)` (Tier-1); a second writer → `FileLocked`.
@@ -166,12 +166,12 @@ Formal follow-through: model A's `rename` as one atomic state transition publish
 |---|----------|------------|
 | R1 | Torn header/arena read | A: image only ever appears via atomic `rename` of an `fsync`'d temp — never partial. B: dual-slot + single aligned 8-byte `active` store + CRC over the header prefix. |
 | R2 | `rename` atomicity + reader holding a deleted inode | POSIX same-dir `rename` is atomic; the old inode is unlinked but kept alive by the reader's open fd until it refreshes/closes. `fsync(dir)` makes the publish crash-durable. |
-| R3 | flock on the churning data inode ⇒ two writers | **Lock the stable `.wlock` sidecar, never the data inode** — Tier-1's chosen design. |
-| R4 | `checkpoint_lsn` equal across two publishes | Harmless: equal watermark ⇒ identical committed term set ⇒ skipping refresh is correct. (B's strictly-monotonic `active` additionally distinguishes byte-level republications.) |
+| R3 | flock on the churning data inode $`\Rightarrow`$ two writers | **Lock the stable `.wlock` sidecar, never the data inode** — Tier-1's chosen design. |
+| R4 | `checkpoint_lsn` equal across two publishes | Harmless: equal watermark $`\Rightarrow`$ identical committed term set $`\Rightarrow`$ skipping refresh is correct. (B's strictly-monotonic `active` additionally distinguishes byte-level republications.) |
 | R5 | Reader rebuild racing a publish (half-written image?) | A: the reader opens a specific inode; the writer only ever publishes a *complete* inode via `rename`. B: the reader snapshots `(active, block_count, root_ptr)` from a CRC-valid header before enumerating. |
-| R6 | mmap remap-on-growth for readers (B only) | Reader re-reads `block_count` and remaps read-only before trusting the new `root_ptr`; grow-only + immutable + fsync-before-flip ⇒ no SIGBUS. (N/A to A — fresh inode.) |
+| R6 | mmap remap-on-growth for readers (B only) | Reader re-reads `block_count` and remaps read-only before trusting the new `root_ptr`; grow-only + immutable + fsync-before-flip $`\Rightarrow`$ no SIGBUS. (N/A to A — fresh inode.) |
 | R7 | Writer WAL retention vs readers | Readers never open the WAL (they read only the checkpoint image); the writer retains it for its own recovery, exactly as today. |
-| R8 | fd/inode exhaustion under A (frequent checkpoints) | Each reader pins ≤ 2 inodes (current + one mid-refresh); the writer unlinks the prior canonical each `rename`. On-disk images $`= O(\#\text{readers} + 1)`$. Mitigated by the (accepted) coarse checkpoint cadence. |
+| R8 | fd/inode exhaustion under A (frequent checkpoints) | Each reader pins $`\le`$ 2 inodes (current + one mid-refresh); the writer unlinks the prior canonical each `rename`. On-disk images $`= O(\#\text{readers} + 1)`$. Mitigated by the (accepted) coarse checkpoint cadence. |
 | R9 | Long-lived reader vs reclamation | A: the OS retains exactly the pinned inode; self-correcting on close. B: old generations accumulate → compaction GC gated by the `.rlock` probe. |
 | R10 | NFS / multi-host | **Single-host only** — A relies on local `rename`/open-unlink; B relies on cross-process page-cache coherence. Documented constraint. |
 | R11 | Byte/char eviction: OnDisk overlay children a reader can't fault | The reader never uses the writer's buffer manager — it faults from its **own** read-only buffer manager over the frozen (immutable) image. Vocab never evicts, so its reader overlay is fully in-memory. |
@@ -200,6 +200,6 @@ manager over the immutable image (R11).
 | 5 | Byte/char generalization (+ lazily-faulting reader) | 2 d |
 | 6 | *(optional)* Option-B evolution (seqlock + immutable arenas + generation GC) | 3–4 d |
 
-**MVP (vocab, Phases 0–4, Option A): ≈ 6–7 engineer-days; full generalization ≈ 9 days.** Verify with
+**MVP (vocab, Phases 0–4, Option A): $`\approx`$ 6–7 engineer-days; full generalization $`\approx`$ 9 days.** Verify with
 loom (refresh-vs-read), proptest (interleavings), and a TLA+ module (`rename` = atomic image
 publication).

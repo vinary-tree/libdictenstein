@@ -17,43 +17,11 @@ backend be improved, measured, and admitted?"
 | Wait-free read | A read operation completes in a bounded number of local steps without waiting for a writer. In this crate the term is used for snapshot reads that do not acquire locks. |
 | Non-blocking write | A write may retry after CAS contention, but it does not wait on a blocking mutex or reader-writer lock. |
 | Unit | The edge label type. `u8` is byte-level, `char` is Unicode scalar-level, and `u64` is sequence-token-level. |
-| `n`, `m`, `k` | `n` is indexed terms or source length, `m` is query length, and `k` is key length in units. |
+| $`n`$, $`m`$, $`k`$ | $`n`$ is indexed terms or source length, $`m`$ is query length, and $`k`$ is key length in units. |
 
 ## System View
 
-```mermaid
-flowchart LR
-    User["Caller / transducer"]:::actor --> Traits["Dictionary traits"]:::trait
-    Traits --> Volatile["Volatile backends"]:::volatile
-    Traits --> Persistent["Persistent backends"]:::persistent
-
-    Volatile --> DAT["DoubleArrayTrie<br/>static, cache-local"]:::static
-    Volatile --> DAWG["DynamicDawg<br/>lock-free prefix graph"]:::dynamic
-    Volatile --> PM["PathMapDictionary<br/>atomic COW trie snapshot"]:::dynamic
-    Volatile --> SA["SuffixAutomaton<br/>substring index"]:::suffix
-    Volatile --> SCD["Scdawg<br/>compact substring graph"]:::suffix
-
-    Persistent --> ART["Persistent ARTrie<br/>mmap + WAL + checkpoint"]:::persistent
-    Persistent --> PS["Persistent suffix family<br/>native snapshot + WAL"]:::persistent
-    Persistent --> VOC["Persistent vocab trie<br/>bijective term/index map"]:::persistent
-
-    Bench["Criterion benchmark gates"]:::gate --> Volatile
-    Bench --> Persistent
-    Formal["Loom / TLA+ / Rocq gates"]:::gate --> Persistent
-    Formal --> DAWG
-    Formal --> PM
-    Formal --> SA
-    Formal --> SCD
-
-    classDef actor fill:#f7fbff,stroke:#2b6cb0,color:#102a43;
-    classDef trait fill:#edf7ed,stroke:#2f855a,color:#16351f;
-    classDef volatile fill:#fff7ed,stroke:#c05621,color:#3b2412;
-    classDef persistent fill:#f5f3ff,stroke:#6b46c1,color:#241447;
-    classDef static fill:#e6fffa,stroke:#2c7a7b,color:#123b3c;
-    classDef dynamic fill:#fff5f5,stroke:#c53030,color:#3b1111;
-    classDef suffix fill:#ebf8ff,stroke:#3182ce,color:#102a43;
-    classDef gate fill:#fffff0,stroke:#b7791f,color:#3a2a0a;
-```
+<img src="../diagrams/arch-roadmap-system-view.svg" alt="System view of libdictenstein. A caller or transducer calls the stable Dictionary trait API, which fans out to two backend families. The always-on in-memory family (green) holds DoubleArrayTrie (static, cache-local), DynamicDawg (lock-free prefix graph), PathMapDictionary (amber, feature pathmap-backend; atomic copy-on-write trie snapshot), SuffixAutomaton (substring index), and Scdawg (compact substring graph). The feature-gated persistent family (blue, disk-backed) holds the Persistent ARTrie (mmap + WAL + checkpoint), the persistent suffix family (native snapshot + WAL), and the persistent vocab trie (bijective term/index map). Two CI gate suites admit changes: the Criterion benchmark gates validate both families, and the Loom / TLA+ / Rocq formal gates validate the persistent family and the concurrent in-memory backends (DynamicDawg, PathMapDictionary, SuffixAutomaton, Scdawg) but not the static DoubleArrayTrie." width="70%"/>
 
 The key architectural rule is that public traits stay stable while backend
 internals specialize aggressively. Static read-mostly backends optimize layout;
@@ -64,15 +32,15 @@ optimize durability, recovery, and bounded unsafe boundaries.
 
 | Workload | Preferred backend | Why | Expected complexity |
 |----------|-------------------|-----|---------------------|
-| Static byte dictionary with high lookup volume | `DoubleArrayTrie` | Contiguous `BASE`/`CHECK` arrays minimize pointer chasing. | Build depends on placement; lookup `O(m)`. |
-| Static Unicode dictionary | `DoubleArrayTrieChar` | Same cache-local layout with `char` units. | Lookup `O(m)` over Unicode scalar values. |
-| Mutable prefix dictionary | `DynamicDawg` / `DynamicDawgChar` | Lock-free edge/value publication with suffix sharing. | Lookup `O(m)`, write $`O(k \times c)`$ where `c` is CAS retry cost. |
-| Fast in-memory trie with external `pathmap` feature | `PathMapDictionary` / `PathMapDictionaryChar` | Copy-on-write root snapshot over a mature trie engine. | Lookup `O(m)`, write clone cost depends on pathmap structural sharing. |
-| Substring lookup over dynamic text | `SuffixAutomaton` / `SuffixAutomatonChar` | Substrings are accepted by graph paths. | Query `O(m)`, states up to about `2n - 1` for one source string. |
-| Compact substring lookup over batch terms | `Scdawg` / `ScdawgChar` | Compact suffix graph shape plus left-extension support. | Query `O(m)`, better space locality after compaction. |
-| Durable mutable byte/char keys | `PersistentARTrie` / `PersistentARTrieChar` | ART node adaptation plus WAL/checkpoint recovery. | Lookup/update `O(k)`, storage cost depends on checkpoint cadence. |
-| Durable sequence keys | `PersistentARTrieU64*` | Native `u64` units avoid byte encoding overhead. | Lookup/update `O(k)` over sequence units. |
-| Durable vocabulary bijection | `PersistentVocabARTrie` | Term-to-index and index-to-term recovery are first-class. | Lookup/update `O(k)` plus reverse-map maintenance. |
+| Static byte dictionary with high lookup volume | `DoubleArrayTrie` | Contiguous `BASE`/`CHECK` arrays minimize pointer chasing. | Build depends on placement; lookup $`O(m)`$. |
+| Static Unicode dictionary | `DoubleArrayTrieChar` | Same cache-local layout with `char` units. | Lookup $`O(m)`$ over Unicode scalar values. |
+| Mutable prefix dictionary | `DynamicDawg` / `DynamicDawgChar` | Lock-free edge/value publication with suffix sharing. | Lookup $`O(m)`$, write $`O(k \times c)`$ where $`c`$ is CAS retry cost. |
+| Fast in-memory trie with external `pathmap` feature | `PathMapDictionary` / `PathMapDictionaryChar` | Copy-on-write root snapshot over a mature trie engine. | Lookup $`O(m)`$, write clone cost depends on pathmap structural sharing. |
+| Substring lookup over dynamic text | `SuffixAutomaton` / `SuffixAutomatonChar` | Substrings are accepted by graph paths. | Query $`O(m)`$, states up to about $`2n - 1`$ for one source string. |
+| Compact substring lookup over batch terms | `Scdawg` / `ScdawgChar` | Compact suffix graph shape plus left-extension support. | Query $`O(m)`$, better space locality after compaction. |
+| Durable mutable byte/char keys | `PersistentARTrie` / `PersistentARTrieChar` | ART node adaptation plus WAL/checkpoint recovery. | Lookup/update $`O(k)`$, storage cost depends on checkpoint cadence. |
+| Durable sequence keys | `PersistentARTrieU64*` | Native `u64` units avoid byte encoding overhead. | Lookup/update $`O(k)`$ over sequence units. |
+| Durable vocabulary bijection | `PersistentVocabARTrie` | Term-to-index and index-to-term recovery are first-class. | Lookup/update $`O(k)`$ plus reverse-map maintenance. |
 
 ## Benchmark Gate
 
@@ -142,10 +110,10 @@ Unicode node stays sorted or sparse-indexed.
 
 | Area | Target |
 |------|--------|
-| Prefix lookup | `O(m)` time, no heap allocation on successful read paths. |
-| Prefix insert | `O(k)` expected time, bounded CAS retry under contention. |
-| Exact traversal | `O(nodes + edges)` time, iterative traversal for deep structures. |
-| Substring lookup | `O(m)` time in suffix backends. |
+| Prefix lookup | $`O(m)`$ time, no heap allocation on successful read paths. |
+| Prefix insert | $`O(k)`$ expected time, bounded CAS retry under contention. |
+| Exact traversal | $`O(\text{nodes} + \text{edges})`$ time, iterative traversal for deep structures. |
+| Substring lookup | $`O(m)`$ time in suffix backends. |
 | Compaction | Rebuild from visible terms with exact-capacity collections where the bound is known. |
 | Persistent recovery | Replay only the durable WAL suffix after the last valid checkpoint. |
 | Edge storage | Tiny inline arrays for low fanout, sorted vectors for medium fanout, indexed/dense storage for high byte fanout. |

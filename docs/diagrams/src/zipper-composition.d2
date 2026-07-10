@@ -52,7 +52,7 @@ consumer: "Consumer — IntersectionIterator (DFS)\nor a Levenshtein pull" {
 }
 
 # --- Top combinator: INTERSECTION wraps two sub-zippers ----------------------
-isect: "IntersectionZipper<Z, LatticeMeet>\nis_final = ALL operands final · descend = ALL\nchildren = ∩ of labels · value = meet-merge" {
+isect: "IntersectionZipper<Z, LatticeMeet>\nis_final = ALL operands final · descend = ALL\nchildren = intersection of labels · value = meet-merge" {
   style: {
     fill: "#FFF59D"
     stroke: "#F9A825"
@@ -62,7 +62,7 @@ isect: "IntersectionZipper<Z, LatticeMeet>\nis_final = ALL operands final · des
   }
 
   # --- Sub-combinator 1: UNION over two backend cursors ---------------------
-  uni: "UnionZipper<Z, FirstWins>\nis_final = ANY · descend = ANY\nchildren = ∪ of labels · value = FirstWins" {
+  uni: "UnionZipper<Z, FirstWins>\nis_final = ANY · descend = ANY\nchildren = union of labels · value = FirstWins" {
     style: {
       fill: "#FFFDE7"
       stroke: "#F9A825"

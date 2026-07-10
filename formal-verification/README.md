@@ -335,8 +335,8 @@ publication, WAL segment lifecycle, recovery planner durable-prefix replay,
 recovery replay completeness, persistent public lifecycle, persistent
 end-to-end trace, epoch checkpoint recovery, substring, SCDAWG occurrence, and
 fuzzy candidate coverage targets plus the
-feature-gated valued semiring and public
-serialization targets under `--features lling-llang`,
+valued semiring and public
+serialization targets under
 `--features serialization`, `--features "serialization protobuf compression"`,
 and `--features "persistent-artrie parallel-merge"`. Set
 `FORMAL_RSS_LIMIT_BYTES=0` to disable the default 8GiB per-process RSS cap. Set
@@ -655,7 +655,7 @@ This full spec↔Rust correspondence table is the authoritative source for the
 | `DynamicDawgU64Spec.v` | `src/dynamic_dawg/u64.rs`, `src/dynamic_dawg/u64_zipper.rs`, and `tests/dynamic_dawg_u64_correspondence.rs` for u64 sequence mutation, value preservation, string/f64 adapter refinement, iterator/zipper exactness, and bounded read-snapshot safety |
 | `DoubleArrayTrieSpec.v` | `tests/double_array_trie_correspondence.rs`, byte and Unicode `DoubleArrayTrie` construction, lookup, child traversal, zipper values, and duplicate normalization |
 | `ZipperLanguageSpec.v` | `tests/zipper_language_correspondence.rs`, public `DictZipper` / `ValuedDictZipper` traversal, iterator, prefix/excluding, set-combinator, value-diff, suffix, SCDAWG, and persistent zipper APIs |
-| `ValuedSetCombinatorSpec.v` | `src/union_zipper/*`, `src/intersection_zipper.rs`, and `tests/valued_set_combinator_correspondence.rs` for ordered duplicate-value merge strategies, lattice values, Unicode/byte/DynamicDawg zippers, and `lling-llang` semiring join |
+| `ValuedSetCombinatorSpec.v` | `src/union_zipper/*`, `src/intersection_zipper.rs`, and `tests/valued_set_combinator_correspondence.rs` for ordered duplicate-value merge strategies, lattice values, Unicode/byte/DynamicDawg zippers, and semiring join (via the always-on `llattice` dependency) |
 | `BloomFilterSpec.v` | `src/bloom_filter.rs`, Bloom-backed `DynamicDawg` lookup, and `tests/bloom_filter_correspondence.rs` for no-false-negative lookup rejection, clear/reinsert traces, byte/string refinement, duplicate inserts, and parameter normalization |
 | `PersistentMergeSpec.v` | `tests/persistent_merge_correspondence.rs`, `PersistentARTrie::iter_prefix_from_cursor`, `merge_from_batched`, `merge_from_batched_grouped`, and `SharedARTrieParallelExt::merge_from_parallel` |
 | `PersistentPrefixSpec.v` | `tests/persistent_prefix_correspondence.rs`, `tests/persistent_bulk_mutation_correspondence.rs`, `PersistentARTrieChar::iter_prefix*`, `iter_prefix_with_*_arena`, `remove_prefix`, `remove_prefix_batched`, and byte/char checked `increment`/`fetch_add` overflow |
@@ -729,7 +729,7 @@ The executable correspondence harness covers:
 - valued set-combinator traces for byte, Unicode, and DynamicDawg zippers,
   union/intersection first-wins, last-wins, custom sum, lattice join/meet, set
   values, empty/disjoint domains, navigation-vs-iteration agreement, and
-  feature-gated `lling-llang` semiring join behavior;
+  semiring join behavior (via the always-on `llattice` dependency);
 - persistent merge traces for cursor pagination, ordinary batched merge,
   arena-grouped batched merge, and feature-gated parallel merge against
   `BTreeMap` reference merges;

@@ -138,3 +138,7 @@ cobertura.xml
 .pgmcp.toml
 
 .claude/worktrees/
+
+# Python bytecode cache (from scripts/*.py, e.g. the doc-math gate)
+__pycache__/
+*.pyc

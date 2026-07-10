@@ -56,33 +56,14 @@ The figure below contrasts a plain trie (prefix sharing only) with the minimized
 
 <img src="../../diagrams/dawg-suffix-sharing.svg" alt="A DAWG shares suffixes too: a trie with 8 nodes for { cats, bats } collapses to a 5-node DAWG by merging the shared 'ats' suffix into a single path." width="640"/>
 
-**Example**: Terms ["car", "card", "cart", "star", "start"]
+**Example**: the term set `{ car, card, cart, star, start }`. A plain trie shares
+only prefixes (`c-a-r` for `car`/`card`/`cart`; `s-t-a-r` for `star`/`start`); the
+minimized DAWG additionally shares the accepting suffix — the three word-final
+letters (`d` of `card`, `t` of `cart`, `t` of `start`) all converge on one shared
+accepting sink, because all three have the empty right language. The two `r` states
+stay distinct, since their right languages differ.
 
-```
-Regular Trie (prefix sharing only):
-       (root)
-       /    \
-      c      s
-      |      |
-      a      t
-      |      |
-      r      a
-     / \     |
-    d   t    r
-            / \
-           t   (nothing - "star")
-
-DAWG (prefix AND suffix sharing):
-       (root)
-       /    \
-      c      s
-      |      |
-      a      t
-      |      |
-      r ─────┘  ← Shares "ar" suffix
-     / \
-    d   t
-```
+<img src="../../diagrams/impl-dawg-vs-trie.svg" alt="Trie versus DAWG for the term set { car, card, cart, star, start }. The trie (11 nodes) shares only prefixes: c-a-r reaches car/card/cart and s-t-a-r reaches star/start, and each word-final letter reaches its own accepting node. The minimized DAWG (9 nodes) additionally merges the three word-final accepting nodes — d of card, t of cart, t of start — into one shared accepting sink, since all three have the empty right language; the two r nodes remain distinct because car's r has right language {epsilon, d, t} while star's r has only {epsilon, t}." width="460"/>
 
 **Space savings**: DAWG nodes = ~50-70% of trie nodes for natural language.
 
@@ -138,7 +119,7 @@ fn find_or_create_child(node: &Arc<Node>, label: u8) -> Arc<Node> {
 }
 ```
 
-**Complexity**: `O(m)` where m = term length (plus bounded CAS retries only when
+**Complexity**: $`O(m)`$ where m = term length (plus bounded CAS retries only when
 another writer races on the same node)
 
 ### Deletion Algorithm
@@ -174,7 +155,7 @@ fn remove(&self, term: &str) -> bool {
 }
 ```
 
-**Complexity**: `O(m)`
+**Complexity**: $`O(m)`$
 
 ### Compaction
 
@@ -208,7 +189,7 @@ pub fn compact(&self) -> usize {
 }
 ```
 
-**Complexity**: `O(n)` where n = total nodes
+**Complexity**: $`O(n)`$ where n = total nodes
 
 **When to compact**:
 - After many deletions (10%+ of dictionary removed)
@@ -252,11 +233,11 @@ struct LockFreeEdgeList<U: CharUnit, V: DictionaryValue> {
 
 | Component | Size | Notes |
 | --- | --- | --- |
-| edges: ArcSwap<EdgeList> | 8 bytes | atomic ptr → COW |
-|  |  | edge list (≤4 |
+| `edges: ArcSwap<EdgeList>` | 8 bytes | atomic ptr → COW |
+|  |  | edge list ($`\le`$4 |
 |  |  | inline, ~16 bytes) |
-| is_final: AtomicBool | 1 byte | term marker |
-| value: ArcSwapOption<V> | 8 bytes | atomic ptr → V |
+| `is_final: AtomicBool` | 1 byte | term marker |
+| `value: ArcSwapOption<V>` | 8 bytes | atomic ptr → V |
 | Node cells | ~17 bytes | + edge-list heap |
 | Shared handle overhead | Arc → core | 8 bytes (one ptr) |
 
@@ -289,8 +270,8 @@ assert_eq!(dict2.len(), Some(3));  // Same count
 
 | Property | Behavior | Impact |
 |----------|----------|--------|
-| **Time Complexity** | O(1) | Single atomic increment |
-| **Space Complexity** | O(1) | 8 bytes (one Arc pointer) |
+| **Time Complexity** | $`O(1)`$ | Single atomic increment |
+| **Space Complexity** | $`O(1)`$ | 8 bytes (one Arc pointer) |
 | **Data Sharing** | ✅ Complete | All clones share same node graph |
 | **Mutation Visibility** | ✅ Global | Changes via any clone affect all |
 | **Thread Safety** | ✅ Lock-free | Wait-free reads AND lock-free writes (per-node CAS) |
@@ -419,9 +400,9 @@ let dict2 = DynamicDawg::from_iter(terms);
 
 | Method | Time | Space | Independence |
 |--------|------|-------|--------------|
-| `.clone()` | O(1) | O(1) | ❌ Shared |
-| Serialize/Deserialize | O(n) | O(n) | ✅ Full |
-| Rebuild from terms | O(n·m) | O(n) | ✅ Full |
+| `.clone()` | $`O(1)`$ | $`O(1)`$ | ❌ Shared |
+| Serialize/Deserialize | $`O(n)`$ | $`O(n)`$ | ✅ Full |
+| Rebuild from terms | $`O(n \cdot m)`$ | $`O(n)`$ | ✅ Full |
 
 #### Comparison with Other Dictionaries
 
@@ -429,11 +410,11 @@ Different dictionary implementations have different clone semantics:
 
 | Dictionary | Clone Type | Cost | Shared Data? |
 |------------|------------|------|--------------|
-| **DynamicDawg** | Shallow (Arc) | O(1) | ✅ Yes |
-| **DynamicDawgChar** | Shallow (Arc) | O(1) | ✅ Yes |
-| **PathMapDictionary** | Shallow (Arc) | O(1) | ✅ Yes |
-| **DoubleArrayTrie** | Deep copy | O(n) | ❌ No |
-| **DoubleArrayTrieChar** | Deep copy | O(n) | ❌ No |
+| **DynamicDawg** | Shallow (Arc) | $`O(1)`$ | ✅ Yes |
+| **DynamicDawgChar** | Shallow (Arc) | $`O(1)`$ | ✅ Yes |
+| **PathMapDictionary** | Shallow (Arc) | $`O(1)`$ | ✅ Yes |
+| **DoubleArrayTrie** | Deep copy | $`O(n)`$ | ❌ No |
+| **DoubleArrayTrieChar** | Deep copy | $`O(n)`$ | ❌ No |
 
 **Why the difference?**
 - **Mutable dictionaries** (DynamicDawg, PathMap) use Arc for shared ownership with interior mutability
@@ -490,10 +471,10 @@ let writer = {
 
 **Key Takeaways:**
 1. 🔗 `.clone()` creates a **shallow copy** - all clones share the same data
-2. 🚀 **`O(1)`** time and space - just increments atomic reference count
+2. 🚀 **$`O(1)`$** time and space - just increments atomic reference count
 3. 🔄 **Mutations are visible** across all clones (by design)
 4. 🔓 **Non-blocking**: wait-free reads and lock-free writes (no locks; per-node CAS)
-5. 📊 For **independence**, use serialization or rebuild from terms (`O(n)` cost)
+5. 📊 For **independence**, use serialization or rebuild from terms ($`O(n)`$ cost)
 
 ### Optimizations
 
@@ -557,27 +538,33 @@ The merge step gives the suffix sharing visualized in the
 [suffix-sharing figure](#what-is-a-dawg) above; running it eagerly during insert
 is what keeps `DynamicDawg` near-minimal between explicit `compact()` calls.
 
-#### 3. Bloom Filter
+#### 3. Exact wait-free reads (no Bloom pre-filter on the read path)
 
-Fast negative lookup rejection:
+The live lock-free core ([`src/dynamic_dawg/lockfree.rs`](../../../src/dynamic_dawg/lockfree.rs))
+answers `contains` with an **exact wait-free traversal** — it consults **no** Bloom
+filter. A negative lookup is cheap for the same reason a positive one is: the
+descent stops at the first unit with no matching edge, so a miss is typically
+resolved before the whole term is read.
 
 ```rust
 fn contains(&self, term: &str) -> bool {
-    // Wait-free read: no lock is taken. An optional Bloom pre-filter can reject
-    // obvious misses before the atomic-snapshot traversal.
-    if let Some(bloom) = self.bloom_filter() {
-        if !bloom.might_contain(term) {
-            return false;  // Definitely not present
-        }
-    }
-
-    // Full traversal over immutable edge-list snapshots (atomic loads only).
+    // Wait-free read: no lock is taken, and no Bloom filter is consulted.
+    // `find_node` walks immutable edge-list snapshots (atomic loads only) and
+    // returns None at the first absent edge — the exact, early-exiting descent.
     self.find_node(term.as_bytes())
         .is_some_and(|node| node.is_final.load(Ordering::Acquire))
 }
 ```
 
-**Impact**: 5-10x faster negative lookups
+A [`BloomFilter`](../../../src/bloom_filter.rs) type still exists in the crate and is
+carried by the serialization-compatibility shape (`DawgCore`), but it is **off the
+live read path**: the lock-free wrapper never queries it. Consequently
+`with_config`'s `bloom_filter_capacity` argument (see
+[Construction Methods](#construction-methods)) is **vestigial** — accepted for API
+compatibility, not used to answer lookups.
+
+**Impact**: negative lookups are resolved by early exit at the first absent edge,
+and every answer is exact (there are no false positives to confirm).
 
 #### 4. Lazy Minimization
 
@@ -591,7 +578,7 @@ if nodes.len() > last_minimized * auto_minimize_threshold {
 }
 ```
 
-**Impact**: Amortizes `O(n)` cost over many insertions
+**Impact**: Amortizes $`O(n)`$ cost over many insertions
 
 ## Construction Methods
 
@@ -601,10 +588,10 @@ DynamicDawg provides multiple constructors for different initialization patterns
 
 | Constructor | Complexity | Use Case | Thread-Safe |
 |-------------|-----------|----------|-------------|
-| `new()` | O(1) | Empty start, incremental | ✅ |
-| `from_iter()` | O(n·m) | Bulk load from iterator | ✅ |
-| `from_terms()` | O(n·m) | Simple term list | ✅ |
-| `insert_with_value()` | O(m) amortized | Per-term values | ✅ |
+| `new()` | $`O(1)`$ | Empty start, incremental | ✅ |
+| `from_iter()` | $`O(n \cdot m)`$ | Bulk load from iterator | ✅ |
+| `from_terms()` | $`O(n \cdot m)`$ | Simple term list | ✅ |
+| `insert_with_value()` | $`O(m)`$ amortized | Per-term values | ✅ |
 
 Where n = number of terms, m = average term length
 
@@ -629,7 +616,7 @@ valued_dict.insert_with_value("world", 200);
 ```
 
 **Characteristics:**
-- **Time**: `O(1)` - Allocates minimal structure
+- **Time**: $`O(1)`$ - Allocates minimal structure
 - **Memory**: ~64 bytes (one `Arc` to an empty lock-free core: a root node plus a few atomic counters — no lock object)
 - **Use case**: Real-time incremental updates, streaming input
 
@@ -829,14 +816,14 @@ DynamicDawg provides comprehensive methods for querying dictionary contents and 
 
 | Method | Returns | Complexity | Thread-Safe | Description |
 |--------|---------|------------|-------------|-------------|
-| `contains(term)` | `bool` | O(m) | ✅ Yes | Check if term exists |
-| `get_value(term)` | `Option<V>` | O(m) | ✅ Yes | Retrieve associated value |
-| `len()` | `Option<usize>` | O(1) | ✅ Yes | Get term count (Dictionary trait) |
-| `is_empty()` | `bool` | O(1) | ✅ Yes | Check if empty (Dictionary trait) |
-| `term_count()` | `usize` | O(1) | ✅ Yes | Get exact term count |
-| `node_count()` | `usize` | O(1) | ✅ Yes | Get internal node count |
-| `needs_compaction()` | `bool` | O(1) | ✅ Yes | Check if compaction recommended |
-| `root()` | `DynamicDawgNode` | O(1) | ✅ Yes | Get root node for traversal |
+| `contains(term)` | `bool` | $`O(m)`$ | ✅ Yes | Check if term exists |
+| `get_value(term)` | `Option<V>` | $`O(m)`$ | ✅ Yes | Retrieve associated value |
+| `len()` | `Option<usize>` | $`O(1)`$ | ✅ Yes | Get term count (Dictionary trait) |
+| `is_empty()` | `bool` | $`O(1)`$ | ✅ Yes | Check if empty (Dictionary trait) |
+| `term_count()` | `usize` | $`O(1)`$ | ✅ Yes | Get exact term count |
+| `node_count()` | `usize` | $`O(1)`$ | ✅ Yes | Get internal node count |
+| `needs_compaction()` | `bool` | $`O(1)`$ | ✅ Yes | Check if compaction recommended |
+| `root()` | `DynamicDawgNode` | $`O(1)`$ | ✅ Yes | Get root node for traversal |
 
 *Note*: `m` = term length (in bytes).
 
@@ -852,8 +839,9 @@ pub fn contains(&self, term: &str) -> bool
 ```
 
 **Performance**:
-- **Complexity**: `O(m)` where m is term length
-- **Optimizations**: Bloom filter for fast negative lookups (~100$`\times`$ faster rejection)
+- **Complexity**: $`O(m)`$ where m is term length
+- **Negative lookups**: resolved by early exit at the first absent edge — no Bloom
+  pre-filter is consulted (the read path is an exact wait-free traversal)
 - **Concurrency**: Wait-free read (atomic-snapshot loads; no lock, never blocks)
 
 **Example**:
@@ -868,20 +856,20 @@ assert!(!dict.contains("bird"));
 assert!(!dict.contains("ca")); // Prefix doesn't count
 ```
 
-**Bloom Filter Optimization** (enabled by default):
+**Negative lookups** (exact, early-exiting — no Bloom pre-filter):
 
 ```rust
-// With Bloom filter (default)
-let dict = DynamicDawg::new(); // Bloom filter auto-enabled
+let dict = DynamicDawg::new();
 dict.insert("term1");
 dict.insert("term2");
 
-// Fast negative lookup (~100× faster than full traversal)
-assert!(!dict.contains("nonexistent")); // Bloom filter rejects immediately
+// A miss is an exact wait-free traversal that stops at the first absent edge.
+assert!(!dict.contains("nonexistent")); // no Bloom filter is consulted
 
-// Custom Bloom filter capacity
+// with_config still accepts a Bloom-capacity argument, but it is vestigial:
+// the lock-free read path ignores it and always answers exactly.
 let dict = DynamicDawg::with_config(2.0, Some(10_000));
-// Optimized for ~10,000 terms
+// The Some(10_000) is accepted for API compatibility only.
 ```
 
 **Thread Safety**:
@@ -922,7 +910,7 @@ where
 - `None` if term doesn't exist or has no value
 
 **Performance**:
-- **Complexity**: `O(m)` where m is term length
+- **Complexity**: $`O(m)`$ where m is term length
 - **Concurrency**: Wait-free read (atomic-snapshot loads; no lock, never blocks)
 
 **Example**:
@@ -978,7 +966,7 @@ fn is_empty(&self) -> bool      // Dictionary trait
 - `is_empty()`: `true` if no terms, `false` otherwise
 
 **Performance**:
-- **Complexity**: `O(1)` - stored counter
+- **Complexity**: $`O(1)`$ - stored counter
 - **Concurrency**: Wait-free read (atomic-snapshot loads; no lock, never blocks)
 
 **Example**:
@@ -1012,7 +1000,7 @@ pub fn term_count(&self) -> usize
 ```
 
 **Performance**:
-- **Complexity**: `O(1)` - stored counter
+- **Complexity**: $`O(1)`$ - stored counter
 - **Concurrency**: Wait-free read (atomic-snapshot loads; no lock, never blocks)
 
 **Example**:
@@ -1047,7 +1035,7 @@ pub fn node_count(&self) -> usize
 **Returns**: Total number of DAWG nodes (including non-final nodes)
 
 **Performance**:
-- **Complexity**: `O(1)` - stored counter
+- **Complexity**: $`O(1)`$ - stored counter
 - **Concurrency**: Wait-free read (atomic-snapshot loads; no lock, never blocks)
 
 **Example**:
@@ -1105,7 +1093,7 @@ pub fn needs_compaction(&self) -> bool
 - `false` if structure is minimal or only insertions occurred
 
 **Performance**:
-- **Complexity**: `O(1)` - flag check
+- **Complexity**: $`O(1)`$ - flag check
 - **Concurrency**: Wait-free read (atomic-snapshot loads; no lock, never blocks)
 
 **Example**:
@@ -1139,7 +1127,7 @@ if dict.needs_compaction() {
 ```
 
 **Performance Guidance**:
-- Compaction is `O(n)` where n = total characters
+- Compaction is $`O(n)`$ where n = total characters
 - Compact periodically, not after every deletion
 - Typical trigger: After removing >10% of terms
 
@@ -1157,7 +1145,7 @@ fn root(&self) -> DynamicDawgNode // From Dictionary trait
 **Returns**: Node at root of DAWG (entry point for traversal)
 
 **Performance**:
-- **Complexity**: `O(1)`
+- **Complexity**: $`O(1)`$
 - **Concurrency**: Wait-free per-node traversal (atomic snapshot loads; no lock)
 
 **Example**:
@@ -1219,7 +1207,7 @@ if let Some(final_zipper) = result {
 | Method | Latency | Throughput | Notes |
 |--------|---------|------------|-------|
 | `contains()` (hit) | ~250ns | 4M ops/sec | Full traversal |
-| `contains()` (miss, Bloom) | ~50ns | 20M ops/sec | Bloom rejection |
+| `contains()` (miss) | ~250ns or less | 4M+ ops/sec | Exact traversal; exits at first absent edge |
 | `get_value()` | ~260ns | 3.8M ops/sec | Traversal + clone |
 | `len()` / `term_count()` | ~5ns | 200M ops/sec | Counter read |
 | `is_empty()` | ~5ns | 200M ops/sec | Counter comparison |
@@ -1234,11 +1222,11 @@ if let Some(final_zipper) = result {
 - Reads are never blocked by concurrent `insert` / `remove` — each observes
   either the pre- or post-write snapshot, never a torn graph
 
-**Memory Overhead**:
-- Term count: 8 bytes (usize)
-- Node count: 8 bytes (usize)
-- Bloom filter: ~100KB for 10K terms (optional)
-- Compaction flag: 1 byte (bool)
+**Memory Overhead** (the live lock-free core carries no Bloom filter):
+- Term count: 8 bytes (`AtomicUsize`)
+- Compaction flag + writer registry: ~10 bytes (`AtomicBool` + `AtomicUsize` + `AtomicBool`)
+- Per node: an `ArcSwap` edge-list pointer, an `AtomicBool` final marker, and an
+  `ArcSwapOption` value pointer — no lock object and no per-node Bloom filter
 
 ---
 
@@ -1371,8 +1359,8 @@ where
 **Complexity**:
 - **Time**: $`O(n\cdot m)`$ where n = terms in `other`, m = average term length
   - $`O(n\cdot m)`$ for DFS traversal
-  - `O(m)` per term for `insert_with_value()`
-- **Space**: `O(d)` where d = maximum trie depth (typically < 50)
+  - $`O(m)`$ per term for `insert_with_value()`
+- **Space**: $`O(d)`$ where d = maximum trie depth (typically < 50)
   - DFS stack size proportional to deepest path
   - Constant additional memory
 
@@ -1571,7 +1559,7 @@ fn union_with<F>(&self, other: &Self, merge_fn: F) -> usize {
 
 **Why Iterative DFS?**
 - ✅ **No stack overflow**: Handles very deep tries (e.g., long terms)
-- ✅ **Memory efficient**: `O(d)` space vs `O(n)` for recursion
+- ✅ **Memory efficient**: $`O(d)`$ space vs $`O(n)`$ for recursion
 - ✅ **Consistent ordering**: Reversed edges ensure predictable traversal
 - ✅ **Debuggable**: Explicit stack state visible at each step
 
@@ -1590,10 +1578,10 @@ The implementation delegates to `insert_with_value()` rather than manipulating n
 
 | Operation | Time Complexity | Space Complexity | Typical Performance (10K terms) |
 |-----------|----------------|------------------|--------------------------------|
-| `union_with()` | O(n·m) | O(d) | ~50ms |
-| `union_replace()` | O(n·m) | O(d) | ~50ms |
-| DFS traversal | O(n) | O(d) | ~20ms |
-| Per-term insertion | O(m) | O(1) amortized | ~2-5µs |
+| `union_with()` | $`O(n \cdot m)`$ | $`O(d)`$ | ~50ms |
+| `union_replace()` | $`O(n \cdot m)`$ | $`O(d)`$ | ~50ms |
+| DFS traversal | $`O(n)`$ | $`O(d)`$ | ~20ms |
+| Per-term insertion | $`O(m)`$ | $`O(1)`$ amortized | ~2-5µs |
 
 **Variables**:
 - n = number of terms in source dictionary
@@ -1826,11 +1814,11 @@ println!("{:?}", results);  // ["test", "tester"]
 
 | Operation | Complexity | Notes |
 |-----------|-----------|-------|
-| **Insert** | O(m) | m = term length |
-| **Remove** | O(m) | Plus ref count updates |
-| **Contains** | O(m) | With Bloom filter: O(1) rejection |
-| **Compact** | O(n) | n = total nodes |
-| **Query (fuzzy)** | O(m $`\times`$ d²$`\times`$b) | d = distance, b = branching |
+| **Insert** | $`O(m)`$ | m = term length |
+| **Remove** | $`O(m)`$ | Plus ref count updates |
+| **Contains** | $`O(m)`$ | Exact traversal; a miss exits at the first absent edge |
+| **Compact** | $`O(n)`$ | n = total nodes |
+| **Query (fuzzy)** | $`O(m \times d^{2} \times b)`$ | d = distance, b = branching |
 
 ### Benchmark Results
 
@@ -1852,9 +1840,8 @@ Single deletion:
   DynamicDawg:      ~1.2µs
 
 Contains check:
-  With Bloom filter:    ~150ns (negative)
-  Without Bloom filter: ~350ns (negative)
-  Positive lookup:      ~450ns
+  Negative lookup:  ~350ns (exact traversal; exits at first absent edge)
+  Positive lookup:  ~450ns
 ```
 
 #### Fuzzy Search
@@ -1870,9 +1857,8 @@ Query "test" (distance 2) in 10K-term dict:
 ```
 10,000-term dictionary:
   Nodes:          ~250KB
-  Suffix cache:   ~32KB
-  Bloom filter:   ~12KB
-  Total:          ~294KB
+  Suffix cache:   ~32KB (construction/minimization only)
+  Total:          ~282KB
 
 vs DoubleArrayTrie: ~100KB (3x smaller)
 ```

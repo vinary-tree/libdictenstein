@@ -1,0 +1,81 @@
+@startuml arch-roadmap-system-view
+' ============================================================================
+' arch-roadmap-system-view.puml — the libdictenstein System View: a caller
+' reaches every backend through one stable trait API; the backends split into
+' the always-on in-memory family and the feature-gated persistent family; two
+' CI gate suites (Criterion benchmarks + formal methods) admit changes to them.
+' Replaces the Mermaid flowchart in docs/architecture/optimization-roadmap.md.
+'
+' Containment expresses "these backends belong to this family" (so no explicit
+' family->backend edges are needed); the drawn edges are the API path
+' (caller -> traits -> family) and the two validation gates.  The formal-gate
+' edges reach only the concurrent backends, never the static DoubleArrayTrie.
+'
+' Color key (house palette — see docs/diagrams/README.md):
+'   green   #C8E6C9 = in-memory backend (always on)
+'   amber   #FFF59D = feature `pathmap-backend`
+'   blue    #BBDEFB = feature `persistent-artrie` (disk-backed)
+'   neutral #F1F1F1 = infrastructure (caller, trait API, CI gates)
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam defaultFontSize 14
+skinparam shadowing false
+skinparam wrapWidth 150
+skinparam nodesep 12
+skinparam ranksep 34
+skinparam ArrowColor #37474F
+skinparam packageStyle rectangle
+skinparam rectangle {
+  BorderColor #37474F
+  FontColor #212121
+  BorderThickness 1.1
+}
+title libdictenstein — system view: one trait API, two backend families, two gate suites
+
+rectangle "Caller / transducer" as User #F1F1F1
+rectangle "Dictionary traits" as Traits #F1F1F1
+
+rectangle "**Volatile backends**\n(in-memory, always on)" as Vol #C8E6C9 {
+  rectangle "**DoubleArrayTrie**\nstatic, cache-local" as DAT #C8E6C9
+  rectangle "**DynamicDawg**\nlock-free prefix graph" as DAWG #C8E6C9
+  rectangle "**PathMapDictionary**\natomic COW trie snapshot" as PM #FFF59D
+  rectangle "**SuffixAutomaton**\nsubstring index" as SA #C8E6C9
+  rectangle "**Scdawg**\ncompact substring graph" as SCD #C8E6C9
+  DAT -[hidden]-> DAWG
+  DAWG -[hidden]-> PM
+  PM -[hidden]-> SA
+  SA -[hidden]-> SCD
+}
+
+rectangle "**Persistent backends**\n(disk-backed)" as Per #BBDEFB {
+  rectangle "**Persistent ARTrie**\nmmap + WAL + checkpoint" as ART #BBDEFB
+  rectangle "**Persistent suffix family**\nnative snapshot + WAL" as PS #BBDEFB
+  rectangle "**Persistent vocab trie**\nbijective term/index map" as VOC #BBDEFB
+  ART -[hidden]-> PS
+  PS -[hidden]-> VOC
+}
+
+rectangle "Criterion\nbenchmark gates" as Bench #F1F1F1
+rectangle "Loom / TLA+ / Rocq\ngates" as Formal #F1F1F1
+
+User --> Traits
+Traits --> Vol
+Traits --> Per
+
+Bench --> Vol
+Bench --> Per
+Formal --> Per
+Formal --> DAWG
+Formal --> PM
+Formal --> SA
+Formal --> SCD
+
+legend right
+| Color | Concept |
+|<#C8E6C9>| in-memory backend (always on) |
+|<#FFF59D>| feature pathmap-backend |
+|<#BBDEFB>| feature persistent-artrie (disk) |
+|<#F1F1F1>| infrastructure (caller / traits / gates) |
+endlegend
+@enduml

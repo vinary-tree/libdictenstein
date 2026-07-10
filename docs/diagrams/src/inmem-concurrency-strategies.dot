@@ -1,0 +1,37 @@
+// ============================================================================
+// The two lock-free strategies of the in-memory mutable backends.
+// Color key (house palette, see docs/diagrams/README.md):
+//   #C8E6C9 green — in-memory volatile structure (nodes / whole graph)
+//   #B2DFDB teal  — lock-free atomic cell (ArcSwap): the CAS publication point
+//   #FFCDD2 red   — the writer's edit
+//   #F1F1F1 / #37474F — infrastructure / borders / arrows
+// ============================================================================
+digraph inmem_concurrency {
+  rankdir=TB;
+  bgcolor="#FFFFFF";
+  node [shape=box, style="filled,rounded", fontname="DejaVu Sans", fontsize=11,
+        color="#37474F", fontcolor="#263238"];
+  edge [color="#37474F", fontname="DejaVu Sans", fontsize=10];
+
+  subgraph cluster_A {
+    label="A · Per-node CAS  (DynamicDawg / …Char / …U64)\nLocal edit → only path nodes' cells change; other readers untouched.";
+    fontname="DejaVu Sans"; fontsize=11; color="#37474F"; style=rounded; labelloc=b;
+    a_writer [label="writer: rebuild edge list\nof each node on the path", fillcolor="#FFCDD2"];
+    a_e1 [label="node.edges : ArcSwap", fillcolor="#B2DFDB"];
+    a_reader [label="reader: wait-free load", fillcolor="#C8E6C9"];
+    a_writer -> a_e1 [label="CAS"];
+    a_e1 -> a_reader [label="load", dir=back];
+  }
+
+  subgraph cluster_B {
+    label="B · Whole-graph snapshot / copy-on-write  (SuffixAutomaton, Scdawg, PathMap)\nNon-local edit → clone Inner, edit clone, one root CAS = linearization point.";
+    fontname="DejaVu Sans"; fontsize=11; color="#37474F"; style=rounded; labelloc=b;
+    b_rn1 [label="revision N+1\n(writer's clone + edit)", fillcolor="#FFCDD2"];
+    b_root [label="Arc<ArcSwap<Inner>>", fillcolor="#B2DFDB"];
+    b_rn [label="revision N (immutable)\nreaders hold until reload", fillcolor="#C8E6C9"];
+    b_rn1 -> b_root [label="CAS publishes\nwhole revision"];
+    b_root -> b_rn [label="readers load"];
+  }
+
+  a_reader -> b_rn1 [style=invis];   // stack B below A
+}

@@ -240,5 +240,5 @@ let merged_count = trie.merge_lockfree_to_persistent()?;
 ## References
 
 - [im crate documentation](https://docs.rs/im/)
-- [Epoch-based memory reclamation](https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-579.pdf)
-- [ART: Adaptive Radix Tree](https://db.in.tum.de/~leis/papers/ART.pdf)
+- Fraser, ["Practical lock-freedom"](https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-579.pdf), University of Cambridge Computer Laboratory Technical Report UCAM-CL-TR-579, 2004 (introduces epoch-based memory reclamation). DOI: <https://doi.org/10.48456/tr-579>.
+- Leis, Kemper, and Neumann, ["The Adaptive Radix Tree: ARTful Indexing for Main-Memory Databases"](https://db.in.tum.de/~leis/papers/ART.pdf), ICDE 2013. DOI: <https://doi.org/10.1109/ICDE.2013.6544812>.

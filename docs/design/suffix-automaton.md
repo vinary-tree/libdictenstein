@@ -1,120 +1,94 @@
-# Persistent Suffix Index Design
+# Design: the volatile suffix automaton
 
-This document describes the current suffix-index family. It is no longer a
-proposal for adding suffix automata; byte and Unicode suffix automata, suffix
-trees, SCDAWGs, and their persistent counterparts are implemented.
+Design rationale for the **in-memory** `SuffixAutomaton` / `SuffixAutomatonChar` backends — why they
+are shaped the way they are. The *theory* (endpos classes, suffix links, the online construction and
+its bounds) is in [`theory/scdawg/02-suffix-automaton.md`](../theory/scdawg/02-suffix-automaton.md);
+the *usage and API* are in
+[`algorithms/implementations/suffix-automaton.md`](../algorithms/implementations/suffix-automaton.md);
+the *persistent* suffix family is [`persistent-suffix-index.md`](persistent-suffix-index.md). This
+document is the "why". Notation follows [`docs/notation.md`](../notation.md).
 
-## Implemented Families
+## What it is for
 
-| Family | In-memory | Persistent |
-|--------|-----------|------------|
-| Suffix automaton | `SuffixAutomaton`, `SuffixAutomatonChar` | `PersistentSuffixAutomaton`, `PersistentSuffixAutomatonChar` |
-| Suffix-tree-compatible API | internal/native compact graph | `PersistentSuffixTree`, `PersistentSuffixTreeChar` |
-| Symmetric compact DAWG | `Scdawg`, `ScdawgChar` | `PersistentScdawg`, `PersistentScdawgChar` |
+A suffix automaton indexes **every substring** of the texts it is built from, so it answers "does
+pattern `P` occur anywhere inside an indexed text?" in $`O(\lvert P\rvert)`$ — the *substring* (infix)
+query that the whole-term backends ([double-array trie](../algorithms/implementations/double-array-trie.md),
+[DAWG](../algorithms/implementations/dynamic-dawg.md)) cannot answer. That single requirement drives
+every design choice below.
 
-All variants are selected by unit type:
+## Design choices and their rationale
 
-- byte variants use `u8` units
-- `Char` variants use Unicode scalar values
+### Build from *texts*, not a term set
 
-## Persistent Representation
+The public constructor is `from_texts`, not `from_terms`. This is deliberate: the automaton indexes
+the substrings of each supplied *text*, so the input is a set of documents to be searched, not a set
+of words to be matched exactly. It is the API-level signal that this backend answers a different
+question than the whole-term backends.
 
-Persistent suffix indexes are native suffix graphs, not ARTrie-encoded suffix
-key spaces.
+### Online (left-to-right) construction
 
-```text
-prepared operation segment
-    -> active source/term records
-    -> rebuild native graph revision
-    -> publish immutable snapshot by CAS
-    -> commit operation segment
-    -> checkpoint native graph image
-```
+Construction is **online** — `extend(c)` appends one unit at a time in amortized $`O(1)`$, so a text
+of length `n` is indexed in $`O(n)`$ and the automaton is queryable after every prefix. The
+alternative (batch construction from the full text) would forfeit incremental indexing for no
+asymptotic gain. The one non-trivial step is **clone-on-split**: when appending a unit would merge
+two distinct endpos classes, the offending state is cloned so each class keeps its own state. Capping
+this at one clone per unit is exactly what holds the automaton to its provable bounds — at most
+$`2\lvert T\rvert - 1`$ states and $`3\lvert T\rvert - 4`$ transitions
+([theory](../theory/scdawg/02-suffix-automaton.md)). This linear size is *by construction*, not a
+best case, which is why the [security analysis](../security/untrusted-input.md) treats state growth
+as expected rather than an adversarial blow-up.
 
-The persistent suffix automaton stores suffix automaton graph nodes. The
-persistent suffix tree stores a path-compressed suffix-tree-compatible graph.
-The persistent SCDAWG stores a compact SCDAWG graph with substring location and
-left/right extension support.
+### Arena of indexed nodes, not pointers
 
-## Concurrency
+The core (`SuffixAutomatonInner<U, V>`,
+[`src/suffix_automaton/core/inner.rs`](../../src/suffix_automaton/core/inner.rs)) stores states in a
+flat `Vec<SuffixNode>` addressed by integer index; edges and suffix links are `usize` indices, not
+`Box`/`Arc` pointers. This is the same arena discipline the DAWG and SCDAWG cores use, and it buys the
+same two properties: non-recursive drop (no stack overflow tearing down a huge automaton) and
+compact, cache-friendly traversal ([architecture §2](../architecture/in-memory-dictionaries.md#2-monomorphized-cores)).
 
-Reads traverse immutable snapshots and do not take a writer lock. Writes are
-split by retryability:
+### Whole-graph snapshot concurrency (not per-node CAS)
 
-- `insert`, `insert_with_value`, `remove`, `clear`, `compact`, and
-  `update_or_insert` append a prepared WAL segment, publish a rebuilt immutable
-  graph revision with pointer-identity CAS, then append a commit segment before
-  acknowledging the caller. CAS losers leave uncommitted prepared records that
-  recovery ignores.
-- `update_or_insert` uses a retry-safe `Fn(&mut V)` updater so CAS conflicts
-  recompute against the newest graph snapshot rather than serializing writes.
-- Checkpoints retain the active WAL and record the committed operation
-  watermark in the native snapshot, so concurrent writers are not truncated out
-  from under a checkpoint. If writers keep the graph unstable across the bounded
-  capture window, checkpoint returns without publishing a new image; retained
-  WAL replay still preserves all committed operations.
+Unlike the DAWG family, the suffix automaton uses the **whole-graph snapshot / copy-on-write**
+concurrency strategy: `LockFreeSuffixAutomaton` wraps `Arc<ArcSwap<SuffixAutomatonInner<U,V>>>`, and a
+writer clones the inner automaton, applies `extend`, and CAS-publishes the whole new revision
+([architecture §3b](../architecture/in-memory-dictionaries.md#3b-whole-graph-snapshot-copy-on-write--suffix-automaton-scdawg-pathmap)).
+The rationale is edit locality: a `clone-on-split` rewires suffix links across the graph, so an edit
+is *not* confined to one root-to-node path the way a DAWG insert is. Per-node CAS would have to
+coordinate a graph-wide rewrite atomically; a single root-pointer CAS after building the new revision
+is simpler and correct, and gives readers a stable, internally consistent snapshot.
 
-## API Shape
+### Two trait asymmetries, on purpose
 
-The persistent suffix graph variants expose:
+Two API decisions surprise trait-driven callers and are therefore stated explicitly (and surfaced in
+the [implementation index](../algorithms/implementations/README.md#asymmetries-worth-knowing-all-verified-against-src)):
 
-- `new`, `create`, `open`, `open_with_recovery`
-- `insert`, `insert_with_value`, `remove`, `clear`, `compact`
-- `checkpoint`, `close`
-- `Dictionary`, `MappedDictionary`, `MutableDictionary`, and
-  `MutableMappedDictionary`
-- `SubstringDictionary` for suffix-tree and SCDAWG variants
+- **It does not implement `SubstringDictionary`.** Substring capability is advertised by
+  `Dictionary::is_suffix_based() == true`, and substring queries are served through node/zipper
+  traversal (which is what the companion Levenshtein transducer consumes). The `SubstringDictionary`
+  trait — with its `find_exact_substring` returning positional matches — is implemented by
+  [`Scdawg`](../algorithms/implementations/scdawg.md) instead. The two substring families thus answer
+  "am I a substring index?" through different signals; this is intentional, reflecting that the
+  suffix automaton is the *online-updatable* index while the SCDAWG is the *static, positional* one.
+- **Removal is not via `MutableDictionary`.** There is an inherent `remove(&self, text)`, but it is an
+  $`O(n)`$ rebuild (removing a text can change the endpos structure globally), so it is not offered
+  through the `MutableDictionary` trait, whose `remove` implies a cheap targeted deletion. Presenting
+  a rebuild behind that trait would misrepresent its cost.
 
-Suffix-tree and SCDAWG variants also expose `find`, `freq_at`, `locations`, and
-`locations_at` helpers over graph handles.
+## When to choose it over the SCDAWG
 
-## Choosing A Persistent Suffix Index
+Both index substrings; the design split is *update model*:
 
-Use `PersistentSuffixAutomaton` when you want the suffix automaton model and
-general substring acceptance over durable text.
+| Need | Backend |
+|------|---------|
+| index that grows online, one unit at a time | `SuffixAutomaton` |
+| static index, most compact, with **bidirectional** (left + right) extension and positional matches | [`Scdawg`](../algorithms/implementations/scdawg.md) |
 
-Use `PersistentSuffixTree` when callers need suffix-tree-style handles,
-frequency at a matched node, or location lookup from a path-compressed graph.
+## Related
 
-Use `PersistentScdawg` when compact SCDAWG structure and bidirectional
-substring metadata are the better fit.
-
-Choose `Char` variants when Unicode scalar semantics matter. Choose byte
-variants for byte protocols, ASCII-heavy data, or smallest edge labels.
-
-## Example
-
-```rust,no_run
-use libdictenstein::persistent_artrie::PersistentScdawgChar;
-
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-let index = PersistentScdawgChar::<u64>::create("docs.pscdawg")?;
-index.insert_with_value("the quick brown fox", 7);
-assert!(index.contains_substring("quick"));
-assert_eq!(index.locations("brown"), vec![("the quick brown fox".to_string(), 10)]);
-index.checkpoint()?;
-
-let reopened = PersistentScdawgChar::<u64>::open("docs.pscdawg")?;
-assert!(reopened.contains_substring("quick"));
-# Ok(())
-# }
-```
-
-## Verification And Benchmarks
-
-Persistent suffix graph tests cover reopen, recovery, mutation parity, substring
-locations, and byte/char variants. Benchmarks live in
-`benches/persistent_suffix_native_benchmarks.rs`; fixed-sample mode prints raw
-samples suitable for pgmcp/Welch analysis.
-
-The 2026-06-13 fixed-sample run accepted pgmcp experiments `56`-`61` for
-parallel read/write latency across persistent suffix automaton, suffix tree,
-and SCDAWG byte/char variants. The local summary is
-`docs/experiments/persistent-suffix-native-2026-06-13.md`; the full raw sample
-vectors are in pgmcp table
-`libdictenstein.persistent_suffix_native_benchmark_sample_sets`.
-
-The read path is snapshot/non-blocking, and suffix graph writes use CAS
-publication with prepared/commit WAL recovery. Checkpoint image publication is
-best-effort under continuous writer churn because retained WAL replay remains
-the authoritative durability path.
+- [theory/scdawg/02-suffix-automaton.md](../theory/scdawg/02-suffix-automaton.md) — the endpos theory,
+  suffix links, and construction bounds.
+- [algorithms/implementations/suffix-automaton.md](../algorithms/implementations/suffix-automaton.md) — API and usage.
+- [architecture/in-memory-dictionaries.md](../architecture/in-memory-dictionaries.md) — the shared
+  arena + concurrency design.
+- [persistent-suffix-index.md](persistent-suffix-index.md) — the durable suffix family.

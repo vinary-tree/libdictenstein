@@ -125,12 +125,12 @@ Date format is ISO-8601 (YYYY-MM-DD).
   Raw samples are in
   `docs/experiments/persistent-u64-watermark-commitrank-2026-06-13.md`;
   pgmcp artifact `132` stores the full benchmark output.
-- **PathMap dictionary nodes rebuilt on `TrieRef` (lock-free, `𝒪(1)`-from-focus).**
+- **PathMap dictionary nodes rebuilt on `TrieRef` (lock-free, $`O(1)`$-from-focus).**
   `PathMapNode` / `PathMapNodeChar` are now type aliases of the new
   `TrieRefNode` / `TrieRefNodeChar` (`pathmap::core`) over a sealed `TrieRefLike`
-  handle. `PathMapDictionary{,Char}::root()` takes an `𝒪(1)` copy-on-write
+  handle. `PathMapDictionary{,Char}::root()` takes an $`O(1)`$ copy-on-write
   snapshot and queries run **lock-free** over it (snapshot isolation), replacing
-  the former lock-per-operation, root-replay node ($`𝒪(n^2)`$ byte-steps + `n` lock
+  the former lock-per-operation, root-replay node ($`O(n^2)`$ byte-steps + `n` lock
   round-trips to walk a term of length `n`). `PathMapZipper` is likewise reworked
   onto `TrieRefZipper`. Fields were private, so there is no downstream breakage.
 - **All dictionary families reorganized into directory submodules** —
@@ -163,7 +163,7 @@ Date format is ISO-8601 (YYYY-MM-DD).
   replacing historical ledger data.
 - **Zero-plumbing, MORK-facing dictionaries** (`pathmap::snapshot`):
   `PathMapSnapshot` / `PathMapRef` (and `…Char` variants) wrap a **borrowed** or
-  `𝒪(1)`-snapshotted `PathMap` so a caller that already holds one (e.g. MORK's
+  $`O(1)`$-snapshotted `PathMap` so a caller that already holds one (e.g. MORK's
   `Space.btm`) can fuzzy-query it with no copy and no lock. Constructors:
   `from_map`, `from_map_ref`, `from_trie_ref`, `from_read_zipper`. Plus
   `PathMapDictionary{,Char}::snapshot()` and a borrowed `PathMapZipperRef<'a>`.
@@ -191,9 +191,9 @@ Date format is ISO-8601 (YYYY-MM-DD).
   illegal-instruction signals on slightly older x86_64 hardware.
 - **`.github/workflows/ci.yml`** replaces `coverage.yml` with a
   full-coverage CI matrix:
-  - 11-config feature matrix (default + no-default + persistent-artrie +
+  - 10-config feature matrix (default + no-default + persistent-artrie +
     pathmap-backend + io-uring-backend + parallel-merge + serialization +
-    protobuf + lling-llang + all-features + macOS default).
+    protobuf + all-features + macOS default).
   - Clippy with `-D warnings`.
   - Doc with `RUSTDOCFLAGS=-D warnings` (broken intra-doc links fail CI).
   - rustfmt `--check`.

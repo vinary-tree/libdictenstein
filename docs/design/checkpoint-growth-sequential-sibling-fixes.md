@@ -101,7 +101,7 @@ Two consequences follow, and they explain why the bug hid for so long:
 
 `check_sequential_char_children` now derives the canonical arena id and verifies consecutiveness **in
 key order** (the order the decoder pairs), declining the optimization on any gap or cross-arena child
-rather than sorting slots (which could mask a key-order≠slot-order mismatch):
+rather than sorting slots (which could mask a key-order $`\ne`$ slot-order mismatch):
 
 ```rust
 let arena_id = loc.block_id.checked_sub(1)?;      // canonical (was: loc.block_id)
@@ -195,7 +195,7 @@ dense image of the live term set and atomically swapping it in — the char twin
 `compaction_impl`, sharing the path/recovery helpers (`compaction_paths.rs`).
 
 <p align="center">
-<img src="../diagrams/char-compaction-flow.svg" alt="compact() flow: enumerate the live (term, value) set with the FAULTING iter_prefix_with_values (recovers evicted Child::OnDisk terms) and serialize values into an expected snapshot while accumulating live_data_bytes; a post-enumeration RAM guard fails loud if 4 × live_data_bytes exceeds available memory; rebuild a fresh dense trie at <name>.compacting by inserting every term and checkpointing; verify by reopening and comparing the term→value map to expected; atomically finalize in place by stashing the original WAL to .compacting-stale, renaming .compacting over the original, and reopening self — a crash before the rename is rolled back by the reopen recovery finalizer; return CompactionStats." width="820">
+<img src="../diagrams/char-compaction-flow.svg" alt="compact() flow: enumerate the live (term, value) set with the FAULTING iter_prefix_with_values (recovers evicted Child::OnDisk terms) and serialize values into an expected snapshot while accumulating live_data_bytes; a post-enumeration RAM guard fails loud if 4 times live_data_bytes exceeds available memory; rebuild a fresh dense trie at <name>.compacting by inserting every term and checkpointing; verify by reopening and comparing the term→value map to expected; atomically finalize in place by stashing the original WAL to .compacting-stale, renaming .compacting over the original, and reopening self — a crash before the rename is rolled back by the reopen recovery finalizer; return CompactionStats." width="820">
 </p>
 
 Two properties are worth calling out:

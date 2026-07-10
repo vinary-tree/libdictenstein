@@ -1,12 +1,12 @@
 # Symmetric Compact Directed Acyclic Word Graph (SCDAWG)
 
-This documentation provides a comprehensive, pedagogical treatment of the **Symmetric Compact DAWG** (SCDAWG), a data structure that enables $`O(\mid pattern\mid )`$ substring searching with bidirectional navigation capabilities.
+This documentation provides a comprehensive, pedagogical treatment of the **Symmetric Compact DAWG** (SCDAWG), a data structure that enables $`O(\lvert \text{pattern}\rvert )`$ substring searching with bidirectional navigation capabilities.
 
 ## Overview
 
 The SCDAWG, also known as **C2S** (Compact Symmetric), is the most space-efficient index structure that supports:
 
-1. **Substring search** in $`O(\mid pattern\mid )`$ time
+1. **Substring search** in $`O(\lvert \text{pattern}\rvert )`$ time
 2. **Right extension**: given a pattern `V`, navigate to `V` followed by character $`\sigma`$
 3. **Left extension**: given a pattern `V`, navigate to character $`\sigma`$ followed by `V`
 4. **Occurrence enumeration**: find all positions where a pattern occurs
@@ -37,7 +37,7 @@ Index:  0 1 2 3 4 5 6 7
 ```
 
 Key properties of this example:
-- Length $`\mid w\mid = 8`$
+- Length $`\lvert w\rvert = 8`$
 - Alphabet $`\Sigma = {a, b, c}`$
 - Contains repeated patterns: "ab" (3$`\times`$), "abc" (2$`\times`$), "bc" (2$`\times`$), "cab" (2$`\times`$)
 - No unique end marker in raw form (added during construction)
@@ -46,13 +46,13 @@ Key properties of this example:
 
 | Structure | States | Transitions | Space | Query Time |
 |-----------|--------|-------------|-------|------------|
-| Suffix Trie | $`O(n^2)`$ | $`O(n^2)`$ | $`O(n^2)`$ | `O(m)` |
-| Suffix Tree | `O(n)` | `O(n)` | `O(n)` | `O(m)` |
-| Suffix Automaton (DAWG) | $`\le 2n − 1`$ | $`\le 3n − 4`$ | `O(n)` | `O(m)` |
-| CDAWG | $`\le n + 1`$ | $`\le 2n − 2`$ | `O(n)` | `O(m)` |
-| **SCDAWG** | $`\le n + 1`$ | $`\le 4n − 4`$ | `O(n)` | `O(m)` |
+| Suffix Trie | $`O(n^2)`$ | $`O(n^2)`$ | $`O(n^2)`$ | $`O(m)`$ |
+| Suffix Tree | $`O(n)`$ | $`O(n)`$ | $`O(n)`$ | $`O(m)`$ |
+| Suffix Automaton (DAWG) | $`\le 2n - 1`$ | $`\le 3n - 4`$ | $`O(n)`$ | $`O(m)`$ |
+| CDAWG | $`\le n + 1`$ | $`\le 2n - 2`$ | $`O(n)`$ | $`O(m)`$ |
+| **SCDAWG** | $`\le n + 1`$ | $`\le 4n - 4`$ | $`O(n)`$ | $`O(m)`$ |
 
-Where $`n = \mid w\mid`$ (text length) and $`m = \mid pattern\mid`$ (query length).
+Where $`n = \lvert w\rvert`$ (text length) and $`m = \lvert \text{pattern}\rvert`$ (query length).
 
 ## Key Concepts at a Glance
 
@@ -71,22 +71,22 @@ Since "ab" and "cab" have different end-positions, they are in different classes
 
 A **suffix link** connects each state to its **longest proper suffix** that forms a distinct equivalence class (one `endpos`-level up):
 
-```
-State "abc" --suffix-link--> State "bc" --suffix-link--> State "c"
+```math
+\text{abc} \xrightarrow{\text{slink}} \text{bc} \xrightarrow{\text{slink}} \text{c}
 ```
 
 ### Left Extension Edges (SCDAWG-specific)
 
 While right extension edges (standard edges) navigate by **appending** characters:
 
-```
-"ab" --'c'--> "abc"   (append 'c' to "ab")
+```math
+\text{ab} \xrightarrow{c} \text{abc} \quad (\text{append } c \text{ to } \text{ab})
 ```
 
 Left extension edges navigate by **prepending** characters:
 
-```
-"ab" --'c'--> "cab"   (prepend 'c' to "ab")
+```math
+\text{ab} \xrightarrow{c} \text{cab} \quad (\text{prepend } c \text{ to } \text{ab})
 ```
 
 This bidirectional capability is what makes the SCDAWG "symmetric."
@@ -120,11 +120,11 @@ The key papers that define and construct the SCDAWG are:
    - Introduces IS (Inverted File) features: `freq()`, `locations()`
 
 2. **Inenaga et al. (2001)** — "On-Line Construction of Symmetric Compact Directed Acyclic Word Graphs." DOI: [10.1109/SPIRE.2001.989743](https://doi.org/10.1109/SPIRE.2001.989743)
-   - On-line `O(n)` construction algorithm
+   - On-line $`O(n)`$ construction algorithm
    - Key insight: sext links = edges of `CDAWG(wʳᵉᵛ)`
 
 3. **Inenaga et al. (2005)** — "On-line construction of compact directed acyclic word graphs." DOI: [10.1016/j.dam.2004.04.012](https://doi.org/10.1016/j.dam.2004.04.012)
-   - On-line `O(n)` CDAWG construction
+   - On-line $`O(n)`$ CDAWG construction
    - Multi-string support with unique end markers
 
 See [07-references](07-references.md) for the complete annotated bibliography.

@@ -30,7 +30,7 @@ sequences whose natural unit is a **64-bit word**, not a character:
   concatenated into one sequence.
 
 `PersistentARTrieU64` is the durable Adaptive Radix Trie for exactly these: a
-crash-safe, lock-free, write-ahead-logged $`&[u64] \to V`$ map where **one trie edge
+crash-safe, lock-free, write-ahead-logged $`\text{\&[u64]} \to V`$ map where **one trie edge
 carries one whole `u64`**.
 
 ---
@@ -107,7 +107,7 @@ in §2 requires.
 ## 4. The CX compact snapshot — checkpointing through a compressor
 
 A **checkpoint** folds the live overlay into a dense on-disk image so that reopen
-is `O(image) + O(WAL tail)` rather than `O(history)`. For the `u64` variant that
+is $`O(\text{image}) + O(\text{WAL tail})`$ rather than $`O(\text{history})`$. For the `u64` variant that
 image is the **CX compact snapshot** (magic `AR64CX01`, `SNAPSHOT_VERSION = 1`):
 
 - It is a **dense, path-compressed** serialization. Long non-branching runs of
@@ -242,11 +242,11 @@ let legacy = PersistentARTrieU64Prefix3Compat::<u64>::open("legacy_p3.ar64")?;
 
 | Property | Native `u64` profile | Mechanism |
 |----------|----------------------|-----------|
-| **Lookup hops** | `O(words)`, not `O(bytes)` | one native `u64` edge per transition |
+| **Lookup hops** | $`O(\text{words})`$, not $`O(\text{bytes})`$ | one native `u64` edge per transition |
 | **Per-hop test** | single 64-bit compare | atomic word labels, no byte descent |
 | **Reads lock-free** | wait-free per traversal | immutable overlay, CAS-published root |
 | **Writes durable & linearizable** | Order-A log-before-publish | copy-on-write spine + `compare_exchange` + WAL `CommitRank` |
-| **Bounded reopen** | `O(CX image) + O(WAL tail)` | CX compact checkpoint at the committed watermark |
+| **Bounded reopen** | $`O(\text{CX image}) + O(\text{WAL tail})`$ | CX compact checkpoint at the committed watermark |
 | **Compact images** | prefix-budgeted path compression | `U64Key<PREFIX>`; default `PREFIX = 4` |
 | **Format discipline** | CX only (not legacy bincode) | `AR64CX01` snapshot; bincode controls live in git history |
 

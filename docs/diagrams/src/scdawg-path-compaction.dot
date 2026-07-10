@@ -1,0 +1,64 @@
+// ============================================================================
+// scdawg-path-compaction.dot — how compaction turns a non-branching chain of
+// single-character transitions into ONE string-labelled edge.  This is the
+// core CDAWG idea, used as the teaser in §CDAWG of 01-introduction.md and as
+// the motivating figure in §Motivation for Compaction / §Compacting Edges of
+// 03-cdawg.md.
+//
+// A state is REMOVED exactly when it has in-degree = out-degree = 1 (a purely
+// linear pass-through).  Here q1 and q2 (dashed, grey) qualify, so the chain
+//     q0 --a--> q1 --b--> q2 --c--> q3
+// collapses to the single compacted edge
+//     q0 --abc--> q3
+// with no loss of information (the edge label is stored as a (start, end) slice
+// into the text, keeping total space O(n)).
+//
+// Color key (house palette):
+//   grey   #ECEFF1  pass-through states to be REMOVED (in=out=1)
+//   green  #C8E6C9  retained states (branching / accepting / merge / source)
+//   dark slate #37474F  transitions + node borders
+// ============================================================================
+digraph scdawg_path_compaction {
+    rankdir=TB;
+    bgcolor="#FFFFFF";
+    fontname="DejaVu Sans";
+    fontsize=14;
+    labelloc="t";
+    fontcolor="#212121";
+    label="Compaction of a non-branching chain\n(remove states with in-degree = out-degree = 1)";
+    nodesep=0.35;
+    ranksep=0.45;
+
+    node [shape=circle, style="filled", fillcolor="#C8E6C9",
+          color="#37474F", fontname="DejaVu Sans", fontcolor="#212121",
+          penwidth=1.4, width=0.5];
+    edge [color="#37474F", fontname="DejaVu Sans", fontcolor="#37474F",
+          penwidth=1.3];
+
+    subgraph cluster_before {
+        label="Before";
+        fontname="DejaVu Sans";
+        color="#B0BEC5";
+        style="rounded";
+        b0 [label="q0"];
+        b1 [label="q1", fillcolor="#ECEFF1", style="filled,dashed"];
+        b2 [label="q2", fillcolor="#ECEFF1", style="filled,dashed"];
+        b3 [label="q3"];
+        b0 -> b1 [label="a"];
+        b1 -> b2 [label="b"];
+        b2 -> b3 [label="c"];
+    }
+
+    subgraph cluster_after {
+        label="After";
+        fontname="DejaVu Sans";
+        color="#B0BEC5";
+        style="rounded";
+        a0 [label="q0"];
+        a3 [label="q3"];
+        a0 -> a3 [label="abc"];
+    }
+
+    // keep the two clusters vertically stacked (narrow figure)
+    b3 -> a0 [style=invis];
+}

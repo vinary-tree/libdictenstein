@@ -21,15 +21,15 @@ skinparam rectangle {
   BorderThickness 1.3
 }
 
-title Left vs right extensions of a prime subword **P**\nprepend σ·P (left, blue) · P · append P·σ (right, green)
+title Left vs right extensions of a prime subword **P**\nprepend <latex>\sigma \cdot P</latex> (left, blue) · P · append <latex>P \cdot \sigma</latex> (right, green)
 
 left to right direction
 
-rectangle "σ₁·P" as L1 #BBDEFB
-rectangle "σ₂·P" as L2 #BBDEFB
+rectangle "<latex>\sigma_1 \cdot P</latex>" as L1 #BBDEFB
+rectangle "<latex>\sigma_2 \cdot P</latex>" as L2 #BBDEFB
 rectangle "**P**\n(current factor)" as P #B2DFDB
-rectangle "P·σ₁" as R1 #C8E6C9
-rectangle "P·σ₂" as R2 #C8E6C9
+rectangle "<latex>P \cdot \sigma_1</latex>" as R1 #C8E6C9
+rectangle "<latex>P \cdot \sigma_2</latex>" as R2 #C8E6C9
 
 P -left-> L1 : "prepend σ₁\n(left ext ←)"
 P -left-> L2 : "prepend σ₂\n(left ext ←)"
@@ -38,7 +38,7 @@ P -right-> R2 : "append σ₂\n(right ext →)"
 
 note bottom of P
   Left extension P → σ·P and right extension P → P·σ each
-  cost O(|label|). "cab" is the **left** ext of "ab" by 'c';
+  cost <latex>O(|label|)</latex>. "cab" is the **left** ext of "ab" by 'c';
   "abc" is the **right** ext — different strings, not a reversal.
 end note
 @enduml

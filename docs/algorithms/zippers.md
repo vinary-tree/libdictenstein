@@ -13,7 +13,7 @@
 3. [The trait surface: `DictZipper` and `ValuedDictZipper`](#3-the-trait-surface-dictzipper-and-valueddictzipper)
 4. [How combinators compose](#4-how-combinators-compose)
 5. [The combinator catalog](#5-the-combinator-catalog)
-   - [Union](#51-union--anyof) · [Intersection](#52-intersection--allof) · [Difference](#53-difference--a--b) · [Symmetric difference](#54-symmetric-difference--a--b) · [Prefix](#55-prefix--scoped-subtree) · [Excluding-prefix](#56-excluding-prefix--pruned-subtree) · [Value-diff](#57-value-diff--changed-values)
+   - [Union](#51-union--any-of) · [Intersection](#52-intersection--all-of) · [Difference](#53-difference--a--b) · [Symmetric difference](#54-symmetric-difference--a--b) · [Prefix](#55-prefix--scoped-subtree) · [Excluding-prefix](#56-excluding-prefix--pruned-subtree) · [Value-diff](#57-value-diff--changed-values)
 6. [The value-merge lattice](#6-the-value-merge-lattice)
 7. [The dual-cursor advance model](#7-the-dual-cursor-advance-model)
 8. [Performance & complexity](#8-performance--complexity)
@@ -50,7 +50,7 @@ The combinators (`union`, `intersection`, `difference`, …) present a **derived
 
 This matters for three reasons:
 
-- **Memory** — a combinator owns `O(n)` cursors (one per operand dictionary) plus the `O(d)` DFS stack during iteration, never $`O(|A \cup B|)`$ materialized terms. Composition is essentially free in space.
+- **Memory** — a combinator owns $`O(n)`$ cursors (one per operand dictionary) plus the $`O(d)`$ DFS stack during iteration, never $`O(\lvert A \cup B\rvert)`$ materialized terms. Composition is essentially free in space.
 - **Short-circuiting** — fuzzy queries and prefix scopes prune the derived tree as they descend. If a Levenshtein walk abandons a subtree at depth 2, the combinator never touches the operands below depth 2 either.
 - **Composability** — because the result *is* a `DictZipper`, it can be fed straight into another combinator or into a transducer. `Intersection(Union(A, B), Difference(C, D))` is a tower of cursors, each pulling lazily from the one below.
 
@@ -122,11 +122,11 @@ The table below is the heart of the subsystem: each row is one combinator's fold
 |------------|-------------------------------|--------------------------|---------------------|--------------|
 | **Union** $`A \cup B`$ | `ANY` operand final | label present in **any** operand | $`\cup`$ of operands' labels | merge via strategy (`FirstWins` default) |
 | **Intersection** $`A \cap B`$ | **ALL** operands final | label present in **all** operands (else prune) | $`\cap`$ of operands' labels | merge via strategy (`LatticeMeet` default) |
-| **Difference** `A \ B` | `A` final **AND NOT** `B` final | `A` (left); `B` tags along | `A`'s children only | from `A` (no merge) |
+| **Difference** $`A \setminus B`$ | `A` final **AND NOT** `B` final | `A` (left); `B` tags along | `A`'s children only | from `A` (no merge) |
 | **Symmetric diff** $`A \triangle B`$ | **exactly one** operand final | label present in **any** operand | $`\cup`$ of operands' labels | from the single source |
-| **Prefix** $`\{t : p \sqsubseteq t\}`$ | underlying `is_final()` | underlying `descend` from prefix node | underlying children | underlying value |
+| **Prefix** $`\{\, t : p \sqsubseteq t \,\}`$ | underlying `is_final()` | underlying `descend` from prefix node | underlying children | underlying value |
 | **Excluding-prefix** | underlying `is_final()`, excluded subtrees pruned | underlying, skipping excluded prefixes | underlying minus excluded | underlying value |
-| **Value-diff** | both final **AND** $`L.value \ne R.value`$ | label in **both** (intersection) | $`\cap`$ of children | both values exposed separately |
+| **Value-diff** | both final **AND** $`L.\text{value} \ne R.\text{value}`$ | label in **both** (intersection) | $`\cap`$ of children | both values exposed separately |
 
 Notation: $`p \sqsubseteq t`$ means "`p` is a prefix of `t`"; $`\cup`$/$`\cap`$ are set union/intersection over the *child label sets* at a node.
 
@@ -215,9 +215,9 @@ assert_eq!(results, vec!["cat", "mat", "sat"]);
 
 Difference is **asymmetric**: navigation follows `A`'s structure (`children()` are `A`'s children), and `B` only "tags along" to test exclusion. The emit predicate is `left_final && !right_final`. A subtle but important case is the *proper-prefix* term: if `A = {"app", "apple"}` and `B = {"apple"}`, then `"app"` is in the difference (in `A`, not in `B`) even though `B` still has the path `a-p-p` on its way to `"apple"` — `B` is simply not *final* at `"app"`. Use `difference_from_optional(None)` when the exclusion set may be absent (the result then equals `A`).
 
-### 5.4 Symmetric difference — *A $`\triangle`$ B*
+### 5.4 Symmetric difference — *A `△` B*
 
-$`A \triangle B`$ yields terms in **exactly one** operand — the set XOR. Algebraically $`A \triangle B = (A \ B) \cup (B \ A) = (A \cup B) \ (A \cap B)`$ (both identities are property-tested in the source). Source: [`src/symmetric_difference_zipper.rs`](../../src/symmetric_difference_zipper.rs).
+$`A \triangle B`$ yields terms in **exactly one** operand — the set XOR. Algebraically $`A \triangle B = (A \setminus B) \cup (B \setminus A) = (A \cup B) \setminus (A \cap B)`$ (both identities are property-tested in the source). Source: [`src/symmetric_difference_zipper.rs`](../../src/symmetric_difference_zipper.rs).
 
 ```rust
 use libdictenstein::prelude::*;
@@ -244,7 +244,7 @@ For the N-ary form `z1.symmetric_difference_all(vec![z2, z3])`, the rule general
 
 ### 5.5 Prefix — *scoped subtree*
 
-`PrefixZipper` is the autocomplete primitive: navigate to a prefix in `O(k)` (k = prefix length), then stream every term under it in `O(m)` (m = matching terms) — far cheaper than `O(n)` full iteration with `.starts_with()` filtering when $`m \ll n`$. Source: [`src/prefix_zipper.rs`](../../src/prefix_zipper.rs).
+`PrefixZipper` is the autocomplete primitive: navigate to a prefix in $`O(k)`$ (k = prefix length), then stream every term under it in $`O(m)`$ (m = matching terms) — far cheaper than $`O(n)`$ full iteration with `.starts_with()` filtering when $`m \ll n`$. Source: [`src/prefix_zipper.rs`](../../src/prefix_zipper.rs).
 
 ```rust
 use libdictenstein::prelude::*;
@@ -264,7 +264,7 @@ assert!(zipper.with_prefix(b"xyz").is_none());
 
 ### 5.6 Excluding-prefix — *pruned subtree*
 
-`ExcludingPrefixZipper` is the inverse filter: iterate everything **except** subtrees whose path starts with an excluded prefix, pruning each excluded subtree at `O(1)` per check *before* it is pushed onto the DFS stack (so excluded nodes are never visited). The canonical use is hiding `\x00`-prefixed metadata/sentinel entries. Source: [`src/excluding_prefix_zipper.rs`](../../src/excluding_prefix_zipper.rs).
+`ExcludingPrefixZipper` is the inverse filter: iterate everything **except** subtrees whose path starts with an excluded prefix, pruning each excluded subtree at $`O(1)`$ per check *before* it is pushed onto the DFS stack (so excluded nodes are never visited). The canonical use is hiding `\x00`-prefixed metadata/sentinel entries. Source: [`src/excluding_prefix_zipper.rs`](../../src/excluding_prefix_zipper.rs).
 
 ```rust
 use libdictenstein::prelude::*;
@@ -444,20 +444,20 @@ Let `k` = prefix/term length, `n` = number of operand dictionaries, `c` = max ch
 
 | Combinator | `descend` (point) | `children` | full `iter` | extra memory |
 |------------|-------------------|------------|-------------|--------------|
-| Union | $`O(k\cdot n)`$ | $`O(c\cdot n)`$ | `O(m)` (deduped) | `O(n)` cursors + `O(d)` stack |
-| Intersection | $`O(k\cdot n)`$ | $`O(c\cdot n)`$ | `O(m)` | `O(n)` + `O(d)` |
-| Difference | `O(k)` (2 cursors) | `O(c)` (A only) | `O(m_A)` | `O(1)` cursors + `O(d)` |
-| Symmetric diff | $`O(k\cdot n)`$ | $`O(c\cdot n)`$ | $`O(m\cdot n)`$ | `O(n)` + `O(d)` |
-| Prefix | `O(k)` | `O(c)` | `O(m)` | `O(d)` stack |
-| Excluding-prefix | `O(k)` | $`O(c\cdot e)`$ (e = #excluded) | `O(m)` | `O(d)` stack |
-| Value-diff | `O(k)` (2 cursors) | `O(c)` ($`\cap`$) | $`O(m_\cap )`$ | `O(d)` + dedup set |
+| Union | $`O(k\cdot n)`$ | $`O(c\cdot n)`$ | $`O(m)`$ (deduped) | $`O(n)`$ cursors + $`O(d)`$ stack |
+| Intersection | $`O(k\cdot n)`$ | $`O(c\cdot n)`$ | $`O(m)`$ | $`O(n)`$ + $`O(d)`$ |
+| Difference | $`O(k)`$ (2 cursors) | $`O(c)`$ (A only) | $`O(m_{A})`$ | $`O(1)`$ cursors + $`O(d)`$ |
+| Symmetric diff | $`O(k\cdot n)`$ | $`O(c\cdot n)`$ | $`O(m\cdot n)`$ | $`O(n)`$ + $`O(d)`$ |
+| Prefix | $`O(k)`$ | $`O(c)`$ | $`O(m)`$ | $`O(d)`$ stack |
+| Excluding-prefix | $`O(k)`$ | $`O(c\cdot e)`$ (e = #excluded) | $`O(m)`$ | $`O(d)`$ stack |
+| Value-diff | $`O(k)`$ (2 cursors) | $`O(c)`$ ($`\cap`$) | $`O(m_\cap )`$ | $`O(d)`$ + dedup set |
 
 Two practical notes:
 
-- **The structure is always `O(n)`-space** — composition never materializes the result. Only the *iterators* allocate (the per-path dedup `HashSet`, and the `Vec<Unit>` path each yield clones). For point queries via `descend`, there is no allocation beyond the path vector.
-- **Iteration deduplicates by path.** Each combinator iterator inserts every yielded path into a `HashSet<Vec<Unit>>`. This guarantees each term is emitted once even when reachable via multiple operands, at the cost of `O(m)` retained paths during a full scan.
+- **The structure is always $`O(n)`$-space** — composition never materializes the result. Only the *iterators* allocate (the per-path dedup `HashSet`, and the `Vec<Unit>` path each yield clones). For point queries via `descend`, there is no allocation beyond the path vector.
+- **Iteration deduplicates by path.** Each combinator iterator inserts every yielded path into a `HashSet<Vec<Unit>>`. This guarantees each term is emitted once even when reachable via multiple operands, at the cost of $`O(m)`$ retained paths during a full scan.
 
-The **`PrefixZipper`** fast path is the headline optimization: navigating to a selective prefix and streaming its subtree is `O(k + m)` versus `O(n)` for full-iterate-and-filter — a 5–10$`\times`$ speedup when $`m \ll n`$ (the autocomplete regime). The iterator deliberately stores *only zippers* on its DFS stack and reconstructs each path **lazily** at final nodes, which profiling showed removes $`\approx`$2–4% of per-child `Vec` clone/realloc overhead.
+The **`PrefixZipper`** fast path is the headline optimization: navigating to a selective prefix and streaming its subtree is $`O(k + m)`$ versus $`O(n)`$ for full-iterate-and-filter — a 5–10$`\times`$ speedup when $`m \ll n`$ (the autocomplete regime). The iterator deliberately stores *only zippers* on its DFS stack and reconstructs each path **lazily** at final nodes, which profiling showed removes $`\approx`$2–4% of per-child `Vec` clone/realloc overhead.
 
 ---
 

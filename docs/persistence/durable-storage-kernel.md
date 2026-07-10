@@ -142,7 +142,7 @@ compare-and-swap) is **burned** for watermark liveness — `mark_committed_burne
 but never ranked, so replay treats it as a no-op.
 
 If your structure is *not* a copy-on-write tree, skip this seam and drive the durability
-services directly, as in [Recipe B](#recipe-b--a-non-tree-snapshot-layer) below.
+services directly, as in [Recipe B](#recipe-b--a-non-tree-snapshot-layer-the-suffix-graph-shape) below.
 
 ---
 

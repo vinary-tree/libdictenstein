@@ -1,290 +1,93 @@
-# Dynamic DAWG Implementation
-
-## Overview
-
-The `DynamicDawg` provides a **mutable DAWG** (Directed Acyclic Word Graph) that supports online insertions, deletions, and batch operations while maintaining near-minimal structure.
-
-## Key Features
-
-### ✅ Online Modifications
-- **Insert**: Add terms dynamically - O(m) per term
-- **Delete**: Remove terms dynamically - O(m) per term
-- **Batch operations**: `extend()` and `remove_many()` with automatic compaction
-
-### ✅ Minimality Management
-- **Compact**: Restore perfect minimality - O(n) total size
-- **Smart tracking**: `needs_compaction()` flag after deletions
-- **Near-minimal**: Structure stays efficient between compactions
-
-### ✅ Thread Safety
-- Uses `Arc<RwLock<...>>` for concurrent access
-- Multiple readers OR single writer
-- Same safety guarantees as `PathMapDictionary`
-
-## API Reference
-
-### Construction
-
-```rust
-use liblevenshtein::prelude::*;
-
-// Empty DAWG
-let dawg = DynamicDawg::new();
-
-// From iterator
-let dawg = DynamicDawg::from_iter(vec!["test", "testing"]);
-```
-
-### Single Operations
-
-```rust
-// Insert (returns true if new)
-dawg.insert("apple");
-
-// Remove (returns true if existed)
-dawg.remove("banana");
-
-// Check status
-println!("Terms: {}", dawg.term_count());
-println!("Nodes: {}", dawg.node_count());
-println!("Needs compaction: {}", dawg.needs_compaction());
-```
-
-### Batch Operations
-
-```rust
-// Manual batch with explicit compaction
-dawg.insert("term1");
-dawg.insert("term2");
-dawg.remove("term3");
-// ... many more operations ...
-let nodes_removed = dawg.compact(); // Restore minimality
-
-// Automatic batch methods
-let added = dawg.extend(vec!["term1", "term2"]);
-let removed = dawg.remove_many(vec!["old1", "old2"]);
-```
-
-### Compaction and Minimization
-
-DynamicDawg provides two methods for restoring minimality:
-
-#### `compact()` - Full Rebuild
-
-```rust
-// Explicit compaction (extracts, sorts, rebuilds, minimizes)
-let nodes_removed = dawg.compact();
-
-// Check if needed
-if dawg.needs_compaction() {
-    dawg.compact();
-}
-```
-
-**When to use**:
-- After many deletions (flag will be set)
-- When you want to ensure optimal structure
-- Equivalent to rebuilding from sorted terms
-
-#### `minimize()` - Incremental Minimization
-
-```rust
-// Minimize without full rebuild
-let nodes_merged = dawg.minimize();
-
-// Can be called anytime
-dawg.minimize();
-```
-
-**When to use**:
-- After batch insertions
-- When you want minimization without rebuilding
-- No assumptions about insertion order
-- Potentially faster for localized updates
-
-**Key Differences**:
-- `compact()`: Extracts all terms, sorts them, rebuilds from scratch, then minimizes
-- `minimize()`: Computes node signatures, merges equivalent nodes in-place
-- Both achieve perfect minimality
-- `minimize()` is generally more efficient for incremental updates
-
-## Performance Characteristics
-
-| Operation | Time Complexity | Notes |
-|-----------|----------------|-------|
-| `insert(term)` | O(m) | m = term length |
-| `remove(term)` | O(m) | May leave orphaned nodes |
-| `compact()` | O(n log n + n·s) | n = terms, s = signature size |
-| `minimize()` | O(n·s) | n = nodes, s = signature size |
-| `extend(terms)` | O(n log n + n·s) | Includes compaction |
-| `remove_many(terms)` | O(n log n + n·s) | Includes compaction |
-
-## Space Efficiency
-
-- **After insertions**: Minimal (suffix sharing maintained)
-- **After deletions**: 1.0x to ~1.5x minimal (worst case)
-- **After compaction**: Perfectly minimal
-
-## When to Use
-
-### ✅ Use DynamicDawg When:
-- Dictionary changes frequently
-- Real-time updates required
-- Periodic compaction acceptable
-- **Examples**: Live spell checker, autocomplete, user dictionaries
-
-### ❌ Use Static DAWG When:
-- Dictionary is fixed
-- Maximum space efficiency critical
-- No updates after construction
-- **Examples**: Embedded systems, read-only dictionaries
-
-## Best Practices
-
-### 1. Batch Operations
-```rust
-// ❌ Bad: Compact after every change
-dawg.insert("term1");
-dawg.compact();  // Expensive!
-dawg.insert("term2");
-dawg.compact();  // Expensive!
-
-// ✅ Good: Batch then compact once
-dawg.insert("term1");
-dawg.insert("term2");
-// ... more operations ...
-dawg.compact();
-
-// ✅ Best: Use batch methods
-dawg.extend(vec!["term1", "term2", ...]);
-```
-
-### 2. Minimization Strategy
-
-```rust
-// Strategy 1: Use minimize() for batch insertions
-fn batch_insert(dawg: &DynamicDawg, terms: Vec<String>) {
-    for term in terms {
-        dawg.insert(&term);
-    }
-    dawg.minimize(); // Incremental minimization
-}
-
-// Strategy 2: Use compact() after deletions
-fn batch_update(dawg: &DynamicDawg, updates: Vec<Update>) {
-    for update in updates {
-        match update {
-            Update::Add(term) => dawg.insert(&term),
-            Update::Remove(term) => dawg.remove(&term),
-        };
-    }
-    if dawg.needs_compaction() {
-        dawg.compact(); // Full rebuild after deletions
-    } else {
-        dawg.minimize(); // Incremental for insertions
-    }
-}
-
-// Strategy 3: Periodic minimization
-let mut ops_since_minimize = 0;
-for term in terms {
-    dawg.insert(term);
-    ops_since_minimize += 1;
-
-    if ops_since_minimize >= 1000 {
-        dawg.minimize(); // Or compact() if deletions occurred
-        ops_since_minimize = 0;
-    }
-}
-
-// Strategy 4: Let the flag guide you
-fn maybe_optimize(dawg: &DynamicDawg) {
-    if dawg.needs_compaction() {
-        dawg.compact(); // Use full rebuild
-    } else {
-        dawg.minimize(); // Use incremental
-    }
-}
-```
-
-### 3. Integration with Transducer
-
-```rust
-// DynamicDawg works seamlessly with fuzzy search
-let dawg = DynamicDawg::from_iter(vec!["test", "testing"]);
-let transducer = Transducer::new(dawg.clone(), Algorithm::Standard);
-
-// Query works immediately after updates
-dawg.insert("tested");
-let results: Vec<_> = transducer.query("test", 1).collect();
-```
-
-## Implementation Details
-
-### Minimality Algorithm
-
-The compaction process:
-1. **Extract** all terms from current structure
-2. **Sort** terms alphabetically
-3. **Rebuild** DAWG with sorted terms (optimal suffix sharing)
-4. **Clear** compaction flag
-
-This guarantees perfect minimality after compaction.
-
-### Why Not Always Minimal?
-
-**Insertions**: Maintain minimality through suffix sharing
-- New nodes only created when necessary
-- Existing suffixes reused
-
-**Deletions**: May create orphans
-- Removing a term unmarks the final node
-- Pruning only removes unreachable leaves
-- Some internal nodes may become redundant
-
-**Solution**: Periodic compaction rebuilds the entire structure.
-
-## Comparison Matrix
-
-| Feature | DynamicDawg | Static DAWG | PathMap |
-|---------|-------------|-------------|---------|
-| Insertions | ✅ O(m) | ❌ No | ✅ O(m) |
-| Deletions | ✅ O(m) | ❌ No | ✅ O(m) |
-| Minimality | 🟡 Near-minimal | ✅ Perfect | ❌ Not minimal |
-| Compaction | ✅ Yes | N/A | N/A |
-| Thread-safe | ✅ RwLock | ✅ Immutable | ✅ RwLock |
-| Space | 🟡 Good | ✅ Excellent | 🟡 Good |
-
-## Examples
-
-See:
-- `examples/dynamic_dawg_demo.rs` - Basic usage and comparisons
-- `examples/batch_operations.rs` - Batch operation patterns
-
-## Theoretical Background
-
-### DAWG Minimization
-
-A DAWG is minimal when:
-1. No two nodes have identical right languages
-2. No unreachable nodes exist
-
-Our compaction achieves this by:
-- Extracting all terms (defines the language)
-- Rebuilding with sorted input (optimal sharing)
-- Using hash-based suffix deduplication
-
-### Time Complexity
-
-- **Online minimal DAWG**: O(n²) worst case per operation
-- **Our approach**: O(m) per operation + O(n) periodic compaction
-- **Amortized**: O(m) if compaction frequency is bounded
-
-This trade-off makes dynamic operations practical.
-
-## Future Enhancements
-
-Potential optimizations:
-- Incremental minimization (avoid full rebuild)
-- Lazy compaction (defer until read-heavy phase)
-- Adaptive compaction (based on fragmentation metrics)
+# Design: the dynamic DAWG
+
+Design rationale for the **mutable, minimized** DAWG backends — `DynamicDawg`, `DynamicDawgChar`, and
+`DynamicDawgU64` — why they exist and why they are built as they are. The *minimization theory* is in
+[`theory/volatile-automata/01-dawg-minimization.md`](../theory/volatile-automata/01-dawg-minimization.md);
+the *API and usage* are in
+[`algorithms/implementations/dynamic-dawg.md`](../algorithms/implementations/dynamic-dawg.md) (and
+[`dynamic-dawg-u64.md`](../algorithms/implementations/dynamic-dawg-u64.md)); the *shared
+architecture* is [`architecture/in-memory-dictionaries.md`](../architecture/in-memory-dictionaries.md).
+This document is the "why". Notation follows [`docs/notation.md`](../notation.md).
+
+## The requirement it uniquely fills
+
+Among the in-memory backends, the dynamic DAWG is the one that is **mutable at runtime (insert *and*
+remove) while staying near-minimal in space**. The [double-array trie](../algorithms/implementations/double-array-trie.md)
+is more compact and faster to read but insert-only; the [suffix automaton](suffix-automaton.md) and
+[SCDAWG](../algorithms/implementations/scdawg.md) index substrings, not whole terms. When the term
+set changes at runtime and you want suffix sharing to keep it small, the dynamic DAWG is the answer.
+
+## Design choices and their rationale
+
+### Minimize incrementally, not just on demand
+
+A DAWG's value is that identical suffixes are shared (see
+[minimization theory](../theory/volatile-automata/01-dawg-minimization.md)). The design keeps the
+graph near-minimal *as it mutates* (`minimize_incremental`) rather than only on an explicit
+`compact()`, so memory does not balloon between compactions. Minimization is driven by a single
+`u64` **signature** per node ([`src/node_signature.rs`](../../src/node_signature.rs)) with a
+structural re-check on hash collision — an $`O(1)`$ merge test instead of a recursive right-language
+comparison. `compact()` remains available for a full $`O(n)`$ rebuild to the exact minimum.
+
+### Copy-on-write before mutating a shared path
+
+Because suffix sharing means many terms' paths run through the same nodes, mutating a term in place
+could corrupt an unrelated term that shares those nodes. The design does **copy-on-write**
+(`make_path_unique`) on the shared portion of a path *before* editing it, so an edit never disturbs a
+co-resident term. This is the invariant that lets minimization and mutation coexist safely.
+
+### Per-node lock-free CAS for concurrency
+
+The live representation is lock-free: `LockFreeDawgNode` holds its edge list behind an
+`ArcSwap<LockFreeEdgeList>` and its value behind an `ArcSwapOption`
+([`src/dynamic_dawg/lockfree.rs`](../../src/dynamic_dawg/lockfree.rs)). Readers load an edge-list
+snapshot **wait-free**; a writer rebuilds and CAS-publishes only the edge lists of the nodes on the
+edited path. The rationale for **per-node** CAS (rather than the whole-graph snapshot the suffix
+automaton uses) is edit locality: a DAWG insert/remove touches one root-to-node path plus whatever
+minimization merges, so publishing per node maximizes reader/writer independence — a writer editing
+`"cat"` never disturbs a reader on `"dog"`. The full contrast is in
+[design/volatile-concurrency.md](volatile-concurrency.md).
+
+### A separate `u64` type, not `DynamicDawg` over `u64`
+
+`DynamicDawg` and `DynamicDawgChar` share one arena core (`DawgCore<U, V>`). `DynamicDawgU64` does
+**not** reuse it, because a 64-bit-token alphabet breaks the shared core's byte-expansion assumptions;
+it uses per-node `Arc` nodes with atomic edge lists instead. The rationale (and the memory trade-off)
+is documented at
+[dynamic-dawg-u64.md §Why a distinct type](../algorithms/implementations/dynamic-dawg-u64.md#why-a-distinct-type-instead-of-dynamicdawg-over-u64).
+
+### The Bloom-filter knob is vestigial
+
+`with_config` accepts a `bloom_filter_capacity`, a remnant of an earlier design that pre-filtered
+negative lookups. The current lock-free read path does an **exact wait-free traversal and consults no
+Bloom filter**; the argument is accepted for API compatibility and ignored on the read path. The
+reasoning — why an exact walk beat a Bloom pre-filter for an in-memory trie — is in
+[theory/volatile-automata/03-bloom-filters.md](../theory/volatile-automata/03-bloom-filters.md).
+
+## Complexity (design targets)
+
+Let `m` be a term's length and `n` the total stored units.
+
+| Operation | Cost |
+|-----------|------|
+| `contains` | $`O(m)`$, wait-free |
+| `insert` / `remove` | $`O(m)`$ amortized (per-node CAS, `CasBackoff` retry) |
+| `compact()` | $`O(n)`$ |
+| Space | near-minimal (exact minimum immediately after `compact()`) |
+
+## Verification
+
+The mutation semantics and lock-free safety are checked, not assumed:
+[`tests/dynamic_dawg_mutation_correspondence.rs`](../../tests/dynamic_dawg_mutation_correspondence.rs)
+pins insert/remove/idempotence semantics;
+[`tests/dynamic_dawg_u64_correspondence.rs`](../../tests/dynamic_dawg_u64_correspondence.rs) runs the
+per-node CAS path under **loom**; and
+[`tests/volatile_lockfree_concurrency.rs`](../../tests/volatile_lockfree_concurrency.rs) drives it
+under concurrent readers and writers. See [engineering/testing-strategy.md](../engineering/testing-strategy.md).
+
+## Related
+
+- [theory/volatile-automata/01-dawg-minimization.md](../theory/volatile-automata/01-dawg-minimization.md) — the minimization theory.
+- [algorithms/implementations/dynamic-dawg.md](../algorithms/implementations/dynamic-dawg.md) — API, node representation, usage.
+- [architecture/in-memory-dictionaries.md](../architecture/in-memory-dictionaries.md) — the shared cores and the two concurrency strategies.
+- [design/volatile-concurrency.md](volatile-concurrency.md) — why per-node CAS here.

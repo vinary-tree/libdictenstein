@@ -87,7 +87,7 @@ copies $`Option<V> \to Option<V>`$ directly into `CharTrieNodeInner<V>` and feed
 Recovery deserializes `bincode::<V>` (bound already in `DictionaryValue`). The generic-`V`
 checkpoint limitation is *removed*; no on-disk format change.
 
-## Forward-compatibility with the scoped ($`V\in {(),u64}`$) work
+## Forward-compatibility with the scoped (`V ∈ {(), u64}`) work
 **Introduce `PersistentCharNode<V = ()>` (default type param) so bare `PersistentCharNode`
 keeps compiling as `<()>` and arbitrary `V` slots in additively.** The value-field swap
 (`AtomicU64`→`Option<V>`) is NOT purely additive (it flips finalization to single-phase),

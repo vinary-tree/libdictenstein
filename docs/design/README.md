@@ -43,8 +43,10 @@ control flow layered on top; the third covers the non-ARTrie dictionary families
 | [`swmr-multiprocess.md`](swmr-multiprocess.md) | The **Tier-2** single-writer / multi-reader-**process** (SWMR) design: reader processes open read-only and serve lock-free snapshots of the last durable checkpoint, refreshed via an atomically-renamed image inode + a background `checkpoint_lsn` poll — preserving the intra-process lock-free invariant. |
 | [`overlay-durable-architecture.md`](overlay-durable-architecture.md) | The shared lock-free **durable**-overlay architecture (Template-Method-driven): one copy of the data-loss-critical durable-write + checkpoint + watermark + recovery control flow, shared across byte, char, and future variants. |
 | [`non-blocking-checkpoint.md`](non-blocking-checkpoint.md) | The non-blocking checkpoint for the persistent char ARTrie via an `RwLock` write→read downgrade, so a checkpoint no longer starves concurrent readers; correct + formally verified, with measured results. |
-| [`dynamic-dawg.md`](dynamic-dawg.md) | The `DynamicDawg` mutable Directed Acyclic Word Graph: online insert/delete/batch operations with near-minimal structure, compaction, and thread-safe access. |
-| [`suffix-automaton.md`](suffix-automaton.md) | Overview of the implemented suffix-index family — suffix automata, suffix-tree-compatible API, and SCDAWGs — in both in-memory and persistent forms, selected by unit type (byte vs. Unicode). |
+| [`dynamic-dawg.md`](dynamic-dawg.md) | Design rationale for the mutable, minimized `DynamicDawg` family: incremental minimization, copy-on-write of shared paths, per-node lock-free CAS, and the separate `u64` type. |
+| [`suffix-automaton.md`](suffix-automaton.md) | Design rationale for the **volatile** `SuffixAutomaton`: online construction, arena representation, whole-graph-snapshot concurrency, and the two deliberate trait asymmetries. |
+| [`persistent-suffix-index.md`](persistent-suffix-index.md) | Overview of the **persistent** suffix-index family — suffix automata, suffix-tree-compatible API, and SCDAWGs — in byte and Unicode forms, with WAL/checkpoint/CAS durability. |
+| [`volatile-concurrency.md`](volatile-concurrency.md) | The concurrency model shared by the in-memory backends: wait-free reads, lock-free writes, the two publication strategies (per-node CAS vs whole-graph snapshot), the four invariants, and how loom/stress/sanitizer testing checks them. |
 
 ---
 

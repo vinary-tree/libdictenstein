@@ -73,9 +73,9 @@ pub trait CharUnit:
 for `u8` (invalid sequences become `` `U+FFFD` ``), lossless `char` collection,
 and LE byte unpacking with trailing-zero trim for `u64`. Concretely, for the byte
 impl `"café"` is `['c', 'a', 'f', 0xC3, 0xA9]` (5 units) while for the char impl
-it is `['c', 'a', 'f', 'é']` (4 units) — the difference that makes
-$`"cafe" \to "café"`$ a distance-`1` edit at char level but distance-`2` at byte
-level.
+it is `['c', 'a', 'f', 'é']` (4 units) — the difference that makes the edit
+`"cafe"` $`\to`$ `"café"` a distance-`1` edit at char level but distance-`2` at
+byte level.
 
 ### What consumes `CharUnit`
 

@@ -19,12 +19,12 @@
 
 `BijectiveMap<V>` is a bidirectional map enforcing a 1:1 correspondence
 (a *bijection*) between string terms and arbitrary hashable values. It supports
-both **forward lookup** ($`term \to value`$) and **reverse lookup** ($`value \to term`$).
+both **forward lookup** ($`\text{term} \to \text{value}`$) and **reverse lookup** ($`\text{value} \to \text{term}`$).
 The forward direction is a Unicode-aware
 [`DynamicDawgChar<V>`](dynamic-dawg-char.md) — the same DAWG backend the vocab
-tries use — so forward lookup is $`O(\mid term\mid )`$ and benefits from the DAWG's
+tries use — so forward lookup is $`O(\lvert \text{term}\rvert)`$ and benefits from the DAWG's
 prefix/suffix sharing; the reverse direction is a hash map, giving amortized
-`O(1)` $`value \to term`$.
+$`O(1)`$ $`\text{value} \to \text{term}`$.
 
 > **Why a DAWG for the forward side?** The forward map is conceptually a small
 > term dictionary, and reusing `DynamicDawgChar<V>` keeps `BijectiveMap`
@@ -104,7 +104,7 @@ Inherent:
 - `BijectiveMap::get_term(&self, value: &V) -> Option<String>` — returns
   a freshly-cloned `String` (no borrow concerns).
 - `BijectiveMap::contains_term`, `BijectiveMap::contains_value`.
-- `BijectiveMap::len() -> usize` / `is_empty() -> bool` — `O(1)` pair count
+- `BijectiveMap::len() -> usize` / `is_empty() -> bool` — $`O(1)`$ pair count
   (the reverse map's length). (The `Dictionary` trait surfaces it as
   `len() -> Option<usize>`; the `BijectiveDictionary` trait as `n()`.)
 - `BijectiveMap::iter()`, `terms()`, `values()` — iterate pairs / keys / values.
@@ -172,8 +172,8 @@ hold a reference into the map while inserts proceed.
 | Backing store | in-memory DAWG (forward) + HashMap (reverse) | disk-backed ARTrie |
 | User-supplied values | yes (via `insert(term, value)`) | no (`insert_with_value` is a no-op, see A4) |
 | Persistence | none (in-memory only) | mmap + WAL |
-| Cost of forward lookup | $`O(\mid term\mid )`$ (DAWG descent) | $`O(\mid term\mid )`$ (trie descent) |
-| Cost of reverse lookup | `O(1)` avg (hash) | `O(depth of trie)` — reconstructed |
+| Cost of forward lookup | $`O(\lvert \text{term}\rvert)`$ (DAWG descent) | $`O(\lvert \text{term}\rvert)`$ (trie descent) |
+| Cost of reverse lookup | $`O(1)`$ avg (hash) | $`O(\text{depth of trie})`$ — reconstructed |
 | Remove support | none (append-only) | none (append-only) |
 
 Use `BijectiveMap` for in-memory mappings with user-controlled values.
@@ -240,21 +240,21 @@ assert!(matches!(
 
 ## Performance Analysis
 
-Let `N` be the number of pairs and $`\mid term\mid`$ the term length in code points:
+Let `N` be the number of pairs and $`\lvert \text{term}\rvert`$ the term length in code points:
 
 | Operation | Time (avg) | Time (worst) |
 |---|---|---|
-| `insert` / `try_insert` | $`O(\mid term\mid )`$ forward + `O(1)` reverse | `O(N)` on reverse-map rehash |
-| `get_value` | $`O(\mid term\mid )`$ forward DAWG descent | $`O(\mid term\mid )`$ |
-| `get_term` | `O(1)` reverse hash + 1 `String` clone | $`O(N + \mid term\mid )`$ on collision |
-| `contains_term` | $`O(\mid term\mid )`$ forward | $`O(\mid term\mid )`$ |
-| `contains_value` | `O(1)` reverse hash | `O(N)` on collision |
-| `len` / `n` | `O(1)` (reverse-map length) | `O(1)` |
+| `insert` / `try_insert` | $`O(\lvert \text{term}\rvert)`$ forward + $`O(1)`$ reverse | $`O(N)`$ on reverse-map rehash |
+| `get_value` | $`O(\lvert \text{term}\rvert)`$ forward DAWG descent | $`O(\lvert \text{term}\rvert)`$ |
+| `get_term` | $`O(1)`$ reverse hash + 1 `String` clone | $`O(N + \lvert \text{term}\rvert)`$ on collision |
+| `contains_term` | $`O(\lvert \text{term}\rvert)`$ forward | $`O(\lvert \text{term}\rvert)`$ |
+| `contains_value` | $`O(1)`$ reverse hash | $`O(N)`$ on collision |
+| `len` / `n` | $`O(1)`$ (reverse-map length) | $`O(1)`$ |
 
-Memory: roughly $`(forward DAWG size) + (sizeof(V) + sizeof(String)) \times N`$ for the
+Memory: roughly $`\text{forward DAWG size} + (\text{sizeof}(V) + \text{sizeof}(\text{String})) \times N`$ for the
 reverse map. The forward side is a DAWG (so terms with shared prefixes/suffixes
 cost sub-linearly), while the reverse map keeps one owned `String` per value for
-`O(1)` $`value \to term`$ lookup. Forward and reverse are *separate* structures —
+$`O(1)`$ $`\text{value} \to \text{term}`$ lookup. Forward and reverse are *separate* structures —
 the reverse direction is not derived from the DAWG on the fly.
 
 ## When to Use
@@ -274,7 +274,7 @@ your data flow.
 
 - [Dictionary Layer](../README.md) — overview of all dictionary backends.
 - [DynamicDawgChar](dynamic-dawg-char.md) — the Unicode DAWG that backs the
-  forward ($`term \to value`$) direction.
+  forward ($`\text{term} \to \text{value}`$) direction.
 - [PersistentVocabARTrie / mmap architecture](../../persistence/README.md)
   — the durable, auto-`u64`-assigning vocabulary trie `BijectiveMap` is the
   in-memory analogue of.

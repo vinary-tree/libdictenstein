@@ -4,17 +4,15 @@ The **Compact DAWG** (CDAWG), also called the **Compact Suffix Automaton**, redu
 
 ## Motivation for Compaction
 
-The suffix automaton has up to `3n − 4` transitions for a string of length `n`. Many of these transitions form linear chains with no branching:
+The suffix automaton has up to $`3n - 4`$ transitions for a string of length $`n`$. Many of these transitions form linear chains with no branching:
 
-```
-Before compaction:
-    q₀ --a--> q₁ --b--> q₂ --c--> q₃
-
-After compaction:
-    q₀ --abc--> q₃
+```math
+\text{Before:}\quad q_0 \xrightarrow{a} q_1 \xrightarrow{b} q_2 \xrightarrow{c} q_3
+\qquad\Longrightarrow\qquad
+\text{After:}\quad q_0 \xrightarrow{abc} q_3
 ```
 
-The intermediate states q₁ and q₂ serve no purpose if:
+The intermediate states $`q_1`$ and $`q_2`$ serve no purpose if:
 - They have exactly one incoming edge
 - They have exactly one outgoing edge
 
@@ -29,8 +27,8 @@ Not all edges can be compacted. We distinguish:
 An edge from state `[x]` to `[xa]` is **primary** if `xa` is the **longest** string in class `[xa]`.
 
 **Definition (Primary Edge)**:
-```
-Edge [x] --a--> [xa] is primary ⟺ xa = longest([xa])
+```math
+\text{Edge } [x] \xrightarrow{a} [xa] \text{ is primary} \iff xa = \text{longest}([xa])
 ```
 
 Primary edges represent the "canonical" path to reach a state.
@@ -40,23 +38,23 @@ Primary edges represent the "canonical" path to reach a state.
 An edge is **secondary** if it leads to a state where `xa` is NOT the longest string:
 
 **Definition (Secondary Edge)**:
-```
-Edge [x] --a--> [xa] is secondary ⟺ xa ≠ longest([xa])
+```math
+\text{Edge } [x] \xrightarrow{a} [xa] \text{ is secondary} \iff xa \ne \text{longest}([xa])
 ```
 
 Secondary edges "jump into" an equivalence class at a shorter string.
 
 ### Example: "abcabcab"
 
-Consider state q₂ = {b, ab} with longest = "ab":
+Consider state $`q_2 = \{b, ab\}`$ with $`\text{longest} = ab`$:
 
 | Source | Edge | Target | xa | longest([xa]) | Type |
 |--------|------|--------|-------|---------------|------|
-| q₀ | b | q₂ | b | ab | Secondary |
-| q₁ | b | q₂ | ab | ab | Primary |
+| $`q_0`$ | b | $`q_2`$ | b | ab | Secondary |
+| $`q_1`$ | b | $`q_2`$ | ab | ab | Primary |
 
-The edge from q₀ labeled 'b' is secondary because "b" $`\ne`$ "ab" = longest(q₂).
-The edge from q₁ labeled 'b' is primary because "ab" = "ab" = longest(q₂).
+The edge from $`q_0`$ labeled 'b' is secondary because $`b \ne ab = \text{longest}(q_2)`$.
+The edge from $`q_1`$ labeled 'b' is primary because $`ab = ab = \text{longest}(q_2)`$.
 
 ### Properties of Primary Edges
 
@@ -74,7 +72,7 @@ This spanning tree corresponds to the **suffix tree** of the string!
 
 A state [x] is kept in the CDAWG if and only if:
 
-1. It is the initial state q₀, OR
+1. It is the initial state $`q_0`$, OR
 2. It is a **branching state**: has multiple outgoing edges, OR
 3. It is an **accepting state**: represents a suffix of w, OR
 4. It is a **merge point**: has multiple incoming edges (primary + secondaries)
@@ -82,19 +80,18 @@ A state [x] is kept in the CDAWG if and only if:
 Equivalently, a state is **removed** if it has exactly one incoming edge (primary) and exactly one outgoing edge (`in-degree = out-degree = 1`).
 
 **Definition (CDAWG States)**:
-```
-V_CDAWG = {q ∈ Q_DAWG : out-degree(q) ≠ 1 OR in-degree(q) ≠ 1 OR q is accepting}
+```math
+V_{\text{CDAWG}} = \{\, q \in Q_{\text{DAWG}} : \text{out-degree}(q) \ne 1 \text{ OR } \text{in-degree}(q) \ne 1 \text{ OR } q \text{ is accepting} \,\}
 ```
 
 ### Compacting Edges
 
 When removing intermediate states, we concatenate edge labels:
 
-```
-Before: q_i --a--> q_j --b--> q_k --c--> q_l
-        (q_j and q_k are non-branching)
-
-After:  q_i --abc--> q_l
+```math
+\text{Before:}\quad q_i \xrightarrow{a} q_j \xrightarrow{b} q_k \xrightarrow{c} q_l \quad (q_j, q_k \text{ non-branching})
+\qquad\Longrightarrow\qquad
+\text{After:}\quad q_i \xrightarrow{abc} q_l
 ```
 
 Edge labels become **strings** rather than single characters.
@@ -123,16 +120,16 @@ Let's trace the compaction for w = "abcabcab\$" (with end marker):
 
 | State | end-pos | Factors | Branching? | Accepting? |
 |-------|---------|---------|------------|------------|
-| q₀ | {0..9} | {ε} | Yes (a,b,c) | No |
-| q₁ | {1,4,7} | {a} | Yes (b,c) | No |
-| q₂ | {2,5,8} | {b, ab} | Yes (c,\$) | No |
-| q₃ | {3,6} | {c, bc, abc} | Yes (a,\$) | No |
-| q₄ | {4,7} | {ca, bca, abca} | Yes (b,\$) | No |
-| q₅ | {5,8} | {cab, bcab, abcab} | Yes (c,\$) | No |
-| q₆ | {6} | {cabc, bcabc, abcabc} | Yes (a,\$) | No |
-| q₇ | {7} | {cabca, bcabca, abcabca} | Yes (b,\$) | No |
-| q₈ | {8} | {cabcab, bcabcab, abcabcab} | Yes (\$) | No |
-| q₉ | {9} | {`$`, `b$`, `ab$`, ...} | No | Yes |
+| $`q_0`$ | $`\{0..9\}`$ | $`\{\varepsilon\}`$ | Yes (a,b,c) | No |
+| $`q_1`$ | $`\{1,4,7\}`$ | $`\{a\}`$ | Yes (b,c) | No |
+| $`q_2`$ | $`\{2,5,8\}`$ | $`\{b, ab\}`$ | Yes (c,\$) | No |
+| $`q_3`$ | $`\{3,6\}`$ | $`\{c, bc, abc\}`$ | Yes (a,\$) | No |
+| $`q_4`$ | $`\{4,7\}`$ | $`\{ca, bca, abca\}`$ | Yes (b,\$) | No |
+| $`q_5`$ | $`\{5,8\}`$ | $`\{cab, bcab, abcab\}`$ | Yes (c,\$) | No |
+| $`q_6`$ | $`\{6\}`$ | $`\{cabc, bcabc, abcabc\}`$ | Yes (a,\$) | No |
+| $`q_7`$ | $`\{7\}`$ | $`\{cabca, bcabca, abcabca\}`$ | Yes (b,\$) | No |
+| $`q_8`$ | $`\{8\}`$ | $`\{cabcab, bcabcab, abcabcab\}`$ | Yes (\$) | No |
+| $`q_9`$ | $`\{9\}`$ | $`\{`$ `$`, `b$`, `ab$`, ... $`\}`$ | No | Yes |
 
 In this example, most states have multiple outgoing edges (branching), so few can be removed.
 
@@ -140,15 +137,7 @@ In this example, most states have multiple outgoing edges (branching), so few ca
 
 Compaction provides the most benefit for strings with long non-repeating segments:
 
-```
-String: "abcdefgh$"  (8 distinct characters)
-
-DAWG: 9 states, each with single outgoing edge (except last)
-      q₀ --a--> q₁ --b--> q₂ --c--> ... --h--> q₈ --$--> q₉
-
-CDAWG: 2 states!
-       q₀ --abcdefgh$--> q₉
-```
+<img src="../../diagrams/scdawg-linear-compaction.svg" alt="Linear compaction on the all-distinct string abcdefgh followed by a terminal sentinel: the DAWG is a single non-branching chain of nine states q0 through q9 joined by edges a, b, c, through h and then the sentinel, whereas the CDAWG collapses that entire chain into just two states, the source q0 and the sink q9, joined by one edge labelled abcdefgh and the sentinel." width="560"/>
 
 For highly repetitive strings (like our "abcabcab"), compaction provides less benefit.
 
@@ -158,7 +147,7 @@ For highly repetitive strings (like our "abcabcab"), compaction provides less be
 
 The CDAWG of string w is the directed graph **CDAWG(w) = (V, E)** where:
 
-- **V** = {[x] $`\in`$ Q_DAWG : [x] satisfies branching/accepting/merge condition}
+- $`V = \{\, [x] \in Q_{\text{DAWG}} : [x] \text{ satisfies the branching/accepting/merge condition} \,\}`$
 
 - **E** = {([x], label, [y]) : there exists a path from [x] to [y] in DAWG
            where all intermediate states are non-branching}
@@ -206,7 +195,7 @@ The CDAWG has two distinguished nodes:
 
 ### Source (Root)
 
-The **source** represents the empty string ε:
+The **source** represents the empty string $`\varepsilon`$:
 - Initial state for all traversals
 - Has no incoming edges
 - Has outgoing edges for each character that starts some factor
@@ -223,19 +212,19 @@ The **sink** represents the longest string (w itself with end marker):
 Suffix links are preserved but may "jump over" compacted states:
 
 **Definition (CDAWG Suffix Link)**:
-```
-slink_CDAWG([x]) = [y] where [y] is the CDAWG node containing shortest([x])'s suffix
+```math
+\text{slink}_{\text{CDAWG}}([x]) = [y] \text{ where } [y] \text{ is the CDAWG node containing the suffix of } \text{shortest}([x])
 ```
 
 If the original suffix link target was compacted away, we follow to the next CDAWG node.
 
 ### Example
 
-If DAWG has: slink(q₃) = q₀
+If the DAWG has $`\text{slink}(q_3) = q_0`$,
 
-And q₃ is kept in CDAWG but q₀ is compacted into a longer path... (unlikely for q₀, but possible for other states).
+and $`q_3`$ is kept in the CDAWG but $`q_0`$ is compacted into a longer path (unlikely for $`q_0`$, but possible for other states).
 
-In practice, q₀ is always kept (it's the source), so suffix links usually point to CDAWG nodes directly.
+In practice, $`q_0`$ is always kept (it is the source), so suffix links usually point to CDAWG nodes directly.
 
 ## LRS (Longest Repeating Suffix) Property
 
@@ -256,7 +245,7 @@ The CDAWG and suffix tree are closely related:
 | Property | Suffix Tree | CDAWG |
 |----------|-------------|-------|
 | Node count | $`\le 2n`$ | $`\le n + 1`$ |
-| Edge count | $`\le 2n`$ | $`\le 2n − 2`$ |
+| Edge count | $`\le 2n`$ | $`\le 2n - 2`$ |
 | Edge labels | Substrings | Substrings |
 | Suffix links | Yes | Yes |
 | Factors recognized | All suffixes | All substrings |
@@ -286,11 +275,11 @@ For bidirectional traversal, we need the **Symmetric** Compact DAWG (SCDAWG), co
 | Primary edge | Edge where target's longest = source's longest + label |
 | Secondary edge | Edge jumping into equivalence class at shorter string |
 | Compaction | Remove states with `in-degree = out-degree = 1` |
-| CDAWG node count | At most `n + 1` |
-| CDAWG edge count | At most `2n − 2` |
+| CDAWG node count | At most $`n + 1`$ |
+| CDAWG edge count | At most $`2n - 2`$ |
 | Source | Node for empty string |
 | Sink | Node for complete string |
 
-**Key insight**: Compaction reduces space while preserving the ability to recognize all substrings in O(|pattern|) time.
+**Key insight**: Compaction reduces space while preserving the ability to recognize all substrings in $`O(\lvert \text{pattern}\rvert)`$ time.
 
 **Next**: [04-scdawg](04-scdawg.md) - Adding left extensions for bidirectional search

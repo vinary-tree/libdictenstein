@@ -51,7 +51,7 @@ reachable on the shared handle $`\Rightarrow`$ method becomes `&self`, field wra
 mutability. **Tier-1** = pre-share configuration only (never on a `Shared*` API) $`\Rightarrow`$
 stays `&mut self`, NO wrap.
 
-### Tier-2 fields wrapped (byte = 5, char = 7; + `merge_lock` $`\Rightarrow`$ byte=6/char=8 per V11.2)
+### Tier-2 fields wrapped (byte = 5, char = 7; with `merge_lock`, byte = 6 / char = 8 per V11.2)
 
 | Field | byte | char | Wrapper | Why interior-mutable |
 |-------|------|------|---------|----------------------|

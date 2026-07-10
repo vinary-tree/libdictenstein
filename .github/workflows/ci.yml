@@ -53,12 +53,6 @@ jobs:
           - features-name: protobuf
             features: --no-default-features --features protobuf
             os: ubuntu-latest
-          # `lling-llang` and `union_zipper_lling_llang_tests.rs` —
-          # the latter is cfg-gated on `lling-llang AND NOT persistent-artrie`,
-          # so we explicitly exclude persistent-artrie in this row.
-          - features-name: lling-llang
-            features: --no-default-features --features lling-llang
-            os: ubuntu-latest
           - features-name: all-features
             features: --all-features
             os: ubuntu-latest

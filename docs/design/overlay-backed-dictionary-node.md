@@ -144,7 +144,7 @@ directly onto the overlay node API:
 - `transition(unit)` → `node.find_child(unit)`:
   - `Child::InMem(arc)` $`\Rightarrow`$ `Some(Overlay { node: arc.clone(), faulter })`.
   - `Child::OnDisk(ptr)` (non-null) $`\Rightarrow`$ fault via `faulter` $`\Rightarrow`$
-    `Some(Overlay { node: loaded, faulter })`; if no faulter / load fails ⇒ `None`.
+    `Some(Overlay { node: loaded, faulter })`; if no faulter / load fails $`\Rightarrow`$ `None`.
   - null / absent $`\Rightarrow`$ `None`.
   - char converts the `char` label to `u32` (overlay keys are `u32`); byte uses the
     `u8` directly.

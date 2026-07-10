@@ -33,7 +33,7 @@ direction: down
 
 title: |md
   # libdictenstein — `unsafe` trust zones
-  *safe API ⊃ tagged `unsafe` primitives ⊃ trusted base — 43 rows · 31 contracts · CI-gated*
+  *safe API wraps tagged `unsafe` primitives, which wrap the trusted base — 43 rows · 31 contracts · CI-gated*
 | {
   near: top-center
   style.font-size: 18
@@ -107,7 +107,7 @@ safe: "③ SAFE PUBLIC API\nno `unsafe` escapes to callers" {
 }
 
 # --- The CI gate that pins the ring (outside the zones, acts on them) --------
-gate: "CI set-equality gate\nscripts/verify-unsafe-boundary-inventory.sh\nlive `unsafe` sites ≡ UNSAFE_INVENTORY.tsv (43)\n→ UNSAFE_CONTRACTS.tsv (31)" {
+gate: "CI set-equality gate\nscripts/verify-unsafe-boundary-inventory.sh\nlive `unsafe` sites match UNSAFE_INVENTORY.tsv (43)\n→ UNSAFE_CONTRACTS.tsv (31)" {
   style: {
     fill: "#FFE0B2"
     stroke: "#EF6C00"

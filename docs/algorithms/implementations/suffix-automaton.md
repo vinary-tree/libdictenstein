@@ -22,7 +22,7 @@
 
 - 🔍 **Substring matching**: Find patterns anywhere, not just at word boundaries
 - 💾 **Space-efficient**: $`\le`$ 2n-1 states for n characters
-- ⚡ **Fast construction**: `O(n)` online construction
+- ⚡ **Fast construction**: $`O(n)`$ online construction
 - 🔄 **Dynamic updates**: Insert and remove text at runtime
 - 📍 **Position tracking**: Know where matches occur in source text
 
@@ -295,7 +295,7 @@ fn extend(&mut self, byte: u8) {
 }
 ```
 
-**Complexity**: `O(1)` amortized per character
+**Complexity**: $`O(1)`$ amortized per character
 
 ### From Multiple Texts
 

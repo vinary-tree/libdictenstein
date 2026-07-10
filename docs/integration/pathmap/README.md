@@ -13,8 +13,8 @@
 > `src/suffix_automaton/`, `src/scdawg/`, `src/persistent_artrie/`). New
 > zero-plumbing, MORK-facing dictionaries — `PathMapSnapshot` / `PathMapRef`
 > (and `Char` variants) in `src/pathmap/snapshot.rs` — let a caller fuzzy-query a
-> **borrowed** or `𝒪(1)`-snapshotted `PathMap` with no copy and no lock.
-> `PathMapDictionary{,Char}::root()` now takes an `𝒪(1)` copy-on-write snapshot
+> **borrowed** or $`O(1)`$-snapshotted `PathMap` with no copy and no lock.
+> `PathMapDictionary{,Char}::root()` now takes an $`O(1)`$ copy-on-write snapshot
 > (lock-free queries, snapshot isolation), replacing the former
 > lock-per-operation, path-replay node. Full design (with verified pathmap-API
 > facts and the 0.3 portability result):
@@ -821,9 +821,9 @@ Uncompressed trie:    Prefix-compressed PathMap:
 
 | Operation | Complexity | Typical Latency |
 |-----------|------------|-----------------|
-| Exact lookup | O(k) | <1 μs |
-| Prefix scan | O(k + m) | <10 μs |
-| Fuzzy query (d=2) | O(k $`\times`$ 3^d) | <100 μs |
+| Exact lookup | $`O(k)`$ | <1 μs |
+| Prefix scan | $`O(k + m)`$ | <10 μs |
+| Fuzzy query ($`d=2`$) | $`O(k \times 3^d)`$ | <100 μs |
 
 Where:
 - k = key length

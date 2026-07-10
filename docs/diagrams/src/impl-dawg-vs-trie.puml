@@ -1,0 +1,69 @@
+@startuml impl-dawg-vs-trie
+' ============================================================================
+' Trie vs. DAWG for the term set { car, card, cart, star, start }.
+' A plain trie shares PREFIXES only; the minimized DAWG additionally shares the
+' accepting SUFFIX — every word-final letter reaches one shared accepting sink.
+'   pink  = plain trie (prefix sharing only) · 11 nodes
+'   green = minimized DAWG (prefix + suffix sharing) · 9 nodes
+'   amber = the single shared accepting sink the three final letters converge on
+'   ✓     = an accepting (final) state
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam wrapWidth 260
+title Trie shares **prefixes**; a DAWG shares **suffixes** too — { car, card, cart, star, start }
+
+state "Trie — prefix sharing only · 11 nodes" as Trie #FFEBEE {
+  state "·" as r1
+  state "c" as c1
+  state "a" as a1
+  state "r ✓" as rcar1
+  state "d ✓" as d1
+  state "t ✓" as tcart1
+  state "s" as s1
+  state "t" as t1
+  state "a " as a1s
+  state "r ✓ " as rstar1
+  state "t ✓ " as tstart1
+  r1 --> c1 : c
+  c1 --> a1 : a
+  a1 --> rcar1 : r
+  rcar1 --> d1 : d
+  rcar1 --> tcart1 : t
+  r1 --> s1 : s
+  s1 --> t1 : t
+  t1 --> a1s : a
+  a1s --> rstar1 : r
+  rstar1 --> tstart1 : t
+}
+
+state "DAWG — prefix + suffix sharing · 9 nodes" as Dawg #E8F5E9 {
+  state "·" as r2
+  state "c" as c2
+  state "a" as a2
+  state "r ✓" as rcar2
+  state "s" as s2
+  state "t" as t2
+  state "a " as a2s
+  state "r ✓ " as rstar2
+  state "✓" as sink2 #FFF59D
+  r2 --> c2 : c
+  c2 --> a2 : a
+  a2 --> rcar2 : r
+  rcar2 --> sink2 : d
+  rcar2 --> sink2 : t
+  r2 --> s2 : s
+  s2 --> t2 : t
+  t2 --> a2s : a
+  a2s --> rstar2 : r
+  rstar2 --> sink2 : t
+}
+
+note bottom of Dawg
+  The three word-final letters — **d** of "card", **t** of "cart", **t** of "start" —
+  reach one shared accepting sink (right language <latex>\{\varepsilon\}</latex>).
+  The two "r" states stay distinct: car's r has right language
+  <latex>\{\varepsilon, d, t\}</latex>, star's only <latex>\{\varepsilon, t\}</latex>.
+end note
+@enduml

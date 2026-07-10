@@ -10,6 +10,12 @@ This convention follows the pgmcp **diagramming catalog**
 (`toolbox_list domain=diagramming`): each illustration is authored with the tool
 best suited to its shape, then rendered to SVG by a single script.
 
+Mathematical labels inside a diagram follow the same standard as prose math — see the
+[notation & terminology register](../notation.md). Because SVG is not Markdown, the delimiter rules
+do not apply; instead, typeset math in a **PlantUML** label with its bundled JLaTeXMath
+(`<latex>…</latex>` inline, `<math>…</math>` block) rather than pasting a Unicode glyph. Ordinary
+flow arrows and cell separators stay Unicode.
+
 ---
 
 ## Layout
@@ -34,23 +40,26 @@ Benchmark **plots** follow the same idea but live next to their data:
 | Ext | Tool | pgmcp catalog slug | Best for |
 |-----|------|--------------------|----------|
 | `.puml` | [PlantUML](https://plantuml.com/) | `plantuml` | UML, **sequence**, activity, component, C4, layered stacks |
-| `.mmd` | [Mermaid](https://mermaid.js.org/) (`mmdc`) | `mermaid-cli` | **flowchart**, **state**, class, sequence, ER — GitHub/rustdoc-native shapes |
+| `.mmd` | [Mermaid](https://mermaid.js.org/) (`mmdc`) | `mermaid-cli` | ⚠️ **local/ad-hoc only — do not commit** (see below); flowchart, state, class, sequence, ER |
 | `.d2` | [D2](https://d2lang.com/) | `d2` | modern **layered architecture** diagrams, clean orthogonal routing |
 | `.dot` / `.gv` | [Graphviz](https://graphviz.org/) (`dot`) | `graphviz` | large **node-edge graphs** (dependency graphs, dense automata) |
-| `.bytefield` | [bytefield-svg](https://bytefield-svg.deepsymmetry.org/) | `bytefield-svg` | **byte / record / bitfield** layouts (WAL records, node headers) |
-| `.bob` | [Svgbob](https://github.com/ivanceras/svgbob) | `svgbob` | **ASCII-art schematics** (node-storage layouts, before/after trees, bit fields) |
+| `.bytefield` | [bytefield-svg](https://bytefield-svg.deepsymmetry.org/) | `bytefield-svg` | *deprecated — renders too small; use PlantUML for byte/record layouts* |
+| `.bob` | [Svgbob](https://github.com/ivanceras/svgbob) | `svgbob` | *deprecated — no root viewBox (fails R1); use PlantUML for ASCII-art schematics* |
 | `.gp` | [gnuplot](http://www.gnuplot.info/) | `gnuplot` | **benchmark plots** (bars, lines, threshold bands) |
 
-`.bytefield` sources are written in bytefield-svg's Clojure-flavored DSL; `.gp`
-scripts emit `set terminal svg` themselves.
+The dispatch script still has branches for `.bytefield`, `.bob`, and `.mmd`, but **no committed
+source uses them** — they are kept only so an old source would still render. The `.gp` scripts emit
+`set terminal svg` themselves.
 
-> **Determinism note.** Committed artifacts use the **deterministic** renderers
-> (PlantUML, D2, Graphviz, bytefield-svg, gnuplot) so the CI byte-diff stays
-> stable across machines. PlantUML covers state / sequence / activity / class /
-> component / C4; D2 covers flowcharts and layered architecture. Mermaid (`.mmd`)
-> is supported by the script for local/ad-hoc use, but its headless-Chromium
-> rendering is **not** guaranteed byte-reproducible across environments — prefer
-> PlantUML or D2 for anything committed.
+> **Determinism note.** Committed artifacts use only the **deterministic, CI-installed** renderers
+> — **PlantUML, D2, Graphviz, gnuplot** — so the CI byte-diff stays stable across machines. PlantUML
+> covers state / sequence / activity / class / component / C4 and typesets math via bundled
+> JLaTeXMath (`<latex>`); D2 covers flowcharts and layered architecture.
+>
+> **Do not commit a Mermaid (`.mmd`) source.** CI does **not** install `mmdc`, and
+> `render-diagrams.sh` exits non-zero on a missing renderer, so a committed `.mmd` would fail the
+> `diagrams` job. Mermaid rendering is also headless-Chromium and not byte-reproducible. Use it only
+> for throwaway local sketches; author anything committed in PlantUML or D2.
 
 ---
 
@@ -131,8 +140,8 @@ equals the surrounding prose. That imposes rules on every rendered SVG;
 | # | Rule | Why |
 |---|------|-----|
 | **R1** | A **root `viewBox="0 0 W H"`** (4-number form) on the top-level `<svg>` | The viewer reads the *first* `viewBox`; with none on the root it picks up a nested `<marker>` arrowhead's tiny box and renders the figure at ~8 px. The render script auto-injects one if a renderer omits it. |
-| **R2** | **One dominant font-size = the body text** | The viewer scales by the plurality `font-size`; if titles/labels out-number body text the whole figure mis-scales. Author body text at ≈14 px and keep it the most common size. |
-| **R3** | **viewBox width ≤ ~700 px** (`W ≲ 42 × dominant-font`) | Font-match only engages when the figure fits the text column; a wider canvas is capped-to-column and its text renders *smaller* than prose. Levers: vertical/top-down layout, concise labels, `skinparam wrapWidth`, split a dense figure in two, flip Graphviz `rankdir=LR→TB`, or stack side-by-side D2 groups with a hidden edge (`a -> b: "" { style.opacity: 0.0 }`). |
+| **R2** | **One dominant font-size = the body text** | The viewer scales by the plurality `font-size`; if titles/labels out-number body text the whole figure mis-scales. Author body text at $`\approx`$14 px and keep it the most common size. |
+| **R3** | **viewBox width $`\le`$ ~700 px** (`W ≲ 42 × dominant-font`) | Font-match only engages when the figure fits the text column; a wider canvas is capped-to-column and its text renders *smaller* than prose. Levers: vertical/top-down layout, concise labels, `skinparam wrapWidth`, split a dense figure in two, flip Graphviz `rankdir=LR→TB`, or stack side-by-side D2 groups with a hidden edge (`a -> b: "" { style.opacity: 0.0 }`). |
 | **R4** | If a renderer emits no viewBox, the root must carry `width`/`height` in **plain-digit px** | The viewer's fallback path needs px (not `pt`/`%`/`em`). |
 
 Additional hard rules the gate checks:
@@ -170,7 +179,7 @@ Three more PlantUML gotchas (render wrong rather than fail the gate):
    and what the figure shows.
 3. `scripts/render-diagrams.sh docs/diagrams/src/<name>.<ext>`.
 4. Check hygiene: `scripts/render-diagrams.sh --check` (root viewBox, no deprecation
-   banner) and confirm the rendered `viewBox` width is ≤ ~700 px per R3 — narrow it if not.
+   banner) and confirm the rendered `viewBox` width is $`\le`$ ~700 px per R3 — narrow it if not.
 5. Embed in the target doc: `<img src="…/docs/diagrams/<name>.svg" alt="…" width="…"/>`.
 6. Commit the source **and** the rendered `.svg` together.
 
@@ -178,7 +187,10 @@ Three more PlantUML gotchas (render wrong rather than fail the gate):
 
 ## Tool availability
 
-All renderers are installed on the development host (`plantuml`, `mmdc`, `d2`,
+All renderers may be installed on the development host (`plantuml`, `mmdc`, `d2`,
 `dot`, `gnuplot` on `PATH`; `bytefield-svg` in the workspace `node_modules/.bin`).
 The Kroki HTTP gateway is **not** required — each CLI is driven directly. The CI
-`diagrams` job installs pinned versions of each tool before re-rendering.
+`diagrams` job installs pinned versions of PlantUML 1.2026.5, D2 0.7.1, Graphviz, gnuplot,
+svgbob 0.7.6, and bytefield-svg 1.11.0 before re-rendering (the last two installed but unused). It
+deliberately does **not** install `mmdc`, which is why a committed `.mmd` source (see the
+determinism note above) would fail the job.

@@ -175,3 +175,77 @@ broken links across `docs/` + `formal-verification/` + `README.md` + `CHANGELOG.
   counts reconciled (69 `.v` / 1,301 props / 55 TLA⁺ / 65 `.cfg` / 43+31 unsafe);
   inline-prefix cap (12 B / 6 `u32`); mangled benchmark table.
 - **ZERO broken links** tree-wide; `cargo doc --all-features -D warnings` clean.
+
+---
+
+## Session 2 (2026-07-10) — notation standard, body-rule gate, in-memory corpus
+
+A second pass triggered by two findings: the prior delimiter migration had corrupted the *bodies*
+of math spans (it rewrote `|q|` → `\mid q\mid`, a relation, not a delimiter — 188 sites/12 files),
+and the in-memory dictionaries lacked the design/architecture/theory/security/usage coverage the
+guidelines demand.
+
+### Phase 0 — notation standard + extended gate (barrier)
+- **`docs/notation.md`** (new): the canonical symbol + terminology register, with the
+  `\lvert…\rvert`-mandatory / `\mid`-forbidden rule and its `\mathrel`-vs-`\mathopen` spacing
+  justification. Linked from `README`, `docs/README.md`, `docs/diagrams/README.md`.
+- **`scripts/check-doc-math.py`** extended with three **body rules** — `mid-delimiter`,
+  `unicode-in-math`, `inert-code-math` — plus ```math-fence inspection, an `is_archival()` exemption
+  (frozen `design/history/**` + ledgers), and a **grandfather ratchet** (report-only backlog that
+  can only shrink; asserts empty at the end). `--selftest` extended to 7 rules + archival + ratchet.
+  Captured a 326-site / 29-file backlog, burned it to **zero**, then emptied `GRANDFATHERED` so all
+  three body rules are now **unconditionally fatal** on every non-archival file.
+
+### Phase 1 — corpus remediation (7 partitions) + correctness fixes
+- Converted inert-code-span big-O, `\mid` length delimiters (→ `\lvert…\rvert`), Unicode-in-math
+  (− → `-`, subscripts, Greek, combining macron), and multi-letter identifiers (→ `\text{}`) across
+  theory/algorithms/architecture/design; **persistence** got a consistency-only pass (already
+  standard-conformant). Converted remaining ASCII state-machine diagrams to diagrams-as-code and
+  ASCII data tables to Markdown tables; fixed stranded partial spans (`O(\|Σ\|)`).
+- **Correctness fixes** (docs asserting things the code doesn't do): removed the fictional
+  Bloom-filter read path from `dynamic-dawg*.md` (the `with_config` bloom arg is vestigial); fixed
+  the README trait table (`SuffixAutomaton` does **not** implement `MutableDictionary`); corrected
+  stale `liblevenshtein` framing + `"0.1"` version in the DAT guide/README; removed the retired
+  `lling-llang` feature row (the `Lattice` integration is the always-on `llattice` dep).
+
+### Phase 2 — diagram-label LaTeX
+- Converted genuine standalone **formulae** in `.puml` labels to bundled-JLaTeXMath `<latex>`
+  (scdawg-factor-extensions, zipper-lattice, clone-on-split, selector, zipper-cursor); rewrote the
+  `.d2` descriptive symbols (`⊃`/`∩`/`∪`/`∀`/`≠`) as prose words (D2 has no LaTeX and inspection
+  showed no formulae — a port was unwarranted). Permitted Unicode (arrows, separators, pseudocode
+  conditions, scaling factors, subscripted identifiers, comments) left per `math-mathjax`. Resolved
+  the `diagrams/README.md` `.bob`/`.bytefield` "available vs retired" contradiction and documented
+  the **no-committed-`.mmd`** rule (CI installs no `mmdc`).
+
+### Phase 3 — new in-memory documentation (7 clusters)
+- **`docs/security/`** — threat model (+ trust-boundary diagram), untrusted-input/DoS analysis,
+  deserialization safety, `unsafe`-contract map (the biggest guideline gap: security had been absent).
+- **`docs/theory/volatile-automata/`** — DAWG minimization (Daciuk MADFA + signature hashing),
+  double-array tries (Aoe/Yata), Bloom filters, bit-parallel child scan (with the honest SIMD
+  accounting: the volatile tree has none; SIMD lives only in the persistent ART Node16).
+- **`docs/architecture/in-memory-dictionaries.md`** + **`docs/design/volatile-concurrency.md`** —
+  the `CharUnit` seam, monomorphized cores, and the two lock-free strategies (per-node CAS vs
+  whole-graph snapshot), with a strategy-contrast diagram.
+- **`docs/user-guide/`** — index, getting-started, in-memory tour, cookbook (verified compiling
+  examples).
+- **`docs/algorithms/implementations/README.md`** (index + trait-support matrix) + **`dynamic-dawg-u64.md`**
+  (+ node diagram) + PathMap snapshot/ref coverage.
+- **`docs/engineering/`** — testing strategy, benchmarking methodology, feature-flag reference.
+- Repaired `docs/design/dynamic-dawg.md` (design-rationale rewrite); renamed the mislabeled
+  `design/suffix-automaton.md` → `persistent-suffix-index.md` and authored a real **volatile**
+  `suffix-automaton.md`.
+
+### Verification (all green)
+- doc-math `--selftest` + full scan: **154 tracked + 78 new/modified files clean**, body rules fatal.
+- `cargo doc --all-features -D warnings`: exit 0. Render pipeline reproducible, 0 error markers.
+- **Zero real broken links/embeds** across 177 files / 1028 relative links (2 known false positives).
+- New diagrams (dawg-u64-node, inmem-concurrency-strategies, security-trust-boundaries) render within
+  budget; 4 mild width warnings (727–929 px, non-failing, within existing corpus tolerance).
+- Hygiene: added `__pycache__/` to `.gitignore` (the gate script generates it).
+
+### Discovered defect (config, out of documentation scope — flagged for the owner)
+- `.github/workflows/ci.yml` (build-matrix, ~lines 56–60) still has a `lling-llang` feature row
+  (`--no-default-features --features lling-llang`), but that feature was **retired**
+  (`scripts/verify-formal-correspondence.sh:48` says so and guards for it). `cargo metadata` confirms
+  `lling-llang` is neither a feature key nor a dependency, so that CI matrix row would fail. The docs
+  were corrected to match reality; the stale CI row is a config fix left for the owner's decision.

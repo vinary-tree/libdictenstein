@@ -47,7 +47,7 @@ state "TestEmit\nevaluate the predicate\n∩: L.is_final() && R.is_final()" as T
 
 state "Emit\nyield (path, zipper) to consumer\nvalue = merge(L.value, R.value)" as Emit #BBDEFB
 
-state "Descend\nlabel ∈ children(L) ∩ children(R)\ndescend(label) on BOTH cursors" as Descend #FFF59D
+state "Descend\n<latex>\text{label} \in \text{children}(L) \cap \text{children}(R)</latex>\ndescend(label) on BOTH cursors" as Descend #FFF59D
 
 state "Sibling / Ascend\npop DFS frame · advance to next\nshared child of the parent" as Ascend #FFF59D
 

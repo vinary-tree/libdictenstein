@@ -30,7 +30,7 @@ registry-invalidation contract + Order-A timing are preserved by construction.
     compaction out of scope (clearing finality suffices, matching owned `remove`).
   - **R-C (tombstone in `Option<V>`):** rejected (ripples into serialization + the u64 domain).
 - **Negative-delta `increment` unsupported:** overlay counter is add-only `BatchIncrement` (`lockfree_cas.rs:1088`)
-  → §2.4 errors/falls back on δ<0; PS3-guarded. Decrement callers use `OwnedTree`.
+  → §2.4 errors/falls back on $`\delta < 0`$; PS3-guarded. Decrement callers use `OwnedTree`.
 - **Arbitrary `V` → scope is $`V\in {(),u64}`$:** the value write path `build_value_path_recursive` is hardcoded
   `<u64>`; arbitrary `V` needs G1 (single-phase + `upsert_cas`) — out of scope, stays `OwnedTree` (a per-monomorph
   guard). On-disk format is already `[len][bincode(V)]` so checkpoint/recover are V-agnostic.
@@ -49,7 +49,7 @@ Order-A (WAL-durable BEFORE visibility CAS, `lockfree_cas.rs:243`) + `invalidate
 `NoLostWriteUnderLockFreeCommit` + the registry contract hold by construction.
 - `insert`/`insert_with_value(V=())` → `insert_cas_durable`; `insert_with_value(V=u64)` → new thin
   `insert_cas_with_value_durable` (reuses `build_value_path_recursive`).
-- $`increment(V=u64, \delta \ge 0)`$ → `try_increment_cas_durable` (u64 adapter; δ<0 errors/falls back).
+- $`increment(V=u64, \delta \ge 0)`$ → `try_increment_cas_durable` (u64 adapter; $`\delta < 0`$ errors/falls back).
 - `upsert(V=u64)` → new thin `upsert_cas_durable` (last-writer = CAS winner).
 - `insert_batch*` → one `BatchInsert` WAL append + N overlay CAS (existing single-append discipline).
 - document-tx → same WAL records, overlay apply.
@@ -135,12 +135,12 @@ is the only data-affecting one-way step, deliberately split out (F7).
 - **Production-soak PS1 (the #41 witness through the FLIPPED production API):** N writers `trie.insert`/`increment`
   + R readers `trie.contains`/`get_value` + checkpointer `trie.checkpoint()` + evictor `force_eviction`, all
   production API now routed to the overlay; reopen (overlay recovery) → EVERY acknowledged term survives exact.
-  Real-disk. **PS2:** kill-switch round-trip (owned↔overlay both reopen-compatible). **PS3:** assert remove/δ<0
+  Real-disk. **PS2:** kill-switch round-trip (owned↔overlay both reopen-compatible). **PS3:** assert remove/$`\delta < 0`$
   return the documented error (guards the gaps).
 - **Existing 2489 suite:** mode-agnostic behavioral tests RUN THROUGH the overlay (the identity oracle, as G4 used
   them); owned-internal tests re-point or run in `OwnedTree`-mode fixtures (mode-parameterized). Green at every phase.
 
-## (10) Phased migration (each green-gated: nextest $`\ge`$2489 + verify-formal-correspondence exit 0 + unsafe-inventory exit 0)
+## (10) Phased migration (each green-gated: nextest at least 2489 + verify-formal-correspondence exit 0 + unsafe-inventory exit 0)
 - **F0** — routing scaffold + thin primitives (`insert_cas_with_value_durable`, `upsert_cas_durable`, overlay batch
   loop) + **un-gate fault-in to production**. No default flip. Reversible.
 - **F1** — integration TLA + PS1/PS2/PS3 harness (mode-parameterized; run `OwnedTree` first = harness sound). Reversible.

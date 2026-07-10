@@ -1,6 +1,6 @@
 # On-line SCDAWG Construction
 
-This document describes the on-line `O(n)` algorithm for constructing the SCDAWG, based on Inenaga et al. (2001, [10.1109/SPIRE.2001.989743](https://doi.org/10.1109/SPIRE.2001.989743); 2005, [10.1016/j.dam.2004.04.012](https://doi.org/10.1016/j.dam.2004.04.012)). The algorithm processes characters left-to-right, enabling dynamic updates as strings are added.
+This document describes the on-line $`O(n)`$ algorithm for constructing the SCDAWG, based on Inenaga et al. (2001, [10.1109/SPIRE.2001.989743](https://doi.org/10.1109/SPIRE.2001.989743); 2005, [10.1016/j.dam.2004.04.012](https://doi.org/10.1016/j.dam.2004.04.012)). The algorithm processes characters left-to-right, enabling dynamic updates as strings are added.
 
 ## Overview
 
@@ -26,7 +26,7 @@ struct ReferencePair {
 
 **Explicit**: When `start > end`, the reference is at the node itself.
 
-**Implicit**: When $`start \le end`$, the reference is within the edge starting at `node` with first character `text[start]`.
+**Implicit**: When $`\text{start} \le \text{end}`$, the reference is within the edge starting at `node` with first character `text[start]`.
 
 ### Node Structure
 
@@ -397,16 +397,16 @@ edge.end = OpenEnd::Fixed(current_position);
 ## Complexity Analysis
 
 **Theorem** (Inenaga et al. 2005, [10.1016/j.dam.2004.04.012](https://doi.org/10.1016/j.dam.2004.04.012)):
-The on-line CDAWG construction runs in `O(n)` time and space.
+The on-line CDAWG construction runs in $`O(n)`$ time and space.
 
 **Proof sketch**:
 1. Each character is processed once.
-2. Amortized `O(1)` operations per character via suffix-link traversal.
-3. At most `O(n)` nodes and edges are created in total.
-4. `canonize` operations traverse at most `O(n)` total edge length.
+2. Amortized $`O(1)`$ operations per character via suffix-link traversal.
+3. At most $`O(n)`$ nodes and edges are created in total.
+4. `canonize` operations traverse at most $`O(n)`$ total edge length.
 
 **SCDAWG Extension**:
-Adding sext links costs `O(1)` work per suffix link, so the overall bound remains `O(n)`.
+Adding sext links costs $`O(1)`$ work per suffix link, so the overall bound remains $`O(n)`$.
 
 ## Worked Example: "abcabcab"
 

@@ -47,23 +47,23 @@ A trie `T` over alphabet $`\Sigma`$ is a rooted tree where:
 ### Properties
 
 **Time Complexity:**
-- Lookup: `O(m)` where `m` is the length of the query string
-- Insert: `O(m)`
-- Delete: `O(m)`
-- Prefix search: `O(m + k)` where `k` is the number of matches
+- Lookup: $`O(m)`$ where $`m`$ is the length of the query string
+- Insert: $`O(m)`$
+- Delete: $`O(m)`$
+- Prefix search: $`O(m + k)`$ where $`k`$ is the number of matches
 
 **Space Complexity:**
-- Worst case: $`O(n \times m \times \mid \Sigma \mid )`$ where `n` is the number of strings and $`\mid \Sigma \mid`$ is the alphabet size
+- Worst case: $`O(n \times m \times \lvert \Sigma \rvert)`$ where $`n`$ is the number of strings and $`\lvert \Sigma \rvert`$ is the alphabet size
 - In practice: much better due to prefix sharing
 
 ### Comparison with Other String Structures
 
 | Structure | Lookup | Insert | Space | Notes |
 |-----------|--------|--------|-------|-------|
-| Sorted Array | `O(m log n)` | `O(n)` | `O(N)` | Binary search, `N` = total chars |
-| Hash Table | `O(m)` expected | `O(m)` | `O(N)` | No prefix queries, hash collisions |
-| Trie | `O(m)` | `O(m)` | Variable | Prefix queries, deterministic |
-| BST of strings | `O(m log n)` | `O(m log n)` | `O(N)` | Balanced variants |
+| Sorted Array | $`O(m \log n)`$ | $`O(n)`$ | $`O(N)`$ | Binary search, $`N`$ = total chars |
+| Hash Table | $`O(m)`$ expected | $`O(m)`$ | $`O(N)`$ | No prefix queries, hash collisions |
+| Trie | $`O(m)`$ | $`O(m)`$ | Variable | Prefix queries, deterministic |
+| BST of strings | $`O(m \log n)`$ | $`O(m \log n)`$ | $`O(N)`$ | Balanced variants |
 
 The key advantage of tries is that lookup time depends only on query length, not the number of stored strings.
 
@@ -75,7 +75,7 @@ Several trie variants optimize for specific use cases:
 
 ### Standard Trie
 
-The basic trie as described above. Each node has up to $`\mid \Sigma \mid`$ children, stored in some collection (array, hash map, linked list).
+The basic trie as described above. Each node has up to $`\lvert \Sigma \rvert`$ children, stored in some collection (array, hash map, linked list).
 
 **Alphabet array representation:**
 ```
@@ -196,8 +196,8 @@ B-trees exemplify disk-optimized design:
         [A-C][E-G][I-L][N-S][U-W][Y-Z]
 ```
 
-- **High fanout**: each node has `O(B)` children, reducing tree height
-- **Height**: `O(log_B N)`, so only `O(log_B N)` I/Os per operation
+- **High fanout**: each node has $`O(B)`$ children, reducing tree height
+- **Height**: $`O(\log_{B} N)`$, so only $`O(\log_{B} N)`$ I/Os per operation
 - **Node size = block size**: each node read/write is one I/O
 
 For `N = 1` billion items and `B = 4 KB` pages holding 400 keys:
@@ -284,10 +284,10 @@ When comparing disk tries, measure:
 
 This foundation establishes the core concepts:
 
-1. **Tries** provide `O(m)` lookup independent of dictionary size
+1. **Tries** provide $`O(m)`$ lookup independent of dictionary size
 2. **External memory model** counts I/Os, not CPU operations
 3. **Disk-efficient design** requires high fanout, block packing, and minimizing height
-4. **B-trees** show how to achieve `O(log_B N)` I/Os; our goal is similar for tries
+4. **B-trees** show how to achieve $`O(\log_{B} N)`$ I/Os; our goal is similar for tries
 
 The following documents explore specific solutions:
 - [02-b-trie](02-b-trie.md): Bucket-based approach from the B-tree world

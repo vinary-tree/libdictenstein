@@ -10,7 +10,7 @@ lives there, so this page stays a map, not a manual.
 
 > **One-sentence summary.** The persistent-ARTrie family is a **lock-free, crash-safe,
 > disk-backed** Adaptive Radix Trie: writes are made **durable in a write-ahead log
-> before they become visible** (so *acknowledged $`\implies`$ durable*), reads traverse an
+> before they become visible** (so *$`\text{acknowledged}\implies\text{durable}`$*), reads traverse an
 > **immutable copy-on-write overlay** with no lock, and memory is bounded by evicting cold
 > subtrees to disk and faulting them back on demand.
 

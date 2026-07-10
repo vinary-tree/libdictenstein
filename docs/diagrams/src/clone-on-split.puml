@@ -77,10 +77,10 @@ partition "Finalize" #ECEFF1 {
   :last := cur;
   note right
     **Case A — no clone.** q already has the right
-    length; one suffix link suffices — O(1).
+    length; one suffix link suffices — <latex>O(1)</latex>.
     **Case B — the costly step.** A single clone caps
-    the state count at ≤ 2·|T|−1 and transitions
-    at ≤ 3·|T|−4.
+    the state count at <latex>\le 2 \cdot |T| - 1</latex> and transitions
+    at <latex>\le 3 \cdot |T| - 4</latex>.
   end note
 }
 stop
