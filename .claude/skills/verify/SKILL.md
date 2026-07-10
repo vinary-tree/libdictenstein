@@ -143,4 +143,4 @@ Every `\_` `\{` `\;` you authored must still be present in that output, and no
 State what you expected, what you ran, and what you observed (command + the decisive lines
 of output). If a gate failed, say so with the output; never claim success you didn't observe.
 For diagrams, a green run is: render exit 0 · `--check` OK · freshness diff = only your
-intended SVGs · byte-stable · every touched figure ≤ 700 px and visibly contiguous.
+intended SVGs · byte-stable · every touched figure at most 700 px and visibly contiguous.
