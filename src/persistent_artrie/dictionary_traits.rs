@@ -100,17 +100,18 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary for Persistent
     where
         F: Fn(&mut Self::Value),
     {
-        if let Some(existing) = self.get_value(term) {
-            let mut value = existing;
-            update_fn(&mut value);
-            PersistentARTrie::upsert(self, term, value).unwrap_or_else(|error| {
-                log::warn!("PersistentARTrie::update_or_insert update failed: {error}");
+        // Delegate to the atomic byte-keyed CAS loop so this shares the lock-free
+        // overlay CX + WAL + CAS path (no lost updates). The previous body was a
+        // read-then-`upsert` with a lost-update window under concurrent `&self`
+        // callers; `update_or_insert_bytes` closes it via a value-CAS retry loop.
+        // Errors are swallowed to `false` to preserve this trait method's
+        // infallible signature, matching the previous body's `unwrap_or_else`
+        // convention.
+        PersistentARTrie::update_or_insert_bytes(self, term.as_bytes(), default_value, update_fn)
+            .unwrap_or_else(|error| {
+                log::warn!("PersistentARTrie::update_or_insert failed: {error}");
                 false
-            });
-            false
-        } else {
-            PersistentARTrie::insert_with_value(self, term, default_value)
-        }
+            })
     }
 }
 

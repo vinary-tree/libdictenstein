@@ -102,6 +102,24 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let terms = self.iter_prefix_with_values_and_arena(prefix).ok()??;
         Some(terms.into_iter().map(|t| (t.term, t.value)))
     }
+
+    /// Iterate over all `(term, value)` pairs as raw byte vectors.
+    ///
+    /// Yields `(Vec<u8>, V)` over the whole trie with lossless raw-byte keys — no
+    /// stringification, so non-UTF-8 keys (high bytes `0x80..=0xFF`, `0x00`)
+    /// round-trip intact, unlike [`iter_strings`](Self::iter_strings). Value-less
+    /// "term-only" members (finals with no value) are skipped; use
+    /// [`iter_with_values`](Self::iter_with_values) to observe them as
+    /// `(term, None)`. Uniform-named twin of the in-memory DAWG's
+    /// `iter_bytes_with_values` for generic byte-backend code.
+    pub fn iter_bytes_with_values(&self) -> impl Iterator<Item = (Vec<u8>, V)> + '_
+    where
+        V: Clone,
+    {
+        // `b""` (the empty prefix) is the overlay root and always exists, so
+        // `iter_prefix_with_values(b"")` is always `Some`; flatten the Option away.
+        self.iter_prefix_with_values(b"").into_iter().flatten()
+    }
 }
 
 #[cfg(test)]

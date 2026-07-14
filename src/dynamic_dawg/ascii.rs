@@ -268,6 +268,24 @@ impl<V: DictionaryValue> DynamicDawg<V> {
             .update_or_insert_units(term.as_bytes(), default_value, update_fn)
     }
 
+    /// Atomically update-or-insert by raw byte key (lock-free, `&self`).
+    ///
+    /// Byte-keyed twin of [`update_or_insert`](Self::update_or_insert): takes the
+    /// key as raw bytes with no UTF-8 requirement, so it is valid for arbitrary key
+    /// bytes — including `0x00`, `0x80..=0xFF`, and the empty key. If `key` is
+    /// absent, inserts `default_value`; if present, applies `update_fn` to the live
+    /// value under the same per-node arc-swap CAS retry loop, so concurrent `&self`
+    /// callers on the same key never lose an update. `update_fn` is `Fn` and MAY run
+    /// more than once (once per CAS attempt, each on a fresh clone). Returns `true`
+    /// iff newly inserted.
+    pub fn update_or_insert_bytes<F>(&self, key: &[u8], default_value: V, update_fn: F) -> bool
+    where
+        F: Fn(&mut V),
+    {
+        self.inner
+            .update_or_insert_units(key, default_value, update_fn)
+    }
+
     /// Get the value associated with a term.
     ///
     /// Returns `Some(value)` if the term exists, `None` otherwise.
@@ -516,6 +534,17 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     pub fn iter_bytes(&self) -> DictionaryIterator<DynamicDawgZipper<V>> {
         let zipper = DynamicDawgZipper::new_from_dict(self);
         DictionaryIterator::new(zipper)
+    }
+
+    /// Iterate over all `(term, value)` pairs as raw byte vectors.
+    ///
+    /// Yields `(Vec<u8>, V)` in depth-first order with lossless raw-byte keys (no
+    /// UTF-8 decode), so non-UTF-8 keys — high bytes `0x80..=0xFF` and `0x00` —
+    /// round-trip intact. Uniform-named twin of the persistent byte trie's
+    /// `iter_bytes_with_values` for generic byte-backend code; identical to
+    /// [`iter_bytes`](Self::iter_bytes), which is already valued.
+    pub fn iter_bytes_with_values(&self) -> DictionaryIterator<DynamicDawgZipper<V>> {
+        self.iter_bytes()
     }
 
     /// Iterate over all `(term, value)` pairs as UTF-8 strings.

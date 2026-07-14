@@ -202,6 +202,82 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
         <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(self, term, value)
     }
 
+    /// Atomically update-or-insert a value by raw byte key, under the crate's
+    /// lock-free overlay CX + WAL + CAS model (`&self`; no lost updates).
+    ///
+    /// If `key` is absent, inserts `default_value`. If `key` is present, applies
+    /// `update_fn` to the live value. Returns `Ok(true)` iff this call newly
+    /// inserted the term (`Ok(false)` if it updated an existing value). This is the
+    /// raw-byte, arbitrary-`V` twin of the `&str`
+    /// `MutableMappedDictionary::update_or_insert`: it imposes no UTF-8 requirement,
+    /// so it is valid for any key bytes — including `0x00`, `0x80..=0xFF`, and the
+    /// empty key.
+    ///
+    /// # Atomicity
+    ///
+    /// Built on the same value-CAS durable loop as
+    /// [`increment_bytes`](Self::increment_bytes) (via
+    /// `compare_and_swap_cas_durable_default`), NOT the read-then-`upsert`
+    /// `MutableMappedDictionary::update_or_insert` trait body (which has a
+    /// lost-update window). Each iteration reads the current value, applies the
+    /// closure to a fresh clone, and publishes via a compare-and-swap keyed on the
+    /// value it read; a competing write between the read and the publish fails the
+    /// CAS, and the loop retries against the new value — so concurrent `&self`
+    /// callers hammering the same key never lose an update.
+    ///
+    /// # Retry contract
+    ///
+    /// `update_fn` is `Fn` (not `FnMut`) and MAY run more than once — once per CAS
+    /// attempt — each time on a fresh clone of the current value. It must therefore
+    /// be a pure function of the value it is handed (the standard `update_or_insert`
+    /// retry contract). Any interior mutability in `V` (e.g. atomics) is snapshotted
+    /// by the per-attempt clone, so the read-modify-write is linearized by the
+    /// root-CAS, not by `V`'s internal atomics.
+    ///
+    /// # Durability
+    ///
+    /// The winning value is persisted as a full-value `WalRecord::Upsert` (Order-A:
+    /// durable append + sync *before* the visibility CAS) and replays as idempotent
+    /// last-writer-wins on recovery — surviving `checkpoint()` + reopen exactly like
+    /// [`upsert_bytes`](Self::upsert_bytes).
+    pub fn update_or_insert_bytes<F>(
+        &self,
+        key: &[u8],
+        default_value: V,
+        update_fn: F,
+    ) -> Result<bool>
+    where
+        F: Fn(&mut V),
+    {
+        loop {
+            // Fresh read each attempt (lock-free; non-faulting for the byte overlay).
+            let cur_v: Option<V> =
+                <Self as DurableOverlayWrite<ByteKey, V, S>>::value_read_faulting(self, key)?;
+            // Compute the new value AND the return flag from THIS read, so the flag
+            // always reflects the iteration that ultimately wins the CAS (an attempt
+            // that reads absent but loses to a concurrent insert re-reads present on
+            // the next iteration and correctly reports `false`).
+            let (new_v, inserted) = match &cur_v {
+                Some(current) => {
+                    let mut updated = current.clone();
+                    update_fn(&mut updated);
+                    (updated, false)
+                }
+                None => (default_value.clone(), true),
+            };
+            // Order-A durable CAS keyed on `cur_v` (`None` ⇒ "must be absent"): a
+            // racing writer landing between the read and the publish fails the swap.
+            match <Self as DurableOverlayWrite<ByteKey, V, S>>::compare_and_swap_cas_durable_default(
+                self, key, cur_v, new_v,
+            )? {
+                true => return Ok(inserted),
+                false => {
+                    std::hint::spin_loop();
+                }
+            }
+        }
+    }
+
     /// Atomically compare and swap a value.
     ///
     /// Updates the value only if the current value matches `expected`.
