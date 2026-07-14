@@ -131,12 +131,19 @@ fn persistent_vocab_dictionary_node_descends_full_depth() {
     // reachable) — the property that was truncated to length-1 terms.
     let mut got = BTreeSet::new();
     collect_terms(&Dictionary::root(&vocab), &mut String::new(), &mut got);
-    assert_eq!(got, corpus_terms(), "generic DictionaryNode DFS != inserted term set");
+    assert_eq!(
+        got,
+        corpus_terms(),
+        "generic DictionaryNode DFS != inserted term set"
+    );
 
     // Empty-string membership => the root itself is final (was hardcoded `false`),
     // and its `value()` matches the inherent index.
     let root = Dictionary::root(&vocab);
-    assert!(root.is_final(), "empty string is a member, so root must be final");
+    assert!(
+        root.is_final(),
+        "empty string is a member, so root must be final"
+    );
     assert_eq!(
         root.value(),
         vocab.get_index(""),
