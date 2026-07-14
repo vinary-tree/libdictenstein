@@ -1287,6 +1287,17 @@ impl<V: DictionaryValue> DictionaryNode for DynamicDawgU64Node<V> {
     }
 }
 
+impl<V: DictionaryValue> crate::MappedDictionaryNode for DynamicDawgU64Node<V> {
+    type Value = V;
+
+    /// The value stored at this node, if any. Values are attached only at final
+    /// nodes (via `insert_sequence_with_value`); the backing `ArcSwapOption` is
+    /// empty elsewhere, so this yields `None` for non-final nodes.
+    fn value(&self) -> Option<Self::Value> {
+        self.node.value.load_full().map(|value| (*value).clone())
+    }
+}
+
 impl<V: DictionaryValue> crate::MutableDictionary for DynamicDawgU64<V> {
     fn insert(&self, term: &str) -> bool {
         // Delegate to the inherent method
@@ -1335,6 +1346,18 @@ impl<V: DictionaryValue> Dictionary for DynamicDawgU64<V> {
 
     fn sync_strategy(&self) -> SyncStrategy {
         SyncStrategy::InternalSync
+    }
+}
+
+impl<V: DictionaryValue> crate::MappedDictionary for DynamicDawgU64<V> {
+    type Value = V;
+
+    /// String-keyed value lookup (the trait's `&str` surface). Sequence-keyed
+    /// lookups use the inherent [`get_sequence_value`](DynamicDawgU64::get_sequence_value);
+    /// value-yielding fuzzy queries read [`MappedDictionaryNode::value`] during the
+    /// walk and never call this. `contains_with_value` uses the trait default.
+    fn get_value(&self, term: &str) -> Option<Self::Value> {
+        DynamicDawgU64::get_value(self, term)
     }
 }
 
