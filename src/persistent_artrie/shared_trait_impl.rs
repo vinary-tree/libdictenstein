@@ -1,4 +1,5 @@
-//! `ARTrie` + `EvictableARTrie` trait implementations for `SharedARTrie<V>`.
+//! `ARTrie` + `EvictableARTrie` + `Dictionary` + `MappedDictionary` trait
+//! implementations for `SharedARTrie<V>`.
 //!
 //! Split out of byte `dict_impl.rs` (lines ~5675-6074, ~400 LOC) as
 //! the tenth Phase-5 byte sub-module. The trait blocks plus the
@@ -17,9 +18,11 @@ use crate::persistent_artrie::core::eviction::{
 // F4: the `.read()/.write()` compat shim on the collapsed `Arc<PersistentARTrie>`.
 use crate::persistent_artrie::core::shared_access::SharedTrieAccess;
 use crate::value::DictionaryValue;
+use crate::{Dictionary, MappedDictionary, SyncStrategy};
 
 use super::dict_impl::PersistentARTrie;
 use super::error::{PersistentARTrieError, Result};
+use super::node_impl::PersistentARTrieNode;
 use super::recovery::RecoveryReport;
 use super::SharedARTrie;
 
@@ -326,5 +329,129 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
         {
             coordinator.lru_registry().touch(path);
         }
+    }
+}
+
+// ============================================================================
+// B1: `Dictionary` / `MappedDictionary` for the `Arc` handle `SharedARTrie<V>`
+// ============================================================================
+//
+// The bare `PersistentARTrie<V, S>` implements `Dictionary`/`MappedDictionary`
+// (see `dictionary_traits.rs`) but is NOT `Clone` — it owns the WAL writer, the
+// mmap buffer manager, the arena, and atomic counters. The `Arc` handle
+// `SharedARTrie<V>` is `Clone` but, until now, carried only `ARTrie` /
+// `EvictableARTrie` (above). Consumers that need BOTH `MappedDictionary` AND
+// `Clone` on a single type — e.g. a value-returning `Transducer` driven over an
+// `Arc`-shared count store — therefore had no usable byte type (the split is the
+// "B1 blocker").
+//
+// These two impls close the gap by delegating through the no-lock `read()` shim
+// to the bare trie's own `Dictionary` / `MappedDictionary` bodies. This is the
+// exact analog of the `SharedVocabARTrie` impls (`vocab/mod.rs`, "the impl lives
+// on the `Arc` handle, whose `Clone` satisfies the bound") and the
+// `DynamicDawgU64` value impls. Method resolution is unambiguous: the guard
+// derefs to `&PersistentARTrie` (which does NOT implement `ARTrie` — only the
+// `Arc` does), and the bare trie has no inherent `root`/`contains`/`len`/
+// `get_value`, so each call binds to the `Dictionary`/`MappedDictionary` method.
+impl<V: DictionaryValue> Dictionary for SharedARTrie<V> {
+    type Node = PersistentARTrieNode<V>;
+
+    fn root(&self) -> Self::Node {
+        // Delegates to the bare trie's overlay-backed `Dictionary::root`. The
+        // returned node OWNS its overlay-root `Arc`, so it outlives the transient
+        // no-lock `read()` guard (`SharedTrieAccess` hands back `&PersistentARTrie`).
+        self.read().root()
+    }
+
+    fn contains(&self, term: &str) -> bool {
+        self.read().contains(term)
+    }
+
+    fn len(&self) -> Option<usize> {
+        self.read().len()
+    }
+
+    fn sync_strategy(&self) -> SyncStrategy {
+        // The persistent ARTrie syncs internally (WAL), so it reports
+        // `InternalSync`. Omitting this override would default to `ExternalSync`
+        // and silently change the transducer's synchronization contract vs. the
+        // single-trie path.
+        self.read().sync_strategy()
+    }
+}
+
+impl<V: DictionaryValue> MappedDictionary for SharedARTrie<V> {
+    type Value = V;
+
+    fn get_value(&self, term: &str) -> Option<Self::Value> {
+        self.read().get_value(term)
+    }
+}
+
+#[cfg(test)]
+mod b1_shared_dictionary_tests {
+    use super::PersistentARTrie;
+    use super::SharedARTrie;
+    use crate::artrie_trait::ARTrie;
+    use crate::{Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode};
+    use std::sync::Arc;
+
+    /// B1 (functional): a `SharedARTrie<u64>` populated through the `Arc` answers
+    /// the full `Dictionary` + `MappedDictionary` surface — `len`, `contains`,
+    /// `get_value`, and an overlay-backed `root()` walk. The `transition(*b)` calls
+    /// take a `u8` label, so this also operationally witnesses the byte node's
+    /// `Unit = u8` projection (the carrier `U64NgramView` needs on the grammstein side).
+    #[test]
+    fn shared_artrie_u64_is_a_mapped_dictionary_through_the_arc() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("b1.part");
+        let trie: SharedARTrie<u64> =
+            Arc::new(PersistentARTrie::<u64>::create(&path).expect("create"));
+
+        assert!(trie.insert_with_value("the", 100));
+        assert!(trie.insert_with_value("the quick", 42));
+        assert!(trie.insert_with_value("the quick brown", 7));
+
+        // Dictionary surface through the Arc handle.
+        assert_eq!(Dictionary::len(&trie), Some(3));
+        assert!(Dictionary::contains(&trie, "the quick"));
+        assert!(!Dictionary::contains(&trie, "absent"));
+
+        // MappedDictionary surface through the Arc handle.
+        assert_eq!(MappedDictionary::get_value(&trie, "the"), Some(100));
+        assert_eq!(MappedDictionary::get_value(&trie, "the quick"), Some(42));
+        assert_eq!(
+            MappedDictionary::get_value(&trie, "the quick brown"),
+            Some(7)
+        );
+        assert_eq!(MappedDictionary::get_value(&trie, "absent"), None);
+
+        // Root walk: byte node projects `Unit = u8`, `Value = u64`.
+        let mut node = Dictionary::root(&trie);
+        for b in b"the" {
+            node = DictionaryNode::transition(&node, *b).expect("edge 't'/'h'/'e' exists");
+        }
+        assert!(
+            DictionaryNode::is_final(&node),
+            "'the' is a stored final node"
+        );
+        assert_eq!(MappedDictionaryNode::value(&node), Some(100));
+    }
+
+    /// B1 + M1 (type-level witness): `SharedARTrie<u64>` satisfies EXACTLY the
+    /// bound the libgrammstein `GrammarCorrector<D>` / `U64NgramView` chain
+    /// requires — `MappedDictionary<Value = u64> + Clone + Send + Sync + 'static`
+    /// with the node projecting `Value = u64`. If this compiles, B1 is resolved.
+    /// (The `Unit: VarintByteUnit` half is checked on the grammstein side, where
+    /// that sealed trait lives; here the functional test above pins `Unit = u8`.)
+    #[test]
+    fn shared_artrie_u64_satisfies_the_grammar_corrector_bound() {
+        fn requires_clone_mapped_dict<D>()
+        where
+            D: MappedDictionary<Value = u64> + Clone + Send + Sync + 'static,
+            <D as Dictionary>::Node: MappedDictionaryNode<Value = u64>,
+        {
+        }
+        requires_clone_mapped_dict::<SharedARTrie<u64>>();
     }
 }
