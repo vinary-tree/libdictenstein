@@ -84,6 +84,26 @@ jobs:
         run: cargo clippy --all-features --all-targets -- -D warnings
 
   # -----------------------------------------------------------------
+  # Supply-chain gate: published advisories, licence compatibility,
+  # banned crates, and permitted sources. Configured in deny.toml.
+  #
+  # Added after a manual OSV sweep (2026-07) found five advisories in the
+  # locked tree -- three of them live soundness bugs -- that had been
+  # present for months with nothing set up to notice. This also runs on
+  # the weekly `schedule` trigger above, which is the important part:
+  # advisories are published against code that has not changed, so a
+  # push-only gate silently goes stale.
+  # -----------------------------------------------------------------
+  supply-chain:
+    name: Supply chain (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans sources licenses
+
+  # -----------------------------------------------------------------
   # `cargo doc` with `-D warnings` so broken intra-doc links fail CI.
   # -----------------------------------------------------------------
   doc:

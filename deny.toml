@@ -1,0 +1,97 @@
+# cargo-deny configuration for libdictenstein.
+#
+# Nothing in this repository previously checked the dependency tree for published
+# advisories. A manual OSV sweep in 2026-07 found five in the locked tree, three of
+# them live soundness bugs (memmap2 unchecked pointer offset, crossbeam-epoch invalid
+# pointer dereference, anyhow Error::downcast_mut). All were silently present for
+# months. This gate exists so that never depends on someone thinking to look.
+#
+# Run locally with:
+#     cargo deny check
+# CI runs `check advisories bans sources licenses` on every push and on a schedule --
+# the schedule matters because advisories are published against code that has not
+# changed, so a push-only gate goes stale without any commit to blame.
+
+[graph]
+# Check every feature combination's dependencies, not just the default set. The
+# persistent-artrie stack (memmap2, sysinfo, lru, dashmap, rustix) is optional, and
+# that is exactly where the mmap soundness advisory lived.
+all-features = true
+
+# ---------------------------------------------------------------------------
+# Published security advisories (RustSec).
+# ---------------------------------------------------------------------------
+[advisories]
+yanked = "deny"
+
+# Every entry here MUST carry a reason that states WHY the risk is accepted and a
+# REVIEW-BY date. An advisory with no fixed version is a standing risk to
+# re-evaluate, not something to mute permanently.
+#
+# (The date lives inside `reason` rather than in cargo-deny's `expires` key, because
+# `expires` is not accepted by cargo-deny 0.19.x, which is what is installed locally.
+# Once the floor moves to 0.20+, convert these to real `expires` entries so the tool
+# enforces the deadline instead of merely printing it.)
+ignore = [
+  { id = "RUSTSEC-2025-0141", reason = "REVIEW-BY 2026-10-31. bincode is unmaintained and no fixed version exists; 3.0.0 is a tombstone release containing only a compiler error, so upgrading is not an option. The crate encodes this project's on-disk format. Migration to the maintained bincode-next fork is planned and gated behind a byte-level regression net (golden fixtures + byte-pinning tests) that does not exist yet." },
+]
+
+# ---------------------------------------------------------------------------
+# Licence compatibility. This crate ships Apache-2.0.
+# ---------------------------------------------------------------------------
+[licenses]
+# All permissive and Apache-2.0-compatible. Anything outside this set is a
+# deliberate decision that has to be made here, in review, rather than arriving
+# silently with a transitive dependency.
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  # xxhash-rust (node deduplication in the persistent ARTrie, and via pathmap).
+  # OSI approved and FSF Free/Libre.
+  "BSL-1.0",
+]
+confidence-threshold = 0.9
+
+# Several entries above are pre-approved rather than currently present. Warning on
+# each of those on every run would train people to ignore this gate's output, which
+# is the opposite of what it is for.
+unused-allowed-license = "allow"
+
+# ---------------------------------------------------------------------------
+# Duplicate versions and banned crates.
+# ---------------------------------------------------------------------------
+[bans]
+# Deliberately "warn", not "deny", for now. The 2026-07 upgrade collapsed the
+# rand/rand_core/rand_chacha/ppv-lite86 duplicates and retired the stale itertools
+# 0.10, but ~19 duplicate pairs remain, most of them transitive and not resolvable
+# from here (e.g. getrandom 0.3 via rand_core vs 0.4 via tempfile). Ratchet this to
+# "deny" once that list is empty, the same way the doc-math gate was ratcheted.
+multiple-versions = "warn"
+wildcards = "deny"
+
+deny = [
+  # bincode 3.0.0 is a tombstone: the crate was abandoned after a doxxing and
+  # harassment incident, and 3.0.0 ships only a README plus a lib.rs containing a
+  # single compiler error announcing that status. Cargo.toml already pins `<3`;
+  # this is the belt-and-braces check in case a transitive dependency drags it in.
+  { crate = "bincode:>=3.0.0", reason = "bincode 3.0.0 is a deliberate tombstone release and does not compile" },
+  # Unmaintained, archived, and superseded by `pastey` (RUSTSEC-2024-0436).
+  { crate = "paste", reason = "unmaintained (RUSTSEC-2024-0436); use `pastey`, declared here via a package rename" },
+]
+
+# ---------------------------------------------------------------------------
+# Where crates may come from.
+# ---------------------------------------------------------------------------
+# This is the check that makes adopting a third-party fork of an abandoned crate an
+# explicit, reviewable decision rather than an invisible one -- relevant because the
+# planned bincode replacement (`bincode-next`) is exactly such a fork.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

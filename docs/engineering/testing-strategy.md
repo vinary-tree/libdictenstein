@@ -74,14 +74,20 @@ models that MUST fail, proving the checker would catch a real violation).
 
 ## Continuous integration
 
-[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) runs **13 jobs**: a 10-row
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) runs **14 jobs**: a 10-row
 `build-matrix` (every feature combination + macOS), `clippy` (`-D warnings`), `doc`
 (`RUSTDOCFLAGS=-D warnings`, so a broken intra-doc link fails CI), `fmt`, `msrv` (Rust **1.95**),
-`coverage` (`llvm-cov` → Codecov), `sanitizers` (address + thread on nightly), `rocq`,
-`formal-correspondence` (the PR gate hosting the `unsafe` gate), `formal-miri`, `formal-io-uring`,
+`supply-chain` (`cargo-deny`: advisories, licences, banned crates, permitted sources — see
+[`deny.toml`](../../deny.toml)), `coverage` (`llvm-cov` → Codecov), `sanitizers` (address +
+thread on nightly), `rocq`, `formal-correspondence` (the PR gate hosting the `unsafe` gate),
+`formal-miri`, `formal-io-uring`,
 `diagrams` (pinned renderers + the SVG freshness gate + the [doc-math gate](../notation.md#8-what-the-gate-enforces)),
 and a cron-only `formal-tlc`. The three orthogonal quality gates — **`unsafe` inventory**,
 **doc-math**, and **diagram freshness** — fail the PR independently of the build/clippy/fmt jobs.
+
+`supply-chain` is the one gate that can fail on a commit that changes nothing: advisories are
+published against code that is already merged. That is why it also runs on the weekly `schedule`
+trigger rather than on pushes alone — a push-only advisory check goes stale invisibly.
 
 ## Gaps
 

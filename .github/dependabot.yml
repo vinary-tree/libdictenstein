@@ -1,0 +1,50 @@
+# Dependency update automation.
+#
+# The 2026-07 upgrade found the locked tree several months behind, carrying five
+# published advisories. `deny.toml` + the `supply-chain` CI job now detect that
+# state; this file is what stops it recurring in the first place.
+#
+# Updates are grouped so this opens a couple of reviewable PRs per week rather than
+# thirty single-crate ones -- ungrouped Dependabot output is reliably ignored, which
+# is how trees drift in the first place.
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      # Semver-compatible updates carry no API break, so they are safe to review
+      # as a single batch. This is the group that would have caught the memmap2,
+      # crossbeam-epoch and anyhow soundness fixes on the day they shipped.
+      compatible:
+        applies-to: version-updates
+        update-types: ["patch", "minor"]
+      # Security fixes, separated so they are never queued behind routine churn.
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+    # Major bumps arrive as individual PRs: each one needs its own migration and
+    # its own verification, as rand 0.8 -> 0.9 and criterion 0.5 -> 0.8 both did.
+    ignore:
+      - dependency-name: "bincode"
+        # bincode 3.0.0 is a tombstone release containing only a compiler error.
+        # Cargo.toml pins `<3` and deny.toml bans `>=3.0.0`; this stops Dependabot
+        # from repeatedly proposing it. Removal of this entry is part of the
+        # planned migration to bincode-next.
+        versions: [">=3.0.0"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "chore(ci)"
