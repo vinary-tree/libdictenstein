@@ -71,6 +71,55 @@ Date format is ISO-8601 (YYYY-MM-DD).
 - **`PersistentVocabARTrie::snapshot()`** — a named alias for the lossless snapshot
   `clone`, for call-site intent.
 
+### Dependencies
+
+- **Four of five RustSec advisories cleared.** An OSV sweep of the whole locked tree
+  found five; the upgrade closes all but one, and the lock shrank from 211 to 195
+  packages through deduplication.
+  - `memmap2` 0.9.10 → 0.9.11 — RUSTSEC-2026-0186, unchecked pointer offset. This is
+    the mmap backend under the entire persistent ARTrie, so the exposure sat on every
+    disk-backed read path. The declared floor is now `0.9.11`, not `0.9`.
+  - `crossbeam-epoch` 0.9.18 → 0.9.20 — RUSTSEC-2026-0204, invalid pointer dereference
+    in the `fmt::Pointer` impl for `Atomic`/`Shared`. Reached via `rayon`'s
+    work-stealing deque; pinned by raising the `rayon` floor to 1.12.
+  - `anyhow` 1.0.102 → 1.0.104 — RUSTSEC-2026-0190, unsoundness in
+    `Error::downcast_mut()`. Transitive via `prost-derive`.
+  - `paste` → **`pastey` 0.2** — RUSTSEC-2024-0436, unmaintained and archived with no
+    fixed version. Declared as a package rename so the `paste::paste!` call sites are
+    unchanged. Dev-dependency only.
+  - `bincode` **remains** on 2.0 (RUSTSEC-2025-0141, unmaintained, no fixed version).
+    It is now pinned `>=2.0, <3`: bincode 3.0.0 is a *tombstone* release shipping only
+    a README and a `lib.rs` containing a compiler error, so upgrading to it breaks the
+    build by design. Migration to the maintained `bincode-next` fork is tracked
+    separately and gated behind a byte-level regression net.
+- **MSRV corrected: 1.70 → 1.95.** The old value was inaccurate in every feature
+  configuration — `pathmap` 0.2.2 required 1.88, `bincode` 2.0.1 and `lru` 0.18
+  required 1.85, and even default-feature `log`/`thiserror` required 1.71. Clippy had
+  been reporting the discrepancy directly (an existing `div_ceil` call in
+  `overlay/codec.rs` was flagged as "stable since 1.73" against the declared 1.70).
+  The `msrv` CI job moves to a matching 1.95 toolchain; `cargo +1.95.0 build
+  --all-features` is verified to succeed.
+- **Major upgrades**, all unblocked by the MSRV correction: `rustc-hash` 1.1 → 2.1,
+  `sysinfo` 0.37 → 0.39.6, `prost`/`prost-build` 0.13 → 0.14.4, and the
+  dev-dependencies `criterion` 0.5 → 0.8 and `rand` 0.8 → 0.9.
+- **`BloomFilter` serialized under `rustc-hash` 1.x is not readable under 2.x.**
+  rustc-hash 2.0 replaced the fxhash algorithm, and `BloomFilter` persists its raw bit
+  vector rather than its keys, so bits set by the old hash and queried by the new one
+  yield false negatives. Nothing inside this crate is affected — `DawgCore`'s
+  `bloom_filter` and `suffix_cache` are both `serde(skip)`, and the on-disk ARTrie
+  format uses xxh3 — but a downstream crate that serialized a `BloomFilter` standalone
+  must rebuild it from its source terms rather than migrating the bits. Documented on
+  the type.
+- **Benchmark corpora changed.** `rand`'s value stream differs across major versions,
+  so although every generator here is a fixed-seed `StdRng` and runs stay deterministic
+  within a version, the generated term corpora after this change are not the same
+  inputs behind the figures recorded in `docs/benchmarks/` and `docs/experiments/`.
+  Treat those as a separate experimental condition rather than a regression.
+- Deduplication: `rand`, `rand_core`, `rand_chacha` and `ppv-lite86` collapsed to one
+  copy each (choosing `rand` 0.9 over 0.10 specifically because `proptest` already
+  pulls 0.9), `getrandom` went from three copies to two, and the stale `itertools` 0.10
+  pulled by `criterion` 0.5 is gone.
+
 ## [0.2.0] - 2026-06-15
 
 ### Changed
