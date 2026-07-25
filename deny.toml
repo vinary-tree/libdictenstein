@@ -64,13 +64,35 @@ unused-allowed-license = "allow"
 # Duplicate versions and banned crates.
 # ---------------------------------------------------------------------------
 [bans]
-# Deliberately "warn", not "deny", for now. The 2026-07 upgrade collapsed the
-# rand/rand_core/rand_chacha/ppv-lite86 duplicates and retired the stale itertools
-# 0.10, but ~19 duplicate pairs remain, most of them transitive and not resolvable
-# from here (e.g. getrandom 0.3 via rand_core vs 0.4 via tempfile). Ratchet this to
-# "deny" once that list is empty, the same way the doc-math gate was ratcheted.
-multiple-versions = "warn"
+# "deny", with every currently-unavoidable duplicate enumerated below.
+#
+# This is deliberately stricter than a bare "warn". Each duplicate that remains is
+# pinned inside an upstream crate and cannot be resolved from this manifest -- but
+# listing them individually means a *new* duplicate, or one that becomes resolvable
+# because an upstream released a fix, fails the gate instead of blending into a wall
+# of warnings. Re-check the list whenever these dependencies move; an entry that
+# stops matching is a duplicate that has been fixed upstream and should be deleted.
+#
+# The 2026-07 upgrade already collapsed rand / rand_core / rand_chacha / ppv-lite86
+# to one copy each and retired the stale itertools 0.10 that criterion 0.5 pulled.
+multiple-versions = "deny"
 wildcards = "deny"
+
+skip = [
+  # dashmap 6.2.1 (its latest) pins hashbrown 0.14; petgraph 0.8 pins 0.15;
+  # indexmap 2.14 and lru 0.18 are on 0.17. Three unrelated upstreams, no overlap.
+  { crate = "hashbrown:0.14.5", reason = "pinned by dashmap 6.2.1, its latest release" },
+  { crate = "hashbrown:0.15.5", reason = "pinned by petgraph 0.8.3, reached via prost-build" },
+  # foldhash tracks whichever hashbrown pulled it, so it duplicates for the same reason.
+  { crate = "foldhash:0.1.5", reason = "pulled by hashbrown 0.15.5; resolves when that does" },
+  # NOTE: getrandom (0.3 via rand_core, 0.4 via tempfile) and itertools (0.13 via
+  # criterion, 0.14 via prost-build) also duplicate in the full graph, but need no
+  # entry here -- their second copy arrives only through a dev-dependency, which
+  # cargo-deny excludes from this check. Adding skips for them would be flagged as
+  # unmatched configuration.
+  # syn 2 lingers in proc-macro crates that have not moved to 3 yet.
+  { crate = "syn:2.0.119", reason = "pinned by pathmap-derive, prettyplease and prost-build" },
+]
 
 deny = [
   # The abandoned crate itself, at any version. We use `bincode-next`, the
