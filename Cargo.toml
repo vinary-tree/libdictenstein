@@ -96,7 +96,11 @@ prost-build = { version = "0.13", optional = true }
 criterion = "0.5"
 tempfile = "3.27"
 proptest = "1.11"
-paste = "1.0"  # For macro test name concatenation
+# For macro test name concatenation. `paste` itself is unmaintained and archived
+# (RUSTSEC-2024-0436); `pastey` is the maintained drop-in successor and exports the
+# same `paste!` macro. Renamed back to `paste` here so the `paste::paste!` call
+# sites in tests/common/macros.rs need no edit.
+paste = { package = "pastey", version = "0.2" }
 hdrhistogram = "7.5"  # High dynamic range histograms for latency benchmarks
 rand = "0.8"  # PRNG for randomized benchmark scenarios
 loom = "0.7"  # Bounded schedule exploration for concurrency correspondence tests
