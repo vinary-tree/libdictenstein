@@ -19,6 +19,24 @@ use std::hash::{Hash, Hasher};
 /// Uses 3 hash functions and a bit vector to probabilistically test membership.
 /// - False positives: Possible (requires full DAWG/trie traversal)
 /// - False negatives: Never (guaranteed correct rejection)
+///
+/// # Serialized filters are tied to the `rustc-hash` major version
+///
+/// The bit positions are derived from [`rustc_hash::FxHasher`], and the serde
+/// impls below persist the raw `bits` vector rather than the inserted keys. The
+/// "no false negatives" guarantee therefore holds only while the bits are queried
+/// by the *same* hash function that set them.
+///
+/// `rustc-hash` 2.0 replaced the original Firefox-derived fxhash with a different
+/// algorithm, so a filter serialized under 1.x and deserialized under 2.x reports
+/// false negatives — it would claim a present term is absent.
+///
+/// Inside this crate that is a non-issue: the only in-crate field of this type,
+/// `DawgCore::bloom_filter`, is `#[serde(skip)]`, so no filter is ever written to
+/// disk and a deserialized DAWG rebuilds it as `None`. The hazard applies only to
+/// a downstream crate that serializes a `BloomFilter` standalone and reloads it
+/// across a `rustc-hash` major boundary. Rebuild such a filter from its source
+/// terms rather than migrating the bits.
 #[derive(Debug, Clone)]
 #[cfg_attr(
     any(feature = "serialization", feature = "serde"),

@@ -20,8 +20,13 @@ exclude = ["docs/", "formal-verification/"]
 log = "0.4"
 # SmallVec for stack-allocated vectors (performance optimization)
 smallvec = { version = "1.15", features = ["serde"] }
-# Fast non-cryptographic hashing for internal use
-rustc-hash = "1.1"
+# Fast non-cryptographic hashing for internal use.
+# 2.0 replaced the original Firefox-derived fxhash with a different algorithm, so
+# identical inputs now hash to different values. That is safe here only because no
+# FxHash output is ever persisted: `DawgCore::suffix_cache` and
+# `DawgCore::bloom_filter` are both `serde(skip)`, and the on-disk ARTrie format
+# uses xxhash-rust/xxh3 for node dedup. See the note in src/bloom_filter.rs.
+rustc-hash = "2.1"
 # Lock-free atomic Arc swapping for DynamicDawgU64
 arc-swap = "1.9"
 # Error handling
