@@ -14,6 +14,19 @@
 //! `load_art_node_with_children*` / `load_child_from_disk*`, the iterative variant) that
 //! built a `TrieRoot` / `ChildNode` were deleted with the owned tree.
 
+/// Everything a full dense-image scan yields: every `(term, value)` pair keyed by
+/// its byte units, the root's own value (outer `Option` = "root carried a value at
+/// all", inner = the value itself), and the highest node id observed.
+type DenseScan<V> = (
+    std::collections::BTreeMap<Vec<u8>, Option<V>>,
+    Option<Option<V>>,
+    u64,
+);
+
+/// One decoded on-disk node: its header, whether it terminates a term, its
+/// path-compressed prefix, and its `(key unit, child pointer)` edges.
+type DecodedNode = (Node, bool, Option<Vec<u8>>, Vec<(u8, SwizzledPtr)>);
+
 use std::sync::Arc;
 
 use crate::sync_compat::RwLock;
@@ -109,11 +122,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         buffer_manager: &Arc<RwLock<BufferManager<S>>>,
         arena_manager: &Arc<RwLock<ArenaManager<S>>>,
         root_ptr: u64,
-    ) -> Result<(
-        std::collections::BTreeMap<Vec<u8>, Option<V>>,
-        Option<Option<V>>,
-        u64,
-    )> {
+    ) -> Result<DenseScan<V>> {
         use std::collections::BTreeMap;
 
         let mut all: BTreeMap<Vec<u8>, Option<V>> = BTreeMap::new();
@@ -310,7 +319,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     fn load_single_art_node_data(
         arena_manager: &Arc<RwLock<ArenaManager<S>>>,
         node_ptr: &SwizzledPtr,
-    ) -> Result<(Node, bool, Option<Vec<u8>>, Vec<(u8, SwizzledPtr)>)> {
+    ) -> Result<DecodedNode> {
         let disk_loc = node_ptr.disk_location().ok_or_else(|| {
             PersistentARTrieError::corrupted("Invalid node pointer: cannot get disk location")
         })?;

@@ -35,7 +35,7 @@ fn sorted_results<T: Ord>(mut results: Vec<T>) -> Vec<T> {
 
 #[test]
 fn test_dat_single_exclusion_null_prefix() {
-    let terms = vec!["\x00meta", "\x00index", "hello", "world"];
+    let terms = ["\x00meta", "\x00index", "hello", "world"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -52,7 +52,7 @@ fn test_dat_single_exclusion_null_prefix() {
 
 #[test]
 fn test_dat_single_exclusion_underscore_prefix() {
-    let terms = vec!["_private", "_internal", "public", "visible"];
+    let terms = ["_private", "_internal", "public", "visible"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -69,7 +69,7 @@ fn test_dat_single_exclusion_underscore_prefix() {
 
 #[test]
 fn test_dat_multiple_exclusions() {
-    let terms = vec![
+    let terms = [
         "_private",
         "_internal",
         ".hidden",
@@ -93,7 +93,7 @@ fn test_dat_multiple_exclusions() {
 
 #[test]
 fn test_dat_empty_exclusion_returns_all() {
-    let terms = vec!["cat", "dog", "fish"];
+    let terms = ["cat", "dog", "fish"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -110,7 +110,7 @@ fn test_dat_empty_exclusion_returns_all() {
 
 #[test]
 fn test_dat_all_excluded_returns_empty() {
-    let terms = vec!["\x00meta", "\x00index", "\x00data"];
+    let terms = ["\x00meta", "\x00index", "\x00data"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -126,7 +126,7 @@ fn test_dat_all_excluded_returns_empty() {
 #[test]
 fn test_dat_exclusion_with_partial_overlap() {
     // Test where excluded prefix is a prefix of some terms but not others
-    let terms = vec!["api", "api_v1", "api_internal", "application", "web"];
+    let terms = ["api", "api_v1", "api_internal", "application", "web"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -147,7 +147,7 @@ fn test_dat_exclusion_with_partial_overlap() {
 
 #[test]
 fn test_dat_with_prefix_excluding() {
-    let terms = vec!["api_v1", "api_v2", "api__internal", "api__debug", "web_v1"];
+    let terms = ["api_v1", "api_v2", "api__internal", "api__debug", "web_v1"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -165,7 +165,7 @@ fn test_dat_with_prefix_excluding() {
 
 #[test]
 fn test_dat_with_prefix_excluding_nonexistent_prefix() {
-    let terms = vec!["hello", "world"];
+    let terms = ["hello", "world"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -177,7 +177,7 @@ fn test_dat_with_prefix_excluding_nonexistent_prefix() {
 
 #[test]
 fn test_dat_with_prefix_excluding_all_under_prefix() {
-    let terms = vec!["api__a", "api__b", "web_v1"];
+    let terms = ["api__a", "api__b", "web_v1"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -205,7 +205,7 @@ fn test_dat_valued_excluding_iterator() {
         ("\x00index", 100),
         ("dog", 3),
     ];
-    let dict = DoubleArrayTrie::from_terms_with_values(terms_with_values.into_iter());
+    let dict = DoubleArrayTrie::from_terms_with_values(terms_with_values);
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
     let excluded: &[&[u8]] = &[b"\x00"];
@@ -234,7 +234,7 @@ fn test_dat_valued_with_prefix_excluding() {
         ("api__internal", 99),
         ("web_v1", 3),
     ];
-    let dict = DoubleArrayTrie::from_terms_with_values(terms_with_values.into_iter());
+    let dict = DoubleArrayTrie::from_terms_with_values(terms_with_values);
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
     let excluded: &[&[u8]] = &[b"api__"];
@@ -258,7 +258,7 @@ fn test_dat_valued_with_prefix_excluding() {
 
 #[test]
 fn test_dawg_single_exclusion() {
-    let terms = vec!["\x00meta", "\x00index", "hello", "world"];
+    let terms = ["\x00meta", "\x00index", "hello", "world"];
     let dict: DynamicDawg<()> = DynamicDawg::from_terms(terms.iter());
 
     let zipper = DynamicDawgZipper::new_from_dict(&dict);
@@ -275,7 +275,7 @@ fn test_dawg_single_exclusion() {
 
 #[test]
 fn test_dawg_multiple_exclusions() {
-    let terms = vec!["_private", ".hidden", "public"];
+    let terms = ["_private", ".hidden", "public"];
     let dict: DynamicDawg<()> = DynamicDawg::from_terms(terms.iter());
 
     let zipper = DynamicDawgZipper::new_from_dict(&dict);
@@ -292,7 +292,7 @@ fn test_dawg_multiple_exclusions() {
 
 #[test]
 fn test_dawg_empty_exclusion_returns_all() {
-    let terms = vec!["a", "b", "c"];
+    let terms = ["a", "b", "c"];
     let dict: DynamicDawg<()> = DynamicDawg::from_terms(terms.iter());
 
     let zipper = DynamicDawgZipper::new_from_dict(&dict);
@@ -309,7 +309,7 @@ fn test_dawg_empty_exclusion_returns_all() {
 
 #[test]
 fn test_dawg_with_prefix_excluding() {
-    let terms = vec!["api_v1", "api_v2", "api__internal", "web_v1"];
+    let terms = ["api_v1", "api_v2", "api__internal", "web_v1"];
     let dict: DynamicDawg<()> = DynamicDawg::from_terms(terms.iter());
 
     let zipper = DynamicDawgZipper::new_from_dict(&dict);
@@ -331,7 +331,7 @@ fn test_dawg_with_prefix_excluding() {
 
 #[test]
 fn test_dat_char_exclusion_unicode() {
-    let terms = vec!["_private", "_internal", "café", "naïve"];
+    let terms = ["_private", "_internal", "café", "naïve"];
     let dict = DoubleArrayTrieChar::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieCharZipper::new_from_dict(&dict);
@@ -348,7 +348,7 @@ fn test_dat_char_exclusion_unicode() {
 
 #[test]
 fn test_dat_char_exclusion_emoji() {
-    let terms = vec!["🔒private", "🔒hidden", "🌍public", "visible"];
+    let terms = ["🔒private", "🔒hidden", "🌍public", "visible"];
     let dict = DoubleArrayTrieChar::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieCharZipper::new_from_dict(&dict);
@@ -365,7 +365,7 @@ fn test_dat_char_exclusion_emoji() {
 
 #[test]
 fn test_dat_char_with_prefix_excluding() {
-    let terms = vec!["api_v1", "api_v2", "api__内部", "web_v1"];
+    let terms = ["api_v1", "api_v2", "api__内部", "web_v1"];
     let dict = DoubleArrayTrieChar::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieCharZipper::new_from_dict(&dict);
@@ -388,7 +388,7 @@ fn test_dat_char_with_prefix_excluding() {
 
 #[test]
 fn test_dawg_char_exclusion() {
-    let terms = vec!["_private", "公開", "表示"];
+    let terms = ["_private", "公開", "表示"];
     let dict: DynamicDawgChar<()> = DynamicDawgChar::from_terms(terms.iter());
 
     let zipper = DynamicDawgCharZipper::new_from_dict(&dict);
@@ -423,7 +423,7 @@ fn test_empty_dictionary() {
 
 #[test]
 fn test_single_character_terms() {
-    let terms = vec!["a", "b", "\x00"];
+    let terms = ["a", "b", "\x00"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -460,7 +460,7 @@ fn test_long_excluded_prefix() {
 
 #[test]
 fn test_exclusion_prefix_not_in_dictionary() {
-    let terms = vec!["hello", "world"];
+    let terms = ["hello", "world"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -479,7 +479,7 @@ fn test_exclusion_prefix_not_in_dictionary() {
 #[test]
 fn test_overlapping_exclusions() {
     // Test with overlapping exclusion patterns
-    let terms = vec!["api", "api_v1", "api__internal"];
+    let terms = ["api", "api_v1", "api__internal"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -500,7 +500,7 @@ fn test_overlapping_exclusions() {
 
 #[test]
 fn test_consistency_dat_vs_dawg() {
-    let terms = vec!["\x00meta", "_private", "apple", "banana", "cherry"];
+    let terms = ["\x00meta", "_private", "apple", "banana", "cherry"];
 
     let dat = DoubleArrayTrie::from_terms(terms.iter());
     let dawg: DynamicDawg<()> = DynamicDawg::from_terms(terms.iter());
@@ -527,7 +527,7 @@ fn test_consistency_dat_vs_dawg() {
 
 #[test]
 fn test_consistency_dat_char_vs_dawg_char() {
-    let terms = vec!["_private", "café", "naïve", "日本語"];
+    let terms = ["_private", "café", "naïve", "日本語"];
 
     let dat_char = DoubleArrayTrieChar::from_terms(terms.iter());
     let dawg_char: DynamicDawgChar<()> = DynamicDawgChar::from_terms(terms.iter());
@@ -559,7 +559,7 @@ fn test_consistency_dat_char_vs_dawg_char() {
 #[test]
 fn test_metadata_exclusion_use_case() {
     // Simulate a dictionary with metadata entries prefixed by \x00
-    let terms = vec![
+    let terms = [
         "\x00__schema_version",
         "\x00__created_at",
         "\x00__node_count",
@@ -590,7 +590,7 @@ fn test_metadata_exclusion_use_case() {
 #[test]
 fn test_internal_api_exclusion() {
     // Simulate an API where internal endpoints are prefixed with __
-    let terms = vec![
+    let terms = [
         "api/v1/users",
         "api/v1/items",
         "api/__internal/debug",
@@ -615,7 +615,7 @@ fn test_internal_api_exclusion() {
 
 #[test]
 fn test_count_excluding() {
-    let terms = vec!["\x00a", "\x00b", "\x00c", "x", "y", "z"];
+    let terms = ["\x00a", "\x00b", "\x00c", "x", "y", "z"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);

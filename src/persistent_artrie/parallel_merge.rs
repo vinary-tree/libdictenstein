@@ -57,7 +57,7 @@ pub trait SharedARTrieParallelExt<V: DictionaryValue> {
     ///
     /// * `other` - The source trie to merge from
     /// * `merge_fn` - Function to merge values when a term exists in both tries.
-    ///                Called as `merge_fn(self_value, other_value)`.
+    ///   Called as `merge_fn(self_value, other_value)`.
     ///
     /// # Returns
     ///

@@ -447,9 +447,7 @@ pub struct CheckpointManager {
 impl CheckpointManager {
     /// Create a new epoch manager.
     pub fn new(base_dir: impl AsRef<Path>, config: EpochConfig) -> Result<Self> {
-        config
-            .validate()
-            .map_err(|e| PersistentARTrieError::internal(e))?;
+        config.validate().map_err(PersistentARTrieError::internal)?;
 
         let base_dir = base_dir.as_ref().to_path_buf();
 
@@ -598,7 +596,7 @@ impl CheckpointManager {
                     PersistentARTrieError::io_error(
                         "sync WAL",
                         w.path().display().to_string(),
-                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                        std::io::Error::other(e.to_string()),
                     )
                 })?;
             }
@@ -757,7 +755,7 @@ impl CheckpointManager {
             PersistentARTrieError::io_error(
                 "create WAL",
                 wal_path.display().to_string(),
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                std::io::Error::other(e.to_string()),
             )
         })?;
 

@@ -13,6 +13,15 @@
 //!   `find_in_lockfree_trie`, `find_leaf_lockfree`, `find_leaf_recursive`,
 //!   `merge_lockfree_zipper`, `chars_to_utf8_bytes`
 
+/// The `(new root, new node)` pair produced by a copy-on-write republish.
+///
+/// Both are freshly published: the root is what a subsequent CAS installs, the node
+/// is the position the caller was walking to.
+type PublishedCharPair<V> = (
+    Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
+    Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
+);
+
 use std::sync::Arc;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
@@ -66,17 +75,21 @@ pub(crate) enum RendezvousPhase {
     AfterCommit,
 }
 
+/// A test-only hook invoked by the durable producers at each rendezvous phase.
+#[cfg(test)]
+pub(crate) type CommitRendezvousHook = Box<dyn Fn(RendezvousPhase)>;
+
 #[cfg(test)]
 thread_local! {
     /// Per-thread rendezvous closure consulted by the durable producers. `None`
     /// (the default) ⇒ the producers behave exactly as in production.
-    static COMMIT_RENDEZVOUS: std::cell::RefCell<Option<Box<dyn Fn(RendezvousPhase)>>> =
+    static COMMIT_RENDEZVOUS: std::cell::RefCell<Option<CommitRendezvousHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
 /// Install (or clear, with `None`) this thread's OD4 commit rendezvous closure.
 #[cfg(test)]
-pub(crate) fn set_commit_rendezvous(hook: Option<Box<dyn Fn(RendezvousPhase)>>) {
+pub(crate) fn set_commit_rendezvous(hook: Option<CommitRendezvousHook>) {
     COMMIT_RENDEZVOUS.with(|h| *h.borrow_mut() = hook);
 }
 
@@ -457,7 +470,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 LockFreeOverlay, RootPublishOutcome,
             };
             let _epoch = self.epoch_manager.enter_read();
-            if self.overlay_root_node().map_or(false, |r| r.is_final()) {
+            if self.overlay_root_node().is_some_and(|r| r.is_final()) {
                 lockfree_cache.insert(term.to_string(), true);
                 return Ok(false);
             }
@@ -603,7 +616,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 LockFreeOverlay, RootPublishOutcome,
             };
             let _epoch = self.epoch_manager.enter_read();
-            if !self.overlay_root_node().map_or(false, |r| r.is_final()) {
+            if !self.overlay_root_node().is_some_and(|r| r.is_final()) {
                 lockfree_cache.remove(term);
                 return Ok(false);
             }
@@ -760,13 +773,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         node: &Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
         chars: &[u32],
         depth: usize,
-    ) -> std::result::Result<
-        (
-            Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
-            Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
-        ),
-        BuildPathError,
-    > {
+    ) -> std::result::Result<PublishedCharPair<V>, BuildPathError> {
         use super::nodes::persistent_node::Child;
 
         if depth == chars.len() {
@@ -859,13 +866,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         chars: &[u32],
         depth: usize,
         finalize: bool,
-    ) -> std::result::Result<
-        (
-            Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
-            Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
-        ),
-        BuildPathError,
-    > {
+    ) -> std::result::Result<PublishedCharPair<V>, BuildPathError> {
         use super::nodes::persistent_node::Child;
 
         if depth == chars.len() {
@@ -1343,9 +1344,9 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     ///      membership `build_path_recursive` to materialize the spine, then
     ///      overwriting the leaf's value);
     ///   4. CAS-publishes the new root via `lockfree_root.compare_exchange`.
-    /// On CAS failure another writer published a newer root, so we bump
-    /// `cas_retries` and retry — re-reading the (now higher) count, so **no
-    /// increment is lost** (the loser folds its delta onto the winner's value).
+    ///      On CAS failure another writer published a newer root, so we bump
+    ///      `cas_retries` and retry — re-reading the (now higher) count, so **no
+    ///      increment is lost** (the loser folds its delta onto the winner's value).
     ///
     /// This is the primary method for n-gram counting. Workers call it
     /// concurrently under only a shared read lock (`&self`). Contention is the CAS

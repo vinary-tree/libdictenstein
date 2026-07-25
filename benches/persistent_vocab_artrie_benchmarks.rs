@@ -202,10 +202,8 @@ fn sample_seeded_vocab_term(rng: &mut StdRng) -> String {
     let mut previous = None;
     for index in 0..len {
         let mut class = sample_vocab_class(rng, previous);
-        if index == 0 || index + 1 == len {
-            if matches!(class, VocabClass::Separator) {
-                class = VocabClass::LatinConsonant;
-            }
+        if (index == 0 || index + 1 == len) && matches!(class, VocabClass::Separator) {
+            class = VocabClass::LatinConsonant;
         }
         out.push(sample_vocab_char(rng, class));
         previous = Some(class);

@@ -132,7 +132,7 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
         &self,
         expected: &Arc<OverlayNode<K, V>>,
         new: Arc<OverlayNode<K, V>>,
-    ) -> Result<Arc<OverlayNode<K, V>>, Arc<OverlayNode<K, V>>> {
+    ) -> super::OverlayCasResult<K, V> {
         // Genuinely-atomic CAS: swap `new` in iff the stored Arc is pointer-equal
         // to `expected`. `&Arc<_>` implements `AsRaw`, so we compare by the node's
         // raw pointer with no extra refcount bump. `compare_and_swap` returns the
@@ -151,7 +151,7 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
         &self,
         expected: &Arc<OverlayNode<K, V>>,
         new: Arc<OverlayNode<K, V>>,
-    ) -> Result<Arc<OverlayNode<K, V>>, Arc<OverlayNode<K, V>>> {
+    ) -> super::OverlayCasResult<K, V> {
         self.compare_exchange(expected, new)
     }
 
@@ -361,11 +361,8 @@ mod tests {
                             .load()
                             .unwrap_or_else(|| Arc::new(OverlayNode::<K, ()>::new()));
                         let key = K::Unit::try_from((t * 64 + i) % 250).expect("unit fits");
-                        let child = Child::OnDisk(SwizzledPtr::on_disk(
-                            (t * 64 + i) as u32,
-                            0,
-                            NodeType::Node4,
-                        ));
+                        let child =
+                            Child::OnDisk(SwizzledPtr::on_disk(t * 64 + i, 0, NodeType::Node4));
                         let next = Arc::new(cur.with_child(key, child));
                         if ptr.compare_exchange(&cur, next).is_ok() {
                             wins += 1;

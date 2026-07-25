@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn test_single_exclusion_null_prefix() {
-        let terms = vec!["\x00meta", "\x00index", "hello", "world"];
+        let terms = ["\x00meta", "\x00index", "hello", "world"];
         let dict = DoubleArrayTrie::from_terms(terms.iter());
 
         let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn test_empty_exclusion_returns_all() {
-        let terms = vec!["cat", "dog", "fish"];
+        let terms = ["cat", "dog", "fish"];
         let dict = DoubleArrayTrie::from_terms(terms.iter());
 
         let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn test_multiple_exclusions() {
-        let terms = vec!["_internal", "_hidden", "public", "visible", "hidden_file"];
+        let terms = ["_internal", "_hidden", "public", "visible", "hidden_file"];
         let dict = DoubleArrayTrie::from_terms(terms.iter());
 
         let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn test_with_prefix_excluding() {
-        let terms = vec!["api_v1", "api_v2", "api__internal", "web_v1"];
+        let terms = ["api_v1", "api_v2", "api__internal", "web_v1"];
         let dict = DoubleArrayTrie::from_terms(terms.iter());
 
         let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -550,7 +550,7 @@ mod tests {
     #[test]
     fn test_valued_excluding_iterator() {
         let terms_with_values = vec![("cat", 1usize), ("cats", 2), ("\x00meta", 99), ("dog", 3)];
-        let dict = DoubleArrayTrie::from_terms_with_values(terms_with_values.into_iter());
+        let dict = DoubleArrayTrie::from_terms_with_values(terms_with_values);
 
         let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
         let excluded: &[&[u8]] = &[b"\x00"];

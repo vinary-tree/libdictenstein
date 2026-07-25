@@ -90,8 +90,12 @@ impl KeyEncoding for CharKey {
     type Token = char;
     const KEY_BYTES: usize = 4;
     // From persistent_artrie/char/arena.rs:43-46:
-    const ARENA_MAGIC: u64 = 0x414E5241524148_43; // "CHARARNA" in little-endian
-    const ARENA_MAGIC_V2: u64 = 0x32564152_4148_43; // "CHARARV2" in little-endian
+    const ARENA_MAGIC: u64 = 0x414E_5241_5241_4843; // b"CHARARNA" in little-endian
+    const ARENA_MAGIC_V2: u64 = 0x0032_5641_5241_4843; // b"CHARAV2\0" in little-endian
+                                                       // NOTE: despite the V2 name, these bytes are `CHARAV2` + a NUL, not `CHARARV2`
+                                                       // (which would be 0x3256_5241_5241_4843). The value is authoritative -- it is
+                                                       // what existing on-disk arenas were written with -- so only the comment, which
+                                                       // previously misreported it, has been corrected.
     const FILE_MAGIC: [u8; 4] = *b"ARTC";
     const NAME: &'static str = "char";
 
@@ -159,7 +163,7 @@ impl<const PREFIX: usize> KeyEncoding for U64Key<PREFIX> {
     }
 
     fn units_from_bytes(bytes: &[u8]) -> Option<SmallVec<[Self::Unit; 32]>> {
-        if bytes.len() % Self::KEY_BYTES != 0 {
+        if !bytes.len().is_multiple_of(Self::KEY_BYTES) {
             return None;
         }
         Some(
@@ -197,6 +201,108 @@ impl<const PREFIX: usize> KeyEncoding for U64Key<PREFIX> {
         buf.copy_from_slice(&bytes[..8]);
         u64::from_le_bytes(buf)
     }
+}
+
+/// Marker trait identifying the key-unit type of a persistent ARTrie variant.
+///
+/// Implementors are zero-sized marker types (e.g. `ByteKey`, `CharKey`).
+pub trait KeyEncoding: 'static + Copy + Send + Sync + Debug {
+    /// The unit type stored at each edge of the trie.
+    ///
+    /// `u8` for byte tries; `u32` (Unicode code points) for char tries; `u64`
+    /// for native sequence tries.
+    type Unit: Copy + Eq + Ord + Hash + Send + Sync + 'static + Debug + AdaptiveLabel;
+
+    /// The public term type this encoding reconstructs to: `String` for char
+    /// (Unicode), `Vec<u8>` for byte (arbitrary byte strings). The shared
+    /// overlay-read engine enumerates `Vec<Self::Unit>` and the variant's public
+    /// API converts each to `Self::Term` via [`units_to_term`](Self::units_to_term).
+    type Term: Clone + Debug;
+
+    /// The PUBLIC `DictionaryNode::Unit` token a caller (transducer / zipper)
+    /// traverses by. For byte this equals [`Unit`](Self::Unit) (`u8`); for char it
+    /// is `char` while `Unit` is the `u32` code point. The split lets the shared
+    /// `OverlayDictionaryNode<K, V>` present each variant's natural public unit
+    /// while storing the compact internal `Unit` in the overlay child map.
+    ///
+    /// Bound by [`CharUnit`](crate::char_unit::CharUnit) because the shared
+    /// `OverlayDictionaryNode`'s `DictionaryNode::Unit = Self::Token`, and
+    /// `DictionaryNode::Unit: CharUnit`. Both `u8` (`ByteKey`) and `char` (`CharKey`)
+    /// implement `CharUnit`, so this is exactly the prior per-variant `Unit = u8` /
+    /// `Unit = char` bound — no new constraint on any real implementor.
+    type Token: crate::char_unit::CharUnit;
+
+    /// Width of `Self::Unit` in bytes (1 for `u8`, 4 for `u32`, 8 for `u64`).
+    const KEY_BYTES: usize;
+
+    /// 8-byte arena magic prefix used in V1 arena-page header layouts.
+    const ARENA_MAGIC: u64;
+
+    /// 8-byte arena magic prefix used in V2 arena-page header layouts.
+    const ARENA_MAGIC_V2: u64;
+
+    /// 4-byte file-header magic identifying this variant's trie file
+    /// (`*b"PART"` for byte, `*b"ARTC"` for char/vocab).
+    const FILE_MAGIC: [u8; 4];
+
+    /// Human-readable name used in diagnostics and panic messages.
+    const NAME: &'static str;
+
+    /// G4: maximum path-compression prefix length, in key units.
+    ///
+    /// `12` for byte (12 B), `6` for char (24 B), benchmark-selected for u64.
+    /// Consumed by the shared
+    /// `persistent_artrie::core::overlay::OverlayNode` to cap its `prefix` length.
+    const MAX_PREFIX_LEN: usize;
+
+    /// G4: the zero-valued unit used as dead filler in the shared
+    /// `OverlayNode`'s inline child-array `[count..]` slots (never read; only
+    /// `keys[..count]` are live). `0u8` for byte, `0u32` for char.
+    const UNIT_ZERO: Self::Unit;
+
+    /// Decode `s` into a sequence of edge units.
+    ///
+    /// For `ByteKey` this returns `s.as_bytes()`; for `CharKey` it returns
+    /// the iterator of Unicode code points as `u32`s.
+    fn units_from_str(s: &str) -> SmallVec<[Self::Unit; 32]>;
+
+    /// Decode RAW WAL key bytes into a sequence of edge units, or `None` if the
+    /// bytes are not a valid key for this encoding (F5 WAL-tail-into-overlay applier).
+    ///
+    /// For `ByteKey` the key bytes ARE the units (identity copy, always `Some`); for
+    /// `CharKey` the WAL stores the term as UTF-8 (writers log `term.as_bytes()`), so
+    /// this decodes UTF-8 → code points and returns `None` for a non-UTF-8 sequence
+    /// (which a char-trie writer cannot have produced — the applier skips it).
+    fn units_from_bytes(bytes: &[u8]) -> Option<SmallVec<[Self::Unit; 32]>>;
+
+    /// Reverse of [`units_from_str`](Self::units_from_str): reconstruct the public
+    /// term from a unit sequence. Char maps each code point via
+    /// `char::from_u32(_).unwrap_or('\u{FFFD}')`; byte returns the raw `Vec<u8>`
+    /// (byte terms are arbitrary byte strings — NO UTF-8 re-decode; UTF-8
+    /// interpretation is the caller's concern). Invariant on the valid domain:
+    /// `units_to_term(&units_from_str(s))` equals `s`'s term form (`s` for char,
+    /// `s.as_bytes()` for byte).
+    fn units_to_term(units: &[Self::Unit]) -> Self::Term;
+
+    /// Lower a public [`Token`](Self::Token) to the internal storage
+    /// [`Unit`](Self::Unit) (the overlay child-map key). Byte: identity; char:
+    /// `token as u32`. Total — every token has a unit.
+    fn token_to_unit(token: Self::Token) -> Self::Unit;
+
+    /// Raise an internal [`Unit`](Self::Unit) back to a public
+    /// [`Token`](Self::Token), or `None` when the unit is not a valid token (a
+    /// `u32` that is not a Unicode scalar value — a surrogate). `None` units are
+    /// SKIPPED by the shared node's `edges()` (never fabricated into a transition),
+    /// preserving the prior char `char::from_u32` filter. Byte: always `Some`.
+    fn unit_to_token(unit: Self::Unit) -> Option<Self::Token>;
+
+    /// Encode `unit` as up to 8 little-endian bytes. Narrower keys pad with
+    /// zeros. Callers consume the first `KEY_BYTES` bytes.
+    fn unit_to_le_bytes(unit: Self::Unit) -> [u8; 8];
+
+    /// Decode a unit from at least `KEY_BYTES` of little-endian bytes.
+    /// Panics if `bytes.len() < KEY_BYTES`.
+    fn unit_from_le_bytes(bytes: &[u8]) -> Self::Unit;
 }
 
 #[cfg(test)]
@@ -335,106 +441,4 @@ mod tests {
     // persistent_artrie::char::arena::tests) rather than here, so that
     // persistent_artrie::core's source set stays free of upward references
     // to its consumers.
-}
-
-/// Marker trait identifying the key-unit type of a persistent ARTrie variant.
-///
-/// Implementors are zero-sized marker types (e.g. `ByteKey`, `CharKey`).
-pub trait KeyEncoding: 'static + Copy + Send + Sync + Debug {
-    /// The unit type stored at each edge of the trie.
-    ///
-    /// `u8` for byte tries; `u32` (Unicode code points) for char tries; `u64`
-    /// for native sequence tries.
-    type Unit: Copy + Eq + Ord + Hash + Send + Sync + 'static + Debug + AdaptiveLabel;
-
-    /// The public term type this encoding reconstructs to: `String` for char
-    /// (Unicode), `Vec<u8>` for byte (arbitrary byte strings). The shared
-    /// overlay-read engine enumerates `Vec<Self::Unit>` and the variant's public
-    /// API converts each to `Self::Term` via [`units_to_term`](Self::units_to_term).
-    type Term: Clone + Debug;
-
-    /// The PUBLIC `DictionaryNode::Unit` token a caller (transducer / zipper)
-    /// traverses by. For byte this equals [`Unit`](Self::Unit) (`u8`); for char it
-    /// is `char` while `Unit` is the `u32` code point. The split lets the shared
-    /// `OverlayDictionaryNode<K, V>` present each variant's natural public unit
-    /// while storing the compact internal `Unit` in the overlay child map.
-    ///
-    /// Bound by [`CharUnit`](crate::char_unit::CharUnit) because the shared
-    /// `OverlayDictionaryNode`'s `DictionaryNode::Unit = Self::Token`, and
-    /// `DictionaryNode::Unit: CharUnit`. Both `u8` (`ByteKey`) and `char` (`CharKey`)
-    /// implement `CharUnit`, so this is exactly the prior per-variant `Unit = u8` /
-    /// `Unit = char` bound — no new constraint on any real implementor.
-    type Token: crate::char_unit::CharUnit;
-
-    /// Width of `Self::Unit` in bytes (1 for `u8`, 4 for `u32`, 8 for `u64`).
-    const KEY_BYTES: usize;
-
-    /// 8-byte arena magic prefix used in V1 arena-page header layouts.
-    const ARENA_MAGIC: u64;
-
-    /// 8-byte arena magic prefix used in V2 arena-page header layouts.
-    const ARENA_MAGIC_V2: u64;
-
-    /// 4-byte file-header magic identifying this variant's trie file
-    /// (`*b"PART"` for byte, `*b"ARTC"` for char/vocab).
-    const FILE_MAGIC: [u8; 4];
-
-    /// Human-readable name used in diagnostics and panic messages.
-    const NAME: &'static str;
-
-    /// G4: maximum path-compression prefix length, in key units.
-    ///
-    /// `12` for byte (12 B), `6` for char (24 B), benchmark-selected for u64.
-    /// Consumed by the shared
-    /// `persistent_artrie::core::overlay::OverlayNode` to cap its `prefix` length.
-    const MAX_PREFIX_LEN: usize;
-
-    /// G4: the zero-valued unit used as dead filler in the shared
-    /// `OverlayNode`'s inline child-array `[count..]` slots (never read; only
-    /// `keys[..count]` are live). `0u8` for byte, `0u32` for char.
-    const UNIT_ZERO: Self::Unit;
-
-    /// Decode `s` into a sequence of edge units.
-    ///
-    /// For `ByteKey` this returns `s.as_bytes()`; for `CharKey` it returns
-    /// the iterator of Unicode code points as `u32`s.
-    fn units_from_str(s: &str) -> SmallVec<[Self::Unit; 32]>;
-
-    /// Decode RAW WAL key bytes into a sequence of edge units, or `None` if the
-    /// bytes are not a valid key for this encoding (F5 WAL-tail-into-overlay applier).
-    ///
-    /// For `ByteKey` the key bytes ARE the units (identity copy, always `Some`); for
-    /// `CharKey` the WAL stores the term as UTF-8 (writers log `term.as_bytes()`), so
-    /// this decodes UTF-8 → code points and returns `None` for a non-UTF-8 sequence
-    /// (which a char-trie writer cannot have produced — the applier skips it).
-    fn units_from_bytes(bytes: &[u8]) -> Option<SmallVec<[Self::Unit; 32]>>;
-
-    /// Reverse of [`units_from_str`](Self::units_from_str): reconstruct the public
-    /// term from a unit sequence. Char maps each code point via
-    /// `char::from_u32(_).unwrap_or('\u{FFFD}')`; byte returns the raw `Vec<u8>`
-    /// (byte terms are arbitrary byte strings — NO UTF-8 re-decode; UTF-8
-    /// interpretation is the caller's concern). Invariant on the valid domain:
-    /// `units_to_term(&units_from_str(s))` equals `s`'s term form (`s` for char,
-    /// `s.as_bytes()` for byte).
-    fn units_to_term(units: &[Self::Unit]) -> Self::Term;
-
-    /// Lower a public [`Token`](Self::Token) to the internal storage
-    /// [`Unit`](Self::Unit) (the overlay child-map key). Byte: identity; char:
-    /// `token as u32`. Total — every token has a unit.
-    fn token_to_unit(token: Self::Token) -> Self::Unit;
-
-    /// Raise an internal [`Unit`](Self::Unit) back to a public
-    /// [`Token`](Self::Token), or `None` when the unit is not a valid token (a
-    /// `u32` that is not a Unicode scalar value — a surrogate). `None` units are
-    /// SKIPPED by the shared node's `edges()` (never fabricated into a transition),
-    /// preserving the prior char `char::from_u32` filter. Byte: always `Some`.
-    fn unit_to_token(unit: Self::Unit) -> Option<Self::Token>;
-
-    /// Encode `unit` as up to 8 little-endian bytes. Narrower keys pad with
-    /// zeros. Callers consume the first `KEY_BYTES` bytes.
-    fn unit_to_le_bytes(unit: Self::Unit) -> [u8; 8];
-
-    /// Decode a unit from at least `KEY_BYTES` of little-endian bytes.
-    /// Panics if `bytes.len() < KEY_BYTES`.
-    fn unit_from_le_bytes(bytes: &[u8]) -> Self::Unit;
 }

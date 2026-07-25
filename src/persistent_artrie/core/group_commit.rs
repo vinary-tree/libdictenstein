@@ -796,9 +796,11 @@ mod tests {
 
     #[test]
     fn test_group_commit_stats() {
-        let mut stats = GroupCommitStats::default();
-        stats.records_committed = 100;
-        stats.fsync_count = 10;
+        let stats = GroupCommitStats {
+            records_committed: 100,
+            fsync_count: 10,
+            ..Default::default()
+        };
         assert!((stats.batching_efficiency() - 10.0).abs() < f64::EPSILON);
     }
 

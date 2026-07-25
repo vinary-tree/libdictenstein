@@ -10,9 +10,9 @@
 //! skeleton — the durability-policy gate, the Order-A step ordering (durable WAL
 //! append → publish via the overlay CAS → `mark_committed`), and the commit-rank
 //! + watermark tail — lives here ONCE as default methods; the per-variant steps
-//! (the WAL-record builder, the value-domain bound, the char/byte-node-building
-//! CAS publish, the present-hoist) are provided by abstract SEAM hooks the variant
-//! supplies.
+//!   (the WAL-record builder, the value-domain bound, the char/byte-node-building
+//!   CAS publish, the present-hoist) are provided by abstract SEAM hooks the variant
+//!   supplies.
 //!
 //! # The Order-A ORDERING is sacred (data-loss-critical — DO NOT REORDER)
 //!

@@ -1113,7 +1113,7 @@ mod tests {
                 "only one stale expected memory pointer update may publish"
             );
             let final_ptr = slot.as_ptr::<u64>().expect("slot should remain in memory");
-            assert!((1..values.len()).any(|i| final_ptr == &values[i] as *const u64));
+            assert!((1..values.len()).any(|i| std::ptr::eq(final_ptr, &values[i])));
         }
 
         #[test]

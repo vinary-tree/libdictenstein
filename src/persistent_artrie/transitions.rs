@@ -31,10 +31,25 @@
 //!    └───────► Bucket: ["pple", "pricot"]
 //! ```
 
+/// A borrowed view of an `ArtNode`'s fields: header, terminal flag,
+/// path-compressed prefix, and `(key unit, child)` edges.
+type ArtNodeView<'a> = (
+    &'a Node,
+    bool,
+    &'a Option<Vec<u8>>,
+    &'a Vec<(u8, ChildNode)>,
+);
+
+/// The mutable counterpart of [`ArtNodeView`].
+type ArtNodeViewMut<'a> = (
+    &'a mut Node,
+    &'a mut bool,
+    &'a mut Option<Vec<u8>>,
+    &'a mut Vec<(u8, ChildNode)>,
+);
+
 use super::bucket::StringBucket;
 use super::nodes::Node;
-#[cfg(test)]
-use super::nodes::Node4;
 use super::swizzled_ptr::SwizzledPtr;
 
 // L3.3c: removed — the owned bucket↔ART transition surface
@@ -203,7 +218,7 @@ impl ChildNode {
     }
 
     /// Get as ART node reference
-    pub fn as_art_node(&self) -> Option<(&Node, bool, &Option<Vec<u8>>, &Vec<(u8, ChildNode)>)> {
+    pub fn as_art_node(&self) -> Option<ArtNodeView<'_>> {
         match self {
             ChildNode::ArtNode {
                 node,
@@ -216,14 +231,7 @@ impl ChildNode {
     }
 
     /// Get as mutable ART node reference
-    pub fn as_art_node_mut(
-        &mut self,
-    ) -> Option<(
-        &mut Node,
-        &mut bool,
-        &mut Option<Vec<u8>>,
-        &mut Vec<(u8, ChildNode)>,
-    )> {
+    pub fn as_art_node_mut(&mut self) -> Option<ArtNodeViewMut<'_>> {
         match self {
             ChildNode::ArtNode {
                 node,
@@ -257,7 +265,7 @@ mod tests {
         assert!(child.is_bucket());
         assert!(child.as_bucket().is_some());
 
-        let node = Node::N4(Box::new(Node4::new()));
+        let node = Node::N4(Box::default());
         let child = ChildNode::art_node(node, false, None);
         assert!(!child.is_bucket());
         assert!(child.as_bucket().is_none());
@@ -279,7 +287,7 @@ mod tests {
 
     #[test]
     fn test_child_node_needs_persistence_art_node() {
-        let node = Node::N4(Box::new(Node4::new()));
+        let node = Node::N4(Box::default());
         let mut child = ChildNode::art_node_with_children(node, false, None, Vec::new());
 
         // Fresh ART node has no dirty flags
@@ -313,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_child_node_dirty_flag_methods() {
-        let node = Node::N4(Box::new(Node4::new()));
+        let node = Node::N4(Box::default());
         let mut child = ChildNode::art_node_with_children(node, false, None, Vec::new());
 
         // Test mark_dirty

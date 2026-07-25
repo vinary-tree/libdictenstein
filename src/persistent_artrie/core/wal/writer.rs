@@ -764,7 +764,7 @@ impl WalWriter {
             for entry in fs::read_dir(&segment_dir).map_err(WalError::Io)? {
                 let entry = entry.map_err(WalError::Io)?;
                 let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "segment") {
+                if path.extension().is_some_and(|ext| ext == "segment") {
                     segments.push(path);
                 }
             }
@@ -840,7 +840,7 @@ impl WalWriter {
                 .unwrap_or(Path::new("."))
                 .join(&config.archive_dir)
         };
-        fs::create_dir_all(&archive_dir).map_err(|e| WalError::Io(e))?;
+        fs::create_dir_all(&archive_dir).map_err(WalError::Io)?;
 
         let archive_path = Self::unique_archive_segment_path(&archive_dir);
 
@@ -851,12 +851,17 @@ impl WalWriter {
 
         drop(file);
 
-        fs::rename(&self.path, &archive_path).map_err(|e| WalError::Io(e))?;
+        fs::rename(&self.path, &archive_path).map_err(WalError::Io)?;
 
         let new_file = OpenOptions::new()
             .create(true)
             .write(true)
             .read(true)
+            // A rotated WAL must start empty. The rename above normally leaves nothing
+            // at this path, so this is a no-op -- but if a stale file were ever present,
+            // appending to it would produce a WAL whose records predate the rotation.
+            // Truncating enforces the invariant instead of assuming it.
+            .truncate(true)
             .open(&self.path)?;
 
         let mut writer = BufWriter::new(new_file);
@@ -997,10 +1002,10 @@ impl WalWriter {
         };
 
         if archive_dir.exists() {
-            for entry in fs::read_dir(&archive_dir).map_err(|e| WalError::Io(e))? {
-                let entry = entry.map_err(|e| WalError::Io(e))?;
+            for entry in fs::read_dir(&archive_dir).map_err(WalError::Io)? {
+                let entry = entry.map_err(WalError::Io)?;
                 let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "segment") {
+                if path.extension().is_some_and(|ext| ext == "segment") {
                     segments.push(path);
                 }
             }
@@ -1009,7 +1014,7 @@ impl WalWriter {
         segments.extend(Self::collect_record_segments_for_path(&self.path)?);
 
         if self.path.exists() {
-            let metadata = fs::metadata(&self.path).map_err(|e| WalError::Io(e))?;
+            let metadata = fs::metadata(&self.path).map_err(WalError::Io)?;
             if metadata.len() > WalHeader::SIZE as u64 {
                 segments.push(self.path.clone());
             }
@@ -1031,10 +1036,10 @@ impl WalWriter {
         }
 
         let mut segments: Vec<(PathBuf, u64)> = Vec::new();
-        for entry in fs::read_dir(archive_dir).map_err(|e| WalError::Io(e))? {
-            let entry = entry.map_err(|e| WalError::Io(e))?;
+        for entry in fs::read_dir(archive_dir).map_err(WalError::Io)? {
+            let entry = entry.map_err(WalError::Io)?;
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "segment") {
+            if path.extension().is_some_and(|ext| ext == "segment") {
                 let size = fs::metadata(&path).map_or(0, |m| m.len());
                 segments.push((path, size));
             }

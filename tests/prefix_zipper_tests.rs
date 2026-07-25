@@ -35,7 +35,7 @@ fn sorted_results<T: Ord>(mut results: Vec<T>) -> Vec<T> {
 
 #[test]
 fn test_dat_prefix_exists_single_match() {
-    let terms = vec!["hello", "world"];
+    let terms = ["hello", "world"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -50,7 +50,7 @@ fn test_dat_prefix_exists_single_match() {
 
 #[test]
 fn test_dat_prefix_exists_multiple_matches() {
-    let terms = vec!["process", "processUser", "produce", "product"];
+    let terms = ["process", "processUser", "produce", "product"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -66,7 +66,7 @@ fn test_dat_prefix_exists_multiple_matches() {
 
 #[test]
 fn test_dat_prefix_not_exists() {
-    let terms = vec!["hello", "world"];
+    let terms = ["hello", "world"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -75,7 +75,7 @@ fn test_dat_prefix_not_exists() {
 
 #[test]
 fn test_dat_empty_prefix_returns_all() {
-    let terms = vec!["cat", "dog", "fish"];
+    let terms = ["cat", "dog", "fish"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -91,7 +91,7 @@ fn test_dat_empty_prefix_returns_all() {
 
 #[test]
 fn test_dat_prefix_equals_term() {
-    let terms = vec!["cat", "cats"];
+    let terms = ["cat", "cats"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -107,7 +107,7 @@ fn test_dat_prefix_equals_term() {
 
 #[test]
 fn test_dat_prefix_longer_than_all_terms() {
-    let terms = vec!["cat", "dog"];
+    let terms = ["cat", "dog"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -128,7 +128,7 @@ fn test_dat_empty_dictionary() {
 
 #[test]
 fn test_dawg_prefix_exists_single_match() {
-    let terms = vec!["hello", "world"];
+    let terms = ["hello", "world"];
     let dict: DynamicDawg<()> = DynamicDawg::from_terms(terms.iter());
 
     let zipper = DynamicDawgZipper::new_from_dict(&dict);
@@ -143,7 +143,7 @@ fn test_dawg_prefix_exists_single_match() {
 
 #[test]
 fn test_dawg_prefix_exists_multiple_matches() {
-    let terms = vec!["process", "processUser", "produce", "product"];
+    let terms = ["process", "processUser", "produce", "product"];
     let dict: DynamicDawg<()> = DynamicDawg::from_terms(terms.iter());
 
     let zipper = DynamicDawgZipper::new_from_dict(&dict);
@@ -159,7 +159,7 @@ fn test_dawg_prefix_exists_multiple_matches() {
 
 #[test]
 fn test_dawg_prefix_not_exists() {
-    let terms = vec!["hello", "world"];
+    let terms = ["hello", "world"];
     let dict: DynamicDawg<()> = DynamicDawg::from_terms(terms.iter());
 
     let zipper = DynamicDawgZipper::new_from_dict(&dict);
@@ -172,7 +172,7 @@ fn test_dawg_prefix_not_exists() {
 
 #[test]
 fn test_dat_char_unicode_prefix() {
-    let terms = vec!["café", "cafétéria", "naïve"];
+    let terms = ["café", "cafétéria", "naïve"];
     let dict = DoubleArrayTrieChar::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieCharZipper::new_from_dict(&dict);
@@ -189,7 +189,7 @@ fn test_dat_char_unicode_prefix() {
 
 #[test]
 fn test_dat_char_emoji() {
-    let terms = vec!["🎉party", "🎉celebration", "🎂cake"];
+    let terms = ["🎉party", "🎉celebration", "🎂cake"];
     let dict = DoubleArrayTrieChar::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieCharZipper::new_from_dict(&dict);
@@ -206,7 +206,7 @@ fn test_dat_char_emoji() {
 
 #[test]
 fn test_dat_char_cjk() {
-    let terms = vec!["中文", "中国", "日本"];
+    let terms = ["中文", "中国", "日本"];
     let dict = DoubleArrayTrieChar::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieCharZipper::new_from_dict(&dict);
@@ -227,7 +227,7 @@ fn test_dat_char_cjk() {
 
 #[test]
 fn test_dawg_char_unicode_prefix() {
-    let terms = vec!["naïve", "naïveté"];
+    let terms = ["naïve", "naïveté"];
     let dict: DynamicDawgChar<()> = DynamicDawgChar::from_terms(terms.iter());
 
     let zipper = DynamicDawgCharZipper::new_from_dict(&dict);
@@ -249,8 +249,7 @@ fn test_dawg_char_unicode_prefix() {
 #[test]
 fn test_valued_dict_prefix_iteration() {
     let terms_with_values = vec![("cat", 1), ("cats", 2), ("dog", 3)];
-    let dict =
-        DoubleArrayTrie::from_terms_with_values(terms_with_values.into_iter().map(|(k, v)| (k, v)));
+    let dict = DoubleArrayTrie::from_terms_with_values(terms_with_values);
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
     let mut results: Vec<(String, usize)> = zipper
@@ -269,8 +268,7 @@ fn test_valued_dict_prefix_iteration() {
 #[test]
 fn test_valued_dict_no_matches() {
     let terms_with_values = vec![("hello", 1), ("world", 2)];
-    let dict =
-        DoubleArrayTrie::from_terms_with_values(terms_with_values.into_iter().map(|(k, v)| (k, v)));
+    let dict = DoubleArrayTrie::from_terms_with_values(terms_with_values);
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
     assert!(zipper.with_prefix_values(b"xyz").is_none());
@@ -282,7 +280,7 @@ fn test_valued_dict_no_matches() {
 
 #[test]
 fn test_single_character_terms() {
-    let terms = vec!["a", "b", "c"];
+    let terms = ["a", "b", "c"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -298,7 +296,7 @@ fn test_single_character_terms() {
 #[test]
 fn test_very_long_prefix() {
     let long_term = "a".repeat(100);
-    let terms = vec![long_term.as_str()];
+    let terms = [long_term.as_str()];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -314,7 +312,7 @@ fn test_very_long_prefix() {
 
 #[test]
 fn test_prefix_substring_but_not_prefix() {
-    let terms = vec!["hello", "world"];
+    let terms = ["hello", "world"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -328,7 +326,7 @@ fn test_prefix_substring_but_not_prefix() {
 
 #[test]
 fn test_consistency_across_backends() {
-    let terms = vec!["apple", "application", "apply", "banana", "band"];
+    let terms = ["apple", "application", "apply", "banana", "band"];
 
     // Build dictionaries with all backends
     let dat = DoubleArrayTrie::from_terms(terms.iter());
@@ -358,7 +356,7 @@ fn test_consistency_across_backends() {
 
 #[test]
 fn test_consistency_char_backends() {
-    let terms = vec!["café", "cafétéria", "naïve"];
+    let terms = ["café", "cafétéria", "naïve"];
 
     let dat_char = DoubleArrayTrieChar::from_terms(terms.iter());
     let dawg_char: DynamicDawgChar<()> = DynamicDawgChar::from_terms(terms.iter());
@@ -418,7 +416,7 @@ fn test_large_dictionary_selective_prefix() {
 
 #[test]
 fn test_count_matches() {
-    let terms = vec!["test", "testing", "tested", "tester"];
+    let terms = ["test", "testing", "tested", "tester"];
     let dict = DoubleArrayTrie::from_terms(terms.iter());
 
     let zipper = DoubleArrayTrieZipper::new_from_dict(&dict);

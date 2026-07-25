@@ -134,7 +134,7 @@ impl WalHeader {
         //   * a too-NEW version (> VERSION) is refused FAIL-CLOSED so an old
         //     binary never silently mis-reads a newer file (design §3.4).
         // A version-1 WAL is read unchanged (no CommitRank → lsn-order fallback).
-        if version < Self::MIN_SUPPORTED_VERSION || version > Self::VERSION {
+        if !(Self::MIN_SUPPORTED_VERSION..=Self::VERSION).contains(&version) {
             return Err(WalError::CorruptedRecord(format!(
                 "Unsupported WAL version: {} (supported range {}..={})",
                 version,

@@ -913,7 +913,7 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeIndex<U, V
 
     fn compact(&self) -> Result<usize> {
         self.mutate_retryable(NativeSuffixTreeWalOp::Compact)
-            .map(|changed| usize::from(changed))
+            .map(usize::from)
     }
 
     fn update_or_insert<F>(&self, text: &str, default_value: V, update_fn: F) -> Result<bool>

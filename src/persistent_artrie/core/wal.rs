@@ -463,9 +463,7 @@ mod tests {
         // Verify archive segment was created
         assert!(archive_path.exists(), "Archive segment should exist");
         assert!(
-            archive_path
-                .extension()
-                .map_or(false, |ext| ext == "segment"),
+            archive_path.extension().is_some_and(|ext| ext == "segment"),
             "Archive should have .segment extension"
         );
 
@@ -536,8 +534,8 @@ mod tests {
         assert_eq!(segments.len(), 4, "Should have 3 archived + 1 active");
 
         // Verify segments are in chronological order
-        for i in 0..3 {
-            let ext = segments[i].extension().unwrap_or_default();
+        for segment in segments.iter().take(3) {
+            let ext = segment.extension().unwrap_or_default();
             assert_eq!(ext, "segment", "Archived segments should come first");
         }
         assert_eq!(segments[3], wal_path, "Active WAL should be last");
@@ -587,7 +585,7 @@ mod tests {
         let segments: Vec<_> = std::fs::read_dir(&archive_dir)
             .expect("read archive dir")
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map_or(false, |ext| ext == "segment"))
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "segment"))
             .collect();
 
         // Subsumed segments are pruned down to max_segments (3).
@@ -674,14 +672,14 @@ mod tests {
                 assert_eq!(deserialized_entries.len(), 3);
                 assert_eq!(deserialized_entries[0].0, b"hello");
                 assert_eq!(
-                    deserialized_entries[0].1.as_ref().map(|v| v.as_slice()),
+                    deserialized_entries[0].1.as_deref(),
                     Some(b"world".as_slice())
                 );
                 assert_eq!(deserialized_entries[1].0, b"foo");
                 assert!(deserialized_entries[1].1.is_none());
                 assert_eq!(deserialized_entries[2].0, b"bar");
                 assert_eq!(
-                    deserialized_entries[2].1.as_ref().map(|v| v.as_slice()),
+                    deserialized_entries[2].1.as_deref(),
                     Some(b"baz".as_slice())
                 );
             }
@@ -919,7 +917,7 @@ mod tests {
         let delete_not_found = delete_result
             .as_ref()
             .err()
-            .map_or(false, |e| e.kind() == std::io::ErrorKind::NotFound);
+            .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound);
 
         assert!(
             open_valid,
@@ -1513,7 +1511,7 @@ mod tests {
         let sync_failed = AsyncWalError::SegmentSyncFailed {
             path: PathBuf::from("/test/path"),
             attempts: 5,
-            last_error: io::Error::new(io::ErrorKind::Other, "test error"),
+            last_error: io::Error::other("test error"),
         };
         let display = format!("{}", sync_failed);
         assert!(display.contains("5 attempts"));
@@ -1564,7 +1562,7 @@ mod tests {
         // term_len says 10, but only provide 4 bytes of term + no has_value
         let mut payload = Vec::new();
         payload.extend_from_slice(&10u32.to_le_bytes()); // term_len = 10
-        payload.extend_from_slice(&[b'a', b'b', b'c', b'd']); // Only 4 bytes of term
+        payload.extend_from_slice(b"abcd"); // Only 4 bytes of term
         let result = WalRecord::deserialize(WalRecordType::Insert, &payload);
         assert!(
             matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("term truncated"))
@@ -1640,7 +1638,7 @@ mod tests {
         // term_len says 10, but only provide 3 bytes
         let mut payload = Vec::new();
         payload.extend_from_slice(&10u32.to_le_bytes()); // term_len = 10
-        payload.extend_from_slice(&[b'a', b'b', b'c']); // Only 3 bytes
+        payload.extend_from_slice(b"abc"); // Only 3 bytes
         let result = WalRecord::deserialize(WalRecordType::Remove, &payload);
         assert!(
             matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("term truncated"))
@@ -1862,7 +1860,7 @@ mod tests {
         let mut payload = Vec::new();
         payload.extend_from_slice(&1u32.to_le_bytes()); // count = 1
         payload.extend_from_slice(&10u32.to_le_bytes()); // term_len = 10
-        payload.extend_from_slice(&[b'a', b'b', b'c']); // Only 3 bytes of term
+        payload.extend_from_slice(b"abc"); // Only 3 bytes of term
         let result = WalRecord::deserialize(WalRecordType::BatchInsert, &payload);
         assert!(
             matches!(result, Err(WalError::CorruptedRecord(msg)) if msg.contains("entry 0 term truncated"))
@@ -1913,7 +1911,7 @@ mod tests {
 
         // Entry 1: incomplete term
         payload.extend_from_slice(&10u32.to_le_bytes()); // term_len = 10
-        payload.extend_from_slice(&[b'a', b'b']); // Only 2 bytes of term
+        payload.extend_from_slice(b"ab"); // Only 2 bytes of term
 
         let result = WalRecord::deserialize(WalRecordType::BatchInsert, &payload);
         assert!(
@@ -2081,7 +2079,7 @@ mod tests {
     #[test]
     fn test_wal_error_display_and_source() {
         // Test WalError Display implementations
-        let io_err = WalError::Io(io::Error::new(io::ErrorKind::Other, "test io error"));
+        let io_err = WalError::Io(io::Error::other("test io error"));
         let display = format!("{}", io_err);
         assert!(display.contains("WAL I/O error"));
 
@@ -2111,7 +2109,7 @@ mod tests {
 
         // Test source() method
         use std::error::Error;
-        let io_err = WalError::Io(io::Error::new(io::ErrorKind::Other, "test"));
+        let io_err = WalError::Io(io::Error::other("test"));
         assert!(io_err.source().is_some());
 
         let corrupted = WalError::CorruptedRecord("test".into());

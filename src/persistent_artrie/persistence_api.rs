@@ -57,7 +57,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                         PersistentARTrieError::io_error(
                             "sync",
                             "WAL",
-                            std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                            std::io::Error::other(e.to_string()),
                         )
                     })?;
                 }
@@ -95,7 +95,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 PersistentARTrieError::io_error(
                     "sync_async",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             Ok(Some(handle))
@@ -179,11 +179,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         };
 
         let appended_lsn = wal_writer.append(record).map_err(|e| {
-            PersistentARTrieError::io_error(
-                operation,
-                "WAL",
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-            )
+            PersistentARTrieError::io_error(operation, "WAL", std::io::Error::other(e.to_string()))
         })?;
         self.sync_wal_after_append(appended_lsn, operation)?;
         Ok(appended_lsn)
@@ -247,7 +243,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     PersistentARTrieError::io_error(
                         operation,
                         "WAL",
-                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                        std::io::Error::other(e.to_string()),
                     )
                 })?;
                 if synced_lsn < appended_lsn {

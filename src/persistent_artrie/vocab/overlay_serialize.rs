@@ -40,6 +40,17 @@ use crate::persistent_artrie::NodeType;
 // The vocab overlay node = char overlay node at V = u64 (the vocabulary index).
 type VocabOverlayNode = PersistentCharNode<u64>;
 
+/// A full vocabulary-overlay scan: every `(term, id)` pair keyed by its char units,
+/// plus the root's own id (outer `Option` = "root carried one at all").
+type VocabScan = (
+    std::collections::BTreeMap<Vec<u32>, Option<u64>>,
+    Option<Option<u64>>,
+);
+
+/// One decoded vocabulary node: whether it terminates a term, its id, its
+/// path-compressed prefix, and its `(char unit, child pointer)` edges.
+type DecodedVocabNode = (bool, Option<u64>, Vec<u32>, Vec<(u32, SwizzledPtr)>);
+
 impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// Build a `CharNode` with disk `SwizzledPtr`s for serialization.
     ///
@@ -50,15 +61,11 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         original: &CharNode,
         disk_children: &[(u32, SwizzledPtr)],
     ) -> CharNode {
-        use crate::persistent_artrie::char::nodes::{
-            CharBucket, CharNode16, CharNode4, CharNode48,
-        };
-
         let mut new_node = match original {
-            CharNode::N4(_) => CharNode::N4(Box::new(CharNode4::new())),
-            CharNode::N16(_) => CharNode::N16(Box::new(CharNode16::new())),
-            CharNode::N48(_) => CharNode::N48(Box::new(CharNode48::new())),
-            CharNode::Bucket(_) => CharNode::Bucket(Box::new(CharBucket::new())),
+            CharNode::N4(_) => CharNode::N4(Box::default()),
+            CharNode::N16(_) => CharNode::N16(Box::default()),
+            CharNode::N48(_) => CharNode::N48(Box::default()),
+            CharNode::Bucket(_) => CharNode::Bucket(Box::default()),
         };
 
         {
@@ -256,7 +263,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
 
         let value_bytes: Vec<u8> = if let Some(ref value) = node.value {
             crate::serialization::bincode_compat::serialize(value).map_err(|e| {
-                PersistentARTrieError::internal(&format!("Failed to serialize value: {}", e))
+                PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
             })?
         } else {
             Vec::new()
@@ -308,10 +315,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// `serialize_one_overlay_node`): deserialize the `CharNode`, then the appended
     /// `[value_len:u32][bincode value]`. Verbatim port of char's `read_char_record_fields`
     /// at `V = u64`.
-    fn read_overlay_record_fields(
-        &self,
-        node_ptr: &SwizzledPtr,
-    ) -> Result<(bool, Option<u64>, Vec<u32>, Vec<(u32, SwizzledPtr)>)> {
+    fn read_overlay_record_fields(&self, node_ptr: &SwizzledPtr) -> Result<DecodedVocabNode> {
         use std::io::Cursor;
 
         let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
@@ -389,13 +393,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// loaded. Returns the term map + the split-out empty term "". The inverse of
     /// `serialize_overlay_to_disk`; fed to `build_overlay_root_from_terms` it reestablishes the
     /// resident overlay (V5 reopen).
-    pub(super) fn enumerate_overlay_terms_from_disk(
-        &self,
-        root_ptr: u64,
-    ) -> Result<(
-        std::collections::BTreeMap<Vec<u32>, Option<u64>>,
-        Option<Option<u64>>,
-    )> {
+    pub(super) fn enumerate_overlay_terms_from_disk(&self, root_ptr: u64) -> Result<VocabScan> {
         use std::collections::BTreeMap;
 
         let mut all: BTreeMap<Vec<u32>, Option<u64>> = BTreeMap::new();

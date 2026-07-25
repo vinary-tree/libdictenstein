@@ -612,10 +612,8 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
         if let Some(existing_ptr) = self.node.find_child(key) {
             if let Some(ptr) = existing_ptr.as_ptr::<CharTrieNodeInner<V>>() {
                 // Remove old child and recover the Box
-                if let Some((_, shrunk)) = self.node.remove_child_shrinking(key) {
-                    if let Some(new_node) = shrunk {
-                        self.node = new_node;
-                    }
+                if let Some((_, Some(new_node))) = self.node.remove_child_shrinking(key) {
+                    self.node = new_node;
                 }
                 // Safety: ptr was created via Box::into_raw()
                 let old_child = unsafe { Box::from_raw(ptr as *mut CharTrieNodeInner<V>) };
@@ -724,10 +722,8 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
             .and_then(|p| p.as_ptr::<CharTrieNodeInner<V>>())?;
 
         // Remove from node
-        if let Some((_, shrunk)) = self.node.remove_child_shrinking(key) {
-            if let Some(new_node) = shrunk {
-                self.node = new_node;
-            }
+        if let Some((_, Some(new_node))) = self.node.remove_child_shrinking(key) {
+            self.node = new_node;
         }
 
         // Safety: ptr was created via Box::into_raw()

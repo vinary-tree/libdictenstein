@@ -831,7 +831,7 @@ fn empty_term_root_fresh_cas_survives_concurrent_child_insert() {
             "empty term \"\" lost under a concurrent child insert — fresh-root-CAS must NOT lose it"
         );
         assert!(
-            r.find_child(b'a').map_or(false, |c| c.is_final()),
+            r.find_child(b'a').is_some_and(|c| c.is_final()),
             "child 'a' lost under the concurrent empty-term publication"
         );
     });

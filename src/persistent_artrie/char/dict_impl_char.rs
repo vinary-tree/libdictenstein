@@ -2895,7 +2895,7 @@ mod tests {
         // After an insert that hasn't been synced, current_lsn advances ahead of
         // synced_lsn (or synced is still None for an unsynced fresh trie).
         assert!(
-            synced_before.map_or(true, |s| s < current_after_insert),
+            synced_before.is_none_or(|s| s < current_after_insert),
             "synced_lsn must lag current_lsn until sync() runs"
         );
         trie.sync().expect("sync");

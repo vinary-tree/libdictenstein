@@ -487,7 +487,7 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgIndex<U, V> {
 
     fn compact(&self) -> Result<usize> {
         self.mutate_retryable(NativeScdawgWalOp::Compact)
-            .map(|changed| usize::from(changed))
+            .map(usize::from)
     }
 
     fn update_or_insert<F>(&self, term: &str, default_value: V, update_fn: F) -> Result<bool>
@@ -1158,7 +1158,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentScdawg<V, S> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = String> {
-        unique_terms(self.index.load().active_terms().into_iter()).into_iter()
+        unique_terms(self.index.load().active_terms()).into_iter()
     }
 
     pub fn source_texts(&self) -> Vec<String> {
@@ -1363,7 +1363,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentScdawgChar<V, S> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = String> {
-        unique_terms(self.index.load().active_terms().into_iter()).into_iter()
+        unique_terms(self.index.load().active_terms()).into_iter()
     }
 
     pub fn source_texts(&self) -> Vec<String> {

@@ -129,7 +129,7 @@ fn bench_transaction_vs_batch(c: &mut Criterion) {
         b.iter(|| {
             let mut tx = trie.begin_document("bench_doc").expect("begin");
             for (term, value) in terms.iter() {
-                trie.tx_insert(&mut tx, term, value.clone());
+                trie.tx_insert(&mut tx, term, *value);
             }
             let result = trie.commit_document(tx).expect("commit");
             black_box(result)

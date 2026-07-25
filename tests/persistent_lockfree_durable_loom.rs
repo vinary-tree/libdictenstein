@@ -171,11 +171,12 @@ impl Model {
         // Snapshot the immutable root, restricted to committed writes ≤ target.
         let snap = self.root.read().expect("root read").clone();
         let mut image = [false; MAX_LSN + 1];
-        for l in 1..=MAX_LSN {
+        // Index 0 is unused: LSNs start at 1, so skip it rather than offsetting.
+        for (l, slot) in image.iter_mut().enumerate().take(MAX_LSN + 1).skip(1) {
             // A write is in the durable checkpoint image iff it is visible in the
             // captured root AND ≤ the chosen target.
             if snap.visible[l] && l <= target {
-                image[l] = true;
+                *slot = true;
             }
         }
 
@@ -219,9 +220,9 @@ impl Model {
         let ckpt_lsn = self.checkpoint_lsn.load(Ordering::Acquire);
         let retained_from = self.wal_retained_from.load(Ordering::Acquire);
         let mut recovered = durable_ckpt;
-        for l in 1..=MAX_LSN {
+        for (l, slot) in recovered.iter_mut().enumerate().take(MAX_LSN + 1).skip(1) {
             if self.appended[l].load(Ordering::Acquire) && l > ckpt_lsn && l >= retained_from {
-                recovered[l] = true;
+                *slot = true;
             }
         }
         recovered
@@ -231,8 +232,8 @@ impl Model {
     /// therefore must survive (`committed` in the TLA spec).
     fn committed_set(&self) -> [bool; MAX_LSN + 1] {
         let mut c = [false; MAX_LSN + 1];
-        for l in 1..=MAX_LSN {
-            c[l] = self.committed[l].load(Ordering::Acquire);
+        for (l, slot) in c.iter_mut().enumerate().take(MAX_LSN + 1).skip(1) {
+            *slot = self.committed[l].load(Ordering::Acquire);
         }
         c
     }

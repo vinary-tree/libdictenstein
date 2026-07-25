@@ -103,7 +103,7 @@ fn vocab_soak_no_deadlock_no_lost_write_consistent_snapshots() {
                     acked.lock().expect("acked").insert(term);
                 }
                 i += 1;
-                if i % 64 == 0 {
+                if i.is_multiple_of(64) {
                     std::thread::yield_now();
                 }
             }
@@ -121,11 +121,11 @@ fn vocab_soak_no_deadlock_no_lost_write_consistent_snapshots() {
                 let _ = trie.contains("w1-00000001");
                 let _ = trie.get_term(0);
                 let _ = trie.len();
-                if reads % 97 == 0 {
+                if reads.is_multiple_of(97) {
                     let _ = trie.iter_terms_with_prefix("w2-").take(4).count();
                 }
                 reads += 1;
-                if reads % 128 == 0 {
+                if reads.is_multiple_of(128) {
                     std::thread::yield_now();
                 }
             }

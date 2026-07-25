@@ -204,9 +204,9 @@ impl<V: DictionaryValue> Scdawg<V> {
 
         let mut current = 0;
         for byte in term.bytes() {
-            match inner.nodes[current].get_edge(byte) {
-                Some(next) => current = next,
-                None => return None,
+            {
+                let next = inner.nodes[current].get_edge(byte)?;
+                current = next
             }
         }
         if inner.nodes[current].is_final {

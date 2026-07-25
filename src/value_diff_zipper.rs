@@ -522,12 +522,16 @@ mod tests {
 
     #[test]
     fn test_value_diff_basic() {
-        let dict1 = DoubleArrayTrie::from_terms_with_values(
-            vec![("cat", 10usize), ("dog", 20), ("fish", 30)].into_iter(),
-        );
-        let dict2 = DoubleArrayTrie::from_terms_with_values(
-            vec![("cat", 10usize), ("dog", 25), ("fish", 35)].into_iter(),
-        );
+        let dict1 = DoubleArrayTrie::from_terms_with_values(vec![
+            ("cat", 10usize),
+            ("dog", 20),
+            ("fish", 30),
+        ]);
+        let dict2 = DoubleArrayTrie::from_terms_with_values(vec![
+            ("cat", 10usize),
+            ("dog", 25),
+            ("fish", 35),
+        ]);
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -550,12 +554,8 @@ mod tests {
 
     #[test]
     fn test_value_diff_identical() {
-        let dict1 = DoubleArrayTrie::from_terms_with_values(
-            vec![("cat", 10usize), ("dog", 20)].into_iter(),
-        );
-        let dict2 = DoubleArrayTrie::from_terms_with_values(
-            vec![("cat", 10usize), ("dog", 20)].into_iter(),
-        );
+        let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize), ("dog", 20)]);
+        let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize), ("dog", 20)]);
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -570,12 +570,10 @@ mod tests {
 
     #[test]
     fn test_value_diff_all_different() {
-        let dict1 = DoubleArrayTrie::from_terms_with_values(
-            vec![("a", 1usize), ("b", 2), ("c", 3)].into_iter(),
-        );
-        let dict2 = DoubleArrayTrie::from_terms_with_values(
-            vec![("a", 10usize), ("b", 20), ("c", 30)].into_iter(),
-        );
+        let dict1 =
+            DoubleArrayTrie::from_terms_with_values(vec![("a", 1usize), ("b", 2), ("c", 3)]);
+        let dict2 =
+            DoubleArrayTrie::from_terms_with_values(vec![("a", 10usize), ("b", 20), ("c", 30)]);
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -590,11 +588,8 @@ mod tests {
 
     #[test]
     fn test_value_diff_disjoint_dicts() {
-        let dict1 =
-            DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)].into_iter());
-        let dict2 = DoubleArrayTrie::from_terms_with_values(
-            vec![("fish", 3usize), ("bird", 4)].into_iter(),
-        );
+        let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)]);
+        let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("fish", 3usize), ("bird", 4)]);
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -609,12 +604,9 @@ mod tests {
 
     #[test]
     fn test_value_diff_partial_overlap() {
-        let dict1 = DoubleArrayTrie::from_terms_with_values(
-            vec![("cat", 1usize), ("dog", 2), ("fish", 3)].into_iter(),
-        );
-        let dict2 = DoubleArrayTrie::from_terms_with_values(
-            vec![("dog", 20usize), ("bird", 4)].into_iter(),
-        );
+        let dict1 =
+            DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2), ("fish", 3)]);
+        let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("dog", 20usize), ("bird", 4)]);
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -632,12 +624,8 @@ mod tests {
 
     #[test]
     fn test_value_diff_descend() {
-        let dict1 = DoubleArrayTrie::from_terms_with_values(
-            vec![("score", 85u32), ("count", 100)].into_iter(),
-        );
-        let dict2 = DoubleArrayTrie::from_terms_with_values(
-            vec![("score", 92u32), ("count", 100)].into_iter(),
-        );
+        let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("score", 85u32), ("count", 100)]);
+        let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("score", 92u32), ("count", 100)]);
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -674,12 +662,10 @@ mod tests {
 
     #[test]
     fn test_value_diff_children() {
-        let dict1 = DoubleArrayTrie::from_terms_with_values(
-            vec![("ab", 1usize), ("ac", 2), ("ad", 3)].into_iter(),
-        );
-        let dict2 = DoubleArrayTrie::from_terms_with_values(
-            vec![("ab", 10usize), ("ac", 2), ("ae", 5)].into_iter(),
-        );
+        let dict1 =
+            DoubleArrayTrie::from_terms_with_values(vec![("ab", 1usize), ("ac", 2), ("ad", 3)]);
+        let dict2 =
+            DoubleArrayTrie::from_terms_with_values(vec![("ab", 10usize), ("ac", 2), ("ae", 5)]);
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -698,8 +684,8 @@ mod tests {
 
     #[test]
     fn test_value_diff_path_string() {
-        let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("hello", 1usize)].into_iter());
-        let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("hello", 2usize)].into_iter());
+        let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("hello", 1usize)]);
+        let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("hello", 2usize)]);
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -714,8 +700,8 @@ mod tests {
 
     #[test]
     fn test_value_diff_extension_trait() {
-        let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("key", 1usize)].into_iter());
-        let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("key", 2usize)].into_iter());
+        let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("key", 1usize)]);
+        let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("key", 2usize)]);
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -730,10 +716,8 @@ mod tests {
 
     #[test]
     fn test_value_diff_with_strings() {
-        let dict1 =
-            DoubleArrayTrie::from_terms_with_values(vec![("key", "old".to_string())].into_iter());
-        let dict2 =
-            DoubleArrayTrie::from_terms_with_values(vec![("key", "new".to_string())].into_iter());
+        let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("key", "old".to_string())]);
+        let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("key", "new".to_string())]);
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -749,12 +733,16 @@ mod tests {
 
     #[test]
     fn test_value_diff_nested_prefixes() {
-        let dict1 = DoubleArrayTrie::from_terms_with_values(
-            vec![("app", 1usize), ("apple", 2), ("application", 3)].into_iter(),
-        );
-        let dict2 = DoubleArrayTrie::from_terms_with_values(
-            vec![("app", 1usize), ("apple", 20), ("application", 3)].into_iter(),
-        );
+        let dict1 = DoubleArrayTrie::from_terms_with_values(vec![
+            ("app", 1usize),
+            ("apple", 2),
+            ("application", 3),
+        ]);
+        let dict2 = DoubleArrayTrie::from_terms_with_values(vec![
+            ("app", 1usize),
+            ("apple", 20),
+            ("application", 3),
+        ]);
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -772,8 +760,8 @@ mod tests {
 
     #[test]
     fn test_both_active_and_final() {
-        let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize)].into_iter());
-        let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 2usize)].into_iter());
+        let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize)]);
+        let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 2usize)]);
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);

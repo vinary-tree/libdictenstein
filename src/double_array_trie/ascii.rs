@@ -583,7 +583,7 @@ impl<V: DictionaryValue> DoubleArrayTrie<V> {
         // EDGES: avg 3 bytes/state (small overhead)
         let state_count = self.state_count();
         let edges_bytes: usize = self.shared.edges.iter().map(|e| e.len()).sum();
-        state_count * 4 + state_count * 4 + (state_count + 7) / 8 + edges_bytes
+        state_count * 4 + state_count * 4 + state_count.div_ceil(8) + edges_bytes
     }
 
     /// Iterate over all terms as raw byte vectors (without values).

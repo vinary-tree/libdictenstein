@@ -342,9 +342,9 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         let mut node_idx = 0;
 
         for &unit in units {
-            match self.nodes[node_idx].edge_target(unit) {
-                Some(child_idx) => node_idx = child_idx,
-                None => return None,
+            {
+                let child_idx = self.nodes[node_idx].edge_target(unit)?;
+                node_idx = child_idx
             }
         }
 

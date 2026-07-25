@@ -267,8 +267,7 @@ pub(super) fn resolve_child_for_mutation_with_bm<S: BlockStorage>(
 ///
 /// Without the persistent-artrie feature, DiskRef nodes should never exist.
 /// This returns false for DiskRef (indicating an error state) and true for
-/// all other node types.
-
+/// all other node types.///
 /// A Persistent Adaptive Radix Trie dictionary.
 ///
 /// This dictionary stores terms in a hybrid structure combining:
@@ -1235,7 +1234,7 @@ mod tests {
         #[test]
         fn test_check_sequential_children_empty() {
             // Node with no children - should return None
-            let node = Node::N4(Box::new(Node4::new()));
+            let node = Node::N4(Box::default());
             let result = PersistentARTrie::<()>::check_sequential_children(&node, 0);
             assert!(result.is_none());
         }

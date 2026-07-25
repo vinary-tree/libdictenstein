@@ -684,7 +684,7 @@ mod tests {
 
         // For every (term, value) pair, the bijection should hold
         for (term, value) in bimap.iter() {
-            assert_eq!(bimap.get_value(&term), Some(value.clone()));
+            assert_eq!(bimap.get_value(&term), Some(value));
             assert_eq!(bimap.get_term(&value), Some(term));
         }
     }

@@ -64,7 +64,7 @@ impl PersistentVocabARTrie {
             PersistentARTrieError::io_error(
                 "create WAL",
                 wal_path.to_string_lossy(),
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                std::io::Error::other(e.to_string()),
             )
         })?;
 
@@ -172,7 +172,7 @@ impl PersistentVocabARTrie {
                 PersistentARTrieError::io_error(
                     "open WAL",
                     wal_path.to_string_lossy(),
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             // Ensure WAL's starting LSN is at least checkpoint_lsn + 1.

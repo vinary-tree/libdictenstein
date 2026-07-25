@@ -621,8 +621,8 @@ mod tests {
 
     #[test]
     fn test_intersection_basic() {
-        let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog", "fish"].iter());
-        let dict2 = DoubleArrayTrie::from_terms(vec!["cat", "fish", "bird"].iter());
+        let dict1 = DoubleArrayTrie::from_terms(["cat", "dog", "fish"].iter());
+        let dict2 = DoubleArrayTrie::from_terms(["cat", "fish", "bird"].iter());
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -641,8 +641,8 @@ mod tests {
 
     #[test]
     fn test_intersection_disjoint() {
-        let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
-        let dict2 = DoubleArrayTrie::from_terms(vec!["fish", "bird"].iter());
+        let dict1 = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
+        let dict2 = DoubleArrayTrie::from_terms(["fish", "bird"].iter());
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -655,8 +655,8 @@ mod tests {
 
     #[test]
     fn test_intersection_identical() {
-        let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
-        let dict2 = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
+        let dict1 = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
+        let dict2 = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -675,7 +675,7 @@ mod tests {
 
     #[test]
     fn test_intersection_empty_dict() {
-        let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
+        let dict1 = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
         let dict2: DoubleArrayTrie = DoubleArrayTrie::new();
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
@@ -689,9 +689,9 @@ mod tests {
 
     #[test]
     fn test_intersection_three_dicts() {
-        let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog", "fish", "bird"].iter());
-        let dict2 = DoubleArrayTrie::from_terms(vec!["cat", "fish", "bird", "horse"].iter());
-        let dict3 = DoubleArrayTrie::from_terms(vec!["cat", "bird", "snake"].iter());
+        let dict1 = DoubleArrayTrie::from_terms(["cat", "dog", "fish", "bird"].iter());
+        let dict2 = DoubleArrayTrie::from_terms(["cat", "fish", "bird", "horse"].iter());
+        let dict3 = DoubleArrayTrie::from_terms(["cat", "bird", "snake"].iter());
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -711,8 +711,8 @@ mod tests {
 
     #[test]
     fn test_intersection_descend() {
-        let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "car"].iter());
-        let dict2 = DoubleArrayTrie::from_terms(vec!["cat", "can"].iter());
+        let dict1 = DoubleArrayTrie::from_terms(["cat", "car"].iter());
+        let dict2 = DoubleArrayTrie::from_terms(["cat", "can"].iter());
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -741,8 +741,8 @@ mod tests {
 
     #[test]
     fn test_intersection_is_final() {
-        let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "catch"].iter());
-        let dict2 = DoubleArrayTrie::from_terms(vec!["catch"].iter()); // Only "catch", not "cat"
+        let dict1 = DoubleArrayTrie::from_terms(["cat", "catch"].iter());
+        let dict2 = DoubleArrayTrie::from_terms(["catch"].iter()); // Only "catch", not "cat"
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -773,8 +773,8 @@ mod tests {
 
     #[test]
     fn test_intersection_children() {
-        let dict1 = DoubleArrayTrie::from_terms(vec!["ab", "ac", "ad"].iter());
-        let dict2 = DoubleArrayTrie::from_terms(vec!["ab", "ac", "ae"].iter());
+        let dict1 = DoubleArrayTrie::from_terms(["ab", "ac", "ad"].iter());
+        let dict2 = DoubleArrayTrie::from_terms(["ab", "ac", "ae"].iter());
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -794,10 +794,8 @@ mod tests {
 
     #[test]
     fn test_valued_intersection_lattice_meet() {
-        let dict1 =
-            DoubleArrayTrie::from_terms_with_values(vec![("cat", 85u32), ("dog", 50)].into_iter());
-        let dict2 =
-            DoubleArrayTrie::from_terms_with_values(vec![("cat", 92u32), ("dog", 60)].into_iter());
+        let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 85u32), ("dog", 50)]);
+        let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 92u32), ("dog", 60)]);
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -827,10 +825,8 @@ mod tests {
 
     #[test]
     fn test_valued_intersection_lattice_join() {
-        let dict1 =
-            DoubleArrayTrie::from_terms_with_values(vec![("cat", 85u32), ("dog", 50)].into_iter());
-        let dict2 =
-            DoubleArrayTrie::from_terms_with_values(vec![("cat", 92u32), ("dog", 60)].into_iter());
+        let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 85u32), ("dog", 50)]);
+        let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 92u32), ("dog", 60)]);
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -850,12 +846,10 @@ mod tests {
 
     #[test]
     fn test_valued_intersection_hashset() {
-        let dict1 = DoubleArrayTrie::from_terms_with_values(
-            vec![("key", HashSet::from([1, 2, 3]))].into_iter(),
-        );
-        let dict2 = DoubleArrayTrie::from_terms_with_values(
-            vec![("key", HashSet::from([2, 3, 4]))].into_iter(),
-        );
+        let dict1 =
+            DoubleArrayTrie::from_terms_with_values(vec![("key", HashSet::from([1, 2, 3]))]);
+        let dict2 =
+            DoubleArrayTrie::from_terms_with_values(vec![("key", HashSet::from([2, 3, 4]))]);
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -874,9 +868,9 @@ mod tests {
 
     #[test]
     fn test_dictionary_count() {
-        let dict1 = DoubleArrayTrie::from_terms(vec!["cat"].iter());
-        let dict2 = DoubleArrayTrie::from_terms(vec!["cat"].iter());
-        let dict3 = DoubleArrayTrie::from_terms(vec!["cat"].iter());
+        let dict1 = DoubleArrayTrie::from_terms(["cat"].iter());
+        let dict2 = DoubleArrayTrie::from_terms(["cat"].iter());
+        let dict3 = DoubleArrayTrie::from_terms(["cat"].iter());
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -891,8 +885,8 @@ mod tests {
     #[test]
     fn test_intersection_preserves_prefix_structure() {
         // Tests that shared prefixes work correctly
-        let dict1 = DoubleArrayTrie::from_terms(vec!["apple", "application", "apply"].iter());
-        let dict2 = DoubleArrayTrie::from_terms(vec!["apple", "apply", "apt"].iter());
+        let dict1 = DoubleArrayTrie::from_terms(["apple", "application", "apply"].iter());
+        let dict2 = DoubleArrayTrie::from_terms(["apple", "apply", "apt"].iter());
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);

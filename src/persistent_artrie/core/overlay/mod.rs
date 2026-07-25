@@ -82,6 +82,33 @@ pub use flip::f7_failpoint;
 use std::sync::Arc;
 
 use crate::persistent_artrie::core::key_encoding::KeyEncoding;
+
+/// A root-to-node path recorded during a CAS walk, innermost last.
+///
+/// Each element pairs a node with the key unit that leads to the *next* node, so a
+/// copy-on-write republish can rebuild the path from the leaf back to the root. Used
+/// by the CAS walk and by both eviction paths.
+pub type OverlaySpine<K, V> = Vec<(Arc<OverlayNode<K, V>>, <K as KeyEncoding>::Unit)>;
+
+/// Child slots keyed by their incoming key unit, in insertion order.
+///
+/// The inverse pairing of [`OverlaySpine`]: here the unit *precedes* the node it
+/// reaches. Used when staging children before a node is published.
+pub type OverlayChildren<K, V> = Vec<(<K as KeyEncoding>::Unit, Arc<OverlayNode<K, V>>)>;
+
+/// A single `(key unit, child)` slot, as produced by a completed subtree build.
+pub type OverlayChildSlot<K, V> = (<K as KeyEncoding>::Unit, Arc<OverlayNode<K, V>>);
+
+/// Outcome of a compare-and-swap publish attempt.
+///
+/// `Ok` carries the node that is now installed; `Err` carries the node found
+/// instead, so the caller can retry against the observed state rather than
+/// re-reading it.
+pub type OverlayCasResult<K, V> = Result<Arc<OverlayNode<K, V>>, Arc<OverlayNode<K, V>>>;
+
+/// A `(published root, published node)` pair returned by a copy-on-write republish.
+pub type OverlayRootAndNode<K, V> = (Arc<OverlayNode<K, V>>, Arc<OverlayNode<K, V>>);
+
 use crate::persistent_artrie::core::mvcc::TrieRoot;
 
 /// G4 Phase 6 (DRY bonus): the single `TrieRoot` impl for the unified overlay

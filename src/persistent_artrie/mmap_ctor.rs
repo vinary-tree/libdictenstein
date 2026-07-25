@@ -156,7 +156,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 PersistentARTrieError::io_error(
                     "create_wal",
                     wal_path.display().to_string(),
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
         let wal_writer = Arc::new(wal_writer);
@@ -252,7 +252,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 PersistentARTrieError::io_error(
                     "create_wal",
                     wal_path.display().to_string(),
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
         let wal_writer = Arc::new(wal_writer);
@@ -438,7 +438,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 PersistentARTrieError::io_error(
                     "open_wal",
                     wal_path.display().to_string(),
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
         let wal_writer = Arc::new(wal_writer);

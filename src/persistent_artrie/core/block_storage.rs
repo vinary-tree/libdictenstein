@@ -438,7 +438,7 @@ mod tests {
         assert_eq!(block.data[1], 0xAD);
 
         // Deref
-        let slice: &[u8; BLOCK_SIZE] = &*block;
+        let slice: &[u8; BLOCK_SIZE] = &block;
         assert_eq!(slice[0], 0xDE);
     }
 

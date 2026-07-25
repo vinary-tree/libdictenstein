@@ -365,6 +365,25 @@ pub struct AdaptivePoolController<S: BlockStorage + 'static = MmapDiskManager> {
     shutdown: Arc<AtomicBool>,
 }
 
+/// Everything the background control loop borrows for its lifetime.
+///
+/// Bundled rather than passed as eleven positional parameters: every field is
+/// `Arc`-shared state cloned once at spawn time, so grouping them costs nothing and
+/// makes the call site self-describing.
+struct ControlLoopContext<S: BlockStorage + 'static> {
+    config: AdaptivePoolConfig,
+    buffer_manager: Arc<BufferManager<S>>,
+    cache_stats: Arc<CacheStats>,
+    memory_monitor: Arc<MemoryPressureMonitor>,
+    current_size: Arc<AtomicUsize>,
+    adjustments: Arc<AtomicU64>,
+    grows: Arc<AtomicU64>,
+    shrinks: Arc<AtomicU64>,
+    last_hit_rate: Arc<RwLock<f64>>,
+    last_pressure: Arc<RwLock<MemoryPressureLevel>>,
+    shutdown: Arc<AtomicBool>,
+}
+
 impl<S: BlockStorage + 'static> AdaptivePoolController<S> {
     /// Create a new adaptive pool controller.
     ///
@@ -426,7 +445,7 @@ impl<S: BlockStorage + 'static> AdaptivePoolController<S> {
         match thread::Builder::new()
             .name("artrie-adaptive-pool".to_string())
             .spawn(move || {
-                Self::control_loop(
+                Self::control_loop(ControlLoopContext {
                     config,
                     buffer_manager,
                     cache_stats,
@@ -438,7 +457,7 @@ impl<S: BlockStorage + 'static> AdaptivePoolController<S> {
                     last_hit_rate,
                     last_pressure,
                     shutdown,
-                );
+                });
             }) {
             Ok(handle) => {
                 self.controller_thread = Some(handle);
@@ -483,19 +502,21 @@ impl<S: BlockStorage + 'static> AdaptivePoolController<S> {
     }
 
     /// Main control loop running in background thread.
-    fn control_loop(
-        config: AdaptivePoolConfig,
-        buffer_manager: Arc<BufferManager<S>>,
-        cache_stats: Arc<CacheStats>,
-        memory_monitor: Arc<MemoryPressureMonitor>,
-        current_size: Arc<AtomicUsize>,
-        adjustments: Arc<AtomicU64>,
-        grows: Arc<AtomicU64>,
-        shrinks: Arc<AtomicU64>,
-        last_hit_rate: Arc<RwLock<f64>>,
-        last_pressure: Arc<RwLock<MemoryPressureLevel>>,
-        shutdown: Arc<AtomicBool>,
-    ) {
+    fn control_loop(ctx: ControlLoopContext<S>) {
+        let ControlLoopContext {
+            config,
+            buffer_manager,
+            cache_stats,
+            memory_monitor,
+            current_size,
+            adjustments,
+            grows,
+            shrinks,
+            last_hit_rate,
+            last_pressure,
+            shutdown,
+        } = ctx;
+
         let mut pid = PidController::new(config.kp, config.ki, config.kd);
         let mut last_time = Instant::now();
         let mut size = current_size.load(Ordering::Relaxed);

@@ -201,8 +201,8 @@ impl CharCompressedPrefix {
     /// Returns the number of matching characters (up to prefix_len)
     pub fn match_key(&self, key: &[u32], prefix_len: usize) -> usize {
         let check_len = prefix_len.min(key.len()).min(CHAR_MAX_PREFIX_LEN);
-        for i in 0..check_len {
-            if self.chars[i] != key[i] {
+        for (i, &unit) in key.iter().enumerate().take(check_len) {
+            if self.chars[i] != unit {
                 return i;
             }
         }
@@ -355,22 +355,22 @@ impl CharNode {
 
     /// Create an empty CharNode4
     pub fn new_node4() -> Self {
-        CharNode::N4(Box::new(CharNode4::new()))
+        CharNode::N4(Box::default())
     }
 
     /// Create an empty CharNode16
     pub fn new_node16() -> Self {
-        CharNode::N16(Box::new(CharNode16::new()))
+        CharNode::N16(Box::default())
     }
 
     /// Create an empty CharNode48
     pub fn new_node48() -> Self {
-        CharNode::N48(Box::new(CharNode48::new()))
+        CharNode::N48(Box::default())
     }
 
     /// Create an empty CharBucket
     pub fn new_bucket() -> Self {
-        CharNode::Bucket(Box::new(CharBucket::new()))
+        CharNode::Bucket(Box::default())
     }
 
     /// Grow this node to the next larger type.
@@ -543,7 +543,7 @@ impl std::error::Error for AddChildError {}
 /// - CharNode4 with 3 children: 24 bytes → 3 bytes (88% reduction)
 /// - CharNode16 with 10 children: 80 bytes → 3 bytes (96% reduction)
 /// - CharBucket with 100 children: 800 bytes → 4 bytes (99.5% reduction)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ChildStorage {
     /// Individual pointers for each child
     ///
@@ -551,6 +551,7 @@ pub enum ChildStorage {
     /// - Children are in different arenas (cross-arena references)
     /// - Backward compatibility with older format
     /// - Node modifications during runtime
+    #[default]
     Direct,
 
     /// Sequential sibling storage
@@ -608,12 +609,6 @@ impl ChildStorage {
             arena_id,
             first_slot,
         }
-    }
-}
-
-impl Default for ChildStorage {
-    fn default() -> Self {
-        ChildStorage::Direct
     }
 }
 

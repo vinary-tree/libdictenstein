@@ -3,7 +3,7 @@
 //! Emits RAW per-replicate resident-reader throughput samples (Melem/s) measured
 //! while a checkpoint thread runs concurrently, for two arms:
 //!   - `control`   : blocking checkpoint (`{ let mut g = trie.write(); g.checkpoint() }`)
-//!                   — holds the trie write lock across its entire I/O.
+//!     — holds the trie write lock across its entire I/O.
 //!   - `treatment` : `ARTrie::checkpoint(&trie)` — the (to-be) non-blocking wrapper.
 //!
 //! Output: one line per sample `arm reader_count throughput_melem_per_s`, plus

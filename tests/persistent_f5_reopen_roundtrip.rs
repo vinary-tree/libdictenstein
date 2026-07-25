@@ -8,7 +8,7 @@
 //!     old counter-fold DROPPED a counter term inserted with no value).
 //!   - `char_f5_reopen_recovery_soak` is a real-disk multi-cycle reopen soak (every key survives N
 //!     reopen/checkpoint/WAL-tail cycles).
-//! Scratch is real disk (`target/test-tmp`), never tmpfs.
+//!     Scratch is real disk (`target/test-tmp`), never tmpfs.
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::persistent_artrie::char::PersistentARTrieChar;

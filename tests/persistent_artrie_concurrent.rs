@@ -154,7 +154,8 @@ fn test_single_writer_multiple_readers() {
                         let _ = dict_guard.contains(term);
                         count.fetch_add(1, Ordering::Relaxed);
                     }
-                    drop(dict_guard);
+                    // `SharedTrieAccess` is a no-lock shim post-F4, so there is no
+                    // guard to release -- it simply goes out of scope here.
                     thread::yield_now();
                 }
             })
@@ -168,7 +169,6 @@ fn test_single_writer_multiple_readers() {
         for (i, term) in new_terms.iter().enumerate() {
             let dict_guard = writer_dict.write();
             let _ = dict_guard.insert_with_value(term, (i + 1000) as i32);
-            drop(dict_guard);
             thread::sleep(Duration::from_micros(100));
         }
     });
@@ -250,7 +250,6 @@ fn test_reader_during_checkpoint() {
     for _ in 0..3 {
         let dict_guard = shared_dict.write();
         dict_guard.checkpoint().expect("checkpoint");
-        drop(dict_guard);
         thread::sleep(Duration::from_millis(10));
     }
 
@@ -360,7 +359,7 @@ fn test_writer_contention() {
                 for i in 0..25 {
                     let term = format!("{}{:03}", prefix, i);
                     let dict_guard = dict_clone.write();
-                    if dict_guard.insert_with_value(&term, (thread_id * 100 + i) as i32) {
+                    if dict_guard.insert_with_value(&term, thread_id * 100 + i) {
                         inserts.fetch_add(1, Ordering::Relaxed);
                     }
                 }

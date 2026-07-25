@@ -151,18 +151,16 @@ impl<S: crate::persistent_artrie::block_storage::BlockStorage>
         let mut current = root.clone();
 
         for &c in chars {
-            match current.find_child(c) {
-                Some(child) => {
-                    if child.is_null() {
-                        return None;
-                    }
-                    // On-disk children are not traversable here → `None`.
-                    match child.as_in_mem() {
-                        Some(child_arc) => current = Arc::clone(child_arc),
-                        None => return None,
-                    }
+            {
+                let child = current.find_child(c)?;
+                if child.is_null() {
+                    return None;
                 }
-                None => return None,
+                // On-disk children are not traversable here → `None`.
+                {
+                    let child_arc = child.as_in_mem()?;
+                    current = Arc::clone(child_arc)
+                }
             }
         }
 

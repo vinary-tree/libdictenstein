@@ -242,10 +242,10 @@ fn char_counter_crosses_i64_max_survives_checkpoint_reopen_and_rejects_overflow(
 
 /// **Pure-WAL-replay (NO checkpoint) twin — the Order-A durability witness for a
 /// > i64::MAX count.** A durable increment crossing i64::MAX survives a reopen with
-/// NO checkpoint via the delta-based `BatchIncrement` WAL records (deltas are
-/// commutative; recovery sums them in the i128 substrate). This exercises the
-/// recovery applier's bit-pattern-faithful absolute/delta decode for a count whose
-/// i64 WAL `result` field is NEGATIVE.
+/// > NO checkpoint via the delta-based `BatchIncrement` WAL records (deltas are
+/// > commutative; recovery sums them in the i128 substrate). This exercises the
+/// > recovery applier's bit-pattern-faithful absolute/delta decode for a count whose
+/// > i64 WAL `result` field is NEGATIVE.
 #[test]
 fn byte_counter_above_i64_max_survives_pure_wal_replay() {
     use libdictenstein::persistent_artrie::core::durability::DurabilityPolicy;

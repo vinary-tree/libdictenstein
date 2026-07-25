@@ -865,7 +865,7 @@ mod char_recovery_tests {
         let path = dir.path().join("truncated.artrie");
 
         // Create a truncated file (smaller than header)
-        fs::write(&path, &[0u8; 32]).expect("write truncated file");
+        fs::write(&path, [0u8; 32]).expect("write truncated file");
 
         let result = detect_corruption(&path, false).expect("detect_corruption");
         assert!(
@@ -895,7 +895,7 @@ mod char_recovery_tests {
         // Create file with invalid magic (64 bytes)
         let mut data = [0u8; 64];
         data[0..4].copy_from_slice(b"BAAD"); // Wrong magic
-        fs::write(&path, &data).expect("write file");
+        fs::write(&path, data).expect("write file");
 
         let result = detect_corruption(&path, false).expect("detect_corruption");
         assert!(result.is_some());

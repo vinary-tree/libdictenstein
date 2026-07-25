@@ -478,8 +478,8 @@ mod tests {
 
     #[test]
     fn test_symmetric_difference_basic() {
-        let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "dog", "fish"].iter());
-        let dict_b = DoubleArrayTrie::from_terms(vec!["dog", "fish", "bird"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["cat", "dog", "fish"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["dog", "fish", "bird"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -499,8 +499,8 @@ mod tests {
 
     #[test]
     fn test_symmetric_difference_identical() {
-        let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
-        let dict_b = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -515,8 +515,8 @@ mod tests {
 
     #[test]
     fn test_symmetric_difference_disjoint() {
-        let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
-        let dict_b = DoubleArrayTrie::from_terms(vec!["fish", "bird"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["fish", "bird"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_symmetric_difference_with_empty() {
-        let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
         let dict_b: DoubleArrayTrie = DoubleArrayTrie::new();
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
@@ -557,9 +557,9 @@ mod tests {
 
     #[test]
     fn test_symmetric_difference_three_dicts() {
-        let dict1 = DoubleArrayTrie::from_terms(vec!["a", "b", "c"].iter());
-        let dict2 = DoubleArrayTrie::from_terms(vec!["b", "c", "d"].iter());
-        let dict3 = DoubleArrayTrie::from_terms(vec!["c", "d", "e"].iter());
+        let dict1 = DoubleArrayTrie::from_terms(["a", "b", "c"].iter());
+        let dict2 = DoubleArrayTrie::from_terms(["b", "c", "d"].iter());
+        let dict3 = DoubleArrayTrie::from_terms(["c", "d", "e"].iter());
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -585,8 +585,8 @@ mod tests {
 
     #[test]
     fn test_symmetric_difference_descend() {
-        let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "car"].iter());
-        let dict_b = DoubleArrayTrie::from_terms(vec!["cat", "cab"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["cat", "car"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["cat", "cab"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -620,8 +620,8 @@ mod tests {
 
     #[test]
     fn test_symmetric_difference_children() {
-        let dict_a = DoubleArrayTrie::from_terms(vec!["ab", "ac"].iter());
-        let dict_b = DoubleArrayTrie::from_terms(vec!["ac", "ad"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["ab", "ac"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["ac", "ad"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -640,11 +640,8 @@ mod tests {
 
     #[test]
     fn test_symmetric_difference_with_values() {
-        let dict_a =
-            DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)].into_iter());
-        let dict_b = DoubleArrayTrie::from_terms_with_values(
-            vec![("dog", 20usize), ("fish", 3)].into_iter(),
-        );
+        let dict_a = DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)]);
+        let dict_b = DoubleArrayTrie::from_terms_with_values(vec![("dog", 20usize), ("fish", 3)]);
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -682,11 +679,8 @@ mod tests {
 
     #[test]
     fn test_symmetric_difference_valued_iterator() {
-        let dict_a =
-            DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)].into_iter());
-        let dict_b = DoubleArrayTrie::from_terms_with_values(
-            vec![("dog", 20usize), ("fish", 3)].into_iter(),
-        );
+        let dict_a = DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)]);
+        let dict_b = DoubleArrayTrie::from_terms_with_values(vec![("dog", 20usize), ("fish", 3)]);
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -708,8 +702,8 @@ mod tests {
 
     #[test]
     fn test_unique_source_index() {
-        let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
-        let dict_b = DoubleArrayTrie::from_terms(vec!["dog", "fish"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["dog", "fish"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -744,9 +738,9 @@ mod tests {
 
     #[test]
     fn test_dictionary_count() {
-        let dict1 = DoubleArrayTrie::from_terms(vec!["a"].iter());
-        let dict2 = DoubleArrayTrie::from_terms(vec!["b"].iter());
-        let dict3 = DoubleArrayTrie::from_terms(vec!["c"].iter());
+        let dict1 = DoubleArrayTrie::from_terms(["a"].iter());
+        let dict2 = DoubleArrayTrie::from_terms(["b"].iter());
+        let dict3 = DoubleArrayTrie::from_terms(["c"].iter());
 
         let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
         let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -761,8 +755,8 @@ mod tests {
     #[test]
     fn test_property_symmetric_difference_equals_union_minus_intersection() {
         // Property: A Δ B = (A ∪ B) \ (A ∩ B)
-        let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "dog", "fish"].iter());
-        let dict_b = DoubleArrayTrie::from_terms(vec!["dog", "fish", "bird"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["cat", "dog", "fish"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["dog", "fish", "bird"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -794,8 +788,8 @@ mod tests {
     #[test]
     fn test_property_symmetric_difference_equals_difference_union() {
         // Property: A Δ B = (A \ B) ∪ (B \ A)
-        let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "dog", "fish"].iter());
-        let dict_b = DoubleArrayTrie::from_terms(vec!["dog", "fish", "bird"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["cat", "dog", "fish"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["dog", "fish", "bird"].iter());
 
         let z_a1 = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b1 = DoubleArrayTrieZipper::new_from_dict(&dict_b);

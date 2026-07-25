@@ -65,7 +65,7 @@ impl FlakyBlockStorage {
         PersistentARTrieError::io_error(
             operation,
             self.path.clone(),
-            io::Error::new(io::ErrorKind::Other, "injected storage failure"),
+            io::Error::other("injected storage failure"),
         )
     }
 

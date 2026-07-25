@@ -64,9 +64,7 @@ where
 }
 
 fn byte_entries(dict: &PathMapDictionary<i32>) -> BTreeMap<String, i32> {
-    dict.iter()
-        .map(|(term, value)| (term, value))
-        .collect::<BTreeMap<_, _>>()
+    dict.iter().collect::<BTreeMap<_, _>>()
 }
 
 fn collect_char_entries<N>(root: N) -> BTreeMap<String, i32>
@@ -196,7 +194,7 @@ fn byte_pathmap_refines_reference_map_and_zipper_traversal() {
     let zipper = PathMapZipper::new_from_dict(&dict);
     let cafe_zipper = b"caf\xc3\xa9"
         .iter()
-        .fold(Some(zipper), |current, byte| current?.descend(*byte))
+        .try_fold(zipper, |current, byte| current.descend(*byte))
         .expect("zipper can descend to café");
     assert!(cafe_zipper.is_final());
     assert_eq!(cafe_zipper.value(), Some(40));

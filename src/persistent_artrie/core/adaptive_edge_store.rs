@@ -174,7 +174,7 @@ impl<L: AdaptiveLabel, C> AdaptiveEdgeStore<L, C> {
 
     #[inline]
     pub(crate) fn take(&mut self) -> Self {
-        std::mem::replace(self, Self::new())
+        std::mem::take(self)
     }
 
     pub(crate) fn into_entries(self) -> Vec<(L, C)> {
@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn replacement_preserves_sorted_order_without_len_growth() {
         let mut store = AdaptiveEdgeStore::<u8, u16>::new();
-        for key in [b'd', b'a', b'c', b'b'] {
+        for key in *b"dacb" {
             store = store.with_edge(key, key as u16);
         }
 

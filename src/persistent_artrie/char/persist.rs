@@ -849,7 +849,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         node: &CharTrieNodeInner<V>,
         child_disk_ptrs: &[(u32, SwizzledPtr)],
         path: &[char],
-        mut registry: Option<&mut DiskLocationRegistry>,
+        registry: Option<&mut DiskLocationRegistry>,
     ) -> Result<SwizzledPtr> {
         use super::relative_encoding::SerializationContext;
         use super::serialization_char::serialize_char_node_v2;
@@ -901,7 +901,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // Serialize the value using bincode (needed regardless of encoding)
         let value_bytes: Vec<u8> = if let Some(ref value) = node.value {
             crate::serialization::bincode_compat::serialize(value).map_err(|e| {
-                PersistentARTrieError::internal(&format!("Failed to serialize value: {}", e))
+                PersistentARTrieError::internal(format!("Failed to serialize value: {}", e))
             })?
         } else {
             Vec::new()
@@ -965,7 +965,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // later reclaim its in-memory box (unswizzling it to this location).
         // Pure side-effect: `result_ptr` and the bytes written above are
         // identical whether or not the registry is present.
-        if let Some(reg) = registry.as_deref_mut() {
+        if let Some(reg) = registry {
             reg.register_char(
                 path.to_vec(),
                 result_ptr.clone(),
@@ -993,14 +993,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         original: &CharNode,
         disk_children: &[(u32, SwizzledPtr)],
     ) -> Result<CharNode> {
-        use super::nodes::{CharBucket, CharNode16, CharNode4, CharNode48};
-
         // Create a new node of the same type
         let mut new_node = match original {
-            CharNode::N4(_) => CharNode::N4(Box::new(CharNode4::new())),
-            CharNode::N16(_) => CharNode::N16(Box::new(CharNode16::new())),
-            CharNode::N48(_) => CharNode::N48(Box::new(CharNode48::new())),
-            CharNode::Bucket(_) => CharNode::Bucket(Box::new(CharBucket::new())),
+            CharNode::N4(_) => CharNode::N4(Box::default()),
+            CharNode::N16(_) => CharNode::N16(Box::default()),
+            CharNode::N48(_) => CharNode::N48(Box::default()),
+            CharNode::Bucket(_) => CharNode::Bucket(Box::default()),
         };
 
         // Copy header properties
@@ -1018,7 +1016,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // Add disk children
         for &(key, ref ptr) in disk_children {
             new_node.add_child_growing(key, ptr.clone()).map_err(|e| {
-                PersistentARTrieError::internal(&format!(
+                PersistentARTrieError::internal(format!(
                     "build_disk_char_node: rebuilt node rejected child key {:#x} (Node type same \
                      as source): {:?} — indicates corruption in source node's child count",
                     key, e
@@ -2628,7 +2626,7 @@ mod cx_compressed_serialize {
     #[test]
     fn cx_density_lt_uncompressed_for_chains() {
         let dir = scratch("cx-density");
-        let trie = PersistentARTrieChar::<()>::create(&dir.path().join("t.artc")).expect("create");
+        let trie = PersistentARTrieChar::<()>::create(dir.path().join("t.artc")).expect("create");
         let overlay = build_overlay(&["abcdefghijklmnopqrstuvwxyz"]);
         let compressed = trie
             .serialize_overlay_snapshot_compressed(&overlay, None)
@@ -2708,7 +2706,7 @@ mod cx_compressed_serialize {
             "deeppathwaybeyondthelimit",
         ];
         let dir = scratch("cx-b1");
-        let trie = PersistentARTrieChar::<()>::create(&dir.path().join("t.artc")).expect("create");
+        let trie = PersistentARTrieChar::<()>::create(dir.path().join("t.artc")).expect("create");
         let overlay = build_overlay(&terms);
         let root_ptr = trie
             .serialize_overlay_snapshot_compressed(&overlay, None)
@@ -2841,7 +2839,7 @@ mod cx_compressed_serialize {
 
         // (a) UNCOMPRESSED: all-short branching terms → every chunk prefix_len=0 → ZERO stamps.
         let dir = scratch("cx6-noop-uncompressed");
-        let trie = PersistentARTrieChar::<()>::create(&dir.path().join("t.artc")).expect("create");
+        let trie = PersistentARTrieChar::<()>::create(dir.path().join("t.artc")).expect("create");
         let root = build_overlay(&["a", "b", "ca", "cb"]);
         let root_ptr = trie
             .serialize_overlay_snapshot_compressed(&root, None)
@@ -2864,8 +2862,7 @@ mod cx_compressed_serialize {
 
         // (b) COMPRESSED: a long chain below a branch → ≥1 prefix_len>0 chunk → ≥1 stamp == its disk_ptr.
         let dir2 = scratch("cx6-stamp-compressed");
-        let trie2 =
-            PersistentARTrieChar::<()>::create(&dir2.path().join("t.artc")).expect("create");
+        let trie2 = PersistentARTrieChar::<()>::create(dir2.path().join("t.artc")).expect("create");
         let root2 = build_overlay(&["aqqqqqqqqqqqqqqqqqqqq", "b"]); // 'a' + 20×'q' chain + 'b' sibling
         let root2_ptr = trie2
             .serialize_overlay_snapshot_compressed(&root2, None)

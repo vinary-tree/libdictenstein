@@ -45,7 +45,7 @@ mod double_array_trie_tests {
         let mut count = 0;
         for (bytes, value) in &dict {
             count += 1;
-            assert!(value >= 1 && value <= 3);
+            assert!((1..=3).contains(&value));
             assert_eq!(bytes.len(), 1);
         }
         assert_eq!(count, 3);
@@ -60,7 +60,7 @@ mod double_array_trie_tests {
 
     #[test]
     fn test_iter_terms_without_values() {
-        let dict = DoubleArrayTrie::from_terms(vec!["one", "two", "three"].iter());
+        let dict = DoubleArrayTrie::from_terms(["one", "two", "three"].iter());
 
         // Use iter_terms() for dictionaries without values
         let terms: HashSet<String> = dict

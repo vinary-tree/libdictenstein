@@ -94,10 +94,7 @@ struct FailingSyncBackend {
 impl WalSyncBackend for FailingSyncBackend {
     fn sync_file(&self, _file: &File) -> std::io::Result<()> {
         self.attempts.fetch_add(1, Ordering::AcqRel);
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "injected fsync failure",
-        ))
+        Err(std::io::Error::other("injected fsync failure"))
     }
 }
 
@@ -757,7 +754,7 @@ fn deterministic_reopen_trace_matches_btreemap_reference() {
     let path = temp_dir.path().join("reopen_trace.part");
     let mut expected = BTreeMap::new();
     let mut seen = BTreeSet::new();
-    let mut rng = StdRng::seed_from_u64(0xC0_55EC_7ED);
+    let mut rng = StdRng::seed_from_u64(0x000C_055E_C7ED);
 
     {
         let dict = PersistentARTrie::<i32>::create(&path).expect("create trie");

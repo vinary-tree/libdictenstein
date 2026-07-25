@@ -836,12 +836,10 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
 
         for &label in sequence {
             let edges = current.edges.load();
-            match edges.find(label) {
-                Some(child) => {
-                    // Clone Arc to own the node, ensuring it outlives the guard
-                    current = child.clone();
-                }
-                None => return None,
+            {
+                let child = edges.find(label)?;
+                // Clone Arc to own the node, ensuring it outlives the guard
+                current = child.clone();
             }
         }
 

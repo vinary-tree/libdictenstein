@@ -59,7 +59,7 @@ fn byte_corruption_rebuild_retains_active_wal_batch_and_remove() {
     assert_eq!(recovered.get_value("keep"), Some(10));
     assert!(!recovered.contains("remove-me"));
     assert!(
-        report.archive_segments_used.len() >= 1,
+        !report.archive_segments_used.is_empty(),
         "active WAL should be preserved as a rebuild segment"
     );
 }

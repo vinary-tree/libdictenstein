@@ -341,7 +341,7 @@ pub fn reconcile_lww_with_regime<R: Fn(Lsn) -> RankRegime>(
     // generation (the fix); the order of different-term ops is irrelevant to the
     // final state. A rank-less WAL has generation == lsn, so this is a stable LSN
     // ordering = the pre-fix in-order replay.
-    stamped.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    stamped.sort_by_key(|a| (a.0, a.1));
     stamped.into_iter().map(|(_, _, op)| op).collect()
 }
 
@@ -1129,7 +1129,7 @@ pub fn detect_corruption<P: AsRef<Path>>(
     }
 
     // Open and read header
-    let mut file = File::open(path).map_err(|e| RecoveryError::Io(e))?;
+    let mut file = File::open(path).map_err(RecoveryError::Io)?;
 
     // Read header bytes
     let mut header_bytes = [0u8; 64];
@@ -2063,13 +2063,13 @@ mod tests {
         assert_eq!(segments.len(), 3);
 
         // Should be sorted by filename
-        for i in 0..3 {
+        for (i, segment) in segments.iter().enumerate().take(3) {
             let expected = format!("wal_pending_{:012}.segment", i * 1000);
             assert!(
-                segments[i].file_name().unwrap().to_str().unwrap() == expected,
+                segment.file_name().unwrap().to_str().unwrap() == expected,
                 "Expected {} but got {:?}",
                 expected,
-                segments[i]
+                segment
             );
         }
     }
@@ -2739,7 +2739,7 @@ mod tests {
     #[test]
     fn test_recovery_error_display() {
         // Test Display implementations for RecoveryError
-        let io_err = RecoveryError::Io(io::Error::new(io::ErrorKind::Other, "test"));
+        let io_err = RecoveryError::Io(io::Error::other("test"));
         assert!(format!("{}", io_err).contains("I/O error"));
 
         let corrupted = RecoveryError::CorruptedWal("test corruption".into());
@@ -2770,7 +2770,7 @@ mod tests {
 
         // Test source() method
         use std::error::Error;
-        let io_err = RecoveryError::Io(io::Error::new(io::ErrorKind::Other, "test"));
+        let io_err = RecoveryError::Io(io::Error::other("test"));
         assert!(io_err.source().is_some());
 
         let corrupted = RecoveryError::CorruptedWal("test".into());
@@ -2782,8 +2782,7 @@ mod tests {
         // Test From<WalError> for RecoveryError
         use super::super::wal::WalError;
 
-        let io_err: RecoveryError =
-            WalError::Io(io::Error::new(io::ErrorKind::Other, "test")).into();
+        let io_err: RecoveryError = WalError::Io(io::Error::other("test")).into();
         assert!(matches!(io_err, RecoveryError::Io(_)));
 
         let corrupted: RecoveryError = WalError::CorruptedRecord("bad record".into()).into();
@@ -2829,7 +2828,7 @@ mod tests {
         let path = dir.path().join("truncated.art");
 
         // Write file smaller than 64 bytes
-        std::fs::write(&path, &[0u8; 32]).expect("write truncated file");
+        std::fs::write(&path, [0u8; 32]).expect("write truncated file");
 
         let result = detect_corruption(&path, false).expect("should succeed");
         assert!(result.is_some(), "Truncated file should report corruption");

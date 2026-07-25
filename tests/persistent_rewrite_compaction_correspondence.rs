@@ -15,14 +15,14 @@ use std::path::Path;
 use tempfile::tempdir;
 
 fn char_wal_record_count(path: &Path) -> usize {
-    WalReader::new(&path.with_extension("wal"))
+    WalReader::new(path.with_extension("wal"))
         .expect("open char WAL")
         .iter()
         .count()
 }
 
 fn vocab_wal_record_count(path: &Path) -> usize {
-    WalReader::new(&path.with_extension("vocab.wal"))
+    WalReader::new(path.with_extension("vocab.wal"))
         .expect("open vocab WAL")
         .iter()
         .count()

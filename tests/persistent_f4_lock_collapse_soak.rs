@@ -85,7 +85,7 @@ fn f4_lock_collapse_soak_no_deadlock_no_lost_write() {
                 }
                 i += 1;
                 // A light yield so the scheduler interleaves checkpoint/eviction.
-                if i % 64 == 0 {
+                if i.is_multiple_of(64) {
                     std::thread::yield_now();
                 }
             }
@@ -104,7 +104,7 @@ fn f4_lock_collapse_soak_no_deadlock_no_lost_write() {
                 let _ = MappedDictionary::get_value(&trie, "w0-00000000");
                 let _ = trie.read().contains("w1-00000001");
                 reads += 1;
-                if reads % 128 == 0 {
+                if reads.is_multiple_of(128) {
                     std::thread::yield_now();
                 }
             }

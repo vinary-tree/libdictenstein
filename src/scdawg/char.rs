@@ -207,9 +207,9 @@ impl<V: DictionaryValue> ScdawgChar<V> {
 
         let mut current = 0;
         for ch in term.chars() {
-            match inner.nodes[current].get_edge(ch) {
-                Some(next) => current = next,
-                None => return None,
+            {
+                let next = inner.nodes[current].get_edge(ch)?;
+                current = next
             }
         }
         if inner.nodes[current].is_final {

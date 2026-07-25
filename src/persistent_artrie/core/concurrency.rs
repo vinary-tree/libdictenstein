@@ -87,14 +87,14 @@ impl OptimisticVersion {
 
     /// Check if the version is stable (not being modified).
     pub fn is_stable(&self) -> bool {
-        self.version.load(Ordering::Acquire) % 2 == 0
+        self.version.load(Ordering::Acquire).is_multiple_of(2)
     }
 
     /// Begin a write operation (increment to odd).
     pub fn begin_write(&self) -> u64 {
         loop {
             let observed = self.version.load(Ordering::Acquire);
-            if observed % 2 != 0 {
+            if !observed.is_multiple_of(2) {
                 std::hint::spin_loop();
                 continue;
             }
@@ -142,7 +142,7 @@ impl<'a> OptimisticReadGuard<'a> {
     pub fn new(version: &'a OptimisticVersion) -> Self {
         // Wait for stable version
         let mut observed = version.get();
-        while observed % 2 != 0 {
+        while !observed.is_multiple_of(2) {
             std::hint::spin_loop();
             observed = version.get();
         }

@@ -1566,8 +1566,8 @@ mod tests {
     #[test]
     fn test_serialized_size_calculation() {
         // Node4 without prefix
-        let node4 = Node::N4(Box::new(Node4::new()));
-        assert_eq!(serialized_size(&node4), 16 + 0 + (4 + 32)); // header + prefix + data
+        let node4 = Node::N4(Box::default());
+        assert_eq!(serialized_size(&node4), 16 + (4 + 32)); // header + prefix + data
 
         // Node4 with prefix
         let mut node4_with_prefix = Node4::new();
@@ -1577,12 +1577,12 @@ mod tests {
         assert_eq!(serialized_size(&node4_p), 16 + 12 + (4 + 32)); // header + MAX_PREFIX_LEN + data
 
         // Node16
-        let node16 = Node::N16(Box::new(Node16::new()));
-        assert_eq!(serialized_size(&node16), 16 + 0 + (16 + 128));
+        let node16 = Node::N16(Box::default());
+        assert_eq!(serialized_size(&node16), 16 + (16 + 128));
 
         // Node48
-        let node48 = Node::N48(Box::new(Node48::new()));
-        assert_eq!(serialized_size(&node48), 16 + 0 + (256 + 384));
+        let node48 = Node::N48(Box::default());
+        assert_eq!(serialized_size(&node48), 16 + (256 + 384));
 
         // Node256 with 5 children
         let mut node256 = Node256::new();
@@ -1592,17 +1592,17 @@ mod tests {
                 .expect("add");
         }
         let node256_node = Node::N256(Box::new(node256));
-        assert_eq!(serialized_size(&node256_node), 16 + 0 + (32 + 5 * 8)); // bitmap + 5 children
+        assert_eq!(serialized_size(&node256_node), 16 + (32 + 5 * 8)); // bitmap + 5 children
     }
 
     #[test]
     fn test_empty_node_roundtrip() {
         // Test that empty nodes serialize and deserialize correctly
         for create_node in [
-            || Node::N4(Box::new(Node4::new())),
-            || Node::N16(Box::new(Node16::new())),
-            || Node::N48(Box::new(Node48::new())),
-            || Node::N256(Box::new(Node256::new())),
+            || Node::N4(Box::default()),
+            || Node::N16(Box::default()),
+            || Node::N48(Box::default()),
+            || Node::N256(Box::default()),
         ] {
             let node = create_node();
             let bytes = to_bytes(&node).expect("serialize");
@@ -1824,7 +1824,7 @@ mod tests {
     #[test]
     fn test_deserialize_truncated_children_node4() {
         // Header claims 2 children but data is truncated
-        let node4 = Node::N4(Box::new(Node4::new()));
+        let node4 = Node::N4(Box::default());
         let mut bytes = to_bytes(&node4).expect("serialize");
 
         // Corrupt header to claim more children exist
@@ -1890,10 +1890,10 @@ mod tests {
     fn test_serialize_all_node_types() {
         // Test that all node types can be serialized and deserialized
         let nodes: Vec<Node> = vec![
-            Node::N4(Box::new(Node4::new())),
-            Node::N16(Box::new(Node16::new())),
-            Node::N48(Box::new(Node48::new())),
-            Node::N256(Box::new(Node256::new())),
+            Node::N4(Box::default()),
+            Node::N16(Box::default()),
+            Node::N48(Box::default()),
+            Node::N256(Box::default()),
         ];
 
         for node in nodes {
@@ -2109,7 +2109,7 @@ mod tests {
     fn test_value_blob_empty_and_large() {
         let parent = ArenaSlot::new(1, 1);
         let ser_ctx = SerializationContext::new(parent);
-        let node = Node::N4(Box::new(Node4::new()));
+        let node = Node::N4(Box::default());
         let base = serialize_node_v2(&node, &ser_ctx).expect("serialize");
 
         // Empty value blob: `Some(&[])` must round-trip as `Some(vec![])` — a

@@ -79,10 +79,7 @@ impl CharNode48 {
             return None;
         }
 
-        match self.keys[..count].binary_search(&key) {
-            Ok(index) => Some(index),
-            Err(_) => None,
-        }
+        self.keys[..count].binary_search(&key).ok()
     }
 
     /// Find the insertion point for a key using binary search

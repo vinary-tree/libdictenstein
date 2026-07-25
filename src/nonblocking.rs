@@ -26,7 +26,7 @@ impl CasBackoff {
             std::hint::spin_loop();
         }
 
-        if self.step >= Self::SPIN_CAP && self.step % Self::YIELD_EVERY == 0 {
+        if self.step >= Self::SPIN_CAP && self.step.is_multiple_of(Self::YIELD_EVERY) {
             yield_now();
         }
 

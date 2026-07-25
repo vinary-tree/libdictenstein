@@ -269,10 +269,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// inversion (the "75-minute hang"); the hot-insert hoists keep their NON-faulting
     /// walks.
     fn overlay_value_get(&self, units: &[K::Unit]) -> Option<V> {
-        let root_slot = match self.lockfree_root() {
-            Some(r) => r,
-            None => return None,
-        };
+        let root_slot = self.lockfree_root()?;
         match self.find_leaf_faulting(root_slot, units, DEFAULT_MAX_FAULTIN_RETRIES) {
             Ok(found) => found.and_then(|leaf| leaf.get_value()),
             // Unreachable in the current `find_leaf_faulting` (it returns `Ok` on every

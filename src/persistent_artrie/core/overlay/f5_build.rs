@@ -13,10 +13,10 @@
 //! writes one node per unit), but a **COMPACTED** Overlay file is path-compressed (C-opt-1:
 //! `compact()` rebuilds a dense owned image via the owned-staging path, which uses buckets
 //! + compressed prefixes, then re-stamps the Overlay regime). So a node-structural
-//! converter operating on the raw owned nodes would have to re-implement bucket/prefix
-//! expansion — new, subtle, data-loss-critical code. Instead we build from the
-//! already-expanded `(term-units, value)` enumeration the proven owned readers yield, so
-//! the compression handling lives ONCE in the existing readers.
+//!   converter operating on the raw owned nodes would have to re-implement bucket/prefix
+//!   expansion — new, subtle, data-loss-critical code. Instead we build from the
+//!   already-expanded `(term-units, value)` enumeration the proven owned readers yield, so
+//!   the compression handling lives ONCE in the existing readers.
 //!
 //! # Two phases, both deep-term safe (NO recursion with key length)
 //!
@@ -29,6 +29,12 @@
 //!    so the deep result also drops cleanly; the builder tree's `Drop` is the
 //!    `BTreeMap`/`Box` default — also a concern at extreme depth, so the builder uses an
 //!    explicit iterative `Drop` too (below).
+
+/// Children staged on the build stack, keyed by their incoming key unit.
+///
+/// Boxed because `OverlayBuilderNode` is recursive: a node owns the children it is
+/// still accumulating, so the type would otherwise be infinitely sized.
+type BuilderChildren<K, V> = Vec<(<K as KeyEncoding>::Unit, Box<OverlayBuilderNode<K, V>>)>;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -150,17 +156,19 @@ where
         parent_edge: Option<K::Unit>,
         /// Children still to descend (drained from the builder node's map), in REVERSE
         /// ascending order so `pop()` yields ascending.
-        pending_children: Vec<(K::Unit, Box<OverlayBuilderNode<K, V>>)>,
+        pending_children: BuilderChildren<K, V>,
         /// Resolved child slots (ascending edge order).
         slots: Vec<Pending<K, V>>,
     }
 
+    /// Takes the node by value: the `Box` is only how children are stored (the type
+    /// is recursive), and this function needs the node itself, not the allocation.
     fn make_frame<K: KeyEncoding, V: DictionaryValue>(
-        mut node: Box<OverlayBuilderNode<K, V>>,
+        mut node: OverlayBuilderNode<K, V>,
         parent_edge: Option<K::Unit>,
     ) -> Frame<K, V> {
         // Drain children in ascending order, build slots, reverse the descent list.
-        let mut pending_children: Vec<(K::Unit, Box<OverlayBuilderNode<K, V>>)> =
+        let mut pending_children: BuilderChildren<K, V> =
             std::mem::take(&mut node.children).into_iter().collect();
         let mut slots: Vec<Pending<K, V>> = Vec::with_capacity(pending_children.len());
         for (edge, _) in &pending_children {
@@ -180,8 +188,8 @@ where
     }
 
     let mut stack: Vec<Frame<K, V>> = Vec::new();
-    stack.push(make_frame(Box::new(root), None));
-    let mut completed: Option<(K::Unit, Arc<OverlayNode<K, V>>)> = None;
+    stack.push(make_frame(root, None));
+    let mut completed: Option<super::OverlayChildSlot<K, V>> = None;
 
     loop {
         let frame = stack
@@ -198,7 +206,7 @@ where
         }
 
         if let Some((edge, child)) = frame.pending_children.pop() {
-            stack.push(make_frame(child, Some(edge)));
+            stack.push(make_frame(*child, Some(edge)));
             continue;
         }
 

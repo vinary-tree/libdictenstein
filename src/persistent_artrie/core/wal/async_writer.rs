@@ -852,7 +852,7 @@ pub fn collect_all_segments(
         for entry in fs::read_dir(&archive_dir).map_err(WalError::Io)? {
             let entry = entry.map_err(WalError::Io)?;
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "segment") {
+            if path.extension().is_some_and(|ext| ext == "segment") {
                 segments.push(path);
             }
         }
@@ -868,7 +868,7 @@ pub fn collect_all_segments(
         for entry in fs::read_dir(&pending_dir).map_err(WalError::Io)? {
             let entry = entry.map_err(WalError::Io)?;
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "segment") {
+            if path.extension().is_some_and(|ext| ext == "segment") {
                 segments.push(path);
             }
         }

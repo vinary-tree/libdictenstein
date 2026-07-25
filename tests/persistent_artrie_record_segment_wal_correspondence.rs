@@ -14,10 +14,14 @@ use tempfile::tempdir;
 
 fn active_record_count(wal_path: &Path) -> usize {
     let reader = WalReader::new(wal_path).expect("open active WAL");
-    reader
-        .iter()
-        .map(|result| result.expect("read WAL record"))
-        .count()
+    // Each record is decoded (and asserted well-formed) as a side effect of counting;
+    // `map` would signal a transformation whose result is then thrown away.
+    let mut count = 0;
+    for result in reader.iter() {
+        result.expect("read WAL record");
+        count += 1;
+    }
+    count
 }
 
 #[test]

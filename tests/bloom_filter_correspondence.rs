@@ -29,7 +29,7 @@ impl ReferenceBloom {
 
     fn with_params(bit_count: usize, hash_count: usize) -> Self {
         let requested_bits = bit_count.max(64);
-        let chunk_count = (requested_bits + 63) / 64;
+        let chunk_count = requested_bits.div_ceil(64);
 
         Self {
             bits: BTreeSet::new(),

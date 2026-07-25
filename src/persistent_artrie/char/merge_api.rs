@@ -157,7 +157,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     ///
     /// * `other` - The source trie to merge from
     /// * `merge_fn` - Function to combine values when a term exists in both tries.
-    ///                Called as `merge_fn(self_value, other_value)`.
+    ///   Called as `merge_fn(self_value, other_value)`.
     /// * `batch_size` - Number of terms to process per batch (0 = default 5000)
     ///
     /// # Returns

@@ -228,9 +228,7 @@ impl<Z: DictZipper> DictZipper for DifferenceZipper<Z> {
         let new_left = self.left.as_ref().and_then(|z| z.descend(label));
 
         // If A can't descend, there's nothing to include in the difference
-        if new_left.is_none() {
-            return None;
-        }
+        new_left.as_ref()?;
 
         // B descends if it can (to track parallel position for exclusion)
         let new_right = self.right.as_ref().and_then(|z| z.descend(label));
@@ -457,8 +455,8 @@ mod tests {
 
     #[test]
     fn test_difference_basic() {
-        let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "dog", "fish"].iter());
-        let dict_b = DoubleArrayTrie::from_terms(vec!["dog", "bird"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["cat", "dog", "fish"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["dog", "bird"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -478,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_difference_a_minus_empty() {
-        let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
         let dict_b: DoubleArrayTrie = DoubleArrayTrie::new();
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
@@ -500,7 +498,7 @@ mod tests {
     #[test]
     fn test_difference_empty_minus_b() {
         let dict_a: DoubleArrayTrie = DoubleArrayTrie::new();
-        let dict_b = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -515,8 +513,8 @@ mod tests {
 
     #[test]
     fn test_difference_a_minus_a() {
-        let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
-        let dict_b = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -531,8 +529,8 @@ mod tests {
 
     #[test]
     fn test_difference_disjoint() {
-        let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
-        let dict_b = DoubleArrayTrie::from_terms(vec!["fish", "bird"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["fish", "bird"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -552,8 +550,8 @@ mod tests {
 
     #[test]
     fn test_difference_b_superset_of_a() {
-        let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
-        let dict_b = DoubleArrayTrie::from_terms(vec!["cat", "dog", "fish", "bird"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["cat", "dog", "fish", "bird"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -568,8 +566,8 @@ mod tests {
 
     #[test]
     fn test_difference_descend() {
-        let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "car", "cab"].iter());
-        let dict_b = DoubleArrayTrie::from_terms(vec!["cat", "can"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["cat", "car", "cab"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["cat", "can"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -603,8 +601,8 @@ mod tests {
 
     #[test]
     fn test_difference_children() {
-        let dict_a = DoubleArrayTrie::from_terms(vec!["ab", "ac", "ad"].iter());
-        let dict_b = DoubleArrayTrie::from_terms(vec!["ac"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["ab", "ac", "ad"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["ac"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -623,10 +621,9 @@ mod tests {
 
     #[test]
     fn test_difference_with_values() {
-        let dict_a = DoubleArrayTrie::from_terms_with_values(
-            vec![("cat", 1usize), ("dog", 2), ("fish", 3)].into_iter(),
-        );
-        let dict_b = DoubleArrayTrie::from_terms_with_values(vec![("dog", 0usize)].into_iter());
+        let dict_a =
+            DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2), ("fish", 3)]);
+        let dict_b = DoubleArrayTrie::from_terms_with_values(vec![("dog", 0usize)]);
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -656,10 +653,9 @@ mod tests {
 
     #[test]
     fn test_difference_valued_iterator() {
-        let dict_a = DoubleArrayTrie::from_terms_with_values(
-            vec![("cat", 1usize), ("dog", 2), ("fish", 3)].into_iter(),
-        );
-        let dict_b = DoubleArrayTrie::from_terms_with_values(vec![("dog", 0usize)].into_iter());
+        let dict_a =
+            DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2), ("fish", 3)]);
+        let dict_b = DoubleArrayTrie::from_terms_with_values(vec![("dog", 0usize)]);
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -683,8 +679,8 @@ mod tests {
     fn test_difference_nested_prefix() {
         // Test case: A has "app" and "apple", B has "apple"
         // Result should include "app" but not "apple"
-        let dict_a = DoubleArrayTrie::from_terms(vec!["app", "apple"].iter());
-        let dict_b = DoubleArrayTrie::from_terms(vec!["apple"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["app", "apple"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["apple"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);
@@ -704,7 +700,7 @@ mod tests {
 
     #[test]
     fn test_difference_optional_right() {
-        let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
 
@@ -724,8 +720,8 @@ mod tests {
 
     #[test]
     fn test_left_right_active() {
-        let dict_a = DoubleArrayTrie::from_terms(vec!["cat", "car"].iter());
-        let dict_b = DoubleArrayTrie::from_terms(vec!["cat"].iter());
+        let dict_a = DoubleArrayTrie::from_terms(["cat", "car"].iter());
+        let dict_b = DoubleArrayTrie::from_terms(["cat"].iter());
 
         let z_a = DoubleArrayTrieZipper::new_from_dict(&dict_a);
         let z_b = DoubleArrayTrieZipper::new_from_dict(&dict_b);

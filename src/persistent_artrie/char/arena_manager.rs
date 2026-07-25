@@ -357,7 +357,7 @@ impl<S: BlockStorage> ArenaManager<S> {
             }
             Ok(slot)
         } else {
-            Err(PersistentARTrieError::internal(&format!(
+            Err(PersistentARTrieError::internal(format!(
                 "Data too large for arena: {} bytes",
                 data.len()
             )))
@@ -368,7 +368,7 @@ impl<S: BlockStorage> ArenaManager<S> {
     pub fn read(&self, slot: ArenaSlot) -> Result<&[u8]> {
         let arena_id = slot.arena_id as usize;
         if arena_id >= self.arenas.len() {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Invalid arena ID {} (have {} arenas)",
                 arena_id,
                 self.arenas.len()
@@ -385,7 +385,7 @@ impl<S: BlockStorage> ArenaManager<S> {
     pub fn update(&mut self, slot: ArenaSlot, new_data: &[u8]) -> Result<()> {
         let arena_id = slot.arena_id as usize;
         if arena_id >= self.arenas.len() {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Invalid arena ID {} (have {} arenas)",
                 arena_id,
                 self.arenas.len()
@@ -1110,7 +1110,7 @@ impl<S: BlockStorage> ArenaManager<S> {
         let current_slot = self.arenas[self.active_arena].node_count();
 
         if current_slot != expected_slot {
-            return Err(PersistentARTrieError::internal(&format!(
+            return Err(PersistentARTrieError::internal(format!(
                 "Slot mismatch: expected {}, got {}",
                 expected_slot, current_slot
             )));
@@ -1120,7 +1120,7 @@ impl<S: BlockStorage> ArenaManager<S> {
         let slot_id = self.arenas[self.active_arena]
             .allocate(data)
             .ok_or_else(|| {
-                PersistentARTrieError::internal(&format!(
+                PersistentARTrieError::internal(format!(
                     "Failed to allocate reserved slot {} (data size: {} bytes)",
                     expected_slot,
                     data.len()
@@ -1552,7 +1552,7 @@ mod tests {
 
         let before = manager.active_arena;
         manager.ensure_valid();
-        let _after = manager.ensure_valid();
+        manager.ensure_valid();
 
         // Should be no change when already valid
         assert_eq!(before, manager.active_arena);

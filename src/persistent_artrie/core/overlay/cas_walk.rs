@@ -213,7 +213,7 @@ pub(crate) fn find_in_lockfree_trie<K: KeyEncoding, V: Clone>(
 pub(crate) fn create_spine<K, V, F>(
     suffix: &[K::Unit],
     make_leaf: F,
-) -> (Arc<OverlayNode<K, V>>, Arc<OverlayNode<K, V>>)
+) -> super::OverlayRootAndNode<K, V>
 where
     K: KeyEncoding,
     V: Clone,
@@ -267,8 +267,7 @@ where
         &crate::persistent_artrie::core::swizzled_ptr::SwizzledPtr,
     ) -> crate::persistent_artrie::core::error::Result<Arc<OverlayNode<K, V>>>,
 {
-    let mut spine: Vec<(Arc<OverlayNode<K, V>>, K::Unit)> =
-        Vec::with_capacity(key.len().saturating_sub(depth));
+    let mut spine: super::OverlaySpine<K, V> = Vec::with_capacity(key.len().saturating_sub(depth));
     let mut current = Arc::clone(node);
     let mut d = depth;
     loop {

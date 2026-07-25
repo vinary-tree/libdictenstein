@@ -235,7 +235,7 @@ fn empty_pattern_behavior_is_explicitly_scoped() {
     assert!(empty_byte.contains_substring(""));
     assert!(empty_byte.find_exact_substring("").is_empty());
 
-    let byte_terms = vec!["alpha".to_string(), "beta".to_string(), "alpha".to_string()];
+    let byte_terms = ["alpha".to_string(), "beta".to_string(), "alpha".to_string()];
     let byte = Scdawg::<()>::from_terms(byte_terms.iter().map(String::as_str));
     let byte_matches = byte.find_exact_substring("");
     assert_eq!(
@@ -250,7 +250,7 @@ fn empty_pattern_behavior_is_explicitly_scoped() {
     assert!(empty_char.contains_substring(""));
     assert!(empty_char.find_exact_substring("").is_empty());
 
-    let char_terms = vec!["café".to_string(), "文🎉".to_string(), "café".to_string()];
+    let char_terms = ["café".to_string(), "文🎉".to_string(), "café".to_string()];
     let char_dict = ScdawgChar::<()>::from_terms(char_terms.iter().map(String::as_str));
     let char_matches = char_dict.find_exact_substring("");
     assert_eq!(

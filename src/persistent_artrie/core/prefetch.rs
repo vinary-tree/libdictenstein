@@ -143,9 +143,10 @@ impl PrefetchStatsSnapshot {
 }
 
 /// Prefetch strategy for controlling which nodes to prefetch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PrefetchStrategy {
     /// Prefetch all children immediately
+    #[default]
     Immediate,
     /// Prefetch only the first N children
     FirstN(usize),
@@ -153,12 +154,6 @@ pub enum PrefetchStrategy {
     DepthLimited(usize),
     /// Disabled - no prefetching
     Disabled,
-}
-
-impl Default for PrefetchStrategy {
-    fn default() -> Self {
-        PrefetchStrategy::Immediate
-    }
 }
 
 /// A prefetch request in the queue.

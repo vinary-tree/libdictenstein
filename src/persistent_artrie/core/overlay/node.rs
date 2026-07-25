@@ -1286,7 +1286,7 @@ mod tests {
 
     #[test]
     fn generic_sorted_order_byte() {
-        check_sorted_order::<ByteKey>(&[b'z', b'a', b'm', b'f'], NodeType::Node4);
+        check_sorted_order::<ByteKey>(b"zamf", NodeType::Node4);
     }
 
     #[test]
@@ -1489,7 +1489,7 @@ mod tests {
 
     #[test]
     fn generic_remove_middle_byte() {
-        check_remove_middle::<ByteKey>(&[b'a', b'b', b'c'], b'b', NodeType::Node4);
+        check_remove_middle::<ByteKey>(b"abc", b'b', NodeType::Node4);
     }
 
     #[test]

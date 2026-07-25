@@ -83,8 +83,8 @@ impl CompactHeader {
         node_type: u8,
         flags: u8,
     ) -> Self {
-        debug_assert!(key_width >= 1 && key_width <= 4);
-        debug_assert!(ptr_width >= 1 && ptr_width <= 6);
+        debug_assert!((1..=4).contains(&key_width));
+        debug_assert!((1..=6).contains(&ptr_width));
         debug_assert!(prefix_len <= 6);
         debug_assert!(node_type <= 3);
 
@@ -266,7 +266,7 @@ pub fn required_bytes_for_value(value: u64) -> usize {
     if value == 0 {
         1
     } else {
-        ((64 - value.leading_zeros()) as usize + 7) / 8
+        ((64 - value.leading_zeros()) as usize).div_ceil(8)
     }
 }
 
@@ -630,7 +630,7 @@ mod tests {
 
         assert_eq!(decoded.key_width, 2);
         assert_eq!(decoded.ptr_width, 3);
-        assert_eq!(decoded.has_value, true);
+        assert!(decoded.has_value);
         assert_eq!(decoded.prefix_len, 3);
         assert_eq!(decoded.node_type, compact_node_types::N4);
         assert_eq!(decoded.flags, 0x42);

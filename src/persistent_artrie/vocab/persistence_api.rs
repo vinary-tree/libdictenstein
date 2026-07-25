@@ -148,7 +148,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
                 PersistentARTrieError::io_error(
                     "sync WAL",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             self.synced_lsn.fetch_max(lsn, Ordering::AcqRel);
@@ -170,7 +170,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
                 PersistentARTrieError::io_error(
                     "sync WAL",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             self.synced_lsn.fetch_max(lsn, Ordering::AcqRel);
@@ -189,7 +189,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
                 PersistentARTrieError::io_error(
                     "sync WAL",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             self.synced_lsn.fetch_max(lsn, Ordering::AcqRel);

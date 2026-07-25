@@ -191,10 +191,8 @@ fn sample_char_term(rng: &mut StdRng) -> String {
     let mut previous = None;
     for index in 0..len {
         let mut class = sample_char_class(rng, previous);
-        if index == 0 || index + 1 == len {
-            if matches!(class, CharClass::Separator) {
-                class = CharClass::LatinConsonant;
-            }
+        if (index == 0 || index + 1 == len) && matches!(class, CharClass::Separator) {
+            class = CharClass::LatinConsonant;
         }
         out.push(sample_char(rng, class));
         previous = Some(class);

@@ -576,7 +576,7 @@ fn test_zero_width_characters() {
 
     // Count depends on whether they are treated as same
     // Without normalization, they are different
-    assert!(trie.len() >= 1); // At least one unique
+    assert!(!trie.is_empty()); // At least one unique
 }
 
 // =============================================================================
@@ -628,10 +628,7 @@ fn test_deep_trie_no_stack_overflow() {
         for i in 0..num_strings {
             // Generate a long string with varying characters
             let long_key: String = (0..string_length)
-                .map(|j| {
-                    let ch = (b'a' + ((i + j) % 26) as u8) as char;
-                    ch
-                })
+                .map(|j| (b'a' + ((i + j) % 26) as u8) as char)
                 .collect();
 
             // Use upsert which takes a value
@@ -643,10 +640,7 @@ fn test_deep_trie_no_stack_overflow() {
         println!("Trie len: {}", trie.len());
         for i in 0..num_strings {
             let long_key: String = (0..string_length)
-                .map(|j| {
-                    let ch = (b'a' + ((i + j) % 26) as u8) as char;
-                    ch
-                })
+                .map(|j| (b'a' + ((i + j) % 26) as u8) as char)
                 .collect();
             let present = trie.contains(&long_key);
             println!("String {} present: {}", i, present);
@@ -665,10 +659,7 @@ fn test_deep_trie_no_stack_overflow() {
     // First check all strings without asserting
     for i in 0..num_strings {
         let long_key: String = (0..string_length)
-            .map(|j| {
-                let ch = (b'a' + ((i + j) % 26) as u8) as char;
-                ch
-            })
+            .map(|j| (b'a' + ((i + j) % 26) as u8) as char)
             .collect();
         let present = reopened.contains(&long_key);
         println!(
@@ -696,10 +687,7 @@ fn test_deep_trie_no_stack_overflow() {
     // Verify we can still look up the strings
     for i in 0..num_strings {
         let long_key: String = (0..string_length)
-            .map(|j| {
-                let ch = (b'a' + ((i + j) % 26) as u8) as char;
-                ch
-            })
+            .map(|j| (b'a' + ((i + j) % 26) as u8) as char)
             .collect();
 
         assert!(

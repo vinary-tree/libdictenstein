@@ -152,7 +152,7 @@ pub fn edge_case_terms() -> impl Strategy<Value = Vec<String>> {
                 .prop_map(|s| s),
             // Repeated characters (tests compression)
             (1usize..=20, prop::char::range('a', 'z'))
-                .prop_map(|(len, c)| std::iter::repeat(c).take(len).collect()),
+                .prop_map(|(len, c)| std::iter::repeat_n(c, len).collect()),
         ],
         1..=20,
     )

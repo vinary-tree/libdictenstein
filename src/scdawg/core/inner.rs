@@ -258,9 +258,9 @@ impl<U: CharUnit, V: DictionaryValue> ScdawgCoreInner<U, V> {
 
         let mut current = 0;
         for unit in U::iter_str(pattern) {
-            match self.nodes[current].get_edge(unit) {
-                Some(next) => current = next,
-                None => return None,
+            {
+                let next = self.nodes[current].get_edge(unit)?;
+                current = next
             }
         }
 

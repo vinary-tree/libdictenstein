@@ -107,7 +107,7 @@ impl DirtyTracker {
         if self.track_slots {
             self.dirty_slots
                 .entry(arena_id)
-                .or_insert_with(HashSet::new)
+                .or_default()
                 .insert(slot_id);
         }
 
@@ -222,7 +222,7 @@ impl DirtyTracker {
             for (&arena_id, slots) in &other.dirty_slots {
                 self.dirty_slots
                     .entry(arena_id)
-                    .or_insert_with(HashSet::new)
+                    .or_default()
                     .extend(slots.iter().copied());
             }
         }

@@ -5,11 +5,11 @@
 //! image DIRECTLY into a fully-resident `Arc<PersistentCharNode<V>>`
 //! (= `OverlayNode<CharKey, V>`) via [`PersistentARTrieChar::enumerate_char_terms_from_disk`]
 //! + the proven iterative
-//! [`build_overlay_root_from_terms`](crate::persistent_artrie::core::overlay::f5_build::build_overlay_root_from_terms)
-//! — **NO transient owned `CharTrieRoot`/`CharTrieNodeInner`**. This lets L3.3 delete
-//! `load_root_from_disk` + `CharTrieRoot` + `CharTrieNodeInner` + the char owned readers.
-//! A corrupt/absent image falls back IN-LOADER to an EMPTY root + `image_loaded = false`
-//! (the caller drains the WAL from frontier 0), never aborting `open()`.
+//!   [`build_overlay_root_from_terms`](crate::persistent_artrie::core::overlay::f5_build::build_overlay_root_from_terms)
+//!   — **NO transient owned `CharTrieRoot`/`CharTrieNodeInner`**. This lets L3.3 delete
+//!   `load_root_from_disk` + `CharTrieRoot` + `CharTrieNodeInner` + the char owned readers.
+//!   A corrupt/absent image falls back IN-LOADER to an EMPTY root + `image_loaded = false`
+//!   (the caller drains the WAL from frontier 0), never aborting `open()`.
 //!
 //! # The single dense-image walk (char is simpler than byte)
 //!
@@ -44,8 +44,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// 1. Build the overlay root from the dense image via the COMPRESSION-AWARE codec
     ///    [`Self::load_overlay_char_root_compressed`] (`enumerate_char_terms_from_disk`
     ///    + `build_overlay_root_from_terms`), which handles both un-compressed and
-    ///    compacted/path-compressed Overlay images and falls back to an EMPTY overlay +
-    ///    `image_loaded = false` on a corrupt/absent image.
+    ///      compacted/path-compressed Overlay images and falls back to an EMPTY overlay +
+    ///      `image_loaded = false` on a corrupt/absent image.
     /// 2. Install it as the live overlay (`install_prebuilt_overlay_root`: selects
     ///    LockFreeOverlay + verifies the WAL Overlay regime — V-2; HARD-ERROR on a `false`
     ///    so a recovery-unsafe Owned-regime-under-overlay never engages).
@@ -150,7 +150,7 @@ mod deep_term_converter_tests {
         const DEPTH: usize = 100_000;
         const EDGE: u32 = 'a' as u32;
         // A single ~100k-unit key (the overlay spine is 1 node/unit ⇒ ~100k deep).
-        let units: Vec<u32> = std::iter::repeat(EDGE).take(DEPTH).collect();
+        let units: Vec<u32> = std::iter::repeat_n(EDGE, DEPTH).collect();
         let root =
             build_overlay_root_from_terms::<CharKey, u64, _>(vec![(units, Some(42u64))], None);
 

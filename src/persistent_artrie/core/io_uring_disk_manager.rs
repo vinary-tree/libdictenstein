@@ -132,10 +132,10 @@ fn validate_completion_count(
     } else {
         Err(PersistentARTrieError::IoUringError {
             operation: operation.to_string(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("expected {} completions, got {}", expected, completed),
-            ),
+            source: std::io::Error::other(format!(
+                "expected {} completions, got {}",
+                expected, completed
+            )),
         })
     }
 }
@@ -183,7 +183,7 @@ impl RingPool {
     /// * `count` - Number of rings (capped at `MAX_RING_POOL_SIZE`)
     /// * `entries_per_ring` - Number of SQEs per ring (must be power of 2)
     fn new(count: usize, entries_per_ring: u32) -> std::result::Result<Self, std::io::Error> {
-        let count = count.max(1).min(MAX_RING_POOL_SIZE);
+        let count = count.clamp(1, MAX_RING_POOL_SIZE);
         let mut rings = Vec::with_capacity(count);
         for _ in 0..count {
             rings.push(Mutex::new(IoUring::new(entries_per_ring)?));
@@ -739,7 +739,7 @@ impl IoUringDiskManager {
     fn read_block_uring(&self, block_id: u32, buffer: &mut [u8; BLOCK_SIZE]) -> Result<()> {
         let offset = block_id as u64 * BLOCK_SIZE as u64;
         let ptr = buffer.as_ptr() as usize;
-        let is_aligned = ptr % 4096 == 0;
+        let is_aligned = ptr.is_multiple_of(4096);
 
         if is_aligned {
             self.submit_read(buffer.as_mut_ptr(), BLOCK_SIZE, offset)
@@ -758,7 +758,7 @@ impl IoUringDiskManager {
     fn write_block_uring(&self, block_id: u32, buffer: &[u8; BLOCK_SIZE]) -> Result<()> {
         let offset = block_id as u64 * BLOCK_SIZE as u64;
         let ptr = buffer.as_ptr() as usize;
-        let is_aligned = ptr % 4096 == 0;
+        let is_aligned = ptr.is_multiple_of(4096);
 
         if is_aligned {
             self.submit_write(buffer.as_ptr(), BLOCK_SIZE, offset)
@@ -790,10 +790,7 @@ impl IoUringDiskManager {
                 .push(&read_e)
                 .map_err(|_| PersistentARTrieError::IoUringError {
                     operation: "push read SQE".to_string(),
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "io_uring submission queue full",
-                    ),
+                    source: std::io::Error::other("io_uring submission queue full"),
                 })?;
         }
 
@@ -808,10 +805,7 @@ impl IoUringDiskManager {
             .next()
             .ok_or_else(|| PersistentARTrieError::IoUringError {
                 operation: "read completion".to_string(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "no completion entry after submit_and_wait",
-                ),
+                source: std::io::Error::other("no completion entry after submit_and_wait"),
             })?;
 
         validate_completion_result(
@@ -842,10 +836,7 @@ impl IoUringDiskManager {
                 .push(&write_e)
                 .map_err(|_| PersistentARTrieError::IoUringError {
                     operation: "push write SQE".to_string(),
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "io_uring submission queue full",
-                    ),
+                    source: std::io::Error::other("io_uring submission queue full"),
                 })?;
         }
 
@@ -860,10 +851,7 @@ impl IoUringDiskManager {
             .next()
             .ok_or_else(|| PersistentARTrieError::IoUringError {
                 operation: "write completion".to_string(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "no completion entry after submit_and_wait",
-                ),
+                source: std::io::Error::other("no completion entry after submit_and_wait"),
             })?;
 
         validate_completion_result(
@@ -888,10 +876,7 @@ impl IoUringDiskManager {
                 .push(&fsync_e)
                 .map_err(|_| PersistentARTrieError::IoUringError {
                     operation: "push fsync SQE".to_string(),
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "io_uring submission queue full",
-                    ),
+                    source: std::io::Error::other("io_uring submission queue full"),
                 })?;
         }
 
@@ -906,10 +891,7 @@ impl IoUringDiskManager {
             .next()
             .ok_or_else(|| PersistentARTrieError::IoUringError {
                 operation: "fsync completion".to_string(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "no completion entry after submit_and_wait",
-                ),
+                source: std::io::Error::other("no completion entry after submit_and_wait"),
             })?;
 
         validate_completion_result("fsync", cqe.result(), CompletionExpectation::NoPayload)
@@ -1005,10 +987,7 @@ impl IoUringDiskManager {
                         ring.submission().push(&write_e).map_err(|_| {
                             PersistentARTrieError::IoUringError {
                                 operation: "push dirty cache flush SQE".to_string(),
-                                source: std::io::Error::new(
-                                    std::io::ErrorKind::Other,
-                                    "io_uring submission queue full",
-                                ),
+                                source: std::io::Error::other("io_uring submission queue full"),
                             }
                         })?;
                     }
@@ -1231,10 +1210,7 @@ impl IoUringDiskManager {
                 .push(&read_e)
                 .map_err(|_| PersistentARTrieError::IoUringError {
                     operation: "push ReadFixed SQE".to_string(),
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "io_uring submission queue full",
-                    ),
+                    source: std::io::Error::other("io_uring submission queue full"),
                 })?;
         }
 
@@ -1249,10 +1225,7 @@ impl IoUringDiskManager {
             .next()
             .ok_or_else(|| PersistentARTrieError::IoUringError {
                 operation: "ReadFixed completion".to_string(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "no completion entry after submit_and_wait",
-                ),
+                source: std::io::Error::other("no completion entry after submit_and_wait"),
             })?;
 
         validate_completion_result(
@@ -1293,10 +1266,7 @@ impl IoUringDiskManager {
                 .push(&write_e)
                 .map_err(|_| PersistentARTrieError::IoUringError {
                     operation: "push WriteFixed SQE".to_string(),
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "io_uring submission queue full",
-                    ),
+                    source: std::io::Error::other("io_uring submission queue full"),
                 })?;
         }
 
@@ -1311,10 +1281,7 @@ impl IoUringDiskManager {
             .next()
             .ok_or_else(|| PersistentARTrieError::IoUringError {
                 operation: "WriteFixed completion".to_string(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "no completion entry after submit_and_wait",
-                ),
+                source: std::io::Error::other("no completion entry after submit_and_wait"),
             })?;
 
         validate_completion_result(
@@ -1662,10 +1629,7 @@ impl BlockStorage for IoUringDiskManager {
                     ring.submission().push(&read_e).map_err(|_| {
                         PersistentARTrieError::IoUringError {
                             operation: "push batch read SQE".to_string(),
-                            source: std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                "io_uring submission queue full",
-                            ),
+                            source: std::io::Error::other("io_uring submission queue full"),
                         }
                     })?;
                 }
@@ -1758,10 +1722,7 @@ impl BlockStorage for IoUringDiskManager {
                     ring.submission().push(&write_e).map_err(|_| {
                         PersistentARTrieError::IoUringError {
                             operation: "push batch write SQE".to_string(),
-                            source: std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                "io_uring submission queue full",
-                            ),
+                            source: std::io::Error::other("io_uring submission queue full"),
                         }
                     })?;
                 }
@@ -1824,7 +1785,7 @@ impl BlockStorage for IoUringDiskManager {
                      block size {BLOCK_SIZE}"
                 )));
             }
-            if (ptr as usize) % std::mem::align_of::<AlignedBlock>() != 0 {
+            if !(ptr as usize).is_multiple_of(std::mem::align_of::<AlignedBlock>()) {
                 return Err(PersistentARTrieError::internal(format!(
                     "register_buffer_pool rejected unaligned buffer at index {index}"
                 )));
@@ -2009,10 +1970,7 @@ impl BlockStorage for IoUringDiskManager {
                     ring.submission().push(&read_e).map_err(|_| {
                         PersistentARTrieError::IoUringError {
                             operation: "push batch ReadFixed SQE".to_string(),
-                            source: std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                "io_uring submission queue full",
-                            ),
+                            source: std::io::Error::other("io_uring submission queue full"),
                         }
                     })?;
                 }
@@ -2097,10 +2055,7 @@ impl BlockStorage for IoUringDiskManager {
                         ring.submission().push(&write_e).map_err(|_| {
                             PersistentARTrieError::IoUringError {
                                 operation: "push batch WriteFixed SQE".to_string(),
-                                source: std::io::Error::new(
-                                    std::io::ErrorKind::Other,
-                                    "io_uring submission queue full",
-                                ),
+                                source: std::io::Error::other("io_uring submission queue full"),
                             }
                         })?;
                     }

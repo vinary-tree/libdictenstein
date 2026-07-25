@@ -381,10 +381,10 @@ fn l48_byte_u64_torn_checkpoint_no_double_apply() {
 /// fsync and the WAL `Checkpoint`-record fsync must NOT double-apply the delta on reopen. Modeled
 /// by checkpointing (which writes the image's self-described coverage into the shared `FileHeader`
 /// + the WAL `Checkpoint` record), then corrupting the LAST WAL record (the `Checkpoint`) so the
-/// reopen reads no valid `Checkpoint` (`checkpoint_lsn=0`) while the durable image's coverage
-/// (`image_checkpoint_lsn`) backstops it via `eff = max(0, coverage)`. No `enable_lockfree()` —
-/// `create` auto-flips to the overlay exactly as production does. GREEN with the #48 fix
-/// (`Some(4)`); pre-fix this re-drains the delta → `Some(8)`.
+///   reopen reads no valid `Checkpoint` (`checkpoint_lsn=0`) while the durable image's coverage
+///   (`image_checkpoint_lsn`) backstops it via `eff = max(0, coverage)`. No `enable_lockfree()` —
+///   `create` auto-flips to the overlay exactly as production does. GREEN with the #48 fix
+///   (`Some(4)`); pre-fix this re-drains the delta → `Some(8)`.
 #[test]
 fn l48_char_u64_torn_checkpoint_no_double_apply() {
     let dir = tempdir().expect("tempdir");

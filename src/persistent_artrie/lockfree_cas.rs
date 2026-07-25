@@ -36,6 +36,12 @@
 
 #![cfg(feature = "persistent-artrie")]
 
+/// The `(new root, new node)` pair produced by a copy-on-write republish.
+type PublishedPair<V> = (
+    Arc<super::nodes::PersistentNode<V>>,
+    Arc<super::nodes::PersistentNode<V>>,
+);
+
 use std::sync::Arc;
 
 use super::block_storage::BlockStorage;
@@ -365,13 +371,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         node: &Arc<super::nodes::PersistentNode<V>>,
         term: &[u8],
         depth: usize,
-    ) -> std::result::Result<
-        (
-            Arc<super::nodes::PersistentNode<V>>,
-            Arc<super::nodes::PersistentNode<V>>,
-        ),
-        (),
-    > {
+    ) -> std::result::Result<PublishedPair<V>, ()> {
         use super::nodes::persistent_node::Child;
 
         if depth == term.len() {
@@ -615,7 +615,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             };
             let _epoch = self.epoch_manager.enter_read();
             // Present-hoist (pre-WAL, no LSN burn): root already final ⇒ no-op insert.
-            if self.overlay_root_node().map_or(false, |r| r.is_final()) {
+            if self.overlay_root_node().is_some_and(|r| r.is_final()) {
                 lockfree_cache.insert(Vec::new(), true);
                 return Ok(false);
             }
@@ -735,7 +735,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             };
             let _epoch = self.epoch_manager.enter_read();
             // Absent fast-path (pre-WAL, no LSN burn): root not final ⇒ nothing to remove.
-            if !self.overlay_root_node().map_or(false, |r| r.is_final()) {
+            if !self.overlay_root_node().is_some_and(|r| r.is_final()) {
                 lockfree_cache.remove(term);
                 return Ok(false);
             }
@@ -1139,9 +1139,9 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
         // an evicted (OnDisk) prefix back in so the value is the durable value, not a
         // spurious `None` (the silent counter-reset bug the design closes). On an I/O
         // error fall through to the non-faulting walk below (best-effort).
-        match self.find_leaf_faulting(lockfree_root, key, DEFAULT_MAX_FAULTIN_RETRIES) {
-            Ok(found) => return found.and_then(|leaf| leaf.get_value()),
-            Err(_) => {}
+        if let Ok(found) = self.find_leaf_faulting(lockfree_root, key, DEFAULT_MAX_FAULTIN_RETRIES)
+        {
+            return found.and_then(|leaf| leaf.get_value());
         }
 
         self.find_leaf_lockfree(lockfree_root, key)
@@ -1161,9 +1161,9 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
     ///   3. builds the new leaf `old_leaf.as_final().with_value(cur + delta)` and
     ///      path-copies the root→leaf spine splicing in that leaf;
     ///   4. CAS-publishes the new root via `lockfree_root.compare_exchange`.
-    /// On CAS failure another writer published a newer root, so we bump
-    /// `cas_retries` and retry — re-reading the (now higher) count, so **no
-    /// increment is lost** (the loser folds its delta onto the winner's value).
+    ///      On CAS failure another writer published a newer root, so we bump
+    ///      `cas_retries` and retry — re-reading the (now higher) count, so **no
+    ///      increment is lost** (the loser folds its delta onto the winner's value).
     ///
     /// Mirrors char `lockfree_cas.rs::try_increment_cas` modulo `&str`→`&[u8]`
     /// (no decode needed for byte keys); the leaf value type is `u64` for both.
@@ -2129,7 +2129,7 @@ mod m2d_regime_aware_recovery_tests {
     /// this asserts specifically that the new Overlay reconcile does NOT drop the
     /// RANKED increment data records (each durable increment is Insert/BatchIncrement
     /// + CommitRank), i.e. the orphan-DROP rule fires ONLY for unranked records. A
-    /// ranked durable counter must recover its exact summed value.
+    ///   ranked durable counter must recover its exact summed value.
     #[test]
     fn test_e_overlay_reopen_keeps_ranked_counter_value() {
         let dir = scratch("byte-m2d-test-e");
@@ -2604,9 +2604,7 @@ mod m4b_flip_gate_tests {
                 "concurrent \"\" increments lost an update (fresh-root-CAS RMW must not)"
             );
             // All thread clones dropped on join → sole owner; unwrap for &mut checkpoint.
-            let trie = Arc::try_unwrap(trie)
-                .ok()
-                .expect("sole Arc owner after joins");
+            let trie = Arc::try_unwrap(trie).expect("sole Arc owner after joins");
             trie.checkpoint().expect("overlay checkpoint");
         }
         let recovered = PersistentARTrie::<u64>::open(&path).expect("reopen<u64>");

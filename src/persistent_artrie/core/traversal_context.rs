@@ -167,7 +167,7 @@ impl<S: BlockStorage> TraversalContext<S> {
     pub fn get_page_slice(&mut self, block_id: u32, offset: usize, len: usize) -> Result<&[u8]> {
         let page = self.get_page(block_id)?;
         if offset + len > BLOCK_SIZE {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Page slice out of bounds: offset={}, len={}, block_size={}",
                 offset, len, BLOCK_SIZE
             )));

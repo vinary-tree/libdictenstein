@@ -1244,14 +1244,14 @@ mod tests {
 
         let vocab = PersistentVocabARTrie::create(&path).unwrap();
 
-        let special_chars = vec![
-            "\0",          // Null byte
-            "\t\n\r",      // Whitespace
-            "a\0b",        // Embedded null
-            "🎉🎊🎁",      // Emoji
-            "αβγδε",       // Greek
-            "מְזָלֵל",        // Hebrew with diacritics
-            "\u{FEFF}BOM", // BOM character
+        let special_chars = [
+            "\0",     // Null byte
+            "\t\n\r", // Whitespace
+            "a\0b",   // Embedded null
+            "🎉🎊🎁", // Emoji
+            "αβγδε",  // Greek
+            "מְזָלֵל",   // Hebrew with diacritics
+            "\u{FEFF}BOM",
         ];
 
         for (i, term) in special_chars.iter().enumerate() {

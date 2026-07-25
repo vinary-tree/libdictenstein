@@ -60,7 +60,7 @@ impl BloomFilter {
     pub fn new(expected_elements: usize) -> Self {
         // Use 10 bits per element for ~1% false positive rate with 3 hash functions
         let bit_count = expected_elements.saturating_mul(10).max(64);
-        let chunk_count = (bit_count + 63) / 64; // Round up to nearest u64
+        let chunk_count = bit_count.div_ceil(64); // Round up to nearest u64
 
         BloomFilter {
             bits: vec![0u64; chunk_count],
@@ -77,7 +77,7 @@ impl BloomFilter {
     /// * `hash_count` - Number of hash functions to use
     pub fn with_params(bit_count: usize, hash_count: usize) -> Self {
         let bit_count = bit_count.max(64);
-        let chunk_count = (bit_count + 63) / 64;
+        let chunk_count = bit_count.div_ceil(64);
 
         BloomFilter {
             bits: vec![0u64; chunk_count],

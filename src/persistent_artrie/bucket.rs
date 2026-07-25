@@ -464,7 +464,7 @@ impl StringBucket {
                 if let Some(new_value) = value {
                     self.update_value_at(index, new_value)?;
                 }
-                return Ok(false);
+                Ok(false)
             }
             Err(insert_pos) => {
                 // Check space requirements
@@ -1189,7 +1189,7 @@ mod tests {
         bucket.insert_key(b"world").unwrap();
 
         // Serialize
-        let bytes = bucket.as_bytes().clone();
+        let bytes = *bucket.as_bytes();
 
         // Deserialize
         let bucket2 = StringBucket::from_bytes(&bytes).unwrap();

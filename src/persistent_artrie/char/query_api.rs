@@ -127,13 +127,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Retries up to `max_retries` times if concurrent writes occur.
     /// Returns the result if successful within retry limit.
     pub fn contains_optimistic(&self, term: &str, max_retries: usize) -> Option<bool> {
-        let mut retries = 0u64;
-        for _ in 0..max_retries {
+        // `retries` is the number of attempts that already failed, so the first
+        // (immediately successful) attempt records zero.
+        for retries in 0..max_retries {
             if let Some(result) = self.try_contains_optimistic(term) {
-                self.retry_stats.record_success(retries);
+                self.retry_stats.record_success(retries as u64);
                 return Some(result);
             }
-            retries += 1;
             std::hint::spin_loop();
         }
         None
@@ -161,13 +161,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
     /// Optimistic get with automatic retry.
     pub fn get_optimistic(&self, term: &str, max_retries: usize) -> Option<Option<V>> {
-        let mut retries = 0u64;
-        for _ in 0..max_retries {
+        // `retries` is the number of attempts that already failed, so the first
+        // (immediately successful) attempt records zero.
+        for retries in 0..max_retries {
             if let Some(result) = self.try_get_optimistic(term) {
-                self.retry_stats.record_success(retries);
+                self.retry_stats.record_success(retries as u64);
                 return Some(result);
             }
-            retries += 1;
             std::hint::spin_loop();
         }
         None

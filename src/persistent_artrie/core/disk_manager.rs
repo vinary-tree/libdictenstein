@@ -586,6 +586,11 @@ impl MmapDiskManager {
             .read(true)
             .write(true)
             .create(true)
+            // MUST stay false. This path opens an EXISTING trie as well as creating a
+            // new one, so truncating would destroy the arena, WAL watermark and every
+            // node image in the file. Stated explicitly rather than relying on the
+            // default, because the consequence of getting it wrong is total data loss.
+            .truncate(false)
             .open(&path)
             .map_err(|e| PersistentARTrieError::IoError {
                 operation: "create file".to_string(),
@@ -829,6 +834,10 @@ impl MmapDiskManager {
             .read(true)
             .write(true)
             .create(true)
+            // The sidecar carries no content -- only the `flock` matters -- but keep the
+            // existing inode rather than truncating, so a concurrent opener's lock is
+            // never disturbed.
+            .truncate(false)
             .open(&lock_path)
             .map_err(|e| PersistentARTrieError::IoError {
                 operation: "open .wlock sidecar".to_string(),
@@ -846,7 +855,7 @@ impl MmapDiskManager {
                 })
             }
             Err(e) => {
-                return Err(PersistentARTrieError::internal(&format!(
+                return Err(PersistentARTrieError::internal(format!(
                     "flock on '{lock_path}' failed: {e:?}"
                 )))
             }

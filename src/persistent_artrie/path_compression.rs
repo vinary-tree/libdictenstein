@@ -100,12 +100,12 @@ pub fn prefix_mismatch(
     // Check if key is too short
     if remaining_key.len() < check_len {
         // Key might still partially match
-        for i in 0..remaining_key.len() {
-            if prefix.bytes[i] != remaining_key[i] {
+        for (i, &key_byte) in remaining_key.iter().enumerate() {
+            if prefix.bytes[i] != key_byte {
                 return PrefixMatchResult::PartialMatch {
                     mismatch_pos: i,
                     prefix_byte: prefix.bytes[i],
-                    key_byte: remaining_key[i],
+                    key_byte,
                 };
             }
         }
@@ -115,12 +115,12 @@ pub fn prefix_mismatch(
     }
 
     // Compare prefix bytes
-    for i in 0..check_len {
-        if prefix.bytes[i] != remaining_key[i] {
+    for (i, &key_byte) in remaining_key.iter().enumerate().take(check_len) {
+        if prefix.bytes[i] != key_byte {
             return PrefixMatchResult::PartialMatch {
                 mismatch_pos: i,
                 prefix_byte: prefix.bytes[i],
-                key_byte: remaining_key[i],
+                key_byte,
             };
         }
     }

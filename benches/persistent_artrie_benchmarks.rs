@@ -159,10 +159,8 @@ fn sample_byte_term(rng: &mut StdRng) -> String {
     let mut previous = None;
     for index in 0..len {
         let mut class = sample_byte_class(rng, previous);
-        if index == 0 || index + 1 == len {
-            if matches!(class, ByteClass::Separator) {
-                class = ByteClass::Consonant;
-            }
+        if (index == 0 || index + 1 == len) && matches!(class, ByteClass::Separator) {
+            class = ByteClass::Consonant;
         }
         out.push(sample_byte_char(rng, class));
         previous = Some(class);

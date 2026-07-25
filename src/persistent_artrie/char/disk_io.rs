@@ -17,6 +17,15 @@
 
 #![allow(dead_code)]
 
+/// Everything a full dense-image scan yields: every `(term, value)` pair keyed by
+/// its char units, the root's own value (outer `Option` = "root carried a value at
+/// all", inner = the value itself), and the highest node id observed.
+type DenseScan<V> = (
+    std::collections::BTreeMap<Vec<u32>, Option<V>>,
+    Option<Option<V>>,
+    u64,
+);
+
 use std::sync::Arc;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
@@ -141,11 +150,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         &self,
         buffer_manager: &Arc<RwLock<BufferManager<S>>>,
         root_ptr: u64,
-    ) -> Result<(
-        std::collections::BTreeMap<Vec<u32>, Option<V>>,
-        Option<Option<V>>,
-        u64,
-    )> {
+    ) -> Result<DenseScan<V>> {
         use std::collections::BTreeMap;
 
         // (1) Read + parse the 18-byte root descriptor (block 0 offset 64) — mirror
@@ -319,7 +324,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             let value_bytes = &node_data[value_start..value_end];
             Some(
                 crate::serialization::bincode_compat::deserialize(value_bytes).map_err(|e| {
-                    PersistentARTrieError::internal(&format!("Failed to deserialize value: {}", e))
+                    PersistentARTrieError::internal(format!("Failed to deserialize value: {}", e))
                 })?,
             )
         } else {

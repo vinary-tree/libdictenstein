@@ -29,6 +29,11 @@
 //! oracle (`load_root_from_disk_with_arena` + the owned→overlay converter) over every
 //! format × `V` × shape — verified BEFORE L3.3 retired that oracle.
 
+/// What the F5 direct dense-to-overlay reopen produces: the rebuilt overlay root,
+/// the number of terms it carries, and whether a dense image was actually present
+/// (`false` ⇒ the file held no image and the overlay starts empty).
+type ReopenedOverlay<V> = (Arc<OverlayNode<ByteKey, V>>, usize, bool);
+
 use std::sync::Arc;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
@@ -99,10 +104,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrie<V, S> {
     /// overlay as the now-retired owned-scratch oracle (`load_root_from_disk_with_arena` + the
     /// owned→overlay converter), proven over format × `V` × {valued, term-only, "" valued, ""
     /// membership} × deep keys BEFORE this became the only reopen path.
-    pub(crate) fn load_overlay_root_compressed(
-        &self,
-        root_ptr: u64,
-    ) -> Result<(Arc<OverlayNode<ByteKey, V>>, usize, bool)> {
+    pub(crate) fn load_overlay_root_compressed(&self, root_ptr: u64) -> Result<ReopenedOverlay<V>> {
         use crate::persistent_artrie::core::overlay::f5_build::build_overlay_root_from_terms;
 
         // `root_ptr == 0` ⇒ an EMPTY overlay + `image_loaded = false` (no dense image present).

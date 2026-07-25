@@ -490,7 +490,7 @@ mod tests {
         let dir = scratch("compact-crash");
         let path = dir.path().join("c.artc");
         {
-            let mut t: PersistentARTrieChar<i64> =
+            let t: PersistentARTrieChar<i64> =
                 PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive())
                     .expect("create");
             t.set_durability_policy(DurabilityPolicy::Immediate);

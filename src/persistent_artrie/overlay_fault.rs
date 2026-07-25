@@ -230,7 +230,7 @@ pub(crate) fn evict_overlay_nodes<V: DictionaryValue, S: BlockStorage>(
     use crate::persistent_artrie::eviction::lru_tracker::LruRegistry;
 
     // LEAF-FIRST: sort by DESCENDING path length (depth).
-    nodes.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    nodes.sort_by_key(|b| std::cmp::Reverse(b.1.len()));
 
     let mut evicted = 0usize;
     let mut bytes_freed = 0usize;
@@ -320,9 +320,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// **REVERSIBLE BENCH/TEST CHECKPOINT — EVICTION-ON** (byte twin of char's
     /// `bench_immutable_checkpoint_with_eviction`, Phase 6). Capture the IMMUTABLE overlay
     /// + publish RETAINING the WAL with eviction-registry publication — directly via the
-    /// overlay capture/publish seams (NOT the production `checkpoint()` route-split). This
-    /// is what populates + publishes the byte disk-location registry the OE tests then
-    /// evict from (the M-2a stamps are written here).
+    ///   overlay capture/publish seams (NOT the production `checkpoint()` route-split). This
+    ///   is what populates + publishes the byte disk-location registry the OE tests then
+    ///   evict from (the M-2a stamps are written here).
     #[allow(dead_code)]
     pub(crate) fn bench_immutable_checkpoint_with_eviction(&self) -> Result<()> {
         let snapshot = self.capture_overlay_snapshot()?;

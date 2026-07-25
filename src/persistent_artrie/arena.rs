@@ -108,7 +108,7 @@ impl ArenaHeader {
 
         let magic = u64::from_le_bytes(bytes[0..8].try_into().expect("8 bytes"));
         if magic != ARENA_MAGIC && magic != ARENA_MAGIC_V2 {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Invalid arena magic: expected {:016x} or {:016x}, got {:016x}",
                 ARENA_MAGIC, ARENA_MAGIC_V2, magic
             )));
@@ -116,7 +116,7 @@ impl ArenaHeader {
 
         let version = u16::from_le_bytes(bytes[8..10].try_into().expect("2 bytes"));
         if version != ARENA_VERSION && version != ARENA_VERSION_V2 {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Unsupported arena version: {}",
                 version
             )));
@@ -308,7 +308,7 @@ impl ByteNodeArena {
     /// Read data for a given slot ID
     pub fn read(&self, slot_id: u32) -> Result<&[u8]> {
         if slot_id >= self.header.node_count {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Invalid slot ID {} (arena has {} nodes)",
                 slot_id, self.header.node_count
             )));
@@ -323,7 +323,7 @@ impl ByteNodeArena {
         let end = start + slot.len as usize;
 
         if end > self.data.len() {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Slot {} points outside arena: offset={}, len={}",
                 slot_id, slot.offset, slot.len
             )));
@@ -338,7 +338,7 @@ impl ByteNodeArena {
     /// allocation so the slot directory and neighboring payloads remain stable.
     pub fn update(&mut self, slot_id: u32, new_data: &[u8]) -> Result<()> {
         if slot_id >= self.header.node_count {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Invalid slot ID {} (arena has {} nodes)",
                 slot_id, self.header.node_count
             )));
@@ -351,7 +351,7 @@ impl ByteNodeArena {
         let original_len = slot.len as usize;
 
         if new_data.len() != original_len {
-            return Err(PersistentARTrieError::internal(&format!(
+            return Err(PersistentARTrieError::internal(format!(
                 "Update size mismatch: original={}, new={}",
                 original_len,
                 new_data.len()
@@ -360,7 +360,7 @@ impl ByteNodeArena {
 
         let end = start + original_len;
         if end > self.data.len() {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Slot {} points outside arena: offset={}, len={}",
                 slot_id, slot.offset, slot.len
             )));
@@ -424,7 +424,7 @@ impl ByteNodeArena {
     /// Used for partial writes during incremental checkpoints.
     pub fn slot_data_range(&self, slot_id: u32) -> Result<(usize, usize)> {
         if slot_id >= self.header.node_count {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Invalid slot ID {} (arena has {} nodes)",
                 slot_id, self.header.node_count
             )));
@@ -443,7 +443,7 @@ impl ByteNodeArena {
     pub fn slot_bytes(&self, slot_id: u32) -> Result<&[u8]> {
         let (offset, len) = self.slot_data_range(slot_id)?;
         if offset + len > self.data.len() {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Slot {} points outside arena: offset={}, len={}",
                 slot_id, offset, len
             )));
@@ -456,7 +456,7 @@ impl ByteNodeArena {
     /// Returns `(offset_in_arena, SLOT_SIZE)` for the slot's directory entry.
     pub fn slot_directory_entry_range(&self, slot_id: u32) -> Result<(usize, usize)> {
         if slot_id >= self.header.node_count {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Invalid slot ID {} (arena has {} nodes)",
                 slot_id, self.header.node_count
             )));
@@ -628,7 +628,7 @@ impl ByteNodeArenaV2 {
     /// Read data for a given slot ID
     pub fn read(&self, slot_id: u32) -> Result<&[u8]> {
         let slot = self.slots.get(slot_id as usize).ok_or_else(|| {
-            PersistentARTrieError::corrupted(&format!(
+            PersistentARTrieError::corrupted(format!(
                 "Invalid slot ID {} (arena has {} nodes)",
                 slot_id,
                 self.slots.len()
@@ -639,7 +639,7 @@ impl ByteNodeArenaV2 {
         let end = start + slot.len as usize;
 
         if end > self.data.len() {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Slot {} points outside arena: offset={}, len={}",
                 slot_id, slot.offset, slot.len
             )));
@@ -690,7 +690,7 @@ impl ByteNodeArenaV2 {
 
         // Verify V2 format
         if header.magic != ARENA_MAGIC_V2 && header.magic != ARENA_MAGIC {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Invalid V2 arena magic: {:016x}",
                 header.magic
             )));
@@ -778,7 +778,7 @@ impl ByteNodeArenaV2 {
     /// Returns `(offset_in_arena, length)` for the slot's data.
     pub fn slot_data_range(&self, slot_id: u32) -> Result<(usize, usize)> {
         let slot = self.slots.get(slot_id as usize).ok_or_else(|| {
-            PersistentARTrieError::corrupted(&format!(
+            PersistentARTrieError::corrupted(format!(
                 "Invalid slot ID {} (arena has {} nodes)",
                 slot_id,
                 self.slots.len()
@@ -791,7 +791,7 @@ impl ByteNodeArenaV2 {
     pub fn slot_bytes(&self, slot_id: u32) -> Result<&[u8]> {
         let (offset, len) = self.slot_data_range(slot_id)?;
         if offset + len > self.data.len() {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Slot {} points outside arena: offset={}, len={}",
                 slot_id, offset, len
             )));

@@ -78,7 +78,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "log_insert",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             Ok(Some(lsn))
@@ -105,7 +105,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "log_remove",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             Ok(Some(lsn))
@@ -132,7 +132,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "log_batch",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             Ok(Some(lsn))
@@ -163,7 +163,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "log_increment",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             Ok(Some(lsn))
@@ -192,7 +192,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "log_upsert",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             Ok(Some(lsn))
@@ -231,7 +231,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "log_compare_and_swap",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             Ok(Some(lsn))
@@ -256,7 +256,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "log_begin_tx",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             Ok(Some(lsn))
@@ -281,7 +281,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "log_commit_tx",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             Ok(Some(lsn))
@@ -306,7 +306,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "log_abort_tx",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             Ok(Some(lsn))
@@ -328,7 +328,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "wal_sync",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             Ok(Some(lsn))
@@ -352,7 +352,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "wal_sync_async",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             Ok(Some(handle))
@@ -394,7 +394,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "log_checkpoint",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             Ok(Some(lsn))
@@ -413,7 +413,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "wal_truncate",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
         }
@@ -440,7 +440,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "wal_rotate_to_archive",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             Ok(path)
@@ -472,7 +472,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "wal_rotate_and_restamp_overlay",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             Ok(path)
@@ -493,7 +493,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "wal_stamp_overlay_regime_records_empty",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
         }
@@ -508,7 +508,7 @@ pub trait WalManaged {
                 PersistentARTrieError::io_error(
                     "wal_collect_segments",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             Ok(segments)

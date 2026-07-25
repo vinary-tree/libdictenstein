@@ -20,6 +20,14 @@
 //! registry/stamp index are preserved from the proven byte/char/vocab originals
 //! and are reused by the native-u64 profile.
 
+/// The result of following a prefix link chain: the units consumed, every node
+/// passed through, and the node the chain terminates at.
+type PrefixChain<K, V> = (
+    Vec<<K as KeyEncoding>::Unit>,
+    Vec<Arc<OverlayNode<K, V>>>,
+    Arc<OverlayNode<K, V>>,
+);
+
 use std::sync::Arc;
 
 use crate::persistent_artrie::core::eviction::DiskLocationRegistry;
@@ -41,11 +49,7 @@ use crate::value::DictionaryValue;
 /// (char `peel_chain`, byte `peel_chain_byte`, vocab's reuse).
 pub(crate) fn peel_chain_generic<K: KeyEncoding, V: DictionaryValue>(
     start: Arc<OverlayNode<K, V>>,
-) -> (
-    Vec<K::Unit>,
-    Vec<Arc<OverlayNode<K, V>>>,
-    Arc<OverlayNode<K, V>>,
-) {
+) -> PrefixChain<K, V> {
     let mut units: Vec<K::Unit> = Vec::new();
     let mut live: Vec<Arc<OverlayNode<K, V>>> = Vec::new();
     let mut cur = start;
@@ -88,7 +92,7 @@ struct Frame<K: KeyEncoding, V: DictionaryValue> {
     live_spine: Vec<Arc<OverlayNode<K, V>>>,
     base_depth: usize,
     pushed_units: usize,
-    pending_in_mem: Vec<(K::Unit, Arc<OverlayNode<K, V>>)>,
+    pending_in_mem: super::OverlayChildren<K, V>,
     slots: Vec<PendingChild<K>>,
 }
 
@@ -102,7 +106,7 @@ fn make_frame<K: KeyEncoding, V: DictionaryValue>(
 ) -> Frame<K, V> {
     let n = node.num_children();
     let mut slots: Vec<PendingChild<K>> = Vec::with_capacity(n);
-    let mut pending_in_mem: Vec<(K::Unit, Arc<OverlayNode<K, V>>)> = Vec::with_capacity(n);
+    let mut pending_in_mem: super::OverlayChildren<K, V> = Vec::with_capacity(n);
     for (&key, child) in node.iter_children() {
         if let Some(child_arc) = child.as_in_mem() {
             slots.push(PendingChild { key, ptr: None });

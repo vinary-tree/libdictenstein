@@ -12,7 +12,7 @@ fn main() {
     for i in 0..300 {
         let term = format!("term_{:08}", i);
         let inserted = trie.insert(&term);
-        if i >= 254 && i <= 260 {
+        if (254..=260).contains(&i) {
             println!("Insert #{}: '{}' -> inserted={}", i, term, inserted);
         }
     }

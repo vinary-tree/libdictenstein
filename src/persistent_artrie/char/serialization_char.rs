@@ -1897,7 +1897,7 @@ mod tests {
             node16
                 .add_child(
                     'a' as u32 + i,
-                    SwizzledPtr::on_disk(i as u32, 0, NodeType::CharNode4),
+                    SwizzledPtr::on_disk(i, 0, NodeType::CharNode4),
                 )
                 .expect("add child");
         }
@@ -1982,10 +1982,10 @@ mod tests {
     fn test_empty_node_roundtrip() {
         // Test that empty nodes serialize and deserialize correctly
         for create_node in [
-            || CharNode::N4(Box::new(CharNode4::new())),
-            || CharNode::N16(Box::new(CharNode16::new())),
-            || CharNode::N48(Box::new(CharNode48::new())),
-            || CharNode::Bucket(Box::new(CharBucket::new())),
+            || CharNode::N4(Box::default()),
+            || CharNode::N16(Box::default()),
+            || CharNode::N48(Box::default()),
+            || CharNode::Bucket(Box::default()),
         ] {
             let node = create_node();
             let bytes = char_to_bytes(&node).expect("serialize");
@@ -1997,8 +1997,8 @@ mod tests {
     #[test]
     fn test_serialized_size_calculation() {
         // CharNode4 without prefix: 16 header + 0 prefix + 56 data
-        let node4 = CharNode::N4(Box::new(CharNode4::new()));
-        assert_eq!(char_serialized_size(&node4), 16 + 0 + 56);
+        let node4 = CharNode::N4(Box::default());
+        assert_eq!(char_serialized_size(&node4), 16 + 56);
 
         // CharNode4 with prefix: 16 header + 24 prefix + 56 data
         let mut node4_with_prefix = CharNode4::new();
@@ -2009,25 +2009,22 @@ mod tests {
         assert_eq!(char_serialized_size(&node4_p), 16 + 24 + 56);
 
         // CharNode16 without prefix: 16 + 0 + 200
-        let node16 = CharNode::N16(Box::new(CharNode16::new()));
-        assert_eq!(char_serialized_size(&node16), 16 + 0 + 200);
+        let node16 = CharNode::N16(Box::default());
+        assert_eq!(char_serialized_size(&node16), 16 + 200);
 
         // CharNode48 without prefix: 16 + 0 + 584
-        let node48 = CharNode::N48(Box::new(CharNode48::new()));
-        assert_eq!(char_serialized_size(&node48), 16 + 0 + 584);
+        let node48 = CharNode::N48(Box::default());
+        assert_eq!(char_serialized_size(&node48), 16 + 584);
 
         // CharBucket with 5 entries: 16 + 0 + (4 + 8 + 5*12)
         let mut bucket = CharBucket::new();
         for i in 0..5 {
             bucket
-                .add_child(i, SwizzledPtr::on_disk(i as u32, 0, NodeType::CharNode4))
+                .add_child(i, SwizzledPtr::on_disk(i, 0, NodeType::CharNode4))
                 .expect("add");
         }
         let bucket_node = CharNode::Bucket(Box::new(bucket));
-        assert_eq!(
-            char_serialized_size(&bucket_node),
-            16 + 0 + (4 + 8 + 5 * 12)
-        );
+        assert_eq!(char_serialized_size(&bucket_node), 16 + (4 + 8 + 5 * 12));
     }
 
     #[test]
@@ -2118,7 +2115,7 @@ mod tests {
                 node16
                     .add_child(
                         'a' as u32 + i,
-                        SwizzledPtr::on_disk(i as u32, 0, NodeType::CharNode4),
+                        SwizzledPtr::on_disk(i, 0, NodeType::CharNode4),
                     )
                     .expect("add child");
             }
@@ -2229,10 +2226,10 @@ mod tests {
         #[test]
         fn test_compact_empty_nodes() {
             for create_node in [
-                || CharNode::N4(Box::new(CharNode4::new())),
-                || CharNode::N16(Box::new(CharNode16::new())),
-                || CharNode::N48(Box::new(CharNode48::new())),
-                || CharNode::Bucket(Box::new(CharBucket::new())),
+                || CharNode::N4(Box::default()),
+                || CharNode::N16(Box::default()),
+                || CharNode::N48(Box::default()),
+                || CharNode::Bucket(Box::default()),
             ] {
                 let node = create_node();
                 let bytes = char_to_bytes_compact(&node, 1000);

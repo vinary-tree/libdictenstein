@@ -300,7 +300,7 @@ fn validate_all_arenas<R: Read + Seek>(reader: &mut R, file_size: u64) -> Vec<u3
     let mut offset = CHAR_FILE_HEADER_SIZE as u64;
 
     // Round up to block boundary
-    offset = (offset + BLOCK_SIZE as u64 - 1) / BLOCK_SIZE as u64 * BLOCK_SIZE as u64;
+    offset = offset.div_ceil(BLOCK_SIZE as u64) * BLOCK_SIZE as u64;
 
     while offset + BLOCK_SIZE as u64 <= file_size {
         if reader.seek(SeekFrom::Start(offset)).is_err() {
@@ -363,7 +363,7 @@ fn count_wal_segments(trie_path: &Path) -> usize {
         if let Ok(entries) = fs::read_dir(&archive_dir) {
             count += entries
                 .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().map_or(false, |ext| ext == "segment"))
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "segment"))
                 .count();
         }
     }
@@ -760,7 +760,7 @@ mod tests {
         let path = dir.path().join("truncated.artrie");
 
         // Create a truncated file
-        fs::write(&path, &[0u8; 10]).expect("write file");
+        fs::write(&path, [0u8; 10]).expect("write file");
 
         let result = detect_corruption(&path, false).expect("detect_corruption");
         assert!(result.is_some());
@@ -781,7 +781,7 @@ mod tests {
         // Create file with wrong magic
         let mut data = [0u8; CHAR_FILE_HEADER_SIZE];
         data[0..4].copy_from_slice(b"XXXX"); // Wrong magic
-        fs::write(&path, &data).expect("write file");
+        fs::write(&path, data).expect("write file");
 
         let result = detect_corruption(&path, false).expect("detect_corruption");
         assert!(result.is_some());
@@ -798,8 +798,8 @@ mod tests {
         let wal_path = dir.path().join("test.wal");
 
         // Create files
-        fs::write(&trie_path, &[0u8; 10]).expect("write trie");
-        fs::write(&wal_path, &[0u8; 100]).expect("write wal");
+        fs::write(&trie_path, [0u8; 10]).expect("write trie");
+        fs::write(&wal_path, [0u8; 100]).expect("write wal");
 
         assert!(check_wal_available(&trie_path));
         assert!(count_wal_segments(&trie_path) >= 1);

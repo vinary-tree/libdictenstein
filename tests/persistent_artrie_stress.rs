@@ -210,7 +210,7 @@ fn test_stress_mixed_operations() {
     assert_eq!(dict.len(), Some(expected.len()), "Phase 1: 3K inserts");
 
     // Phase 2: Remove 1,000 terms
-    let to_remove: Vec<_> = expected.iter().cloned().take(1_000).collect();
+    let to_remove: Vec<_> = expected.iter().take(1_000).cloned().collect();
 
     for term in &to_remove {
         expected.remove(term);
@@ -228,7 +228,7 @@ fn test_stress_mixed_operations() {
     for i in 0..1_000 {
         let term = format!("new{:06}", i);
         expected.insert(term.clone());
-        let _ = dict.insert_with_value(&term, (3000 + i) as i32);
+        let _ = dict.insert_with_value(&term, 3000 + i);
     }
 
     assert_eq!(

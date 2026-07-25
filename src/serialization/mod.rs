@@ -601,7 +601,7 @@ mod tests {
         // dictionaries; the goal of this test is to exercise iterative
         // traversal under a long single-child chain, not to stress DAT.
         const DEPTH: usize = 1024;
-        let long_term: String = std::iter::repeat('a').take(DEPTH).collect();
+        let long_term: String = std::iter::repeat_n('a', DEPTH).collect();
 
         let dict = DoubleArrayTrie::from_terms(vec![long_term.clone()]);
         let terms = extract_terms(&dict);
@@ -619,7 +619,7 @@ mod tests {
         use crate::dynamic_dawg::DynamicDawg;
 
         const DEPTH: usize = 50_000;
-        let long_term: String = std::iter::repeat('a').take(DEPTH).collect();
+        let long_term: String = std::iter::repeat_n('a', DEPTH).collect();
 
         let dict: DynamicDawg<()> = DynamicDawg::from_terms(vec![long_term.clone()]);
         let terms = extract_terms(&dict);

@@ -190,7 +190,7 @@ pub(crate) trait OverlayEvictable<K: KeyEncoding, V: DictionaryValue, S>:
 
         // (2) Walk the spine top-down, collecting (node, edge) for the rebuild.
         // Preallocate to the known path length (no reallocation).
-        let mut spine: Vec<(Arc<OverlayNode<K, V>>, K::Unit)> = Vec::with_capacity(path.len());
+        let mut spine: super::OverlaySpine<K, V> = Vec::with_capacity(path.len());
         let mut current = Arc::clone(&old_root);
         for &edge in path {
             let child = match current.find_child(edge) {
@@ -318,7 +318,7 @@ pub(crate) trait OverlayEvictable<K: KeyEncoding, V: DictionaryValue, S>:
             // Walk top-down, collecting (node, edge) for a possible rebuild, until
             // we either reach the leaf (all InMem ⇒ answer directly), hit a missing
             // edge (absent), or hit an OnDisk edge (fault + CAS + rebase).
-            let mut spine: Vec<(Arc<OverlayNode<K, V>>, K::Unit)> = Vec::with_capacity(key.len());
+            let mut spine: super::OverlaySpine<K, V> = Vec::with_capacity(key.len());
             let mut current = Arc::clone(&old_root);
             let mut faulted = false;
 

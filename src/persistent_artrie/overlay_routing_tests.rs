@@ -104,7 +104,7 @@ fn m3_routed_writes_round_trip_and_survive_reopen() {
             !trie.insert_with_value("alpha", 999),
             "insert_with_value is INSERT (no-op on existing)"
         );
-        assert_eq!(trie.upsert_bytes(b"alpha", 11).expect("upsert"), false); // updated
+        assert!(!trie.upsert_bytes(b"alpha", 11).expect("upsert")); // updated
         assert!(trie.upsert_bytes(b"beta", 20).expect("upsert new")); // newly inserted
         assert_eq!(trie.increment_bytes(b"beta", 5).expect("increment"), 25);
         assert_eq!(

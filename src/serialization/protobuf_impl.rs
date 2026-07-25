@@ -128,11 +128,8 @@ fn terms_from_adjacency(
 
 #[cfg(feature = "protobuf")]
 fn encode_dat_terms(terms: &[String]) -> Result<Vec<u8>, SerializationError> {
-    let encoded_len = DAT_TERMS_MAGIC.len()
-        + terms
-            .iter()
-            .map(|term| 4 + term.as_bytes().len())
-            .sum::<usize>();
+    let encoded_len =
+        DAT_TERMS_MAGIC.len() + terms.iter().map(|term| 4 + term.len()).sum::<usize>();
     let mut encoded = Vec::with_capacity(encoded_len);
     encoded.extend_from_slice(DAT_TERMS_MAGIC);
     for term in terms {
@@ -305,9 +302,9 @@ impl DictionarySerializer for ProtobufSerializer {
 
         let proto_dict = Self::extract_graph(dict);
         let mut buf = Vec::with_capacity(proto_dict.encoded_len());
-        proto_dict.encode(&mut buf).map_err(|e| {
-            SerializationError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-        })?;
+        proto_dict
+            .encode(&mut buf)
+            .map_err(|e| SerializationError::Io(std::io::Error::other(e)))?;
         writer.write_all(&buf)?;
         Ok(())
     }
@@ -494,9 +491,9 @@ impl DictionarySerializer for OptimizedProtobufSerializer {
 
         let proto_dict = Self::extract_graph_v2(dict);
         let mut buf = Vec::with_capacity(proto_dict.encoded_len());
-        proto_dict.encode(&mut buf).map_err(|e| {
-            SerializationError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-        })?;
+        proto_dict
+            .encode(&mut buf)
+            .map_err(|e| SerializationError::Io(std::io::Error::other(e)))?;
         writer.write_all(&buf)?;
         Ok(())
     }
@@ -610,9 +607,9 @@ impl SuffixAutomatonProtobufSerializer {
         };
 
         let mut buf = Vec::with_capacity(proto_suffix.encoded_len());
-        proto_suffix.encode(&mut buf).map_err(|e| {
-            SerializationError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-        })?;
+        proto_suffix
+            .encode(&mut buf)
+            .map_err(|e| SerializationError::Io(std::io::Error::other(e)))?;
         writer.write_all(&buf)?;
         Ok(())
     }
@@ -693,9 +690,9 @@ impl DatProtobufSerializer {
         };
 
         let mut buf = Vec::with_capacity(proto_dat.encoded_len());
-        proto_dat.encode(&mut buf).map_err(|e| {
-            SerializationError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-        })?;
+        proto_dat
+            .encode(&mut buf)
+            .map_err(|e| SerializationError::Io(std::io::Error::other(e)))?;
         writer.write_all(&buf)?;
         Ok(())
     }

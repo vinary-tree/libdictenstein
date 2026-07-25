@@ -346,7 +346,7 @@ impl VersionGcRegistry {
         if let Some(ref tx) = self.worker_tx {
             // Send to background worker
             match tx.try_send(GcMessage::AddCandidate(candidate)) {
-                Ok(()) => return,
+                Ok(()) => (),
                 Err(TrySendError::Full(GcMessage::AddCandidate(candidate)))
                 | Err(TrySendError::Disconnected(GcMessage::AddCandidate(candidate))) => {
                     let mut candidates = self.gc_candidates.write();

@@ -173,7 +173,7 @@ mod tests {
 
         // Decrement back across the i64::MAX boundary stays correct.
         let decremented = counter_leaf_to_i128::<u64>(&incremented).expect("decode") - 15;
-        assert_eq!(decremented, (i64::MAX as i128) + 0);
+        assert_eq!(decremented, (i64::MAX as i128));
     }
 
     #[test]

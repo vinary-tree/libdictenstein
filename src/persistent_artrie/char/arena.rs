@@ -40,10 +40,14 @@ use crate::persistent_artrie::PersistentARTrieError;
 type Result<T> = std::result::Result<T, PersistentARTrieError>;
 
 /// Magic number for arena identification: "CHARARNA"
-pub const ARENA_MAGIC: u64 = 0x414E5241524148_43; // "CHARARNA" in little-endian
+pub const ARENA_MAGIC: u64 = 0x414E_5241_5241_4843; // b"CHARARNA" in little-endian
 
 /// Magic number for V2 arena with varint directory: "CHARARV2"
-pub const ARENA_MAGIC_V2: u64 = 0x32564152_4148_43; // "CHARARV2" in little-endian
+pub const ARENA_MAGIC_V2: u64 = 0x0032_5641_5241_4843; // b"CHARAV2\0" in little-endian
+                                                       // NOTE: despite the V2 name, these bytes are `CHARAV2` + a NUL, not `CHARARV2`
+                                                       // (which would be 0x3256_5241_5241_4843). The value is authoritative -- it is
+                                                       // what existing on-disk arenas were written with -- so only the comment, which
+                                                       // previously misreported it, has been corrected.
 
 /// Current arena format version
 pub const ARENA_VERSION: u16 = 1;
@@ -174,7 +178,7 @@ impl ArenaHeader {
 
         let magic = u64::from_le_bytes(bytes[0..8].try_into().expect("8 bytes"));
         if magic != ARENA_MAGIC && magic != ARENA_MAGIC_V2 {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Invalid arena magic: expected {:016x} or {:016x}, got {:016x}",
                 ARENA_MAGIC, ARENA_MAGIC_V2, magic
             )));
@@ -182,7 +186,7 @@ impl ArenaHeader {
 
         let version = u16::from_le_bytes(bytes[8..10].try_into().expect("2 bytes"));
         if version != ARENA_VERSION && version != ARENA_VERSION_V2 && version != ARENA_VERSION_V3 {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Unsupported arena version: {}",
                 version
             )));
@@ -404,14 +408,14 @@ impl CharNodeArena {
         // Verify checksums for V3+ arenas
         if verify_checksums && header.has_data_checksum() {
             if !header.verify_header_checksum() {
-                return Err(PersistentARTrieError::corrupted(&format!(
+                return Err(PersistentARTrieError::corrupted(format!(
                     "Arena header checksum mismatch: stored={:#x}, computed={:#x}",
                     header.header_checksum,
                     header.compute_header_checksum()
                 )));
             }
             if !header.verify_data_checksum(bytes) {
-                return Err(PersistentARTrieError::corrupted(&format!(
+                return Err(PersistentARTrieError::corrupted(format!(
                     "Arena data checksum mismatch: stored={:#x}, computed={:#x}",
                     header.data_checksum,
                     header.compute_data_checksum(bytes)
@@ -527,7 +531,7 @@ impl CharNodeArena {
     /// Read data for a given slot ID
     pub fn read(&self, slot_id: u32) -> Result<&[u8]> {
         if slot_id >= self.header.node_count {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Invalid slot ID {} (arena has {} nodes)",
                 slot_id, self.header.node_count
             )));
@@ -542,7 +546,7 @@ impl CharNodeArena {
         let end = start + slot.len as usize;
 
         if end > self.data.len() {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Slot {} points outside arena: offset={}, len={}",
                 slot_id, slot.offset, slot.len
             )));
@@ -557,7 +561,7 @@ impl CharNodeArena {
     /// This is used for correcting relative encoding after arena overflow detection.
     pub fn update(&mut self, slot_id: u32, new_data: &[u8]) -> Result<()> {
         if slot_id >= self.header.node_count {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Invalid slot ID {} (arena has {} nodes)",
                 slot_id, self.header.node_count
             )));
@@ -572,7 +576,7 @@ impl CharNodeArena {
         let original_len = slot.len as usize;
 
         if new_data.len() != original_len {
-            return Err(PersistentARTrieError::internal(&format!(
+            return Err(PersistentARTrieError::internal(format!(
                 "Update size mismatch: original={}, new={}",
                 original_len,
                 new_data.len()
@@ -581,7 +585,7 @@ impl CharNodeArena {
 
         let end = start + original_len;
         if end > self.data.len() {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Slot {} points outside arena: offset={}, len={}",
                 slot_id, slot.offset, slot.len
             )));
@@ -689,7 +693,7 @@ impl CharNodeArena {
     /// Used for partial writes during incremental checkpoints.
     pub fn slot_data_range(&self, slot_id: u32) -> Result<(usize, usize)> {
         if slot_id >= self.header.node_count {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Invalid slot ID {} (arena has {} nodes)",
                 slot_id, self.header.node_count
             )));
@@ -708,7 +712,7 @@ impl CharNodeArena {
     pub fn slot_bytes(&self, slot_id: u32) -> Result<&[u8]> {
         let (offset, len) = self.slot_data_range(slot_id)?;
         if offset + len > self.data.len() {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Slot {} points outside arena: offset={}, len={}",
                 slot_id, offset, len
             )));
@@ -721,7 +725,7 @@ impl CharNodeArena {
     /// Returns `(offset_in_arena, SLOT_SIZE)` for the slot's directory entry.
     pub fn slot_directory_entry_range(&self, slot_id: u32) -> Result<(usize, usize)> {
         if slot_id >= self.header.node_count {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Invalid slot ID {} (arena has {} nodes)",
                 slot_id, self.header.node_count
             )));
@@ -881,7 +885,7 @@ impl CharNodeArenaV2 {
     /// Read data for a given slot ID
     pub fn read(&self, slot_id: u32) -> Result<&[u8]> {
         let slot = self.slots.get(slot_id as usize).ok_or_else(|| {
-            PersistentARTrieError::corrupted(&format!(
+            PersistentARTrieError::corrupted(format!(
                 "Invalid slot ID {} (arena has {} nodes)",
                 slot_id,
                 self.slots.len()
@@ -892,7 +896,7 @@ impl CharNodeArenaV2 {
         let end = start + slot.len as usize;
 
         if end > self.data.len() {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Slot {} points outside arena: offset={}, len={}",
                 slot_id, slot.offset, slot.len
             )));
@@ -934,7 +938,7 @@ impl CharNodeArenaV2 {
         let header = ArenaHeader::from_bytes(bytes)?;
 
         if header.magic != ARENA_MAGIC_V2 && header.magic != ARENA_MAGIC {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Invalid V2 arena magic: {:016x}",
                 header.magic
             )));
@@ -1014,7 +1018,7 @@ impl CharNodeArenaV2 {
     /// Returns `(offset_in_arena, length)` for the slot's data.
     pub fn slot_data_range(&self, slot_id: u32) -> Result<(usize, usize)> {
         let slot = self.slots.get(slot_id as usize).ok_or_else(|| {
-            PersistentARTrieError::corrupted(&format!(
+            PersistentARTrieError::corrupted(format!(
                 "Invalid slot ID {} (arena has {} nodes)",
                 slot_id,
                 self.slots.len()
@@ -1027,7 +1031,7 @@ impl CharNodeArenaV2 {
     pub fn slot_bytes(&self, slot_id: u32) -> Result<&[u8]> {
         let (offset, len) = self.slot_data_range(slot_id)?;
         if offset + len > self.data.len() {
-            return Err(PersistentARTrieError::corrupted(&format!(
+            return Err(PersistentARTrieError::corrupted(format!(
                 "Slot {} points outside arena: offset={}, len={}",
                 slot_id, offset, len
             )));

@@ -551,7 +551,7 @@ fn bench_serialized_size(c: &mut Criterion) {
     group.throughput(Throughput::Elements(OPS_PER_ITER));
     group.sample_size(50);
 
-    let entries = vec![
+    let entries = [
         NodeLogEntry::InsertChild {
             key: 0x42,
             child_id: 100,

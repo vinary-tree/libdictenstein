@@ -17,12 +17,18 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
+/// A node's outgoing edges: `(key unit, target)` pairs, inline up to four.
+///
+/// Four covers the overwhelming majority of DAWG nodes without touching the heap;
+/// wider nodes spill to a `Vec` transparently.
+type LockFreeEdges<U, V> = SmallVec<[(U, Arc<LockFreeDawgNode<U, V>>); 4]>;
+
 const EDGE_LINEAR_SCAN_LIMIT: usize = 16;
 
 /// Immutable sorted edge list published atomically by a node.
 #[derive(Clone, Debug)]
 pub(crate) struct LockFreeEdgeList<U: CharUnit, V: DictionaryValue> {
-    pub(crate) edges: SmallVec<[(U, Arc<LockFreeDawgNode<U, V>>); 4]>,
+    pub(crate) edges: LockFreeEdges<U, V>,
 }
 
 impl<U: CharUnit, V: DictionaryValue> Default for LockFreeEdgeList<U, V> {

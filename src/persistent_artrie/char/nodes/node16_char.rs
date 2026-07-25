@@ -143,12 +143,7 @@ impl CharNode16 {
     /// Find a key using linear scan (fallback for non-AVX2 platforms)
     fn find_key_index_linear(&self, key: u32) -> Option<usize> {
         let count = self.header.num_children as usize;
-        for i in 0..count {
-            if self.keys[i] == key {
-                return Some(i);
-            }
-        }
-        None
+        (0..count).find(|&i| self.keys[i] == key)
     }
 
     /// Find the insertion point for a key (maintains sorted order)

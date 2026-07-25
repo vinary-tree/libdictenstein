@@ -41,8 +41,8 @@ fn sorted_results<T: Ord>(mut results: Vec<T>) -> Vec<T> {
 
 #[test]
 fn test_basic_union_two_dictionaries() {
-    let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
-    let dict2 = DoubleArrayTrie::from_terms(vec!["fish", "bird"].iter());
+    let dict1 = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
+    let dict2 = DoubleArrayTrie::from_terms(["fish", "bird"].iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -61,8 +61,8 @@ fn test_basic_union_two_dictionaries() {
 
 #[test]
 fn test_union_with_overlapping_terms() {
-    let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog", "fish"].iter());
-    let dict2 = DoubleArrayTrie::from_terms(vec!["cat", "bird", "fish"].iter());
+    let dict1 = DoubleArrayTrie::from_terms(["cat", "dog", "fish"].iter());
+    let dict2 = DoubleArrayTrie::from_terms(["cat", "bird", "fish"].iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -82,10 +82,10 @@ fn test_union_with_overlapping_terms() {
 
 #[test]
 fn test_union_n_dictionaries() {
-    let dict1 = DoubleArrayTrie::from_terms(vec!["alpha"].iter());
-    let dict2 = DoubleArrayTrie::from_terms(vec!["beta"].iter());
-    let dict3 = DoubleArrayTrie::from_terms(vec!["gamma"].iter());
-    let dict4 = DoubleArrayTrie::from_terms(vec!["delta"].iter());
+    let dict1 = DoubleArrayTrie::from_terms(["alpha"].iter());
+    let dict2 = DoubleArrayTrie::from_terms(["beta"].iter());
+    let dict3 = DoubleArrayTrie::from_terms(["gamma"].iter());
+    let dict4 = DoubleArrayTrie::from_terms(["delta"].iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -108,7 +108,7 @@ fn test_union_n_dictionaries() {
 
 #[test]
 fn test_union_identical_dictionaries() {
-    let dict = DoubleArrayTrie::from_terms(vec!["cat", "dog", "fish"].iter());
+    let dict = DoubleArrayTrie::from_terms(["cat", "dog", "fish"].iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict);
@@ -146,7 +146,7 @@ fn test_union_both_empty() {
 #[test]
 fn test_union_first_empty() {
     let dict1: DoubleArrayTrie = DoubleArrayTrie::new();
-    let dict2 = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
+    let dict2 = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -165,7 +165,7 @@ fn test_union_first_empty() {
 
 #[test]
 fn test_union_second_empty() {
-    let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
+    let dict1 = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
     let dict2: DoubleArrayTrie = DoubleArrayTrie::new();
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
@@ -189,8 +189,8 @@ fn test_union_second_empty() {
 
 #[test]
 fn test_union_descend_exists_in_both() {
-    let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "car"].iter());
-    let dict2 = DoubleArrayTrie::from_terms(vec!["cat", "cab"].iter());
+    let dict1 = DoubleArrayTrie::from_terms(["cat", "car"].iter());
+    let dict2 = DoubleArrayTrie::from_terms(["cat", "cab"].iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -214,8 +214,8 @@ fn test_union_descend_exists_in_both() {
 
 #[test]
 fn test_union_descend_exists_in_one() {
-    let dict1 = DoubleArrayTrie::from_terms(vec!["apple"].iter());
-    let dict2 = DoubleArrayTrie::from_terms(vec!["banana"].iter());
+    let dict1 = DoubleArrayTrie::from_terms(["apple"].iter());
+    let dict2 = DoubleArrayTrie::from_terms(["banana"].iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -233,8 +233,8 @@ fn test_union_descend_exists_in_one() {
 
 #[test]
 fn test_union_descend_nonexistent() {
-    let dict1 = DoubleArrayTrie::from_terms(vec!["cat"].iter());
-    let dict2 = DoubleArrayTrie::from_terms(vec!["dog"].iter());
+    let dict1 = DoubleArrayTrie::from_terms(["cat"].iter());
+    let dict2 = DoubleArrayTrie::from_terms(["dog"].iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -247,8 +247,8 @@ fn test_union_descend_nonexistent() {
 
 #[test]
 fn test_union_is_final() {
-    let dict1 = DoubleArrayTrie::from_terms(vec!["cat"].iter());
-    let dict2 = DoubleArrayTrie::from_terms(vec!["cat", "cats"].iter());
+    let dict1 = DoubleArrayTrie::from_terms(["cat"].iter());
+    let dict2 = DoubleArrayTrie::from_terms(["cat", "cats"].iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -272,8 +272,8 @@ fn test_union_is_final() {
 
 #[test]
 fn test_union_path_tracking() {
-    let dict1 = DoubleArrayTrie::from_terms(vec!["hello"].iter());
-    let dict2 = DoubleArrayTrie::from_terms(vec!["world"].iter());
+    let dict1 = DoubleArrayTrie::from_terms(["hello"].iter());
+    let dict2 = DoubleArrayTrie::from_terms(["world"].iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -299,10 +299,8 @@ fn test_union_path_tracking() {
 
 #[test]
 fn test_valued_union_first_wins() {
-    let dict1 =
-        DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)].into_iter());
-    let dict2 =
-        DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize), ("fish", 3)].into_iter());
+    let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)]);
+    let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize), ("fish", 3)]);
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -331,10 +329,8 @@ fn test_valued_union_first_wins() {
 
 #[test]
 fn test_valued_union_last_wins() {
-    let dict1 =
-        DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)].into_iter());
-    let dict2 =
-        DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize), ("fish", 3)].into_iter());
+    let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)]);
+    let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize), ("fish", 3)]);
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -362,9 +358,9 @@ fn test_valued_union_custom_strategy() {
         }
     }
 
-    let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize)].into_iter());
-    let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize)].into_iter());
-    let dict3 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 100usize)].into_iter());
+    let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize)]);
+    let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize)]);
+    let dict3 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 100usize)]);
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -384,10 +380,8 @@ fn test_valued_union_custom_strategy() {
 
 #[test]
 fn test_valued_union_iterator() {
-    let dict1 =
-        DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)].into_iter());
-    let dict2 =
-        DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize), ("fish", 3)].into_iter());
+    let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 1usize), ("dog", 2)]);
+    let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("cat", 10usize), ("fish", 3)]);
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -417,8 +411,8 @@ fn test_valued_union_iterator() {
 
 #[test]
 fn test_union_char_dictionaries() {
-    let dict1 = DoubleArrayTrieChar::from_terms(vec!["café", "naïve"].iter());
-    let dict2 = DoubleArrayTrieChar::from_terms(vec!["résumé", "naïveté"].iter());
+    let dict1 = DoubleArrayTrieChar::from_terms(["café", "naïve"].iter());
+    let dict2 = DoubleArrayTrieChar::from_terms(["résumé", "naïveté"].iter());
 
     let z1 = DoubleArrayTrieCharZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieCharZipper::new_from_dict(&dict2);
@@ -437,8 +431,8 @@ fn test_union_char_dictionaries() {
 
 #[test]
 fn test_union_char_overlap() {
-    let dict1 = DoubleArrayTrieChar::from_terms(vec!["café", "naïve"].iter());
-    let dict2 = DoubleArrayTrieChar::from_terms(vec!["café", "naïveté"].iter());
+    let dict1 = DoubleArrayTrieChar::from_terms(["café", "naïve"].iter());
+    let dict2 = DoubleArrayTrieChar::from_terms(["café", "naïveté"].iter());
 
     let z1 = DoubleArrayTrieCharZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieCharZipper::new_from_dict(&dict2);
@@ -458,8 +452,8 @@ fn test_union_char_overlap() {
 
 #[test]
 fn test_union_char_navigation() {
-    let dict1 = DoubleArrayTrieChar::from_terms(vec!["中国"].iter());
-    let dict2 = DoubleArrayTrieChar::from_terms(vec!["中文"].iter());
+    let dict1 = DoubleArrayTrieChar::from_terms(["中国"].iter());
+    let dict2 = DoubleArrayTrieChar::from_terms(["中文"].iter());
 
     let z1 = DoubleArrayTrieCharZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieCharZipper::new_from_dict(&dict2);
@@ -482,8 +476,8 @@ fn test_union_char_navigation() {
 
 #[test]
 fn test_union_dawg_basic() {
-    let dict1: DynamicDawg<()> = DynamicDawg::from_terms(vec!["cat", "dog"].iter());
-    let dict2: DynamicDawg<()> = DynamicDawg::from_terms(vec!["fish", "bird"].iter());
+    let dict1: DynamicDawg<()> = DynamicDawg::from_terms(["cat", "dog"].iter());
+    let dict2: DynamicDawg<()> = DynamicDawg::from_terms(["fish", "bird"].iter());
 
     let z1 = DynamicDawgZipper::new_from_dict(&dict1);
     let z2 = DynamicDawgZipper::new_from_dict(&dict2);
@@ -502,8 +496,8 @@ fn test_union_dawg_basic() {
 
 #[test]
 fn test_union_dawg_with_overlap() {
-    let dict1: DynamicDawg<()> = DynamicDawg::from_terms(vec!["cat", "dog"].iter());
-    let dict2: DynamicDawg<()> = DynamicDawg::from_terms(vec!["cat", "fish"].iter());
+    let dict1: DynamicDawg<()> = DynamicDawg::from_terms(["cat", "dog"].iter());
+    let dict2: DynamicDawg<()> = DynamicDawg::from_terms(["cat", "fish"].iter());
 
     let z1 = DynamicDawgZipper::new_from_dict(&dict1);
     let z2 = DynamicDawgZipper::new_from_dict(&dict2);
@@ -523,8 +517,8 @@ fn test_union_dawg_with_overlap() {
 
 #[test]
 fn test_union_dawg_char() {
-    let dict1: DynamicDawgChar<()> = DynamicDawgChar::from_terms(vec!["café", "naïve"].iter());
-    let dict2: DynamicDawgChar<()> = DynamicDawgChar::from_terms(vec!["résumé"].iter());
+    let dict1: DynamicDawgChar<()> = DynamicDawgChar::from_terms(["café", "naïve"].iter());
+    let dict2: DynamicDawgChar<()> = DynamicDawgChar::from_terms(["résumé"].iter());
 
     let z1 = DynamicDawgCharZipper::new_from_dict(&dict1);
     let z2 = DynamicDawgCharZipper::new_from_dict(&dict2);
@@ -547,8 +541,8 @@ fn test_union_dawg_char() {
 
 #[test]
 fn test_consistency_dat_dawg() {
-    let terms1 = vec!["apple", "application"];
-    let terms2 = vec!["apple", "banana"];
+    let terms1 = ["apple", "application"];
+    let terms2 = ["apple", "banana"];
 
     // DoubleArrayTrie
     let dat1 = DoubleArrayTrie::from_terms(terms1.iter());
@@ -589,8 +583,8 @@ fn test_consistency_dat_dawg() {
 
 #[test]
 fn test_union_with_prefix_zipper() {
-    let dict1 = DoubleArrayTrie::from_terms(vec!["process", "produce"].iter());
-    let dict2 = DoubleArrayTrie::from_terms(vec!["product", "program"].iter());
+    let dict1 = DoubleArrayTrie::from_terms(["process", "produce"].iter());
+    let dict2 = DoubleArrayTrie::from_terms(["product", "program"].iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -611,8 +605,8 @@ fn test_union_with_prefix_zipper() {
 
 #[test]
 fn test_union_with_prefix_zipper_partial_match() {
-    let dict1 = DoubleArrayTrie::from_terms(vec!["apple", "application"].iter());
-    let dict2 = DoubleArrayTrie::from_terms(vec!["banana", "band"].iter());
+    let dict1 = DoubleArrayTrie::from_terms(["apple", "application"].iter());
+    let dict2 = DoubleArrayTrie::from_terms(["banana", "band"].iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -644,8 +638,8 @@ fn test_union_with_prefix_zipper_partial_match() {
 
 #[test]
 fn test_union_with_prefix_zipper_nonexistent() {
-    let dict1 = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
-    let dict2 = DoubleArrayTrie::from_terms(vec!["fish", "bird"].iter());
+    let dict1 = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
+    let dict2 = DoubleArrayTrie::from_terms(["fish", "bird"].iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -658,8 +652,8 @@ fn test_union_with_prefix_zipper_nonexistent() {
 
 #[test]
 fn test_union_char_with_prefix_zipper() {
-    let dict1 = DoubleArrayTrieChar::from_terms(vec!["café", "cafétéria"].iter());
-    let dict2 = DoubleArrayTrieChar::from_terms(vec!["cafard"].iter());
+    let dict1 = DoubleArrayTrieChar::from_terms(["café", "cafétéria"].iter());
+    let dict2 = DoubleArrayTrieChar::from_terms(["cafard"].iter());
 
     let z1 = DoubleArrayTrieCharZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieCharZipper::new_from_dict(&dict2);
@@ -684,7 +678,7 @@ fn test_union_char_with_prefix_zipper() {
 
 #[test]
 fn test_union_single_dictionary() {
-    let dict = DoubleArrayTrie::from_terms(vec!["cat", "dog"].iter());
+    let dict = DoubleArrayTrie::from_terms(["cat", "dog"].iter());
     let z = DoubleArrayTrieZipper::new_from_dict(&dict);
 
     let union = UnionZipper::new(vec![z]);
@@ -706,8 +700,8 @@ fn test_union_very_long_terms() {
     let long_term1 = "a".repeat(100);
     let long_term2 = "b".repeat(100);
 
-    let dict1 = DoubleArrayTrie::from_terms(vec![long_term1.as_str()].iter());
-    let dict2 = DoubleArrayTrie::from_terms(vec![long_term2.as_str()].iter());
+    let dict1 = DoubleArrayTrie::from_terms([long_term1.as_str()].iter());
+    let dict2 = DoubleArrayTrie::from_terms([long_term2.as_str()].iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -726,8 +720,8 @@ fn test_union_very_long_terms() {
 
 #[test]
 fn test_union_single_character_terms() {
-    let dict1 = DoubleArrayTrie::from_terms(vec!["a", "b"].iter());
-    let dict2 = DoubleArrayTrie::from_terms(vec!["b", "c"].iter());
+    let dict1 = DoubleArrayTrie::from_terms(["a", "b"].iter());
+    let dict2 = DoubleArrayTrie::from_terms(["b", "c"].iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -747,8 +741,8 @@ fn test_union_single_character_terms() {
 #[test]
 fn test_union_prefix_overlap() {
     // Terms where one is a prefix of another, across dictionaries
-    let dict1 = DoubleArrayTrie::from_terms(vec!["cat"].iter());
-    let dict2 = DoubleArrayTrie::from_terms(vec!["cats", "catsup"].iter());
+    let dict1 = DoubleArrayTrie::from_terms(["cat"].iter());
+    let dict2 = DoubleArrayTrie::from_terms(["cats", "catsup"].iter());
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -820,20 +814,14 @@ fn test_union_count_with_prefix() {
 #[test]
 fn test_lattice_join_hashset_integration() {
     // Test HashSet union semantics with real dictionaries
-    let dict1 = DoubleArrayTrie::from_terms_with_values(
-        vec![
-            ("println", HashSet::from([1, 2])),
-            ("eprintln", HashSet::from([1])),
-        ]
-        .into_iter(),
-    );
-    let dict2 = DoubleArrayTrie::from_terms_with_values(
-        vec![
-            ("println", HashSet::from([2, 3])),
-            ("format", HashSet::from([1, 2, 3])),
-        ]
-        .into_iter(),
-    );
+    let dict1 = DoubleArrayTrie::from_terms_with_values(vec![
+        ("println", HashSet::from([1, 2])),
+        ("eprintln", HashSet::from([1])),
+    ]);
+    let dict2 = DoubleArrayTrie::from_terms_with_values(vec![
+        ("println", HashSet::from([2, 3])),
+        ("format", HashSet::from([1, 2, 3])),
+    ]);
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -871,15 +859,12 @@ fn test_lattice_join_hashset_integration() {
 #[test]
 fn test_lattice_meet_hashset_integration() {
     // Test HashSet intersection semantics with real dictionaries
-    let dict1 = DoubleArrayTrie::from_terms_with_values(
-        vec![("shared", HashSet::from([1, 2, 3, 4]))].into_iter(),
-    );
-    let dict2 = DoubleArrayTrie::from_terms_with_values(
-        vec![("shared", HashSet::from([2, 3, 4, 5]))].into_iter(),
-    );
-    let dict3 = DoubleArrayTrie::from_terms_with_values(
-        vec![("shared", HashSet::from([3, 4, 5, 6]))].into_iter(),
-    );
+    let dict1 =
+        DoubleArrayTrie::from_terms_with_values(vec![("shared", HashSet::from([1, 2, 3, 4]))]);
+    let dict2 =
+        DoubleArrayTrie::from_terms_with_values(vec![("shared", HashSet::from([2, 3, 4, 5]))]);
+    let dict3 =
+        DoubleArrayTrie::from_terms_with_values(vec![("shared", HashSet::from([3, 4, 5, 6]))]);
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -903,12 +888,10 @@ fn test_lattice_meet_hashset_integration() {
 #[test]
 fn test_lattice_join_numeric_max() {
     // Test numeric max semantics (priority/score scenarios)
-    let dict1 = DoubleArrayTrie::from_terms_with_values(
-        vec![("priority", 100u32), ("score", 85u32)].into_iter(),
-    );
-    let dict2 = DoubleArrayTrie::from_terms_with_values(
-        vec![("priority", 50u32), ("score", 92u32)].into_iter(),
-    );
+    let dict1 =
+        DoubleArrayTrie::from_terms_with_values(vec![("priority", 100u32), ("score", 85u32)]);
+    let dict2 =
+        DoubleArrayTrie::from_terms_with_values(vec![("priority", 50u32), ("score", 92u32)]);
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -935,12 +918,10 @@ fn test_lattice_join_numeric_max() {
 #[test]
 fn test_lattice_meet_numeric_min() {
     // Test numeric min semantics
-    let dict1 = DoubleArrayTrie::from_terms_with_values(
-        vec![("min_price", 100u32), ("min_qty", 5u32)].into_iter(),
-    );
-    let dict2 = DoubleArrayTrie::from_terms_with_values(
-        vec![("min_price", 80u32), ("min_qty", 10u32)].into_iter(),
-    );
+    let dict1 =
+        DoubleArrayTrie::from_terms_with_values(vec![("min_price", 100u32), ("min_qty", 5u32)]);
+    let dict2 =
+        DoubleArrayTrie::from_terms_with_values(vec![("min_price", 80u32), ("min_qty", 10u32)]);
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -967,12 +948,10 @@ fn test_lattice_meet_numeric_min() {
 #[test]
 fn test_lattice_join_bool_or() {
     // Test boolean OR semantics (feature flags)
-    let dict1 = DoubleArrayTrie::from_terms_with_values(
-        vec![("feature_a", true), ("feature_b", false)].into_iter(),
-    );
-    let dict2 = DoubleArrayTrie::from_terms_with_values(
-        vec![("feature_a", false), ("feature_b", true)].into_iter(),
-    );
+    let dict1 =
+        DoubleArrayTrie::from_terms_with_values(vec![("feature_a", true), ("feature_b", false)]);
+    let dict2 =
+        DoubleArrayTrie::from_terms_with_values(vec![("feature_a", false), ("feature_b", true)]);
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -999,12 +978,16 @@ fn test_lattice_join_bool_or() {
 #[test]
 fn test_lattice_meet_bool_and() {
     // Test boolean AND semantics (required permissions)
-    let dict1 = DoubleArrayTrie::from_terms_with_values(
-        vec![("read", true), ("write", true), ("admin", false)].into_iter(),
-    );
-    let dict2 = DoubleArrayTrie::from_terms_with_values(
-        vec![("read", true), ("write", false), ("admin", false)].into_iter(),
-    );
+    let dict1 = DoubleArrayTrie::from_terms_with_values(vec![
+        ("read", true),
+        ("write", true),
+        ("admin", false),
+    ]);
+    let dict2 = DoubleArrayTrie::from_terms_with_values(vec![
+        ("read", true),
+        ("write", false),
+        ("admin", false),
+    ]);
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -1032,21 +1015,15 @@ fn test_lattice_meet_bool_and() {
 #[test]
 fn test_lattice_join_with_prefix_zipper() {
     // Test composition with PrefixZipper
-    let dict1 = DoubleArrayTrie::from_terms_with_values(
-        vec![
-            ("println", HashSet::from([1, 2])),
-            ("print", HashSet::from([1])),
-            ("printf", HashSet::from([3])),
-        ]
-        .into_iter(),
-    );
-    let dict2 = DoubleArrayTrie::from_terms_with_values(
-        vec![
-            ("println", HashSet::from([2, 3])),
-            ("printk", HashSet::from([4])),
-        ]
-        .into_iter(),
-    );
+    let dict1 = DoubleArrayTrie::from_terms_with_values(vec![
+        ("println", HashSet::from([1, 2])),
+        ("print", HashSet::from([1])),
+        ("printf", HashSet::from([3])),
+    ]);
+    let dict2 = DoubleArrayTrie::from_terms_with_values(vec![
+        ("println", HashSet::from([2, 3])),
+        ("printk", HashSet::from([4])),
+    ]);
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -1074,10 +1051,8 @@ fn test_lattice_join_with_prefix_zipper() {
 #[test]
 fn test_lattice_valued_iterator() {
     // Test ValuedUnionIterator with LatticeJoin
-    let dict1 =
-        DoubleArrayTrie::from_terms_with_values(vec![("a", 10u32), ("b", 20u32)].into_iter());
-    let dict2 =
-        DoubleArrayTrie::from_terms_with_values(vec![("a", 15u32), ("c", 30u32)].into_iter());
+    let dict1 = DoubleArrayTrie::from_terms_with_values(vec![("a", 10u32), ("b", 20u32)]);
+    let dict2 = DoubleArrayTrie::from_terms_with_values(vec![("a", 15u32), ("c", 30u32)]);
 
     let z1 = DoubleArrayTrieZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieZipper::new_from_dict(&dict2);
@@ -1105,12 +1080,14 @@ fn test_lattice_char_dictionary() {
     // Test Lattice with char dictionaries (unicode)
     // Note: We use String instead of &str because when persistent-artrie is enabled,
     // DictionaryValue requires Serialize + DeserializeOwned, which &str doesn't implement.
-    let dict1 = DoubleArrayTrieChar::from_terms_with_values(
-        vec![("日本", HashSet::from(["ja".to_string()]))].into_iter(),
-    );
-    let dict2 = DoubleArrayTrieChar::from_terms_with_values(
-        vec![("日本", HashSet::from(["jp".to_string(), "jpn".to_string()]))].into_iter(),
-    );
+    let dict1 = DoubleArrayTrieChar::from_terms_with_values(vec![(
+        "日本",
+        HashSet::from(["ja".to_string()]),
+    )]);
+    let dict2 = DoubleArrayTrieChar::from_terms_with_values(vec![(
+        "日本",
+        HashSet::from(["jp".to_string(), "jpn".to_string()]),
+    )]);
 
     let z1 = DoubleArrayTrieCharZipper::new_from_dict(&dict1);
     let z2 = DoubleArrayTrieCharZipper::new_from_dict(&dict2);

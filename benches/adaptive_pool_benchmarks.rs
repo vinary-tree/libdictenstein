@@ -39,7 +39,8 @@ fn bench_cache_stats_hit(c: &mut Criterion) {
             for _ in 0..iters {
                 let start = std::time::Instant::now();
                 for _ in 0..OPS_PER_ITER {
-                    black_box(stats.record_hit());
+                    stats.record_hit();
+                    black_box(());
                 }
                 total_duration += start.elapsed();
             }
@@ -55,7 +56,8 @@ fn bench_cache_stats_hit(c: &mut Criterion) {
             for _ in 0..iters {
                 let start = std::time::Instant::now();
                 for _ in 0..OPS_PER_ITER {
-                    black_box(stats.record_miss());
+                    stats.record_miss();
+                    black_box(());
                 }
                 total_duration += start.elapsed();
             }
@@ -243,7 +245,7 @@ fn bench_concurrent_stats(c: &mut Criterion) {
                                 let stats = Arc::clone(&stats);
                                 std::thread::spawn(move || {
                                     for j in 0..ops_per_thread {
-                                        if (i + j as usize) % 2 == 0 {
+                                        if (i + j as usize).is_multiple_of(2) {
                                             stats.record_hit();
                                         } else {
                                             stats.record_miss();

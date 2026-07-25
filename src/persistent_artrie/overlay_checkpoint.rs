@@ -255,14 +255,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     PersistentARTrieError::io_error(
                         "overlay_checkpoint_append",
                         "WAL",
-                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                        std::io::Error::other(e.to_string()),
                     )
                 })?;
             wal_writer.sync().map_err(|e| {
                 PersistentARTrieError::io_error(
                     "overlay_checkpoint_sync",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             // #49: mark the `Checkpoint` record's LSN committed (durable via the `sync()` above) so
@@ -282,7 +282,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     PersistentARTrieError::io_error(
                         "overlay_checkpoint_floor",
                         "WAL",
-                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                        std::io::Error::other(e.to_string()),
                     )
                 })?;
             }
@@ -363,14 +363,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     PersistentARTrieError::io_error(
                         "overlay_checkpoint_append",
                         "WAL",
-                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                        std::io::Error::other(e.to_string()),
                     )
                 })?;
             wal_writer.sync().map_err(|e| {
                 PersistentARTrieError::io_error(
                     "overlay_checkpoint_sync",
                     "WAL",
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             // #49: mark the `Checkpoint` record's LSN committed (durable via the `sync()` above) so
@@ -384,7 +384,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                     PersistentARTrieError::io_error(
                         "overlay_checkpoint_floor",
                         "WAL",
-                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                        std::io::Error::other(e.to_string()),
                     )
                 })?;
             }
@@ -643,7 +643,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             // Childless root. `overlay_root_to_owned`: final ⇒ childless ART root
             // marked final (in the descriptor); non-final ⇒ empty bucket root.
             if is_final {
-                let node = Node::N4(Box::new(Node4::new()));
+                let node = Node::N4(Box::default());
                 let value_bytes = Self::serialize_root_value_bytes(root_value.as_ref())?;
                 // Register the (childless final) root at path `[]` + stamp it. The bucket
                 // arm below is NOT registered (it is a values-bucket, not an overlay node
@@ -673,7 +673,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             value_bytes.as_deref(),
             root,
             &path,
-            registry.as_deref_mut(),
+            registry,
         )?;
         Ok((ROOT_TYPE_ART_NODE, node_ptr.to_raw(), is_final))
     }
@@ -923,7 +923,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         // `children` Vec and `node = Node4::new()` (`overlay_node_to_child`'s
         // `unwrap_or_else`), so a leaf serializes as an empty Node4.
         let mut node_copy = if child_ptrs.is_empty() {
-            Node::N4(Box::new(Node4::new()))
+            Node::N4(Box::default())
         } else {
             Self::build_owned_node_with_child_ptrs(child_ptrs)
         };
@@ -1142,7 +1142,7 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCompressedSerialize<ByteKey, V>
         child_disk_ptrs: &[(u8, SwizzledPtr)],
     ) -> Result<Self::Projected> {
         let mut term_node = if child_disk_ptrs.is_empty() {
-            Node::N4(Box::new(Node4::new()))
+            Node::N4(Box::default())
         } else {
             Self::build_owned_node_with_child_ptrs(child_disk_ptrs)
         };
@@ -1150,7 +1150,7 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCompressedSerialize<ByteKey, V>
         let value: Option<Vec<u8>> =
             match node.get_value() {
                 Some(v) => Some(crate::serialization::bincode_compat::serialize(&v).map_err(
-                    |e| PersistentARTrieError::internal(&format!("serialize overlay value: {e}")),
+                    |e| PersistentARTrieError::internal(format!("serialize overlay value: {e}")),
                 )?),
                 None => None,
             };
@@ -1383,7 +1383,7 @@ mod cx_compressed_serialize_byte {
 
     fn roundtrip(name: &str, terms: &[&str]) {
         let dir = scratch(name);
-        let trie = PersistentARTrie::<()>::create(&dir.path().join("t.artb")).expect("create");
+        let trie = PersistentARTrie::<()>::create(dir.path().join("t.artb")).expect("create");
         let root = build_overlay(terms);
         let root_ptr = trie
             .serialize_overlay_snapshot_compressed(&root, None)
@@ -1431,7 +1431,7 @@ mod cx_compressed_serialize_byte {
     #[test]
     fn cx_density_lt_uncompressed_for_chains() {
         let dir = scratch("byte-cx-density");
-        let trie = PersistentARTrie::<()>::create(&dir.path().join("t.artb")).expect("create");
+        let trie = PersistentARTrie::<()>::create(dir.path().join("t.artb")).expect("create");
         let overlay = build_overlay(&["abcdefghijklmnopqrstuvwxyz"]);
         let mut reg_c = DiskLocationRegistry::new();
         trie.serialize_overlay_snapshot_compressed(&overlay, Some(&mut reg_c))
@@ -1554,7 +1554,7 @@ mod cx_compressed_serialize_byte {
 
         // (a) UNCOMPRESSED: all-short branching terms → every chunk prefix_len=0 → ZERO stamps.
         let dir = scratch("byte-cx6-noop-uncompressed");
-        let trie = PersistentARTrie::<()>::create(&dir.path().join("t.artb")).expect("create");
+        let trie = PersistentARTrie::<()>::create(dir.path().join("t.artb")).expect("create");
         let root = build_overlay(&["a", "b", "ca", "cb"]);
         let root_ptr = trie
             .serialize_overlay_snapshot_compressed(&root, None)
@@ -1577,7 +1577,7 @@ mod cx_compressed_serialize_byte {
 
         // (b) COMPRESSED: a long chain below a branch → ≥1 prefix_len>0 chunk → ≥1 stamp == its disk_ptr.
         let dir2 = scratch("byte-cx6-stamp-compressed");
-        let trie2 = PersistentARTrie::<()>::create(&dir2.path().join("t.artb")).expect("create");
+        let trie2 = PersistentARTrie::<()>::create(dir2.path().join("t.artb")).expect("create");
         let root2 = build_overlay(&["aqqqqqqqqqqqqqqqqqqqq", "b"]); // 'a' + 20×'q' chain + 'b' sibling
         let root2_ptr = trie2
             .serialize_overlay_snapshot_compressed(&root2, None)

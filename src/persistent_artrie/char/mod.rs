@@ -879,7 +879,9 @@ impl<V: DictionaryValue> Dictionary for SharedCharARTrie<V> {
                         V,
                     >::new())
                 });
-        drop(guard);
+        // No `drop(guard)` here: after the F4 lock-collapse `SharedTrieAccess` is a
+        // no-lock shim, so the guard owns nothing and dropping it releases nothing.
+        // Keeping the call would imply a lock hand-off that does not exist.
         let faulter: Arc<dyn crate::persistent_artrie::core::overlay::OverlayFaulter<CharKey, V>> =
             Arc::new(overlay_fault::SharedOverlayFaulter::new(Arc::clone(self)));
         PersistentARTrieCharNode::from_overlay_root(root, Some(faulter))
@@ -1371,7 +1373,7 @@ pub(crate) fn evict_overlay_nodes<
 
     // LEAF-FIRST: sort by DESCENDING path length (depth). Deeper nodes evict
     // first, so an ancestor's spine is still fully in memory when we reach it.
-    nodes.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    nodes.sort_by_key(|b| std::cmp::Reverse(b.1.len()));
 
     let mut evicted = 0usize;
     let mut bytes_freed = 0usize;

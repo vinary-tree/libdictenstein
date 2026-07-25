@@ -226,9 +226,9 @@ impl<T: TrieRoot<Key = u8>> ReadTransaction<T> {
 
         let mut current = Arc::clone(root);
         for &key in term {
-            match current.find_child(key) {
-                Some(child) => current = child,
-                None => return None,
+            {
+                let child = current.find_child(key)?;
+                current = child
             }
         }
 
@@ -272,9 +272,9 @@ impl<T: TrieRoot<Key = u32>> ReadTransaction<T> {
 
         let mut current = Arc::clone(root);
         for c in term.chars() {
-            match current.find_child(c as u32) {
-                Some(child) => current = child,
-                None => return None,
+            {
+                let child = current.find_child(c as u32)?;
+                current = child
             }
         }
 

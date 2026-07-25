@@ -475,7 +475,7 @@ impl AtomicNodeHeader {
     /// Check if the version is stable (even = not being modified).
     #[inline]
     pub fn is_version_stable(&self) -> bool {
-        self.version.load(Ordering::Acquire) % 2 == 0
+        self.version.load(Ordering::Acquire).is_multiple_of(2)
     }
 }
 
@@ -550,8 +550,8 @@ impl CompressedPrefix {
     /// Returns the number of matching bytes (up to prefix_len)
     pub fn match_key(&self, key: &[u8], prefix_len: usize) -> usize {
         let check_len = prefix_len.min(key.len()).min(MAX_PREFIX_LEN);
-        for i in 0..check_len {
-            if self.bytes[i] != key[i] {
+        for (i, &byte) in key.iter().enumerate().take(check_len) {
+            if self.bytes[i] != byte {
                 return i;
             }
         }
@@ -695,22 +695,22 @@ impl Node {
 
     /// Create an empty Node4
     pub fn new_node4() -> Self {
-        Node::N4(Box::new(Node4::new()))
+        Node::N4(Box::default())
     }
 
     /// Create an empty Node16
     pub fn new_node16() -> Self {
-        Node::N16(Box::new(Node16::new()))
+        Node::N16(Box::default())
     }
 
     /// Create an empty Node48
     pub fn new_node48() -> Self {
-        Node::N48(Box::new(Node48::new()))
+        Node::N48(Box::default())
     }
 
     /// Create an empty Node256
     pub fn new_node256() -> Self {
-        Node::N256(Box::new(Node256::new()))
+        Node::N256(Box::default())
     }
 
     /// Grow this node to the next larger type.
@@ -915,7 +915,7 @@ impl std::error::Error for AddChildError {}
 /// - Node4 with 3 children: 24 bytes → 3 bytes (88% reduction)
 /// - Node16 with 10 children: 80 bytes → 3 bytes (96% reduction)
 /// - Node256 with 100 children: 800 bytes → 4 bytes (99.5% reduction)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ChildStorage {
     /// Individual pointers for each child
     ///
@@ -923,6 +923,7 @@ pub enum ChildStorage {
     /// - Children are in different arenas (cross-arena references)
     /// - Backward compatibility with older format
     /// - Node modifications during runtime
+    #[default]
     Direct,
 
     /// Sequential sibling storage
@@ -980,12 +981,6 @@ impl ChildStorage {
             arena_id,
             first_slot,
         }
-    }
-}
-
-impl Default for ChildStorage {
-    fn default() -> Self {
-        ChildStorage::Direct
     }
 }
 

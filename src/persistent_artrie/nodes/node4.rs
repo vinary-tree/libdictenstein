@@ -115,7 +115,7 @@ impl ArtNode for Node4 {
 
         // Find insertion point (keep sorted)
         match self.find_key_index(key) {
-            Ok(_) => return Err(AddChildError::KeyExists),
+            Ok(_) => Err(AddChildError::KeyExists),
             Err(insert_pos) => {
                 // Shift elements to make room
                 for i in (insert_pos..count).rev() {

@@ -68,7 +68,7 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
             PersistentARTrieError::io_error(
                 "create WAL",
                 wal_path.to_string_lossy(),
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                std::io::Error::other(e.to_string()),
             )
         })?;
 
@@ -159,7 +159,7 @@ impl PersistentVocabARTrie<crate::persistent_artrie::IoUringDiskManager> {
                 PersistentARTrieError::io_error(
                     "open WAL",
                     wal_path.to_string_lossy(),
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                    std::io::Error::other(e.to_string()),
                 )
             })?;
             let min_lsn = header.checkpoint_lsn + 1;
