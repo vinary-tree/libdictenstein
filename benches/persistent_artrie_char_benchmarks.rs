@@ -9,13 +9,13 @@
 //!
 //! Run with: cargo bench --bench persistent_artrie_char_benchmarks --features persistent-artrie
 
-use criterion::{black_box, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput};
 use libdictenstein::{persistent_artrie::char::PersistentARTrieChar, DictionaryNode};
 use rand::distr::{weighted::WeightedIndex, Distribution};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::HashSet;
-use std::hint::black_box as bb;
+use std::hint::{black_box, black_box as bb};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;

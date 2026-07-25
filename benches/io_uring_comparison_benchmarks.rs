@@ -14,8 +14,9 @@
 //! taskset -c 0-3 cargo bench --bench io_uring_comparison_benchmarks --features io-uring-backend
 //! ```
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use hdrhistogram::Histogram;
+use std::hint::black_box;
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

@@ -5,8 +5,9 @@
 //! - Single-term vs batch transaction performance
 //! - Memory overhead during transaction buffering
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use libdictenstein::persistent_artrie::PersistentARTrie;
+use std::hint::black_box;
 use tempfile::tempdir;
 
 /// Benchmark: Transaction commit performance

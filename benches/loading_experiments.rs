@@ -11,9 +11,10 @@
 //! For scientific analysis, run with JSON output:
 //! cargo bench --bench loading_experiments --features persistent-artrie -- --save-baseline eager
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 use log::info;
+use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;

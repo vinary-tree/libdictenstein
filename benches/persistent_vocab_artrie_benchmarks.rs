@@ -8,13 +8,14 @@
 //! PART_VOCAB_FIXED_SAMPLES=1 cargo bench --bench persistent_vocab_artrie_benchmarks --features persistent-artrie
 //! ```
 
-use criterion::{black_box, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput};
 use libdictenstein::persistent_artrie::vocab::PersistentVocabARTrie;
 use rand::distr::{weighted::WeightedIndex, Distribution};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::HashSet;
 use std::fs;
+use std::hint::black_box;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};

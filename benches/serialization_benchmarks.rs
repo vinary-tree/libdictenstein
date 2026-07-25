@@ -1,8 +1,9 @@
 //! Benchmarks for serialization performance optimization.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use libdictenstein::pathmap::PathMapDictionary;
 use libdictenstein::serialization::{BincodeSerializer, DictionarySerializer, JsonSerializer};
+use std::hint::black_box;
 use std::io::Cursor;
 
 #[cfg(feature = "protobuf")]

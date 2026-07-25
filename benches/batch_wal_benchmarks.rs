@@ -5,7 +5,8 @@
 //! 2. Batch insert performance (new approach)
 //! 3. WAL size comparison to verify header overhead reduction
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::hint::black_box;
 use std::time::Duration;
 use tempfile::tempdir;
 

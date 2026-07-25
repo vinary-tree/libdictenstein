@@ -11,9 +11,10 @@
 //! cargo bench --bench epoch_benchmarks --features persistent-artrie
 //! ```
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use libdictenstein::persistent_artrie::{CheckpointManager, EpochConfig, WalRecord, WalWriter};
 use log::info;
+use std::hint::black_box;
 use std::time::Duration;
 use tempfile::tempdir;
 

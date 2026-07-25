@@ -11,11 +11,12 @@
 //! cargo bench --bench group_commit_benchmarks --features persistent-artrie
 //! ```
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use libdictenstein::persistent_artrie::{
     AsyncWalConfig, AsyncWalWriter, GroupCommitConfig, GroupCommitCoordinator, WalConfig,
     WalRecord, WalWriter,
 };
+use std::hint::black_box;
 use std::sync::Arc;
 use std::thread;
 use tempfile::tempdir;

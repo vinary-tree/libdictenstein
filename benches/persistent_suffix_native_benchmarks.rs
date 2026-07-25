@@ -23,13 +23,14 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use criterion::{black_box, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput};
 use libdictenstein::persistent_artrie::char::PersistentARTrieChar;
 use libdictenstein::persistent_artrie::{
     PersistentARTrie, PersistentScdawg, PersistentScdawgChar, PersistentSuffixAutomaton,
     PersistentSuffixAutomatonChar, PersistentSuffixTree, PersistentSuffixTreeChar,
 };
 use serde::{Deserialize, Serialize};
+use std::hint::black_box;
 
 const BYTE_DATA_TAG: u8 = 0;
 const BYTE_SOURCE_TAG: u8 = 1;

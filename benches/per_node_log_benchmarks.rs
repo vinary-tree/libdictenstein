@@ -11,10 +11,11 @@
 //! cargo bench --bench per_node_log_benchmarks --features persistent-artrie
 //! ```
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use libdictenstein::persistent_artrie::{
     DirtyNodeTracker, InlineLog, NodeLogEntry, PerNodeLogStatsAtomic,
 };
+use std::hint::black_box;
 use std::sync::Arc;
 
 /// Number of operations per benchmark iteration

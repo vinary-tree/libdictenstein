@@ -11,13 +11,14 @@
 //! cargo bench --bench volatile_dictionary_benchmarks --features pathmap-backend
 //! ```
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use libdictenstein::double_array_trie::{DoubleArrayTrie, DoubleArrayTrieChar};
 use libdictenstein::dynamic_dawg::{DynamicDawg, DynamicDawgChar};
 use libdictenstein::factory::{DictionaryBackend, DictionaryContainer, DictionaryFactory};
 use libdictenstein::scdawg::{Scdawg, ScdawgChar};
 use libdictenstein::suffix_automaton::{SuffixAutomaton, SuffixAutomatonChar};
 use libdictenstein::{Dictionary, DictionaryNode};
+use std::hint::black_box;
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};

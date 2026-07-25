@@ -22,8 +22,9 @@
 //! taskset -c 0-3 cargo bench --bench eviction_benchmarks --features bench-internals
 //! ```
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use hdrhistogram::Histogram;
+use std::hint::black_box;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;

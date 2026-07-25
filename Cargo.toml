@@ -93,7 +93,7 @@ rustix = { version = "1", features = ["fs"], optional = true }
 prost-build = { version = "0.13", optional = true }
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"
 tempfile = "3.27"
 proptest = "1.11"
 # For macro test name concatenation. `paste` itself is unmaintained and archived

@@ -24,7 +24,7 @@
 //! control for the parallel reader/writer metric. Criterion mode remains
 //! available for the usual local performance workflow.
 
-use criterion::{black_box, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput};
 use libdictenstein::persistent_artrie::u64::EncodedPersistentARTrieU64;
 use libdictenstein::persistent_artrie::{
     PersistentARTrieU64Compact, PersistentARTrieU64Prefix3Compat,
@@ -34,6 +34,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::HashSet;
 use std::fs;
+use std::hint::black_box;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
