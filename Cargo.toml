@@ -102,7 +102,11 @@ proptest = "1.11"
 # sites in tests/common/macros.rs need no edit.
 paste = { package = "pastey", version = "0.2" }
 hdrhistogram = "7.5"  # High dynamic range histograms for latency benchmarks
-rand = "0.8"  # PRNG for randomized benchmark scenarios
+# PRNG for randomized benchmark scenarios. 0.9 rather than 0.10: proptest 1.11
+# already pulls rand 0.9, so 0.9 collapses the otherwise-duplicated
+# rand/rand_core/rand_chacha/getrandom pairs to a single copy each. 0.9.3 is the
+# floor for RUSTSEC-2026-0097 (unsoundness with a custom logger using `rand::rng()`).
+rand = "0.9.3"
 loom = "0.7"  # Bounded schedule exploration for concurrency correspondence tests
 
 [features]

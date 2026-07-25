@@ -11,7 +11,7 @@
 
 use criterion::{black_box, BenchmarkId, Criterion, Throughput};
 use libdictenstein::{persistent_artrie::char::PersistentARTrieChar, DictionaryNode};
-use rand::distributions::{Distribution, WeightedIndex};
+use rand::distr::{weighted::WeightedIndex, Distribution};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::HashSet;
@@ -173,13 +173,13 @@ fn sample_char(rng: &mut StdRng, class: CharClass) -> char {
         'α', 'β', 'γ', 'δ', 'ε', 'η', 'θ', 'ι', 'κ', 'λ', 'μ', 'ν', 'ο', 'π', 'ρ', 'σ', 'τ',
     ];
     match class {
-        CharClass::LatinConsonant => LATIN_CONSONANTS[rng.gen_range(0..LATIN_CONSONANTS.len())],
-        CharClass::LatinVowel => LATIN_VOWELS[rng.gen_range(0..LATIN_VOWELS.len())],
-        CharClass::Digit => DIGITS[rng.gen_range(0..DIGITS.len())],
-        CharClass::Separator => ['-', '_'][rng.gen_range(0..2)],
-        CharClass::Cjk => CJK[rng.gen_range(0..CJK.len())],
-        CharClass::Kana => KANA[rng.gen_range(0..KANA.len())],
-        CharClass::Greek => GREEK[rng.gen_range(0..GREEK.len())],
+        CharClass::LatinConsonant => LATIN_CONSONANTS[rng.random_range(0..LATIN_CONSONANTS.len())],
+        CharClass::LatinVowel => LATIN_VOWELS[rng.random_range(0..LATIN_VOWELS.len())],
+        CharClass::Digit => DIGITS[rng.random_range(0..DIGITS.len())],
+        CharClass::Separator => ['-', '_'][rng.random_range(0..2)],
+        CharClass::Cjk => CJK[rng.random_range(0..CJK.len())],
+        CharClass::Kana => KANA[rng.random_range(0..KANA.len())],
+        CharClass::Greek => GREEK[rng.random_range(0..GREEK.len())],
     }
 }
 
@@ -221,8 +221,8 @@ fn generate_statistical_char_queries(terms: &[String], count: usize) -> Vec<Stri
     let hot_len = (terms.len() / 10).max(1);
     for i in 0..count {
         match sample_weighted_index(&mut rng, &[70, 20, 10]) {
-            0 => queries.push(terms[rng.gen_range(0..hot_len)].clone()),
-            1 => queries.push(terms[rng.gen_range(0..terms.len())].clone()),
+            0 => queries.push(terms[rng.random_range(0..hot_len)].clone()),
+            1 => queries.push(terms[rng.random_range(0..terms.len())].clone()),
             _ => {
                 let base = &terms[i % terms.len()];
                 queries.push(format!("{base}x"));

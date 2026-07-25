@@ -16,7 +16,7 @@ use libdictenstein::{
     double_array_trie::DoubleArrayTrie, dynamic_dawg::DynamicDawg,
     persistent_artrie::PersistentARTrie, Dictionary, DictionaryNode,
 };
-use rand::distributions::{Distribution, WeightedIndex};
+use rand::distr::{weighted::WeightedIndex, Distribution};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::HashSet;
@@ -144,10 +144,10 @@ fn sample_byte_char(rng: &mut StdRng, class: ByteClass) -> char {
     const VOWELS: &[u8] = b"aeiou";
     const DIGITS: &[u8] = b"0123456789";
     match class {
-        ByteClass::Consonant => CONSONANTS[rng.gen_range(0..CONSONANTS.len())] as char,
-        ByteClass::Vowel => VOWELS[rng.gen_range(0..VOWELS.len())] as char,
-        ByteClass::Digit => DIGITS[rng.gen_range(0..DIGITS.len())] as char,
-        ByteClass::Separator => ['-', '_'][rng.gen_range(0..2)],
+        ByteClass::Consonant => CONSONANTS[rng.random_range(0..CONSONANTS.len())] as char,
+        ByteClass::Vowel => VOWELS[rng.random_range(0..VOWELS.len())] as char,
+        ByteClass::Digit => DIGITS[rng.random_range(0..DIGITS.len())] as char,
+        ByteClass::Separator => ['-', '_'][rng.random_range(0..2)],
     }
 }
 
@@ -189,8 +189,8 @@ fn generate_statistical_byte_queries(terms: &[String], count: usize) -> Vec<Stri
     let hot_len = (terms.len() / 10).max(1);
     for i in 0..count {
         match sample_weighted_index(&mut rng, &[70, 20, 10]) {
-            0 => queries.push(terms[rng.gen_range(0..hot_len)].clone()),
-            1 => queries.push(terms[rng.gen_range(0..terms.len())].clone()),
+            0 => queries.push(terms[rng.random_range(0..hot_len)].clone()),
+            1 => queries.push(terms[rng.random_range(0..terms.len())].clone()),
             _ => {
                 let base = &terms[i % terms.len()];
                 queries.push(format!("{base}x"));

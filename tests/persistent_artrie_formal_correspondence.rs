@@ -295,8 +295,8 @@ fn wal_codec_reference_records() -> Vec<WalRecord> {
 fn deterministic_trace_key(rng: &mut StdRng, step: usize) -> String {
     const PREFIXES: [&str; 8] = ["aa", "ab", "bucket", "doc", "edge", "node", "wal", "zz"];
     let prefix = PREFIXES[step % PREFIXES.len()];
-    let shard = rng.gen_range(0..64);
-    let suffix = rng.gen_range(0..512);
+    let shard = rng.random_range(0..64);
+    let suffix = rng.random_range(0..512);
     format!("{prefix}-{shard:02}-{suffix:03}")
 }
 
@@ -728,9 +728,9 @@ fn deterministic_large_trace_matches_btreemap_reference() {
         let term = deterministic_trace_key(&mut rng, step);
         seen.insert(term.clone());
 
-        match rng.gen_range(0..10) {
+        match rng.random_range(0..10) {
             0..=6 => {
-                let value = rng.gen_range(-100_000..=100_000);
+                let value = rng.random_range(-100_000..=100_000);
                 dict.insert_with_value(&term, value);
                 expected.insert(term, value);
             }
@@ -766,8 +766,8 @@ fn deterministic_reopen_trace_matches_btreemap_reference() {
             let term = deterministic_trace_key(&mut rng, step * 13);
             seen.insert(term.clone());
 
-            if rng.gen_bool(0.72) {
-                let value = rng.gen_range(-50_000..=50_000);
+            if rng.random_bool(0.72) {
+                let value = rng.random_range(-50_000..=50_000);
                 dict.insert_with_value(&term, value);
                 expected.insert(term, value);
             } else {

@@ -29,7 +29,7 @@ use libdictenstein::persistent_artrie::u64::EncodedPersistentARTrieU64;
 use libdictenstein::persistent_artrie::{
     PersistentARTrieU64Compact, PersistentARTrieU64Prefix3Compat,
 };
-use rand::distributions::{Distribution, WeightedIndex};
+use rand::distr::{weighted::WeightedIndex, Distribution};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::HashSet;
@@ -116,7 +116,7 @@ fn sample_delta_nanos(rng: &mut StdRng) -> u64 {
     ];
     const WEIGHTS: &[u32] = &[3, 20, 24, 22, 20, 8, 3];
     let base = BASE_DELTAS[sample_weighted_index(rng, WEIGHTS)];
-    base.saturating_add(rng.gen_range(0..=(base / 20).max(1)))
+    base.saturating_add(rng.random_range(0..=(base / 20).max(1)))
 }
 
 fn quantized_f64_bits(value: f64) -> u64 {
@@ -132,13 +132,13 @@ fn sample_u64_sequence(rng: &mut StdRng, len: usize) -> Vec<u64> {
     const TAG_EVENT: u64 = 0x5000_0000_0000_0000;
     const TAG_MASK: u64 = 0x0fff_ffff_ffff_ffff;
 
-    let stream_id = rng.gen_range(0..2_048u64);
-    let mut metric_id = rng.gen_range(0..512u64);
+    let stream_id = rng.random_range(0..2_048u64);
+    let mut metric_id = rng.random_range(0..512u64);
     let mut timestamp = 1_700_000_000_000_000_000u64
-        + rng.gen_range(0..86_400_000_000_000u64)
+        + rng.random_range(0..86_400_000_000_000u64)
         + stream_id * 1_000_000;
-    let seasonal_phase = rng.gen_range(0.0..std::f64::consts::TAU);
-    let mut value = rng.gen_range(-20.0..20.0) + metric_id as f64 * 0.025;
+    let seasonal_phase = rng.random_range(0.0..std::f64::consts::TAU);
+    let mut value = rng.random_range(-20.0..20.0) + metric_id as f64 * 0.025;
     let mut previous = None;
     let mut sequence = Vec::with_capacity(len);
     for position in 0..len {
@@ -149,8 +149,8 @@ fn sample_u64_sequence(rng: &mut StdRng, len: usize) -> Vec<u64> {
         let label = match class {
             U64Class::StreamId => TAG_STREAM | stream_id,
             U64Class::MetricId => {
-                if position > 1 && rng.gen_bool(0.18) {
-                    metric_id = (metric_id + rng.gen_range(1..17)) & 0x01ff;
+                if position > 1 && rng.random_bool(0.18) {
+                    metric_id = (metric_id + rng.random_range(1..17)) & 0x01ff;
                 }
                 TAG_METRIC | metric_id
             }
@@ -164,13 +164,13 @@ fn sample_u64_sequence(rng: &mut StdRng, len: usize) -> Vec<u64> {
                 TAG_DELTA | (delta & TAG_MASK)
             }
             U64Class::FloatBits => {
-                let drift = rng.gen_range(-0.75..0.75);
+                let drift = rng.random_range(-0.75..0.75);
                 let seasonal = ((position as f64 * 0.37) + seasonal_phase).sin() * 0.35;
                 value += drift + seasonal + metric_id as f64 * 0.0005;
                 quantized_f64_bits(value)
             }
             U64Class::EventCode => {
-                let code = rng.gen_range(0..128u64);
+                let code = rng.random_range(0..128u64);
                 TAG_EVENT | ((metric_id & 0xffff) << 16) | code
             }
         };
@@ -207,8 +207,8 @@ fn generate_queries(sequences: &[Vec<u64>], count: usize) -> Vec<Vec<u64>> {
     let hot_len = (sequences.len() / 10).max(1);
     for i in 0..count {
         match sample_weighted_index(&mut rng, &[70, 20, 10]) {
-            0 => queries.push(sequences[rng.gen_range(0..hot_len)].clone()),
-            1 => queries.push(sequences[rng.gen_range(0..sequences.len())].clone()),
+            0 => queries.push(sequences[rng.random_range(0..hot_len)].clone()),
+            1 => queries.push(sequences[rng.random_range(0..sequences.len())].clone()),
             _ => {
                 let base = &sequences[i % sequences.len()];
                 let mut miss = base.clone();
