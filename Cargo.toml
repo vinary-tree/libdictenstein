@@ -96,6 +96,11 @@ rustix = { version = "1", features = ["fs"], optional = true }
 
 [build-dependencies]
 prost-build = { version = "0.14", optional = true }
+# prost-build shells out to a `protoc` binary and vendors none of its own, so
+# without this the `protobuf` feature builds only on hosts that happen to have
+# protoc installed. This crate ships prebuilt binaries; build.rs prefers an
+# explicit `PROTOC` override and falls back to it. See docs/engineering/feature-flags.md.
+protoc-bin-vendored = { version = "3.2", optional = true }
 
 [dev-dependencies]
 criterion = "0.8"
@@ -119,7 +124,7 @@ default = ["parking_lot"]
 pathmap-backend = ["pathmap"]
 serialization = ["serde", "bincode", "serde_json"]
 compression = ["flate2"]
-protobuf = ["prost", "prost-build"]
+protobuf = ["prost", "prost-build", "dep:protoc-bin-vendored"]
 # Persistent Adaptive Radix Trie (disk-based dictionary).
 # Enables the `serialization` feature transitively because the
 # persistent_artrie* modules use `crate::serialization::bincode_compat`
