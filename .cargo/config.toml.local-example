@@ -8,8 +8,10 @@
 # 2. The [build] section with rustflags remains the same
 # 3. The [paths] section below will redirect PathMap to your local checkout
 #
-# Note: .cargo/config.toml is in .gitignore, so your local override won't
-# be committed accidentally.
+# WARNING: `.cargo/config.toml` **is tracked in git** — it is not gitignored.
+# Overwriting it as described above will show up in `git status`, so revert it
+# (`git checkout -- .cargo/config.toml`) before committing, or your local
+# PathMap redirect will be committed by accident.
 
 [build]
 # Use native CPU features for optimal performance

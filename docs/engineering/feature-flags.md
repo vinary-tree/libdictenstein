@@ -46,6 +46,11 @@ guards for the feature's presence and skips gracefully now that it is absent). I
 
 ## MSRV and edition
 
-Minimum supported Rust version is **1.70**; edition **2021**. The `msrv` CI job builds
-`--all-features` on a pinned 1.70 toolchain, so a feature that raised the MSRV would fail CI. `docs.rs`
+Minimum supported Rust version is **1.95**; edition **2021**. The `msrv` CI job builds
+`--all-features` on a pinned 1.95 toolchain, so a feature that raised the MSRV would fail CI. `docs.rs`
 builds with `all-features`.
+
+The floor is set by dependencies, not by this crate's own language use. Under `--all-features` the
+binding constraints are `sysinfo` 0.39 (1.95) and `pathmap` 0.2.2 (1.88); with only `serialization`
+or `persistent-artrie` it is `bincode` 2.0 / `lru` 0.18 (1.85). Raising a dependency floor is
+therefore the usual reason this number moves.

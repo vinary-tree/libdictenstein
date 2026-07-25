@@ -112,17 +112,24 @@ jobs:
         run: cargo fmt --all -- --check
 
   # -----------------------------------------------------------------
-  # MSRV check. `Cargo.toml` declares `rust-version = "1.70"` —
+  # MSRV check. `Cargo.toml` declares `rust-version = "1.95"` —
   # enforce it.
+  #
+  # `Cargo.lock` is not committed, so this job re-resolves from scratch on the
+  # pinned toolchain. That is deliberate: it proves the declared floor holds for
+  # a fresh consumer, not just for our local lock. It also means the pinned
+  # toolchain must be new enough to *parse* every resolved manifest — the
+  # previous 1.70 pin predated MSRV-aware resolution (Cargo 1.84) and could not
+  # have been passing, since bincode 2.0.1 and lru 0.18 already required 1.85.
   # -----------------------------------------------------------------
   msrv:
-    name: MSRV (1.70)
+    name: MSRV (1.95)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.70"
+          toolchain: "1.95"
       - name: cargo build --all-features
         run: cargo build --all-features
 

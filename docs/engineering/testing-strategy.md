@@ -76,7 +76,7 @@ models that MUST fail, proving the checker would catch a real violation).
 
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) runs **13 jobs**: a 10-row
 `build-matrix` (every feature combination + macOS), `clippy` (`-D warnings`), `doc`
-(`RUSTDOCFLAGS=-D warnings`, so a broken intra-doc link fails CI), `fmt`, `msrv` (Rust **1.70**),
+(`RUSTDOCFLAGS=-D warnings`, so a broken intra-doc link fails CI), `fmt`, `msrv` (Rust **1.95**),
 `coverage` (`llvm-cov` → Codecov), `sanitizers` (address + thread on nightly), `rocq`,
 `formal-correspondence` (the PR gate hosting the `unsafe` gate), `formal-miri`, `formal-io-uring`,
 `diagrams` (pinned renderers + the SVG freshness gate + the [doc-math gate](../notation.md#8-what-the-gate-enforces)),

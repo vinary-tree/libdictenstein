@@ -3,7 +3,7 @@
 **A toolbox of high-performance dictionary data structures for Rust** — tries, DAWGs, double-array tries, suffix automata, compact suffix graphs, and lock-free **durable** Adaptive Radix Tries — unified behind one small trait API, and backed by machine-checked proofs.
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
-![MSRV](https://img.shields.io/badge/rustc-1.70%2B-orange)
+![MSRV](https://img.shields.io/badge/rustc-1.95%2B-orange)
 ![proofs](https://img.shields.io/badge/proofs-Rocq%20%2B%20TLA%2B-success)
 ![unsafe](https://img.shields.io/badge/unsafe-contract--bound%20%2B%20CI--gated-informational)
 
@@ -450,7 +450,7 @@ use libdictenstein::prelude::*;
 
 ## License
 
-Licensed under **Apache-2.0**. Minimum supported Rust version: **1.70**.
+Licensed under **Apache-2.0**. Minimum supported Rust version: **1.95**.
 
 [`DictionaryFactory`]: https://docs.rs/libdictenstein/latest/libdictenstein/factory/struct.DictionaryFactory.html
 [`prelude`]: https://docs.rs/libdictenstein/latest/libdictenstein/prelude/index.html

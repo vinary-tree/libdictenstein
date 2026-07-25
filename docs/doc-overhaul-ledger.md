@@ -243,9 +243,13 @@ guidelines demand.
   budget; 4 mild width warnings (727–929 px, non-failing, within existing corpus tolerance).
 - Hygiene: added `__pycache__/` to `.gitignore` (the gate script generates it).
 
-### Discovered defect (config, out of documentation scope — flagged for the owner)
+### Discovered defect (config, out of documentation scope — flagged for the owner) — **RESOLVED**
 - `.github/workflows/ci.yml` (build-matrix, ~lines 56–60) still has a `lling-llang` feature row
   (`--no-default-features --features lling-llang`), but that feature was **retired**
   (`scripts/verify-formal-correspondence.sh:48` says so and guards for it). `cargo metadata` confirms
   `lling-llang` is neither a feature key nor a dependency, so that CI matrix row would fail. The docs
   were corrected to match reality; the stale CI row is a config fix left for the owner's decision.
+- **Resolution (2026-07-25):** the row was in fact deleted by commit `aff33be` — the same commit that
+  wrote this entry — so the defect was already closed when it was filed. `grep -c lling .github/workflows/ci.yml`
+  on the current tree returns `0`. The self-healing guard at `scripts/verify-formal-correspondence.sh:48`
+  remains and is correct. No action outstanding.

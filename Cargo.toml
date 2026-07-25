@@ -2,7 +2,10 @@
 name = "libdictenstein"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.70"
+# Effective floor across `--all-features`: pathmap 0.2.2 and sysinfo 0.39 are the
+# binding constraints. The previously declared 1.70 was inaccurate — bincode 2.0.1
+# and lru 0.18 already required 1.85, and pathmap 0.2.2 required 1.88.
+rust-version = "1.95"
 authors = ["Dylon Edwards <dylon.devo@gmail.com>"]
 license = "Apache-2.0"
 repository = "https://github.com/vinary-tree/libdictenstein"
@@ -16,11 +19,11 @@ exclude = ["docs/", "formal-verification/"]
 # Logging facade
 log = "0.4"
 # SmallVec for stack-allocated vectors (performance optimization)
-smallvec = { version = "1.13", features = ["serde"] }
+smallvec = { version = "1.15", features = ["serde"] }
 # Fast non-cryptographic hashing for internal use
 rustc-hash = "1.1"
 # Lock-free atomic Arc swapping for DynamicDawgU64
-arc-swap = "1.7"
+arc-swap = "1.9"
 # Error handling
 thiserror = "2.0"
 # Shared lattice trait (join/meet); extracted leaf crate (cycle-break)
@@ -29,11 +32,17 @@ llattice = { path = "../llattice", version = "0.1" }
 parking_lot = { version = "0.12", optional = true }
 # Serialization support (optional)
 serde = { version = "1.0", features = ["derive", "rc"], optional = true }
-bincode = { version = "2.0", features = ["serde"], optional = true }
+# NOTE: pinned below 3.0 deliberately. bincode 3.0.0 is a tombstone release — the
+# crate was abandoned after a doxxing/harassment incident and 3.0.0 ships only a
+# README plus a `lib.rs` containing a single compiler error, to announce that
+# status. Upgrading to it breaks the build by design. The `legacy()` fixint-LE
+# config used by `serialization::bincode_compat` is load-bearing for the on-disk
+# format; see docs/algorithms/serialization.md.
+bincode = { version = ">=2.0, <3", features = ["serde"], optional = true }
 serde_json = { version = "1.0", optional = true }
 
 # Compression support (optional)
-flate2 = { version = "1.0", optional = true }
+flate2 = { version = "1.1", optional = true }
 
 # Protobuf support (optional)
 prost = { version = "0.13", optional = true }
@@ -41,8 +50,10 @@ prost = { version = "0.13", optional = true }
 # PathMap as an optional dictionary backend
 pathmap = { version = ">=0.2.2, <0.4", optional = true }
 
-# Memory-mapped I/O for persistent data structures
-memmap2 = { version = "0.9", optional = true }
+# Memory-mapped I/O for persistent data structures.
+# Floor is 0.9.11: 0.9.10 and earlier carry RUSTSEC-2026-0186 (unchecked pointer
+# offset), and this crate is the mmap backend under the whole persistent ARTrie.
+memmap2 = { version = "0.9.11", optional = true }
 
 # Lock-free MPMC channels for group commit
 crossbeam-channel = { version = "0.5", optional = true }
@@ -50,8 +61,10 @@ crossbeam-channel = { version = "0.5", optional = true }
 # Cross-platform system information (memory, CPU, etc.)
 sysinfo = { version = "0.37", optional = true }
 
-# Parallel processing for merge operations
-rayon = { version = "1.10", optional = true }
+# Parallel processing for merge operations.
+# Floor is 1.12 so the resolved crossbeam-epoch is >= 0.9.20 (RUSTSEC-2026-0204,
+# invalid pointer dereference in the `fmt::Pointer` impl for `Atomic`/`Shared`).
+rayon = { version = "1.12", optional = true }
 
 # Fast non-cryptographic hashing for node deduplication
 xxhash-rust = { version = "0.8", features = ["xxh3"], optional = true }
@@ -60,7 +73,7 @@ xxhash-rust = { version = "0.8", features = ["xxh3"], optional = true }
 lru = { version = "0.18", optional = true }
 
 # Concurrent hash map for LRU tracking in eviction
-dashmap = { version = "6.1", optional = true }
+dashmap = { version = "6.2", optional = true }
 
 # (Removed) `im` was the RRB-tree backing for the lock-free overlay nodes; both
 # the char and byte overlay nodes now use the tiered `ChildStore` (Inline/Heap)
@@ -81,8 +94,8 @@ prost-build = { version = "0.13", optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
-tempfile = "3.8"
-proptest = "1.4"
+tempfile = "3.27"
+proptest = "1.11"
 paste = "1.0"  # For macro test name concatenation
 hdrhistogram = "7.5"  # High dynamic range histograms for latency benchmarks
 rand = "0.8"  # PRNG for randomized benchmark scenarios

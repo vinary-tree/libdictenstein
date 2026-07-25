@@ -1,5 +1,27 @@
 # D5 Handoff: Upgrade `bincode` 1.3 → 3.0
 
+> **SUPERSEDED (2026-07-25) — do not follow this document.**
+>
+> Three of its premises are now false:
+>
+> 1. **The 3.0 target no longer exists as usable software.** bincode was abandoned after a
+>    doxxing/harassment incident and the repository was archived on 2025-08-15. Version 3.0.0
+>    (published 2025-12-16) is a *tombstone*: per the crate's own docs.rs notice it "contains only
+>    this README, as well as a lib.rs containing only a compiler error, to inform potential users of
+>    the maintenance status." docs.rs failed to build it. Depending on it breaks the build by design.
+> 2. **The serde-adapter attribution below is wrong.** The `bincode::serde` adapter module described
+>    as a 3.0 feature is in fact a **2.0** feature.
+> 3. **The migration was completed as 1.3 → 2.0, not 1.3 → 3.0**, via the
+>    `serialization::bincode_compat` shim pinned to `bincode::config::legacy()` (fixint
+>    little-endian) so the wire format stayed byte-identical to 1.x. See
+>    `docs/algorithms/serialization.md` for the contract that shim upholds.
+>
+> `Cargo.toml` now pins `bincode = ">=2.0, <3"` to make walking into the tombstone impossible.
+> The live plan is migration to the maintained `bincode-next` fork, gated behind a byte-pinning
+> and golden-fixture safety net.
+>
+> Retained unedited below for historical context.
+
 ## Goal
 
 Migrate the `serialization` feature off `bincode` 1.3.x onto a
