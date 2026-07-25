@@ -28,13 +28,10 @@ yanked = "deny"
 # REVIEW-BY date. An advisory with no fixed version is a standing risk to
 # re-evaluate, not something to mute permanently.
 #
-# (The date lives inside `reason` rather than in cargo-deny's `expires` key, because
-# `expires` is not accepted by cargo-deny 0.19.x, which is what is installed locally.
-# Once the floor moves to 0.20+, convert these to real `expires` entries so the tool
-# enforces the deadline instead of merely printing it.)
-ignore = [
-  { id = "RUSTSEC-2025-0141", reason = "REVIEW-BY 2026-10-31. bincode is unmaintained and no fixed version exists; 3.0.0 is a tombstone release containing only a compiler error, so upgrading is not an option. The crate encodes this project's on-disk format. Migration to the maintained bincode-next fork is planned and gated behind a byte-level regression net (golden fixtures + byte-pinning tests) that does not exist yet." },
-]
+# This list is currently EMPTY, and should stay that way. The tree has zero
+# advisories: the last one (RUSTSEC-2025-0141, bincode unmaintained) was closed by
+# migrating to the maintained `bincode-next` fork rather than by suppressing it.
+ignore = []
 
 # ---------------------------------------------------------------------------
 # Licence compatibility. This crate ships Apache-2.0.
@@ -76,11 +73,10 @@ multiple-versions = "warn"
 wildcards = "deny"
 
 deny = [
-  # bincode 3.0.0 is a tombstone: the crate was abandoned after a doxxing and
-  # harassment incident, and 3.0.0 ships only a README plus a lib.rs containing a
-  # single compiler error announcing that status. Cargo.toml already pins `<3`;
-  # this is the belt-and-braces check in case a transitive dependency drags it in.
-  { crate = "bincode:>=3.0.0", reason = "bincode 3.0.0 is a deliberate tombstone release and does not compile" },
+  # The abandoned crate itself, at any version. We use `bincode-next`, the
+  # maintained fork, declared under the name `bincode` via a package rename --
+  # so this ban catches a transitive dependency dragging the real one back in.
+  { crate = "bincode", reason = "unmaintained (RUSTSEC-2025-0141); 3.0.0 is a tombstone containing only a compiler error. Use the maintained `bincode-next` fork." },
   # Unmaintained, archived, and superseded by `pastey` (RUSTSEC-2024-0436).
   { crate = "paste", reason = "unmaintained (RUSTSEC-2024-0436); use `pastey`, declared here via a package rename" },
 ]
@@ -89,8 +85,9 @@ deny = [
 # Where crates may come from.
 # ---------------------------------------------------------------------------
 # This is the check that makes adopting a third-party fork of an abandoned crate an
-# explicit, reviewable decision rather than an invisible one -- relevant because the
-# planned bincode replacement (`bincode-next`) is exactly such a fork.
+# explicit, reviewable decision rather than an invisible one -- directly relevant
+# here, since `bincode-next` is exactly such a fork (Apich-Organization, not the
+# original bincode-org).
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"

@@ -269,14 +269,44 @@ re-derives an efficient representation on load. The crate's
 `serialization_value_roundtrip.rs` and `serialization_correspondence.rs` test
 suites pin these guarantees.
 
-## The bincode 1 → 2 byte-compatibility note
+## The bincode byte-compatibility note
 
-The crate depends on **bincode 2.x**, which removed the bincode 1.x crate-root
+The crate depends on **`bincode-next` 3.x**, declared under the name `bincode` via
+a Cargo package rename so no call site or import needs to know.
+
+The original `bincode` is **unmaintained** (RUSTSEC-2025-0141): it was abandoned
+after a doxxing and harassment incident, its repository was archived on
+2025-08-15, and its own 3.0.0 is a *tombstone release* shipping only a README and
+a `lib.rs` containing a single compiler error to announce that status. Because no
+fixed version exists, the advisory could only be closed by leaving the crate.
+`bincode-next` is the maintained fork and preserves the API surface exactly.
+
+That fork is a third party (`Apich-Organization`, not the original
+`bincode-org`), so adopting it is a supply-chain decision rather than a routine
+bump. It is recorded deliberately: `deny.toml` bans the abandoned `bincode` crate
+by name and pins the permitted registry set, so this choice stays visible in
+review rather than dissolving into the lock file.
+
+Both `bincode` 2.x and `bincode-next` removed the bincode 1.x crate-root
 `serialize` / `deserialize` / `serialize_into` / `deserialize_from` functions in
 favor of a `bincode::serde` sub-module that takes an explicit `Config`. To avoid
 re-architecting every call site, a thin shim —
 `serialization::bincode_compat` — re-exposes the old 1.x function shapes on top
-of bincode 2.x.
+of it.
+
+### Compatibility was measured, not assumed
+
+A probe crate depending on bincode 1.3, bincode 2.0 and bincode-next 3
+*simultaneously* encoded the same values through each and compared the bytes.
+`config::legacy()` output was identical across all three for scalars, signed
+integers, sequences, nested structs (`[u8; 8]` + `u32` + `String` +
+`Option<Vec<u8>>` + `i64`) and payload-carrying enums. The `wire_format_pins`
+test module in `bincode_compat.rs` now enforces those exact byte strings
+permanently, so a future implementation swap cannot silently change the format.
+
+Before those pins existed there was no such check anywhere: every serialization
+test writes and reads within one process, so a wholesale encoding change would
+round-trip perfectly while invalidating every file already on disk.
 
 The shim pins the config to **`bincode::config::legacy()`**, which is
 **fixed-int little-endian** (every integer is written as its full
@@ -284,17 +314,17 @@ little-endian byte image — a `u64` or `i64` is exactly 8 LE bytes), with
 bincode 1.x's strict trailing-bytes check. The practical consequences:
 
 - **Wire format is byte-for-byte identical to bincode 1.x.** Files written by a
-  pre-migration build of this crate still deserialize, and vice-versa; the
-  upgrade is invisible on disk.
-- This is *not* bincode 2.x's default `standard()` varint encoding — picking
-  `standard()` would have silently broken compatibility.
+  pre-migration build of this crate still deserialize, and vice-versa; both the
+  2.x upgrade and the move to `bincode-next` are invisible on disk.
+- This is *not* the default `standard()` varint encoding — picking `standard()`
+  would have silently broken compatibility.
 - The fixed-int-LE layout is **load-bearing** beyond this module: the persistent
   ARTrie counter leaf decodes its value as exactly 8 little-endian bytes, so a
   non-negative `u64` and an `i64` of the same magnitude are byte-identical on
   disk. See [WAL format](../persistence/wal-format.md).
 
-Errors from the shim are wrapped in `bincode_compat::BincodeError` (unifying
-bincode 2.x's separate `EncodeError` / `DecodeError`), which the top-level
+Errors from the shim are wrapped in `bincode_compat::BincodeError` (unifying the
+separate `EncodeError` / `DecodeError`), which the top-level
 `SerializationError::Bincode` variant carries via `#[from]`.
 
 ## Errors

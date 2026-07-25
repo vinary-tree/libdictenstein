@@ -1,12 +1,29 @@
-//! Compatibility shim for bincode 2.x's serde adapter.
+//! Compatibility shim for the bincode 2.x-style serde adapter.
 //!
 //! bincode 2.x dropped the bincode 1.x crate-root `serialize_into` /
 //! `deserialize_from` / `serialize` / `deserialize` functions in favor
 //! of the [`bincode::serde`] sub-module with a `Config` parameter and
 //! `EncodeError` / `DecodeError` error types. This shim exposes the
-//! old 1.x API surface on top of bincode 2.x so the rest of the crate
+//! old 1.x API surface on top of that so the rest of the crate
 //! can migrate one call-site at a time without re-architecting the
 //! error chain.
+//!
+//! # `bincode` here is `bincode-next`
+//!
+//! The `bincode` path used throughout this module resolves to the
+//! **`bincode-next`** crate, declared under the original name via a Cargo
+//! package rename. The original `bincode` is unmaintained
+//! (RUSTSEC-2025-0141) with no fixed version — its own 3.0.0 is a tombstone
+//! release containing only a compiler error — so the advisory could only be
+//! closed by leaving the crate. `bincode-next` is the maintained fork and
+//! preserves the API exactly, which is why nothing below changed.
+//!
+//! Byte compatibility was **measured, not assumed**: a probe depending on
+//! bincode 1.3, bincode 2.0 and bincode-next 3 simultaneously produced
+//! identical `config::legacy()` output across scalars, signed integers,
+//! sequences, nested structs and payload-carrying enums. The
+//! `wire_format_pins` tests at the bottom of this file enforce that
+//! permanently.
 //!
 //! The config used everywhere here is `bincode::config::legacy()`, which
 //! is **fixed-int little-endian** (NOT `standard()`'s varint encoding):
