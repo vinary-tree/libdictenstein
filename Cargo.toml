@@ -56,7 +56,6 @@ serde = { version = "1.0", features = ["derive", "rc"], optional = true }
 # counter leaf and for the raw-offset magic/version reads in the snapshot
 # formats. See docs/algorithms/serialization.md.
 bincode = { package = "bincode-next", version = "3", features = ["serde"], optional = true }
-serde_json = { version = "1.0", optional = true }
 
 # Compression support (optional)
 flate2 = { version = "1.1", optional = true }
@@ -134,7 +133,7 @@ loom = "0.7"  # Bounded schedule exploration for concurrency correspondence test
 [features]
 default = ["parking_lot"]
 pathmap-backend = ["pathmap"]
-serialization = ["serde", "bincode", "serde_json"]
+serialization = ["serde", "bincode"]
 compression = ["flate2"]
 protobuf = ["prost", "prost-build", "dep:protoc-bin-vendored"]
 # Persistent Adaptive Radix Trie (disk-based dictionary).

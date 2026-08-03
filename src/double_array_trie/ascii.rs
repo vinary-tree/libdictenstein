@@ -87,10 +87,10 @@ pub(crate) type DATShared<V = ()> = super::core::DATCoreShared<u8, V>;
 ///
 /// # Serialization
 ///
-/// Supports multiple formats when the `serialization` feature is enabled:
-/// - **Bincode**: Fast binary format, smallest size
-/// - **JSON**: Human-readable, portable across platforms
-/// - **Gzip compression**: Available for both formats via `compression` feature
+/// Supports compact binary persistence:
+/// - **Bincode** (`serialization`): efficient Rust-native storage
+/// - **Protocol Buffers** (`protobuf`): schema-based cross-language interchange
+/// - **Gzip** (`compression`): an optional wrapper around either binary format
 ///
 /// # Example
 ///
@@ -428,40 +428,28 @@ impl<V: DictionaryValue> DoubleArrayTrieBuilder<V> {
             return 0;
         }
 
-        // Search for a BASE value where all required slots are free
-        // We search in the range [start, start + 10000)
-        // For each candidate BASE value, check if BASE + byte is free for all bytes
-        let start_base = start as i32;
+        // Search every representable BASE, beginning at the locality hint and
+        // wrapping once. The former fixed 10,000-candidate search returned an
+        // unchecked occupied fallback slot, corrupting sufficiently dense
+        // tries during child relocation.
+        let max_byte = usize::from(*bytes.iter().max().expect("non-empty byte set"));
+        let max_base = (i32::MAX as usize).saturating_sub(max_byte);
+        let start_base = start.min(max_base);
+        let candidates = (start_base..=max_base).chain(0..start_base);
 
-        for base in start_base..start_base + 10000 {
-            let mut all_free = true;
-
-            for &byte in bytes {
-                // Compute next_state = BASE + byte
-                let next = base + (byte as i32);
-
-                // next_state must be non-negative and within bounds (or we'll grow)
-                if next < 0 {
-                    all_free = false;
-                    break;
-                }
-
-                let next_usize = next as usize;
-
-                // Check if this slot is free (CHECK[next] < 0 means unused)
-                if next_usize < self.check.len() && self.check[next_usize] >= 0 {
-                    all_free = false;
-                    break;
-                }
-            }
-
+        for base in candidates {
+            let all_free = bytes.iter().all(|&byte| {
+                let next = base + usize::from(byte);
+                // States 0 and 1 are the sentinel and root. Their CHECK cells
+                // are negative by design, but they are not allocatable slots.
+                next > 1 && (next >= self.check.len() || self.check[next] < 0)
+            });
             if all_free {
-                return base;
+                return i32::try_from(base).expect("candidate is bounded by i32::MAX");
             }
         }
 
-        // Fallback: use a large BASE value
-        start_base + 10000
+        panic!("double-array trie exhausted every representable collision-free base")
     }
 
     /// Build the final DoubleArrayTrie.
@@ -965,6 +953,22 @@ mod tests {
         assert!(dat.contains("hello"));
         assert!(dat.contains("world"));
         assert!(dat.contains("test"));
+    }
+
+    #[test]
+    fn find_free_base_searches_beyond_the_old_unchecked_fallback() {
+        let mut builder = DoubleArrayTrieBuilder::<()>::new();
+        let start = 7usize;
+        let old_search_width = 10_000usize;
+        let byte = b'a';
+        let occupied_through = start + old_search_width + usize::from(byte);
+        builder.check.resize(occupied_through + 1, 1);
+
+        let base = builder.find_free_base(start, &[byte]);
+
+        assert!(base as usize > start + old_search_width);
+        let slot = base as usize + usize::from(byte);
+        assert!(slot >= builder.check.len() || builder.check[slot] < 0);
     }
 
     // MappedDictionary tests

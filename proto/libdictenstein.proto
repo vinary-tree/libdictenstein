@@ -87,10 +87,9 @@ message DoubleArrayTrie {
     // Size: ceil(num_states / 8)
     bytes is_final = 3;
 
-    // DAT-specific payload. Current Rust encoding stores dictionary terms as:
-    // magic "LDT1" followed by repeated little-endian u32 byte lengths and
-    // UTF-8 term bytes. The Rust decoder keeps legacy newline-delimited
-    // payload support for older serialized dictionaries.
+    // DAT-specific binary payload. Current Rust encoding stores dictionary
+    // terms as magic "LDT1" followed by repeated little-endian u32 byte
+    // lengths and UTF-8 term bytes. Text payloads are not accepted.
     bytes edge_data = 4;
 
     // Free list: indices of deleted/unused states

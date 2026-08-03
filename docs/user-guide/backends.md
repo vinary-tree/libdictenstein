@@ -197,7 +197,9 @@ libdictenstein = { version = "0.1", features = ["persistent-artrie"] }
 |---------|--------|
 | `default` | Enables `parking_lot` synchronization support |
 | `pathmap-backend` | Enables `PathMapDictionary` and `PathMapDictionaryChar` |
-| `serialization` | Enables serde/bincode/json serialization helpers |
+| `serialization` | Enables Serde and compact bincode helpers |
+| `protobuf` | Enables portable Protocol Buffers persistence |
+| `compression` | Enables gzip around bincode or protobuf |
 | `persistent-artrie` | Enables all disk-backed ARTrie, vocab, and suffix graph backends |
 | `io-uring-backend` | Adds Linux `io_uring` block storage for persistent backends |
 | `parallel-merge` | Enables Rayon-backed merge helpers |

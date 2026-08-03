@@ -157,6 +157,32 @@ Solution: Try BASE[0] = 101, 102, ... until no conflicts
 
 The construction algorithm finds BASE values that minimize conflicts and array size.
 
+#### Collision-search invariant
+
+Let `$`L`$` be the finite set of byte labels leaving a state and let `$`b`$` be a candidate
+BASE value. The builder may select `$`b`$` only when every computed slot is allocatable:
+
+```math
+\operatorname{free}(b,L)
+\;\Longleftrightarrow\;
+\forall \ell\in L,\;
+b+\ell>1\;\land\;
+\bigl(b+\ell\geq\lvert\mathrm{CHECK}\rvert
+\;\lor\;\mathrm{CHECK}[b+\ell]<0\bigr).
+```
+
+Slots 0 and 1 are reserved for the sentinel and root even though their CHECK entries are
+negative. The search begins at a locality hint, examines every representable candidate through
+`i32::MAX - max(L)`, then wraps once to the beginning. It either returns a value satisfying
+`free` or reports address-space exhaustion; there is no unchecked fallback.
+
+When an insertion collides, all existing children are moved to slots `$`b+\ell`$`, their CHECK
+entries continue to name the same parent, and every grandchild CHECK entry is rewritten to name
+the relocated child. This preserves the transition equation and exact membership. A focused
+test occupies the entire former bounded-search window, while the liblevenshtein integration
+gate constructs a DAT from every Birkbeck correction and checks exact inventory before running
+the 42,395-pair spelling campaign.
+
 ## Data Structure
 
 ### Core Components

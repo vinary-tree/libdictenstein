@@ -24,24 +24,15 @@
 //
 // u64 (`DynamicDawgU64`) still has no `*_with_values` path — u64 doesn't
 // trivially round-trip through `String`, and the appropriate format
-// (JSON array of u64s, separator-delimited tokens, …) needs design input.
+// (for example, an explicit token-vector schema) needs design input.
 
-use libdictenstein::double_array_trie::char::DoubleArrayTrieChar;
 use libdictenstein::double_array_trie::DoubleArrayTrie;
 use libdictenstein::dynamic_dawg::char::DynamicDawgChar;
 use libdictenstein::dynamic_dawg::DynamicDawg;
-use libdictenstein::serialization::{BincodeSerializer, JsonSerializer, PlainTextSerializer};
+use libdictenstein::serialization::BincodeSerializer;
 
 fn pairs_u32() -> Vec<(&'static str, u32)> {
     vec![("apple", 10), ("banana", 20), ("cherry", 30)]
-}
-
-fn pairs_string() -> Vec<(&'static str, String)> {
-    vec![
-        ("alpha", "first".to_string()),
-        ("beta", "second".to_string()),
-        ("gamma", "third".to_string()),
-    ]
 }
 
 // ---------- DynamicDawg ----------
@@ -59,33 +50,6 @@ fn dynamic_dawg_bincode_roundtrip_values() {
     }
 }
 
-#[test]
-fn dynamic_dawg_json_roundtrip_values() {
-    let dict: DynamicDawg<u32> = DynamicDawg::from_terms_with_values(pairs_u32());
-
-    let mut buf = Vec::new();
-    JsonSerializer::serialize_with_values(&dict, &mut buf).unwrap();
-    let loaded: DynamicDawg<u32> = JsonSerializer::deserialize_with_values(&buf[..]).unwrap();
-
-    for (t, v) in pairs_u32() {
-        assert_eq!(loaded.get_value(t), Some(v), "term {t}");
-    }
-}
-
-#[test]
-fn dynamic_dawg_plaintext_roundtrip_values() {
-    let dict: DynamicDawg<String> = DynamicDawg::from_terms_with_values(pairs_string());
-
-    let mut buf = Vec::new();
-    PlainTextSerializer::serialize_with_values(&dict, &mut buf).unwrap();
-    let loaded: DynamicDawg<String> =
-        PlainTextSerializer::deserialize_with_values(&buf[..]).unwrap();
-
-    for (t, v) in pairs_string() {
-        assert_eq!(loaded.get_value(t).as_deref(), Some(v.as_str()), "term {t}");
-    }
-}
-
 // ---------- DoubleArrayTrie ----------
 
 #[test]
@@ -96,19 +60,6 @@ fn dat_bincode_roundtrip_values() {
     BincodeSerializer::serialize_with_values(&dict, &mut buf).unwrap();
     let loaded: DoubleArrayTrie<u32> =
         BincodeSerializer::deserialize_with_values(&buf[..]).unwrap();
-
-    for (t, v) in pairs_u32() {
-        assert_eq!(loaded.get_value(t), Some(v), "term {t}");
-    }
-}
-
-#[test]
-fn dat_json_roundtrip_values() {
-    let dict: DoubleArrayTrie<u32> = DoubleArrayTrie::from_terms_with_values(pairs_u32());
-
-    let mut buf = Vec::new();
-    JsonSerializer::serialize_with_values(&dict, &mut buf).unwrap();
-    let loaded: DoubleArrayTrie<u32> = JsonSerializer::deserialize_with_values(&buf[..]).unwrap();
 
     for (t, v) in pairs_u32() {
         assert_eq!(loaded.get_value(t), Some(v), "term {t}");
@@ -129,40 +80,6 @@ fn dynamic_dawg_char_bincode_roundtrip_values_unicode() {
 
     for (t, v) in pairs {
         assert_eq!(loaded.get_value(t), Some(v), "term {t}");
-    }
-}
-
-#[test]
-fn dat_char_json_roundtrip_values_unicode() {
-    let pairs: Vec<(&str, u32)> = vec![("café", 10), ("naïve", 20), ("日本語", 30)];
-    let dict: DoubleArrayTrieChar<u32> = DoubleArrayTrieChar::from_terms_with_values(pairs.clone());
-
-    let mut buf = Vec::new();
-    JsonSerializer::serialize_with_values_char(&dict, &mut buf).unwrap();
-    let loaded: DoubleArrayTrieChar<u32> =
-        JsonSerializer::deserialize_with_values(&buf[..]).unwrap();
-
-    for (t, v) in pairs {
-        assert_eq!(loaded.get_value(t), Some(v), "term {t}");
-    }
-}
-
-#[test]
-fn dynamic_dawg_char_plaintext_roundtrip_values_unicode() {
-    let pairs: Vec<(&str, String)> = vec![
-        ("café", "coffee".to_string()),
-        ("naïve", "innocent".to_string()),
-        ("日本語", "japanese".to_string()),
-    ];
-    let dict: DynamicDawgChar<String> = DynamicDawgChar::from_terms_with_values(pairs.clone());
-
-    let mut buf = Vec::new();
-    PlainTextSerializer::serialize_with_values_char(&dict, &mut buf).unwrap();
-    let loaded: DynamicDawgChar<String> =
-        PlainTextSerializer::deserialize_with_values(&buf[..]).unwrap();
-
-    for (t, v) in pairs {
-        assert_eq!(loaded.get_value(t).as_deref(), Some(v.as_str()), "term {t}");
     }
 }
 

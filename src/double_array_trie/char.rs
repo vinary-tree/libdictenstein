@@ -702,10 +702,15 @@ impl<V: DictionaryValue> DATBuilderChar<V> {
 
     fn find_base(&mut self, labels: &[char]) -> i32 {
         // Find a base value such that base + label is unused for all labels
-        'base_search: for base in 1u32..100000 {
+        let max_label = labels.iter().map(|label| *label as u32).max().unwrap_or(0);
+        let max_base = (i32::MAX as u32).saturating_sub(max_label);
+        'base_search: for base in 1u32..=max_base {
             for &label in labels {
                 let char_code = label as u32;
-                let next = base.wrapping_add(char_code) as usize;
+                let next = base
+                    .checked_add(char_code)
+                    .expect("base is bounded by the maximum label")
+                    as usize;
 
                 // Ensure we have space
                 while next >= self.used.len() {
@@ -719,8 +724,7 @@ impl<V: DictionaryValue> DATBuilderChar<V> {
             return base as i32;
         }
 
-        // Fallback
-        1
+        panic!("double-array trie exhausted every representable collision-free base")
     }
 
     fn build(self) -> DATCharComponents<V> {
@@ -1098,6 +1102,19 @@ mod tests {
         for term in ["apple", "banana", "cherry", "date"] {
             assert_eq!(dict1.get_value(term), dict2.get_value(term));
         }
+    }
+
+    #[test]
+    fn find_base_searches_beyond_the_old_silent_corruption_ceiling() {
+        let mut builder = DATBuilderChar::<()>::new();
+        let label = 'a';
+        let old_ceiling = 100_000usize;
+        builder.used.resize(old_ceiling + label as usize, true);
+
+        let base = builder.find_base(&[label]);
+
+        assert!(base as usize >= old_ceiling);
+        assert!(!builder.used[base as usize + label as usize]);
     }
 }
 

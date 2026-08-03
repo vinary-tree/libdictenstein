@@ -56,35 +56,31 @@ fn ensure_reachable_acyclic(
     root_id: u64,
     adjacency: &HashMap<u64, Vec<(u8, u64)>>,
 ) -> Result<(), SerializationError> {
-    fn visit(
-        node_id: u64,
-        adjacency: &HashMap<u64, Vec<(u8, u64)>>,
-        visiting: &mut HashSet<u64>,
-        visited: &mut HashSet<u64>,
-    ) -> Result<(), SerializationError> {
-        if visited.contains(&node_id) {
-            return Ok(());
-        }
-        if !visiting.insert(node_id) {
-            return Err(dictionary_error(format!(
-                "protobuf graph contains a reachable cycle at node {node_id}"
-            )));
-        }
-
-        if let Some(edges) = adjacency.get(&node_id) {
-            for &(_, target_id) in edges {
-                visit(target_id, adjacency, visiting, visited)?;
-            }
-        }
-
-        visiting.remove(&node_id);
-        visited.insert(node_id);
-        Ok(())
-    }
-
     let mut visiting = HashSet::with_capacity(adjacency.len());
     let mut visited = HashSet::with_capacity(adjacency.len());
-    visit(root_id, adjacency, &mut visiting, &mut visited)
+    let mut stack = vec![(root_id, 0usize)];
+    visiting.insert(root_id);
+
+    while let Some((node_id, next_edge)) = stack.last_mut() {
+        let edges = adjacency.get(node_id).map(Vec::as_slice).unwrap_or(&[]);
+        if let Some(&(_, target_id)) = edges.get(*next_edge) {
+            *next_edge += 1;
+            if visited.contains(&target_id) {
+                continue;
+            }
+            if !visiting.insert(target_id) {
+                return Err(dictionary_error(format!(
+                    "protobuf graph contains a reachable cycle at node {target_id}"
+                )));
+            }
+            stack.push((target_id, 0));
+        } else {
+            let (completed, _) = stack.pop().expect("the DFS stack is non-empty");
+            visiting.remove(&completed);
+            visited.insert(completed);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(feature = "protobuf")]
@@ -95,35 +91,71 @@ fn terms_from_adjacency(
 ) -> Result<Vec<String>, SerializationError> {
     ensure_reachable_acyclic(root_id, adjacency)?;
 
-    fn dfs(
+    struct Frame {
         node_id: u64,
-        adjacency: &HashMap<u64, Vec<(u8, u64)>>,
-        final_set: &HashSet<u64>,
-        current_term: &mut Vec<u8>,
-        terms: &mut Vec<String>,
-    ) -> Result<(), SerializationError> {
-        if final_set.contains(&node_id) {
-            let term = String::from_utf8(current_term.clone()).map_err(|_| {
-                dictionary_error("protobuf graph produced a non-UTF-8 dictionary term")
-            })?;
-            terms.push(term);
-        }
-
-        if let Some(edges) = adjacency.get(&node_id) {
-            for &(label, target_id) in edges {
-                current_term.push(label);
-                dfs(target_id, adjacency, final_set, current_term, terms)?;
-                current_term.pop();
-            }
-        }
-
-        Ok(())
+        next_edge: usize,
+        restore_len: usize,
+        entered: bool,
     }
 
     let mut terms = Vec::with_capacity(final_set.len());
     let mut current_term = Vec::with_capacity(32);
-    dfs(root_id, adjacency, final_set, &mut current_term, &mut terms)?;
+    let mut stack = vec![Frame {
+        node_id: root_id,
+        next_edge: 0,
+        restore_len: 0,
+        entered: false,
+    }];
+
+    while let Some(frame) = stack.last_mut() {
+        if !frame.entered {
+            frame.entered = true;
+            if final_set.contains(&frame.node_id) {
+                let term = String::from_utf8(current_term.clone()).map_err(|_| {
+                    dictionary_error("protobuf graph produced a non-UTF-8 dictionary term")
+                })?;
+                terms.push(term);
+            }
+        }
+
+        let edges = adjacency
+            .get(&frame.node_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        if let Some(&(label, target_id)) = edges.get(frame.next_edge) {
+            frame.next_edge += 1;
+            let restore_len = current_term.len();
+            current_term.push(label);
+            stack.push(Frame {
+                node_id: target_id,
+                next_edge: 0,
+                restore_len,
+                entered: false,
+            });
+        } else {
+            let completed = stack.pop().expect("the traversal stack is non-empty");
+            current_term.truncate(completed.restore_len);
+        }
+    }
     Ok(terms)
+}
+
+#[cfg(feature = "protobuf")]
+fn insert_deterministic_edge(
+    adjacency: &mut HashMap<u64, Vec<(u8, u64)>>,
+    source_id: u64,
+    label: u8,
+    target_id: u64,
+    format: &str,
+) -> Result<(), SerializationError> {
+    let edges = adjacency.entry(source_id).or_default();
+    if edges.iter().any(|&(existing, _)| existing == label) {
+        return Err(dictionary_error(format!(
+            "{format} node {source_id} has duplicate outgoing label {label}"
+        )));
+    }
+    edges.push((label, target_id));
+    Ok(())
 }
 
 #[cfg(feature = "protobuf")]
@@ -146,42 +178,39 @@ fn encode_dat_terms(terms: &[String]) -> Result<Vec<u8>, SerializationError> {
 fn decode_dat_terms(edge_data: &[u8], term_count: u64) -> Result<Vec<String>, SerializationError> {
     let term_capacity = usize::try_from(term_count)
         .map_err(|_| dictionary_error("DAT protobuf term_count does not fit usize"))?;
-    let terms = if edge_data.starts_with(DAT_TERMS_MAGIC) {
-        let mut offset = DAT_TERMS_MAGIC.len();
-        let mut terms = Vec::with_capacity(term_capacity);
+    if !edge_data.starts_with(DAT_TERMS_MAGIC) {
+        return Err(dictionary_error(
+            "DAT protobuf term payload is not the length-delimited binary format",
+        ));
+    }
 
-        while offset < edge_data.len() {
-            let Some(length_bytes) = edge_data.get(offset..offset + 4) else {
-                return Err(dictionary_error("DAT protobuf term length is truncated"));
-            };
-            let len = u32::from_le_bytes([
-                length_bytes[0],
-                length_bytes[1],
-                length_bytes[2],
-                length_bytes[3],
-            ]) as usize;
-            offset += 4;
+    let mut offset = DAT_TERMS_MAGIC.len();
+    // Every encoded term consumes at least its four-byte length field. Bound
+    // the initial allocation by bytes actually present, not by an attacker-
+    // controlled count that may be orders of magnitude larger than the input.
+    let encoded_term_ceiling = edge_data.len().saturating_sub(DAT_TERMS_MAGIC.len()) / 4;
+    let mut terms = Vec::with_capacity(term_capacity.min(encoded_term_ceiling));
+    while offset < edge_data.len() {
+        let Some(length_bytes) = edge_data.get(offset..offset + 4) else {
+            return Err(dictionary_error("DAT protobuf term length is truncated"));
+        };
+        let len = u32::from_le_bytes([
+            length_bytes[0],
+            length_bytes[1],
+            length_bytes[2],
+            length_bytes[3],
+        ]) as usize;
+        offset += 4;
 
-            let Some(term_bytes) = edge_data.get(offset..offset + len) else {
-                return Err(dictionary_error("DAT protobuf term payload is truncated"));
-            };
-            offset += len;
+        let Some(term_bytes) = edge_data.get(offset..offset + len) else {
+            return Err(dictionary_error("DAT protobuf term payload is truncated"));
+        };
+        offset += len;
 
-            let term = String::from_utf8(term_bytes.to_vec())
-                .map_err(|_| dictionary_error("DAT protobuf term is not valid UTF-8"))?;
-            terms.push(term);
-        }
-
-        terms
-    } else {
-        let terms_str = std::str::from_utf8(edge_data)
-            .map_err(|_| dictionary_error("legacy DAT protobuf terms are not valid UTF-8"))?;
-        let mut terms = Vec::with_capacity(term_capacity);
-        for term in terms_str.lines().filter(|s| !s.is_empty()) {
-            terms.push(term.to_string());
-        }
-        terms
-    };
+        let term = String::from_utf8(term_bytes.to_vec())
+            .map_err(|_| dictionary_error("DAT protobuf term is not valid UTF-8"))?;
+        terms.push(term);
+    }
 
     validate_term_count(term_count, terms.len(), "DAT protobuf")?;
     Ok(terms)
@@ -349,10 +378,13 @@ impl DictionarySerializer for ProtobufSerializer {
                 )));
             }
             let label = checked_label_u32(edge.label, "protobuf v1")?;
-            adjacency
-                .entry(edge.source_id)
-                .or_default()
-                .push((label, edge.target_id));
+            insert_deterministic_edge(
+                &mut adjacency,
+                edge.source_id,
+                label,
+                edge.target_id,
+                "protobuf v1",
+            )?;
         }
 
         // Pre-allocate HashSet with known size
@@ -548,10 +580,7 @@ impl DictionarySerializer for OptimizedProtobufSerializer {
             let label = checked_label_u64(chunk[1], "protobuf v2")?;
             let target_id = chunk[2];
 
-            adjacency
-                .entry(source_id)
-                .or_default()
-                .push((label, target_id));
+            insert_deterministic_edge(&mut adjacency, source_id, label, target_id, "protobuf v2")?;
         }
 
         // Pre-allocate HashSet with known size
@@ -715,5 +744,48 @@ impl DatProtobufSerializer {
 
         // Rebuild DAT from terms
         Ok(crate::double_array_trie::DoubleArrayTrie::from_terms(terms))
+    }
+}
+
+#[cfg(all(test, feature = "protobuf"))]
+mod binary_dat_payload_tests {
+    use super::*;
+
+    #[test]
+    fn dat_payload_round_trips_only_the_length_delimited_binary_form() {
+        let terms = vec!["alpha".to_string(), "café".to_string()];
+        let encoded = encode_dat_terms(&terms).unwrap();
+        assert_eq!(decode_dat_terms(&encoded, 2).unwrap(), terms);
+
+        let text_payload = b"alpha\ncaf\xc3\xa9\n";
+        assert!(matches!(
+            decode_dat_terms(text_payload, 2),
+            Err(SerializationError::DictionaryError(message))
+                if message.contains("length-delimited binary format")
+        ));
+
+        // The declared count is hostile, but the four-byte payload proves no
+        // term body exists. Decoding must fail without reserving usize::MAX.
+        assert!(decode_dat_terms(DAT_TERMS_MAGIC, u64::MAX).is_err());
+    }
+
+    #[test]
+    fn graph_validation_and_enumeration_are_iterative_on_deep_inputs() {
+        const DEPTH: u64 = 50_000;
+        let mut adjacency = HashMap::with_capacity(DEPTH as usize);
+        for node in 0..DEPTH {
+            adjacency.insert(node, vec![(b'a', node + 1)]);
+        }
+        let finals = HashSet::from([DEPTH]);
+        let terms = terms_from_adjacency(0, &adjacency, &finals).unwrap();
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0].len(), DEPTH as usize);
+    }
+
+    #[test]
+    fn duplicate_outgoing_labels_are_rejected() {
+        let mut adjacency = HashMap::new();
+        insert_deterministic_edge(&mut adjacency, 0, b'a', 1, "test").unwrap();
+        assert!(insert_deterministic_edge(&mut adjacency, 0, b'a', 2, "test").is_err());
     }
 }

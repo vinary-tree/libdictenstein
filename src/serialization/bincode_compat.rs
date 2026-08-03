@@ -49,6 +49,12 @@ pub enum BincodeError {
     Encode(#[from] bincode::error::EncodeError),
     #[error("bincode decode error: {0}")]
     Decode(#[from] bincode::error::DecodeError),
+    /// A complete payload decoded successfully, but unconsumed bytes followed it.
+    #[error("bincode payload contains trailing bytes")]
+    TrailingBytes,
+    /// I/O failed while checking that a streamed payload ended exactly.
+    #[error("bincode I/O error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// Drop-in replacement for `bincode::serialize_into` (bincode 1.x).
@@ -64,7 +70,12 @@ pub fn serialize_into<W: Write, T: Serialize>(
 /// Drop-in replacement for `bincode::deserialize_from` (bincode 1.x).
 pub fn deserialize_from<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<T, BincodeError> {
     let config = bincode::config::legacy();
-    Ok(bincode::serde::decode_from_std_read(reader, config)?)
+    let value = bincode::serde::decode_from_std_read(reader, config)?;
+    let mut trailing = [0_u8; 1];
+    if reader.read(&mut trailing)? != 0 {
+        return Err(BincodeError::TrailingBytes);
+    }
+    Ok(value)
 }
 
 /// Drop-in replacement for `bincode::serialize` (bincode 1.x).
@@ -76,7 +87,10 @@ pub fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, BincodeError> {
 /// Drop-in replacement for `bincode::deserialize` (bincode 1.x).
 pub fn deserialize<T: DeserializeOwned>(slice: &[u8]) -> Result<T, BincodeError> {
     let config = bincode::config::legacy();
-    let (value, _consumed): (T, usize) = bincode::serde::decode_from_slice(slice, config)?;
+    let (value, consumed): (T, usize) = bincode::serde::decode_from_slice(slice, config)?;
+    if consumed != slice.len() {
+        return Err(BincodeError::TrailingBytes);
+    }
     Ok(value)
 }
 
@@ -201,5 +215,20 @@ mod wire_format_pins {
             deserialize_from::<_, Payload>(&mut via_slice.as_slice()).expect("deserialize_from"),
             value
         );
+    }
+
+    #[test]
+    fn slice_and_reader_paths_reject_trailing_bytes() {
+        let mut bytes = serialize(&Payload::Empty).expect("serialize");
+        bytes.push(0xaa);
+
+        assert!(matches!(
+            deserialize::<Payload>(&bytes),
+            Err(BincodeError::TrailingBytes)
+        ));
+        assert!(matches!(
+            deserialize_from::<_, Payload>(&mut bytes.as_slice()),
+            Err(BincodeError::TrailingBytes)
+        ));
     }
 }

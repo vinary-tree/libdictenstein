@@ -633,7 +633,7 @@ See [Serialization Guide](serialization.md) for details.
 ### Conceptual deep-dives (this layer)
 
 - [Zippers](zippers.md) - Lazy set-algebra over dictionaries: union / intersection / difference / prefix zippers that compose any two backends without materializing the result.
-- [Serialization & values](serialization.md) - bincode / JSON / plaintext / protobuf codecs and the value-preserving variants that carry each term's associated value across the round trip.
+- [Serialization & values](serialization.md) - bincode / protobuf binary persistence and the value-preserving bincode variants that carry each term's associated value across the round trip.
 - [Persistent suffix graphs](persistent-suffix-graphs.md) - The durable substring-index family (`PersistentSuffixAutomaton` / `PersistentSuffixTree` / `PersistentScdawg`): snapshot + operation-segment WAL with CAS-published graph revisions.
 - [Native `u64` & CX](native-u64-and-cx.md) - The native 64-bit sequence / time-series profile of the persistent ARTrie and the CX compact snapshot format it checkpoints through.
 - [Vocabulary trie](vocab-trie.md) - `PersistentVocabARTrie`: a durable, lock-free term ↔ `u64` id bijection (durable forward map, recovery-rebuilt reverse map).

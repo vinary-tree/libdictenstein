@@ -21,7 +21,7 @@ use libdictenstein::double_array_trie::DoubleArrayTrie;
 use libdictenstein::dynamic_dawg::DynamicDawg;
 use libdictenstein::serialization::{
     BincodeSerializer, DatProtobufSerializer, DictionaryFromTerms, DictionarySerializer,
-    GzipSerializer, JsonSerializer, OptimizedProtobufSerializer, ProtobufSerializer,
+    GzipSerializer, OptimizedProtobufSerializer, ProtobufSerializer,
     SuffixAutomatonProtobufSerializer,
 };
 use libdictenstein::suffix_automaton::SuffixAutomaton;
@@ -168,10 +168,6 @@ fn gzip_wrapped_serializers_roundtrip_membership() {
 
     let dawg: DynamicDawg<()> = DynamicDawg::from_terms(terms.clone());
     let restored: DynamicDawg<()> = gzip_roundtrip::<BincodeSerializer, _>(&dawg);
-    assert_membership(&restored, &terms);
-
-    let dat = DoubleArrayTrie::from_terms(terms.clone());
-    let restored: DoubleArrayTrie = gzip_roundtrip::<JsonSerializer, _>(&dat);
     assert_membership(&restored, &terms);
 }
 

@@ -1,7 +1,7 @@
 //! Dictionary serialization support.
 //!
 //! This module provides serialization and deserialization of dictionaries
-//! using various formats (bincode, JSON, protobuf) with optional compression.
+//! using bincode or protobuf with optional compression.
 //!
 //! # Example
 //!
@@ -30,8 +30,6 @@ use std::io::{Read, Write};
 
 // Serializer implementations
 mod bincode_impl;
-mod json_impl;
-mod plaintext_impl;
 
 #[cfg(feature = "protobuf")]
 pub mod protobuf_impl;
@@ -54,8 +52,6 @@ pub mod bincode_compat;
 
 // Re-exports
 pub use self::bincode_impl::BincodeSerializer;
-pub use self::json_impl::JsonSerializer;
-pub use self::plaintext_impl::PlainTextSerializer;
 
 #[cfg(feature = "protobuf")]
 pub use self::protobuf_impl::{
@@ -111,8 +107,8 @@ pub trait DictionaryFromTerms: Sized {
 /// Trait for dictionaries that can be constructed from `(term, value)` pairs.
 ///
 /// The value-preserving serializers (`*_with_values` methods on
-/// [`BincodeSerializer`], [`JsonSerializer`], [`PlainTextSerializer`]) require
-/// this trait. Backends that implement [`crate::MappedDictionary`] should
+/// `BincodeSerializer`) require this trait. Backends that implement
+/// [`crate::MappedDictionary`] should
 /// implement this trait too so values survive serialization round-trips.
 ///
 /// The previous serializer path (`extract_terms` + `from_terms`) silently
@@ -134,9 +130,6 @@ pub enum SerializationError {
     /// Error during bincode serialization
     #[error("Bincode error")]
     Bincode(#[from] crate::serialization::bincode_compat::BincodeError),
-    /// Error during JSON serialization
-    #[error("JSON error")]
-    Json(#[from] serde_json::Error),
     /// Error during protobuf serialization
     #[cfg(feature = "protobuf")]
     #[error("Protobuf error")]
@@ -564,20 +557,6 @@ mod tests {
         assert!(loaded.contains("world"));
         assert!(loaded.contains("test"));
         assert!(!loaded.contains("missing"));
-    }
-
-    #[test]
-    fn test_json_roundtrip() {
-        let dict = DoubleArrayTrie::from_terms(vec!["alpha", "beta", "gamma"]);
-        let mut buffer = Vec::new();
-
-        JsonSerializer::serialize(&dict, &mut buffer).unwrap();
-        let loaded: DoubleArrayTrie = JsonSerializer::deserialize(&buffer[..]).unwrap();
-
-        assert!(loaded.contains("alpha"));
-        assert!(loaded.contains("beta"));
-        assert!(loaded.contains("gamma"));
-        assert!(!loaded.contains("delta"));
     }
 
     #[test]

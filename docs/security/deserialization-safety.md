@@ -8,10 +8,11 @@ it validates, and where a crafted input can still request a large allocation. No
 [`docs/notation.md`](../notation.md).
 
 The headline: **parsing is fail-closed** — every path returns an error rather than reading out of
-bounds or panicking on malformed data — but **allocation sizing is the residual edge**: a few sites
-read a count from untrusted input and reserve capacity *before* fully validating it, so a crafted
-input can request a large allocation (an OOM abort, not memory corruption). Bound the input size
-before deserializing from an untrusted source.
+bounds or panicking on malformed data. The protobuf graph walkers are iterative, declared DAT term
+counts cannot cause an unchecked reservation, and duplicate outgoing labels are rejected. The
+remaining resource boundary is the size of the byte stream itself: high-level readers consume a
+complete message and gzip can expand a small input substantially. Bound input and decompressed
+output before deserializing from an untrusted source.
 
 ## The volatile serializers (feature `serialization` / `protobuf` / `compression`)
 
@@ -24,22 +25,27 @@ dictionary — it **cannot** corrupt in-memory invariants. Sources under
 | Format | Parse safety | Allocation edge |
 |--------|--------------|-----------------|
 | **bincode** (`bincode_compat.rs`) | `bincode::config::legacy()` — fixint LE, strict trailing-byte check | **no `.with_limit()`** — no crate-level byte cap; OOM resistance rests on bincode's own per-collection strategy |
-| **JSON** (`json_impl.rs`) | `serde_json::from_reader` — streaming, no length-prefix preallocation | low risk |
-| **protobuf** (`protobuf_impl.rs`, feat. `protobuf`) | IDs range-checked, `edge_data.len() % 3` checked, final-node deltas use `checked_add`, `validate_term_count` cross-checks | **two real weaknesses, below** |
+| **protobuf** (`protobuf_impl.rs`, feat. `protobuf`) | IDs range-checked, duplicate labels rejected, packed-edge shape checked, final-node deltas use `checked_add`, reachable acyclicity and declared term count checked | complete message and reconstructed terms reside in memory |
 | **gzip** (`compression_impl.rs`, feat. `compression`) | wraps a reader in `GzDecoder` and delegates | **decompression bomb** — no size cap on the decompressed stream |
 
-### protobuf: the two weaknesses
+JSON, TOML, and plaintext dictionary persistence are not part of the API.
 
-1. **OOM by preallocation-before-validation.** `decode_dat_terms` does
-   `Vec::with_capacity(term_count)` where `term_count` is an untrusted `u64` protobuf field, and it
-   does so *before* `validate_term_count` runs. A crafted `term_count` near $`10^{18}`$ requests a
-   capacity that aborts the process.
-2. **Recursion over attacker-controlled graph depth.** `terms_from_adjacency::dfs` and
-   `ensure_reachable_acyclic::visit` recurse on the decoded graph, so a degenerate deep chain can
-   overflow the stack. Note the sharp contrast: the generic `extract_terms` / `extract_terms_char`
-   paths in `serialization/mod.rs` were **deliberately rewritten to iterative** (explicit `Vec`
-   stack, with `test_extract_terms_deep_chain_*` guarding ~50k-deep chains) — the protobuf import DFS
-   was not given the same treatment. This is a known asymmetry.
+### protobuf: bounded count hints and iterative graph traversal
+
+`decode_dat_terms` treats the declared term count as a consistency value and a *bounded* capacity
+hint. Its initial capacity is capped by the number of minimum-size length-delimited records that can
+fit in the actual payload, so a field such as `u64::MAX` cannot independently request an enormous
+allocation. The post-parse equality check still rejects a false count.
+
+The general protobuf decoders use explicit heap stacks for both reachable-acyclic validation and
+term enumeration. Graph depth therefore consumes bounded heap storage instead of call-stack frames;
+a 50,000-edge regression fixture exercises the path. Each node's outgoing labels must also be
+unique. That requirement preserves the deterministic-dictionary invariant instead of letting two
+encoded edges compete for the same input byte.
+
+These checks bound allocations by encoded structure rather than by unauthenticated count hints.
+They do not impose a universal maximum message size: the entire encoded message, adjacency, and
+reconstructed terms can still be large when the input itself is large.
 
 ### gzip: decompression bomb
 
@@ -78,8 +84,7 @@ are candidates to adopt the same pattern.
    your dictionary sizes before calling `deserialize`; the library does not (yet) impose a universal
    one for you.
 2. **Compressed input:** bound the *decompressed* size, not just the compressed size.
-3. **protobuf from an untrusted peer:** be aware of the recursion and preallocation edges above; a
-   size cap on the input mitigates both in practice (it bounds both the declared counts that fit and
-   the graph depth that fits).
+3. **protobuf from an untrusted peer:** cap the input even though count hints and graph traversal are
+   hardened; a structurally valid message may still contain a very large graph or term language.
 4. **A failed load is safe:** deserialization returns `Err` on malformed data and leaves you with no
    partially-built dictionary — retry or reject, but you will not get a corrupt structure.

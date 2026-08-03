@@ -2,7 +2,7 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use libdictenstein::pathmap::PathMapDictionary;
-use libdictenstein::serialization::{BincodeSerializer, DictionarySerializer, JsonSerializer};
+use libdictenstein::serialization::{BincodeSerializer, DictionarySerializer};
 use std::hint::black_box;
 use std::io::Cursor;
 
@@ -67,48 +67,6 @@ fn bench_bincode_deserialize(c: &mut Criterion) {
                 let cursor = Cursor::new(black_box(&buffer));
                 let loaded: PathMapDictionary =
                     BincodeSerializer::deserialize(cursor).expect("Deserialization failed");
-                black_box(loaded);
-            });
-        });
-    }
-    group.finish();
-}
-
-/// Benchmark: JSON serialization performance
-fn bench_json_serialize(c: &mut Criterion) {
-    let mut group = c.benchmark_group("json_serialize");
-
-    for size in [100, 500, 1000, 5000].iter() {
-        let dict = create_dictionary(*size);
-        group.throughput(Throughput::Elements(*size as u64));
-
-        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
-            b.iter(|| {
-                let mut buffer = serialization_buffer(*size);
-                JsonSerializer::serialize(black_box(&dict), &mut buffer)
-                    .expect("Serialization failed");
-                black_box(buffer);
-            });
-        });
-    }
-    group.finish();
-}
-
-/// Benchmark: JSON deserialization performance
-fn bench_json_deserialize(c: &mut Criterion) {
-    let mut group = c.benchmark_group("json_deserialize");
-
-    for size in [100, 500, 1000, 5000].iter() {
-        let dict = create_dictionary(*size);
-        let mut buffer = serialization_buffer(*size);
-        JsonSerializer::serialize(&dict, &mut buffer).unwrap();
-
-        group.throughput(Throughput::Elements(*size as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
-            b.iter(|| {
-                let cursor = Cursor::new(black_box(&buffer));
-                let loaded: PathMapDictionary =
-                    JsonSerializer::deserialize(cursor).expect("Deserialization failed");
                 black_box(loaded);
             });
         });
@@ -218,14 +176,6 @@ fn bench_format_comparison_serialize(c: &mut Criterion) {
         });
     });
 
-    group.bench_function("json", |b| {
-        b.iter(|| {
-            let mut buffer = serialization_buffer(1000);
-            JsonSerializer::serialize(black_box(&dict), &mut buffer).unwrap();
-            black_box(buffer);
-        });
-    });
-
     #[cfg(feature = "protobuf")]
     group.bench_function("protobuf_v1", |b| {
         b.iter(|| {
@@ -259,16 +209,6 @@ fn bench_format_comparison_deserialize(c: &mut Criterion) {
         b.iter(|| {
             let cursor = Cursor::new(black_box(&bincode_buffer));
             let loaded: PathMapDictionary = BincodeSerializer::deserialize(cursor).unwrap();
-            black_box(loaded);
-        });
-    });
-
-    let mut json_buffer = serialization_buffer(1000);
-    JsonSerializer::serialize(&dict, &mut json_buffer).unwrap();
-    group.bench_function("json", |b| {
-        b.iter(|| {
-            let cursor = Cursor::new(black_box(&json_buffer));
-            let loaded: PathMapDictionary = JsonSerializer::deserialize(cursor).unwrap();
             black_box(loaded);
         });
     });
@@ -346,51 +286,6 @@ fn bench_gzip_bincode_deserialize(c: &mut Criterion) {
 }
 
 #[cfg(feature = "compression")]
-/// Benchmark: Gzip+JSON serialization performance
-fn bench_gzip_json_serialize(c: &mut Criterion) {
-    let mut group = c.benchmark_group("gzip_json_serialize");
-
-    for size in [100, 500, 1000, 5000].iter() {
-        let dict = create_dictionary(*size);
-        group.throughput(Throughput::Elements(*size as u64));
-
-        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
-            b.iter(|| {
-                let mut buffer = serialization_buffer(*size);
-                GzipSerializer::<JsonSerializer>::serialize(black_box(&dict), &mut buffer)
-                    .expect("Serialization failed");
-                black_box(buffer);
-            });
-        });
-    }
-    group.finish();
-}
-
-#[cfg(feature = "compression")]
-/// Benchmark: Gzip+JSON deserialization performance
-fn bench_gzip_json_deserialize(c: &mut Criterion) {
-    let mut group = c.benchmark_group("gzip_json_deserialize");
-
-    for size in [100, 500, 1000, 5000].iter() {
-        let dict = create_dictionary(*size);
-        let mut buffer = serialization_buffer(*size);
-        GzipSerializer::<JsonSerializer>::serialize(&dict, &mut buffer).unwrap();
-
-        group.throughput(Throughput::Elements(*size as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
-            b.iter(|| {
-                let cursor = Cursor::new(black_box(&buffer));
-                let loaded: PathMapDictionary =
-                    GzipSerializer::<JsonSerializer>::deserialize(cursor)
-                        .expect("Deserialization failed");
-                black_box(loaded);
-            });
-        });
-    }
-    group.finish();
-}
-
-#[cfg(feature = "compression")]
 /// Benchmark: Compression overhead comparison
 fn bench_compression_overhead(c: &mut Criterion) {
     let dict = create_dictionary(1000);
@@ -415,24 +310,6 @@ fn bench_compression_overhead(c: &mut Criterion) {
         });
     });
 
-    // JSON without compression
-    group.bench_function("json_plain", |b| {
-        b.iter(|| {
-            let mut buffer = serialization_buffer(1000);
-            JsonSerializer::serialize(black_box(&dict), &mut buffer).unwrap();
-            black_box(buffer);
-        });
-    });
-
-    // JSON with compression
-    group.bench_function("json_gzip", |b| {
-        b.iter(|| {
-            let mut buffer = serialization_buffer(1000);
-            GzipSerializer::<JsonSerializer>::serialize(black_box(&dict), &mut buffer).unwrap();
-            black_box(buffer);
-        });
-    });
-
     group.finish();
 }
 
@@ -449,12 +326,6 @@ fn bench_file_size_comparison(c: &mut Criterion) {
     let mut bincode_gzip = serialization_buffer(1000);
     GzipSerializer::<BincodeSerializer>::serialize(&dict, &mut bincode_gzip).unwrap();
 
-    let mut json_plain = serialization_buffer(1000);
-    JsonSerializer::serialize(&dict, &mut json_plain).unwrap();
-
-    let mut json_gzip = serialization_buffer(1000);
-    GzipSerializer::<JsonSerializer>::serialize(&dict, &mut json_gzip).unwrap();
-
     println!("\n=== File Size Comparison (1000 words) ===");
     println!("Bincode:           {:6} bytes", bincode_plain.len());
     println!(
@@ -462,13 +333,6 @@ fn bench_file_size_comparison(c: &mut Criterion) {
         bincode_gzip.len(),
         100.0 * bincode_gzip.len() as f64 / bincode_plain.len() as f64
     );
-    println!("JSON:              {:6} bytes", json_plain.len());
-    println!(
-        "JSON+Gzip:         {:6} bytes ({:.1}% of original)",
-        json_gzip.len(),
-        100.0 * json_gzip.len() as f64 / json_plain.len() as f64
-    );
-
     // Dummy benchmark to trigger output
     group.bench_function("dummy", |b| b.iter(|| 1));
     group.finish();
@@ -478,8 +342,6 @@ criterion_group!(
     serialization_benches,
     bench_bincode_serialize,
     bench_bincode_deserialize,
-    bench_json_serialize,
-    bench_json_deserialize,
     bench_format_comparison_serialize,
     bench_format_comparison_deserialize,
 );
@@ -498,8 +360,6 @@ criterion_group!(
     compression_benches,
     bench_gzip_bincode_serialize,
     bench_gzip_bincode_deserialize,
-    bench_gzip_json_serialize,
-    bench_gzip_json_deserialize,
     bench_compression_overhead,
     bench_file_size_comparison,
 );

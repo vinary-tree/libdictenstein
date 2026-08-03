@@ -1,360 +1,229 @@
-# Serialization & values
+# Compact Binary Serialization
 
-**Navigation**: [↑ Dictionary layer](README.md) · [↑ Documentation index](../README.md) · [Abstractions →](../architecture/abstractions.md) · [Persistence →](../persistence/) · [Query half: liblevenshtein →](https://github.com/universal-automata/liblevenshtein-rust)
+[← Algorithms](README.md) · [Documentation index](../README.md)
 
-## Overview
+**Status**: implemented
+**Updated**: 2026-08-01
 
-This document describes how **in-memory** `libdictenstein` dictionaries are
-*serialized* — converted to a stream of bytes for storage or transport — and
-*deserialized* — reconstructed from such a stream. It also covers the
-**value-preserving** variants that carry each term's associated value across the
-round trip, not just the term itself.
+Libdictenstein persists dictionaries in two binary formats: bincode for efficient
+Rust-native storage and Protocol Buffers for schema-based interchange. Gzip may wrap either
+format. JSON, TOML, newline-delimited text, and native-path text are intentionally absent from
+the persistence API because production dictionaries can be very large.
 
-> **Scope.** This is the on-demand serializer for the in-memory backends
-> (`DoubleArrayTrie`, `DynamicDawg`, `SuffixAutomaton`, `Scdawg`, `PathMap`, and
-> their `Char` / `U64` siblings). It is distinct from the *persistent* ARTrie
-> family, which is **continuously** durable on disk via a write-ahead log and
-> checkpoint images rather than a one-shot `serialize` call — see
-> [the persistence docs](../persistence/) and
-> [WAL format](../persistence/wal-format.md). When you call `serialize` here you
-> get a single self-contained byte stream you own; when you use a persistent
-> backend the durability is managed for you.
+Text word lists remain useful as *construction input*. They are not a serialized dictionary:
+loading one must parse all terms and rebuild a backend.
 
-### Terms of art (defined before first use)
+<img src="../diagrams/serializer-selector.svg" alt="Choose bincode for Rust-native binary persistence or Protocol Buffers for portable binary interchange; gzip may wrap either stream." width="70%"/>
 
-| Term | Definition |
-|------|-----------|
-| **serialize / deserialize** | Encode an in-memory value into a byte stream (serialize) and decode a byte stream back into an equivalent in-memory value (deserialize). |
-| **round trip** | The composition *deserialize $`\circ`$ serialize*: serialize a dictionary, then deserialize the bytes. A serializer is *lossless* for a property if the round trip preserves it. |
-| **[serde](https://serde.rs/)** | Rust's de-facto serialization *framework*. A type that is `#[derive(Serialize, Deserialize)]` can be encoded by any serde-compatible *format* (bincode, JSON, …). `libdictenstein`'s value types only need to be serde-serializable to survive a value-preserving round trip. |
-| **[bincode](https://docs.rs/bincode)** | A compact binary serde *format* (not human-readable). Fast and space-efficient; the recommended production format here. |
-| **wire format** | The exact byte layout a serializer emits. Two serializers with different wire formats are mutually unreadable even if they carry the same logical data. |
-| **term** | A key string stored in the dictionary (e.g. `"apple"`). |
-| **value** | The datum a [`MappedDictionary`](README.md#3-mappeddictionary-trait) associates with a term (the `V` in `DoubleArrayTrie<V>`). For a pure *set* dictionary the value type is `()` (the unit type) and there is nothing to preserve beyond membership. |
+## Feature matrix
 
-## The two serialization contracts
+| Capability | Feature | Dependencies added | Contract |
+|---|---|---|---|
+| Bincode | `serialization` | Serde, `bincode-next` | Fixed-int little-endian legacy layout |
+| Protocol Buffers | `protobuf` | `prost`, schema compiler | Numbered binary schema |
+| Gzip wrapper | `compression` | `flate2` | Compression around a supported binary serializer |
 
-`libdictenstein` exposes **two** parallel serialization paths. Choosing the right
-one is the single most important decision in this subsystem, because the two
-paths emit **incompatible wire formats** — a file written by one cannot be read
-by the other.
+`serialization` does not enable `serde_json` or any other text-format dependency. The crate
+uses the maintained `bincode-next` fork under the dependency name `bincode`; the original
+crate is unmaintained. The `bincode_compat` module pins the legacy fixed-int,
+little-endian layout with byte-level tests.
 
-| Path | Trait / entry point | Wire payload | Preserves values? | Use when |
-|------|--------------------|--------------|-------------------|----------|
-| **Terms-only** | `DictionarySerializer::serialize` / `deserialize` | a list of terms (`Vec<String>`) | ❌ no — values are dropped | the dictionary is a *set* (`V = ()`), or you only need the keys back |
-| **Value-preserving** | the `*_with_values` methods | a list of `(term, value)` pairs (`Vec<(String, V)>`) | ✅ yes | the dictionary is a *map* ($`V \ne ()`$) and the values must survive |
+## Terms-only bincode
 
-The terms-only path is governed by the `DictionarySerializer` trait:
+`DictionarySerializer` is the common terms-only interface:
 
 ```rust
 pub trait DictionarySerializer {
-    fn serialize<D, W>(dict: &D, writer: W) -> Result<(), SerializationError>
-    where
-        D: Dictionary,
-        D::Node: DictionaryNode<Unit = u8>,
-        W: Write;
-
-    fn deserialize<D, R>(reader: R) -> Result<D, SerializationError>
-    where
-        D: DictionaryFromTerms,
-        R: Read;
+    fn serialize<D, W>(dictionary: &D, writer: W) -> Result<(), SerializationError>;
+    fn deserialize<D, R>(reader: R) -> Result<D, SerializationError>;
 }
 ```
 
-Reconstruction on deserialize is delegated to one of two construction traits the
-backend implements:
+The concrete bounds require a byte-oriented `Dictionary` for serialization and a
+`DictionaryFromTerms` backend for reconstruction.
 
-- `DictionaryFromTerms` — `from_terms(terms)`; used by the terms-only path.
-- `DictionaryFromTermsWithValues` — `from_terms_with_values(entries)`, with an
-  associated `type Value`; used by the value-preserving path. Backends that
-  implement [`MappedDictionary`](README.md#3-mappeddictionary-trait) implement
-  this so values survive the round trip.
-
-> **Why two construction traits?** The terms-only wire format (`Vec<String>`)
-> has *no slot* for a value, so the older `extract_terms` + `from_terms` path
-> silently dropped values for `MappedDictionary` backends. The
-> `*_with_values` path was added precisely to close that data-loss gap; it
-> serializes `Vec<(String, V)>` and reconstructs via `from_terms_with_values`.
-
-## Formats
-
-The serializer is parameterized by *format*. Each format is a zero-sized type
-implementing `DictionarySerializer` (and, where applicable, the `*_with_values`
-inherent methods). All formats are feature-gated under the `serialization`
-feature except where noted.
-
-| Format | Type | Feature | Human-readable? | Compactness | When to use |
-|--------|------|---------|-----------------|-------------|-------------|
-| **Bincode** | `BincodeSerializer` | `serialization` | ❌ binary | ⭐⭐⭐⭐⭐ smallest | **Default for production** — fastest load, smallest files. |
-| **JSON** | `JsonSerializer` | `serialization` | ✅ text | ⭐⭐ | Debugging, manual inspection, interop with non-Rust tools. Pretty-printed. |
-| **Plain text** | `PlainTextSerializer` | `serialization` | ✅ text | ⭐⭐⭐ | One term per line; ideal for version control, manual editing, `grep`. |
-| **Protobuf** | `ProtobufSerializer`, `OptimizedProtobufSerializer`, `DatProtobufSerializer`, `SuffixAutomatonProtobufSerializer` | `protobuf` | ❌ binary | ⭐⭐⭐⭐ | Cross-language interchange via a stable `.proto` schema. |
-| **Gzip wrapper** | `GzipSerializer<S>` | `compression` | ❌ binary | ⭐⭐⭐⭐⭐⭐ | Wraps *any* `DictionarySerializer` `S` and gzip-compresses its output ($`\approx`$40–60% smaller). |
-
-### Bincode — the production default
-
-`BincodeSerializer` uses the [bincode](https://docs.rs/bincode) binary format
-for fast, space-efficient output. It is the recommended choice when storage and
-load time matter.
-
-```rust,no_run
-use libdictenstein::prelude::*;
+```rust
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 use libdictenstein::serialization::{BincodeSerializer, DictionarySerializer};
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-let dict = DoubleArrayTrie::from_terms(vec!["test", "testing"]);
 
-// Serialize to an in-memory buffer (any `std::io::Write` works).
+let dictionary = DoubleArrayTrie::from_terms(vec!["alpha", "alpine", "beta"]);
 let mut bytes = Vec::new();
-BincodeSerializer::serialize(&dict, &mut bytes)?;
+BincodeSerializer::serialize(&dictionary, &mut bytes)?;
 
-// Reconstruct (any `std::io::Read` works).
-let loaded: DoubleArrayTrie = BincodeSerializer::deserialize(&bytes[..])?;
-assert!(loaded.contains("test"));
-# Ok(())
-# }
+let restored: DoubleArrayTrie = BincodeSerializer::deserialize(&bytes[..])?;
+assert!(restored.contains("alpine"));
+# Ok::<(), libdictenstein::serialization::SerializationError>(())
 ```
 
-### JSON — human-readable
+This wire value is a binary `Vec<String>` extracted by iterative trie traversal. Decoding
+reconstructs the selected backend, so the guarantee is preservation of its accepted term set,
+not preservation of internal node identities or allocation layout.
 
-`JsonSerializer` emits pretty-printed JSON. The terms-only payload is a JSON
-array of strings; the value-preserving payload is a JSON array of `[term, value]`
-pairs. Slower and larger than bincode, but inspectable in any text editor.
+The decoder requires exact input consumption. A complete bincode value followed by any byte
+is rejected as `BincodeError::TrailingBytes` on both slice and reader APIs.
 
-### Plain text — line-oriented
+## Value-preserving bincode
 
-`PlainTextSerializer` writes **one term per line**, UTF-8 encoded. Empty lines
-are skipped on read. This is the simplest, most diffable format:
+The terms-only format has no slot for mapped values. For a `MappedDictionary<Value = V>`, call
+the explicit value-preserving methods:
 
-```text
-apple
-banana
-cherry
-```
-
-Its value-preserving variant writes one `term<TAB><JSON value>` per line (so
-each value is a tiny embedded JSON document); tabs inside a term itself are not
-supported by the format.
-
-### Protobuf — cross-language
-
-With the `protobuf` feature, four serializers target a generated `.proto`
-schema for language-neutral interchange:
-
-- `ProtobufSerializer` — V1 node-graph encoding (implements `DictionarySerializer`).
-- `OptimizedProtobufSerializer` — V2 encoding (delta + packed); strictly
-  smaller than V1 (the test suite asserts `V2 < V1`).
-- `DatProtobufSerializer` — `serialize_dat` / `deserialize_dat`: term-extraction encoding specialized for the double-array trie.
-- `SuffixAutomatonProtobufSerializer` — `serialize_suffix_automaton` /
-  `deserialize_suffix_automaton`: persists a suffix automaton from its *source
-  texts* (see the suffix-automaton note below).
-
-### Gzip — compose with any format
-
-With the `compression` feature, `GzipSerializer<S>` is a *wrapper*: it
-gzip-compresses the output of any inner serializer `S`. It is itself a
-`DictionarySerializer`, so it composes transparently:
-
-```text
-use libdictenstein::prelude::*;
-use libdictenstein::serialization::{GzipSerializer, BincodeSerializer, DictionarySerializer};
-use std::fs::File;
-
-let dict = DoubleArrayTrie::from_terms(vec!["test", "testing"]);
-
-// Bincode payload, gzip-compressed.
-let file = File::create("dict.bin.gz")?;
-GzipSerializer::<BincodeSerializer>::serialize(&dict, file)?;
-
-let file = File::open("dict.bin.gz")?;
-let loaded: DoubleArrayTrie = GzipSerializer::<BincodeSerializer>::deserialize(file)?;
-```
-
-## The value-preserving API (`*_with_values`)
-
-Every concrete byte-unit serializer exposes a value-preserving pair of inherent
-methods alongside the terms-only trait methods. For `BincodeSerializer`,
-`JsonSerializer`, and `PlainTextSerializer`:
-
-```rust,no_run
-use libdictenstein::prelude::*;
+```rust
+use libdictenstein::double_array_trie::DoubleArrayTrie;
 use libdictenstein::serialization::BincodeSerializer;
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-// A *map*: each term carries a u32 value (e.g. a scope id or frequency).
-let dict: DoubleArrayTrie<u32> = DoubleArrayTrie::from_terms_with_values(vec![
-    ("println".to_string(), 1u32),
-    ("my_var".to_string(), 42u32),
-]);
+use libdictenstein::MappedDictionary;
 
-// Value-preserving serialize → wire payload is `Vec<(String, u32)>`.
+let dictionary: DoubleArrayTrie<u32> =
+    DoubleArrayTrie::from_terms_with_values([("alpha", 10), ("beta", 20)]);
+
 let mut bytes = Vec::new();
-BincodeSerializer::serialize_with_values(&dict, &mut bytes)?;
-
-// Value-preserving deserialize reconstructs the map, values intact.
-let loaded: DoubleArrayTrie<u32> =
+BincodeSerializer::serialize_with_values(&dictionary, &mut bytes)?;
+let restored: DoubleArrayTrie<u32> =
     BincodeSerializer::deserialize_with_values(&bytes[..])?;
-assert_eq!(loaded.get_value("my_var"), Some(42));
-# Ok(())
-# }
+assert_eq!(restored.get_value("beta"), Some(20));
+# Ok::<(), libdictenstein::serialization::SerializationError>(())
 ```
 
-- `serialize_with_values<D, W>` requires `D: MappedDictionary`,
-  `D::Node: DictionaryNode<Unit = u8>`, and `D::Value: serde::Serialize`.
-- `deserialize_with_values<D, R>` requires `D: DictionaryFromTermsWithValues`
-  and `D::Value: serde::de::DeserializeOwned`.
+The value-preserving wire value is `Vec<(String, V)>` and is intentionally distinct from the
+terms-only `Vec<String>`. Calling `serialize` on a mapped dictionary preserves its domain but
+drops values on reconstruction; use `serialize_with_values` whenever values are part of the
+application contract.
 
-### Unicode (`char`-unit) backends
+For `Unit = char` backends, use `serialize_with_values_char`; decoding uses the same
+`deserialize_with_values` method because both value-aware variants have the same wire shape.
 
-The byte-unit methods above bound `D::Node: DictionaryNode<Unit = u8>`. For the
-Unicode (`char`-unit) backends — `DoubleArrayTrieChar`, `DynamicDawgChar`,
-`ScdawgChar`, `PathMapDictionaryChar`, … — use the `_char` siblings, which bound
-`Unit = char`:
+## Direct Serde types
 
-- `BincodeSerializer::serialize_with_values_char` (same `Vec<(String, V)>`
-  wire format as the byte path; deserialize via the shared
-  `deserialize_with_values`),
-- `JsonSerializer::serialize_with_values_char`,
-- `PlainTextSerializer::serialize_with_values_char`.
+Some backends derive `Serialize` and `Deserialize` and can use the compatibility shim directly:
 
-The free functions `extract_terms_char` and `extract_terms_with_values_char`
-back these, mirroring the byte-unit `extract_terms` /
-`extract_terms_with_values`.
+```rust
+use libdictenstein::double_array_trie::char::DoubleArrayTrieChar;
+use libdictenstein::serialization::bincode_compat;
 
-## How extraction works
+let dictionary = DoubleArrayTrieChar::from_terms(vec!["café", "日本語"]);
+let bytes = bincode_compat::serialize(&dictionary)?;
+let restored: DoubleArrayTrieChar = bincode_compat::deserialize(&bytes)?;
+assert!(restored.contains("日本語"));
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
 
-Both serialization paths are *structure-agnostic*: rather than encode a backend's
-internal node arrays, they **enumerate the dictionary's terms by traversal**, so
-the same serializer works across every trie/DAWG/automaton backend.
+This path preserves the Serde representation of that type. It is not available for every
+backend, and it should not be confused with the backend-independent term-set contract of
+`BincodeSerializer`.
 
-- `extract_terms(dict) -> Vec<String>` performs an **iterative**
-  depth-first traversal of the dictionary trie, collecting every final-node
-  term. The traversal is deliberately iterative (an explicit `Vec` stack, not
-  recursion) so that a pathological single-child chain — a term forming an
-  N-edge path — cannot overflow the thread stack at depths in the ~50k-edge
-  range. The crate's test suite exercises this with a 50,000-character
-  single-child term.
-- `extract_terms_with_values(dict) -> Vec<(String, D::Value)>` first runs
-  `extract_terms`, then looks up each term's value via
-  `MappedDictionary::get_value`. A term whose value is unexpectedly `None` at
-  lookup time (which would signal a soundness bug in the backend) is dropped
-  from the result rather than fabricated.
+## Protocol Buffers
 
-> **Suffix automata are special.** A `SuffixAutomaton` recognizes *every
-> substring* of its source texts, so a naive term enumeration would emit all
-> substrings rather than the original inputs. Serialize a suffix automaton via
-> its dedicated source-text path —
-> `BincodeSerializer::serialize_suffix_automaton` (or the protobuf
-> equivalent), which persists `source_texts()` and rebuilds with `from_texts`,
-> round-tripping the *source texts*, not the substring closure.
+The `protobuf` feature exposes four binary serializers:
 
-## The round-trip guarantee
+| API | Representation | Use |
+|---|---|---|
+| `ProtobufSerializer` | Declared nodes, finals, and edges | Portable V1 interchange |
+| `OptimizedProtobufSerializer` | Packed edge triples, delta finals | Compact V2 Rust interchange |
+| `DatProtobufSerializer` | `LDT1` length-delimited term payload | DAT-specific reconstruction |
+| `SuffixAutomatonProtobufSerializer` | Original indexed texts | Suffix-automaton reconstruction |
 
-The serialization contract is a **membership / mapping round trip**, not a
-byte-for-byte structural one. Concretely:
+```rust
+use libdictenstein::double_array_trie::DoubleArrayTrie;
+use libdictenstein::serialization::{DictionarySerializer, ProtobufSerializer};
 
-- **Terms-only path.** For any dictionary `dict` and format `F`,
-  `F::deserialize(F::serialize(dict))` contains exactly the same set of terms as
-  `dict` (`contains(t)` agrees for every `t`). The *internal layout* of the
-  reconstructed dictionary (node ids, array packing, minimization state) is
-  whatever `from_terms` builds and is **not** guaranteed identical to the
-  original — only the recognized language is.
-- **Value-preserving path.** Additionally, `get_value(t)` agrees for every term
-  `t` (the `(term, value)` pairs survive).
-- **Suffix automaton.** The reconstructed automaton recognizes the same
-  substrings *and* exposes the same `source_texts()`.
+let dictionary = DoubleArrayTrie::from_terms(vec!["alpha", "alpine", "beta"]);
+let mut bytes = Vec::new();
+ProtobufSerializer::serialize(&dictionary, &mut bytes)?;
+let restored: DoubleArrayTrie = ProtobufSerializer::deserialize(&bytes[..])?;
+assert!(restored.contains("alpha"));
+# Ok::<(), libdictenstein::serialization::SerializationError>(())
+```
 
-This "language and mapping are preserved; representation may differ" guarantee is
-exactly why one serializer serves every backend: the wire format describes the
-*contents* (terms, optionally values), and the *target* backend's constructor
-re-derives an efficient representation on load. The crate's
-`serialization_value_roundtrip.rs` and `serialization_correspondence.rs` test
-suites pin these guarantees.
+The general decoder validates declared roots/endpoints/finals, byte-sized edge labels,
+reachable acyclicity, UTF-8 paths, and the declared term count. V2 additionally validates the
+packed triple count and checked terminal-ID deltas.
 
-## The bincode byte-compatibility note
+The DAT `edge_data` grammar is binary and self-identifying:
 
-The crate depends on **`bincode-next` 3.x**, declared under the name `bincode` via
-a Cargo package rename so no call site or import needs to know.
+```text
+payload := "LDT1" term*
+term    := byte_length:u32_le utf8_bytes[byte_length]
+```
 
-The original `bincode` is **unmaintained** (RUSTSEC-2025-0141): it was abandoned
-after a doxxing and harassment incident, its repository was archived on
-2025-08-15, and its own 3.0.0 is a *tombstone release* shipping only a README and
-a `lib.rs` containing a single compiler error to announce that status. Because no
-fixed version exists, the advisory could only be closed by leaving the crate.
-`bincode-next` is the maintained fork and preserves the API surface exactly.
+The decoder rejects missing magic, truncated lengths or bodies, invalid UTF-8, inconsistent
+term counts, and newline-delimited compatibility data. No plaintext fallback exists.
 
-That fork is a third party (`Apich-Organization`, not the original
-`bincode-org`), so adopting it is a supply-chain decision rather than a routine
-bump. It is recorded deliberately: `deny.toml` bans the abandoned `bincode` crate
-by name and pins the permitted registry set, so this choice stays visible in
-review rather than dissolving into the lock file.
+Protocol Buffers is a compact encoding, not compression. Its broad runtime support makes it
+the default cross-language choice, but compatibility still requires sharing the exact schema
+and validation fixtures.
 
-Both `bincode` 2.x and `bincode-next` removed the bincode 1.x crate-root
-`serialize` / `deserialize` / `serialize_into` / `deserialize_from` functions in
-favor of a `bincode::serde` sub-module that takes an explicit `Config`. To avoid
-re-architecting every call site, a thin shim —
-`serialization::bincode_compat` — re-exposes the old 1.x function shapes on top
-of it.
+## Gzip wrapper
 
-### Compatibility was measured, not assumed
+`GzipSerializer<S>` decorates a supported binary serializer:
 
-A probe crate depending on bincode 1.3, bincode 2.0 and bincode-next 3
-*simultaneously* encoded the same values through each and compared the bytes.
-`config::legacy()` output was identical across all three for scalars, signed
-integers, sequences, nested structs (`[u8; 8]` + `u32` + `String` +
-`Option<Vec<u8>>` + `i64`) and payload-carrying enums. The `wire_format_pins`
-test module in `bincode_compat.rs` now enforces those exact byte strings
-permanently, so a future implementation swap cannot silently change the format.
+```rust
+use libdictenstein::double_array_trie::DoubleArrayTrie;
+use libdictenstein::serialization::{
+    BincodeSerializer, DictionarySerializer, GzipSerializer,
+};
 
-Before those pins existed there was no such check anywhere: every serialization
-test writes and reads within one process, so a wholesale encoding change would
-round-trip perfectly while invalidating every file already on disk.
+let dictionary = DoubleArrayTrie::from_terms(vec!["alpha", "alpine", "beta"]);
+let mut bytes = Vec::new();
+GzipSerializer::<BincodeSerializer>::serialize(&dictionary, &mut bytes)?;
+let restored: DoubleArrayTrie =
+    GzipSerializer::<BincodeSerializer>::deserialize(&bytes[..])?;
+assert!(restored.contains("beta"));
+# Ok::<(), libdictenstein::serialization::SerializationError>(())
+```
 
-The shim pins the config to **`bincode::config::legacy()`**, which is
-**fixed-int little-endian** (every integer is written as its full
-little-endian byte image — a `u64` or `i64` is exactly 8 LE bytes), with
-bincode 1.x's strict trailing-bytes check. The practical consequences:
+`GzipSerializer<ProtobufSerializer>` is available with both `compression` and `protobuf`.
+Bincode and protobuf are compact encodings but are not themselves compressed; gzip can exploit
+repeated prefixes, labels, and field patterns. The benefit is corpus-dependent and costs CPU,
+latency, and whole-stream decompression. Benchmark representative artifacts before enabling it.
 
-- **Wire format is byte-for-byte identical to bincode 1.x.** Files written by a
-  pre-migration build of this crate still deserialize, and vice-versa; both the
-  2.x upgrade and the move to `bincode-next` are invisible on disk.
-- This is *not* the default `standard()` varint encoding — picking `standard()`
-  would have silently broken compatibility.
-- The fixed-int-LE layout is **load-bearing** beyond this module: the persistent
-  ARTrie counter leaf decodes its value as exactly 8 little-endian bytes, so a
-  non-negative `u64` and an `i64` of the same magnitude are byte-identical on
-  disk. See [WAL format](../persistence/wal-format.md).
+## Correctness contract
 
-Errors from the shim are wrapped in `bincode_compat::BincodeError` (unifying the
-separate `EncodeError` / `DecodeError`), which the top-level
-`SerializationError::Bincode` variant carries via `#[from]`.
+For a terms-only dictionary $`D`$, serialization promises language preservation:
 
-## Errors
+```math
+L(\operatorname{decode}(\operatorname{encode}(D))) = L(D).
+```
 
-All entry points return `Result<_, SerializationError>`. The variants are:
+For a mapped dictionary serialized through the value-aware bincode API, it additionally
+promises lookup preservation:
 
-| Variant | Cause |
-|---------|-------|
-| `Bincode` | a bincode encode/decode failure (wraps `bincode_compat::BincodeError`) |
-| `Json` | a `serde_json` failure |
-| `Protobuf` | a protobuf decode failure (feature `protobuf`) |
-| `Io` | an underlying `std::io::Error` from the reader/writer |
-| `DictionaryError(String)` | a semantic failure during (de)serialization (e.g. a malformed plaintext line missing its tab separator, or a protobuf graph that is cyclic or non-UTF-8) |
+```math
+\forall t \in L(D),\quad
+\operatorname{value}_{\operatorname{roundtrip}(D)}(t)
+= \operatorname{value}_{D}(t).
+```
 
-## Choosing a serializer — quick guide
+These invariants are checked across byte and Unicode backends by example tests and generated
+term/value maps. Bincode has byte-layout pins and trailing-data tests. Protobuf tests cover V1,
+V2, specialized payloads, corruption, truncation, graph validation, compression composition,
+and correspondence with bincode term sets.
 
-<img src="../diagrams/serializer-selector.svg" alt="Decision tree for choosing a serializer: for a set (V = ()) or when values are not needed, the terms-only path offers BincodeSerializer (smallest/fastest), PlainTextSerializer (human-readable), JsonSerializer, ProtobufSerializer (cross-language), or GzipSerializer to wrap any of them; when values must survive, the value-preserving path uses serialize_with_values for byte backends or serialize_with_values_char for Unicode backends." width="70%"/>
+## Security and resource boundaries
 
-## Related documentation
+All persistence decoders operate on untrusted structured bytes and may allocate according to
+encoded collection lengths. The high-level protobuf serializers currently read the provided
+stream to completion before message decoding. Therefore:
 
-- [Dictionary layer](README.md) — the traits (`Dictionary`, `MappedDictionary`,
-  `DictionaryNode`) these serializers operate over.
-- [Abstractions: `CharUnit` & `KeyEncoding`](../architecture/abstractions.md) —
-  why the byte/char split shows up as `Unit = u8` vs `Unit = char` bounds here.
-- [Persistence](../persistence/) and [WAL format](../persistence/wal-format.md) —
-  the *continuously durable* alternative to one-shot serialization, and the
-  fixed-int-LE on-disk codec the bincode shim is consistent with.
-- [Query half: liblevenshtein](https://github.com/universal-automata/liblevenshtein-rust) —
-  the transducer that walks the deserialized dictionary.
+- impose a compressed-input limit before gzip;
+- impose a decompressed-output limit while inflating;
+- bound process memory and elapsed work for untrusted payloads;
+- authenticate artifacts when provenance matters;
+- reject an unexpected format or marker instead of guessing another schema;
+- atomically replace durable files so interruption cannot expose a partial payload.
 
----
+Structural validation prevents malformed graphs from becoming dictionaries, but it is not an
+authentication mechanism. Bincode's exact-consumption check prevents an otherwise valid prefix
+from hiding appended data.
 
-**Navigation**: [↑ Dictionary layer](README.md) · [↑ Documentation index](../README.md) · [Abstractions →](../architecture/abstractions.md) · [Persistence →](../persistence/) · [Query half: liblevenshtein →](https://github.com/universal-automata/liblevenshtein-rust)
+## Format selection
+
+Use bincode for Rust applications that control library-version compatibility. Use Protocol
+Buffers when another language must read the artifact or when an explicit schema is required.
+Wrap either in gzip only when measured storage or transfer savings justify decompression cost.
+
+Do not use a text format for persisted production dictionaries.
+
+## References
+
+- [Serde data model](https://serde.rs/data-model.html)
+- [Protocol Buffers proto3 guide](https://protobuf.dev/programming-guides/proto3/)
+- [Protocol Buffers encoding](https://protobuf.dev/programming-guides/encoding/)

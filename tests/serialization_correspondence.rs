@@ -22,7 +22,6 @@ use libdictenstein::scdawg::char::ScdawgChar;
 use libdictenstein::scdawg::Scdawg;
 use libdictenstein::serialization::{
     BincodeSerializer, DictionaryFromTerms, DictionaryFromTermsWithValues, DictionarySerializer,
-    JsonSerializer, PlainTextSerializer,
 };
 use libdictenstein::{Dictionary, DictionaryNode, MappedDictionary};
 use proptest::prelude::*;
@@ -106,26 +105,6 @@ where
     BincodeSerializer::deserialize(&buf[..]).expect("bincode set deserialize")
 }
 
-fn roundtrip_json_set<D>(dict: &D) -> D
-where
-    D: Dictionary + DictionaryFromTerms,
-    D::Node: DictionaryNode<Unit = u8>,
-{
-    let mut buf = Vec::new();
-    JsonSerializer::serialize(dict, &mut buf).expect("json set serialize");
-    JsonSerializer::deserialize(&buf[..]).expect("json set deserialize")
-}
-
-fn roundtrip_plaintext_set<D>(dict: &D) -> D
-where
-    D: Dictionary + DictionaryFromTerms,
-    D::Node: DictionaryNode<Unit = u8>,
-{
-    let mut buf = Vec::new();
-    PlainTextSerializer::serialize(dict, &mut buf).expect("plaintext set serialize");
-    PlainTextSerializer::deserialize(&buf[..]).expect("plaintext set deserialize")
-}
-
 fn roundtrip_bincode_map_byte<D>(dict: &D) -> D
 where
     D: MappedDictionary<Value = i32> + DictionaryFromTermsWithValues<Value = i32>,
@@ -134,27 +113,6 @@ where
     let mut buf = Vec::new();
     BincodeSerializer::serialize_with_values(dict, &mut buf).expect("bincode byte map serialize");
     BincodeSerializer::deserialize_with_values(&buf[..]).expect("bincode byte map deserialize")
-}
-
-fn roundtrip_json_map_byte<D>(dict: &D) -> D
-where
-    D: MappedDictionary<Value = i32> + DictionaryFromTermsWithValues<Value = i32>,
-    D::Node: DictionaryNode<Unit = u8>,
-{
-    let mut buf = Vec::new();
-    JsonSerializer::serialize_with_values(dict, &mut buf).expect("json byte map serialize");
-    JsonSerializer::deserialize_with_values(&buf[..]).expect("json byte map deserialize")
-}
-
-fn roundtrip_plaintext_map_byte<D>(dict: &D) -> D
-where
-    D: MappedDictionary<Value = i32> + DictionaryFromTermsWithValues<Value = i32>,
-    D::Node: DictionaryNode<Unit = u8>,
-{
-    let mut buf = Vec::new();
-    PlainTextSerializer::serialize_with_values(dict, &mut buf)
-        .expect("plaintext byte map serialize");
-    PlainTextSerializer::deserialize_with_values(&buf[..]).expect("plaintext byte map deserialize")
 }
 
 fn roundtrip_bincode_map_char<D>(dict: &D) -> D
@@ -168,27 +126,6 @@ where
     BincodeSerializer::deserialize_with_values(&buf[..]).expect("bincode char map deserialize")
 }
 
-fn roundtrip_json_map_char<D>(dict: &D) -> D
-where
-    D: MappedDictionary<Value = i32> + DictionaryFromTermsWithValues<Value = i32>,
-    D::Node: DictionaryNode<Unit = char>,
-{
-    let mut buf = Vec::new();
-    JsonSerializer::serialize_with_values_char(dict, &mut buf).expect("json char map serialize");
-    JsonSerializer::deserialize_with_values(&buf[..]).expect("json char map deserialize")
-}
-
-fn roundtrip_plaintext_map_char<D>(dict: &D) -> D
-where
-    D: MappedDictionary<Value = i32> + DictionaryFromTermsWithValues<Value = i32>,
-    D::Node: DictionaryNode<Unit = char>,
-{
-    let mut buf = Vec::new();
-    PlainTextSerializer::serialize_with_values_char(dict, &mut buf)
-        .expect("plaintext char map serialize");
-    PlainTextSerializer::deserialize_with_values(&buf[..]).expect("plaintext char map deserialize")
-}
-
 #[test]
 fn byte_term_serializers_roundtrip_membership() {
     let terms = byte_terms();
@@ -196,16 +133,9 @@ fn byte_term_serializers_roundtrip_membership() {
 
     let dat = DoubleArrayTrie::from_terms(terms.clone());
     assert_set_matches(&roundtrip_bincode_set::<DoubleArrayTrie>(&dat), &expected);
-    assert_set_matches(&roundtrip_json_set::<DoubleArrayTrie>(&dat), &expected);
-    assert_set_matches(&roundtrip_plaintext_set::<DoubleArrayTrie>(&dat), &expected);
 
     let dawg: DynamicDawg<()> = DynamicDawg::from_terms(terms);
     assert_set_matches(&roundtrip_bincode_set::<DynamicDawg<()>>(&dawg), &expected);
-    assert_set_matches(&roundtrip_json_set::<DynamicDawg<()>>(&dawg), &expected);
-    assert_set_matches(
-        &roundtrip_plaintext_set::<DynamicDawg<()>>(&dawg),
-        &expected,
-    );
 }
 
 #[test]
@@ -215,18 +145,12 @@ fn byte_value_serializers_roundtrip_lookup_values() {
 
     let dat: DoubleArrayTrie<i32> = DoubleArrayTrie::from_terms_with_values(entries.clone());
     assert_map_matches(&roundtrip_bincode_map_byte(&dat), &expected);
-    assert_map_matches(&roundtrip_json_map_byte(&dat), &expected);
-    assert_map_matches(&roundtrip_plaintext_map_byte(&dat), &expected);
 
     let dawg: DynamicDawg<i32> = DynamicDawg::from_terms_with_values(entries.clone());
     assert_map_matches(&roundtrip_bincode_map_byte(&dawg), &expected);
-    assert_map_matches(&roundtrip_json_map_byte(&dawg), &expected);
-    assert_map_matches(&roundtrip_plaintext_map_byte(&dawg), &expected);
 
     let scdawg: Scdawg<i32> = Scdawg::from_terms_with_values(entries);
     assert_map_matches(&roundtrip_bincode_map_byte(&scdawg), &expected);
-    assert_map_matches(&roundtrip_json_map_byte(&scdawg), &expected);
-    assert_map_matches(&roundtrip_plaintext_map_byte(&scdawg), &expected);
 }
 
 #[test]
@@ -237,18 +161,12 @@ fn char_value_serializers_roundtrip_unicode_lookup_values() {
     let dat: DoubleArrayTrieChar<i32> =
         DoubleArrayTrieChar::from_terms_with_values(entries.clone());
     assert_map_matches(&roundtrip_bincode_map_char(&dat), &expected);
-    assert_map_matches(&roundtrip_json_map_char(&dat), &expected);
-    assert_map_matches(&roundtrip_plaintext_map_char(&dat), &expected);
 
     let dawg: DynamicDawgChar<i32> = DynamicDawgChar::from_terms_with_values(entries.clone());
     assert_map_matches(&roundtrip_bincode_map_char(&dawg), &expected);
-    assert_map_matches(&roundtrip_json_map_char(&dawg), &expected);
-    assert_map_matches(&roundtrip_plaintext_map_char(&dawg), &expected);
 
     let scdawg: ScdawgChar<i32> = ScdawgChar::from_terms_with_values(entries);
     assert_map_matches(&roundtrip_bincode_map_char(&scdawg), &expected);
-    assert_map_matches(&roundtrip_json_map_char(&scdawg), &expected);
-    assert_map_matches(&roundtrip_plaintext_map_char(&scdawg), &expected);
 }
 
 #[test]
@@ -261,18 +179,6 @@ fn legacy_term_serializers_drop_values_but_preserve_domain() {
     BincodeSerializer::serialize(&dict, &mut bincode).expect("legacy bincode serialize");
     let restored: DynamicDawg<i32> =
         BincodeSerializer::deserialize(&bincode[..]).expect("legacy bincode deserialize");
-    assert_legacy_domain_without_values(&restored, &expected);
-
-    let mut json = Vec::new();
-    JsonSerializer::serialize(&dict, &mut json).expect("legacy json serialize");
-    let restored: DynamicDawg<i32> =
-        JsonSerializer::deserialize(&json[..]).expect("legacy json deserialize");
-    assert_legacy_domain_without_values(&restored, &expected);
-
-    let mut plaintext = Vec::new();
-    PlainTextSerializer::serialize(&dict, &mut plaintext).expect("legacy plaintext serialize");
-    let restored: DynamicDawg<i32> =
-        PlainTextSerializer::deserialize(&plaintext[..]).expect("legacy plaintext deserialize");
     assert_legacy_domain_without_values(&restored, &expected);
 }
 
@@ -300,25 +206,6 @@ fn malformed_payloads_fail_closed() {
         )
         .is_err()
     );
-
-    assert!(JsonSerializer::deserialize::<DoubleArrayTrie, _>(b"{not-json}" as &[u8]).is_err());
-    assert!(
-        JsonSerializer::deserialize_with_values::<DoubleArrayTrie<i32>, _>(b"[[" as &[u8]).is_err()
-    );
-
-    assert!(PlainTextSerializer::deserialize::<DoubleArrayTrie, _>(&[0xff][..]).is_err());
-    assert!(
-        PlainTextSerializer::deserialize_with_values::<DoubleArrayTrie<i32>, _>(
-            "term-without-tab\n".as_bytes()
-        )
-        .is_err()
-    );
-    assert!(
-        PlainTextSerializer::deserialize_with_values::<DoubleArrayTrie<i32>, _>(
-            "term\t{invalid-json}\n".as_bytes()
-        )
-        .is_err()
-    );
 }
 
 proptest! {
@@ -334,24 +221,6 @@ proptest! {
 
         for term in &expected {
             prop_assert!(restored.contains(term), "missing term {:?}", term);
-        }
-        prop_assert_eq!(restored.len(), Some(expected.len()));
-    }
-
-    #[test]
-    fn json_value_roundtrip_preserves_generated_maps(
-        entries in prop::collection::btree_map(ascii_term(1, 12), any::<i16>(), 1..=32)
-    ) {
-        let expected: BTreeMap<String, i32> = entries
-            .iter()
-            .map(|(term, value)| (term.clone(), i32::from(*value)))
-            .collect();
-        let dict: DoubleArrayTrie<i32> =
-            DoubleArrayTrie::from_terms_with_values(expected.iter().map(|(k, v)| (k.clone(), *v)));
-        let restored: DoubleArrayTrie<i32> = roundtrip_json_map_byte(&dict);
-
-        for (term, value) in &expected {
-            prop_assert_eq!(restored.get_value(term), Some(*value), "term {:?}", term);
         }
         prop_assert_eq!(restored.len(), Some(expected.len()));
     }

@@ -1,11 +1,5 @@
 @startuml serializer-selector
-' ============================================================================
-' serializer-selector.puml — pick a serializer: terms-only vs value-preserving.
-' Replaces the ASCII "choosing a serializer" tree in docs/algorithms/serialization.md.
-' Vertical two-lane decision tree (kept narrow for the prose column).
-' Color key:  amber = the root decision   green = terms-only serializers
-'             blue = value-preserving serializers
-' ============================================================================
+' Binary-only serializer selection.
 skinparam defaultFontSize 14
 skinparam shadowing false
 skinparam backgroundColor #FFFFFF
@@ -19,29 +13,29 @@ skinparam rectangle {
 }
 skinparam TitleFontSize 15
 
-title Choosing a serializer
+title Choosing a compact binary serializer
 
-rectangle "Is the dictionary a **set** (V = ())\nor do you not need values back?" as Q #FFE0B2
+rectangle "Must a non-Rust consumer\nread the dictionary?" as Q #FFE0B2
 
-package "Yes — terms-only path\n(DictionarySerializer::serialize / deserialize)" #E8F5E9 {
-  rectangle "Smallest / fastest\n→ **BincodeSerializer**" as B #C8E6C9
-  rectangle "Human-readable / diffable\n→ **PlainTextSerializer** (one term / line)" as P #C8E6C9
-  rectangle "Inspect in a JSON tool\n→ **JsonSerializer**" as J #C8E6C9
-  rectangle "Cross-language interchange\n→ **ProtobufSerializer** (feature “protobuf”)" as PR #C8E6C9
-  rectangle "Wrap any of the above smaller\n→ **GzipSerializer<S>** (feature “compression”)" as G #C8E6C9
-  B -[hidden]down- P
-  P -[hidden]down- J
-  J -[hidden]down- PR
-  PR -[hidden]down- G
-}
+rectangle "No\n**BincodeSerializer**\ncompact Rust-native bytes" as B #C8E6C9
+rectangle "Yes\n**ProtobufSerializer**\nportable numbered schema" as P #C8E6C9
 
-package "No — values must survive\n(*_with_values path)" #E3F2FD {
-  rectangle "Byte-unit backend (u8)\n→ **serialize_with_values** / **deserialize_with_values**" as BV #BBDEFB
-  rectangle "Unicode backend (char)\n→ **serialize_with_values_char**" as CV #BBDEFB
-  BV -[hidden]down- CV
-}
+rectangle "Do mapped values\nneed to survive?" as V #E3F2FD
+rectangle "Byte backend\n**serialize_with_values**" as BV #BBDEFB
+rectangle "Unicode backend\n**serialize_with_values_char**" as CV #BBDEFB
 
-Q --> B : set
-G -[hidden]down- BV
-Q --> BV : values
+rectangle "Optional transport wrapper\n**GzipSerializer<S>**\nbenchmark corpus-dependent trade-off" as G #F0F4C3
+
+Q --> B : no
+Q --> P : yes
+B --> V : mapped bincode
+V --> BV : Unit = u8
+V --> CV : Unit = char
+B --> G : optional
+P --> G : optional
+
+note bottom of G
+  JSON, TOML, and newline text are not
+  dictionary persistence formats.
+end note
 @enduml

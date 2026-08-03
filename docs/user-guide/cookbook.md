@@ -109,11 +109,13 @@ semantics; the entry point is `UnionZipper::new(vec![z1, z2])` (and the `Differe
 
 ## Save and load
 
-With the `serialization` feature, dictionaries round-trip through bincode, JSON, or (with
-`protobuf`) Protobuf; `compression` adds a gzip wrapper. The wire format is always the *term list*
-(and values, with the `*_with_values` variants), so a load rebuilds a valid dictionary regardless of
-the on-disk graph. See the [serialization guide](../algorithms/serialization.md) for formats,
-value-preservation, and version compatibility.
+With the `serialization` feature, dictionaries round-trip through compact bincode; `protobuf`
+adds portable binary interchange, and `compression` adds a gzip wrapper around either binary
+stream. JSON, TOML, and newline text are not persistence formats. The general wire formats
+preserve the term language (and bincode preserves values with the `*_with_values` variants), so
+a load rebuilds a valid dictionary regardless of the original in-memory graph. See the
+[serialization guide](../algorithms/serialization.md) for format, value, safety, and compatibility
+contracts.
 
 ## Make it durable (survive a restart)
 

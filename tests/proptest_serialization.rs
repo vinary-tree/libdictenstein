@@ -11,7 +11,7 @@ mod common;
 use common::strategies::*;
 use libdictenstein::double_array_trie::DoubleArrayTrie;
 use libdictenstein::dynamic_dawg::DynamicDawg;
-use libdictenstein::serialization::{BincodeSerializer, DictionarySerializer, JsonSerializer};
+use libdictenstein::serialization::{BincodeSerializer, DictionarySerializer};
 use libdictenstein::Dictionary;
 use proptest::prelude::*;
 use std::collections::HashSet;
@@ -95,40 +95,6 @@ proptest! {
             restored.len(),
             "Length should match after roundtrip"
         );
-    }
-}
-
-// =============================================================================
-// JSON Serialization Tests
-// =============================================================================
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(30))]
-
-    /// Property: JSON serialization roundtrip works
-    #[test]
-    fn json_serialization_roundtrip(
-        terms in prop::collection::vec(ascii_term(1, 15), 1..=30)
-    ) {
-        let unique_terms: HashSet<_> = terms.into_iter().collect();
-        let dict = DoubleArrayTrie::from_terms(unique_terms.iter());
-
-        // Serialize to JSON
-        let mut buffer = Vec::new();
-        JsonSerializer::serialize(&dict, &mut buffer).expect("JSON serialization should succeed");
-
-        // Deserialize from JSON
-        let restored: DoubleArrayTrie = JsonSerializer::deserialize(&buffer[..])
-            .expect("JSON deserialization should succeed");
-
-        // Verify all terms present
-        for term in &unique_terms {
-            prop_assert!(
-                restored.contains(term),
-                "Term '{}' should be present after JSON roundtrip",
-                term
-            );
-        }
     }
 }
 
