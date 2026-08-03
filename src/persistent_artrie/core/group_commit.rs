@@ -30,7 +30,7 @@
 //! │                                   │  1. Acquire WAL lock           │    │
 //! │                                   │  2. Append all records         │    │
 //! │                                   │  3. Single fsync()             │    │
-//! │                                   │  4. Update synced_lsn          │    │
+//! │                                   │  4. Publish stats and synced_lsn│    │
 //! │                                   │  5. Notify all waiters         │    │
 //! │                                   └────────────────────────────────┘    │
 //! │                                                                          │
@@ -543,6 +543,11 @@ impl GroupCommitCoordinator {
     }
 
     /// Wait until the given LSN has been durably synced.
+    ///
+    /// Returning also establishes an acquire/release happens-before edge with
+    /// the commit thread. Consequently [`Self::stats`] includes the batch that
+    /// published `target_lsn`; callers never observe durability paired with
+    /// pre-commit statistics.
     pub fn wait_for_lsn(&self, target_lsn: Lsn) {
         while self.synced_lsn.load(Ordering::Acquire) < target_lsn {
             std::hint::spin_loop();
@@ -676,12 +681,13 @@ impl GroupCommitCoordinator {
             Ok(())
         })();
 
-        // Update synced LSN and notify waiters
+        // Publish commit metadata and the synced LSN before notifying waiters.
         match write_result {
             Ok(()) => {
-                synced_lsn.store(max_lsn, Ordering::Release);
-
-                // Update statistics
+                // Statistics belong to the observable commit. Update them
+                // before the release-store: `wait_for_lsn`'s acquire-load must
+                // not see the durable frontier while `stats()` still reports
+                // the preceding batch.
                 {
                     let mut stats_guard = stats.write();
                     stats_guard.records_committed += batch_size as u64;
@@ -690,6 +696,7 @@ impl GroupCommitCoordinator {
                     stats_guard.avg_batch_size =
                         stats_guard.records_committed as f64 / stats_guard.fsync_count as f64;
                 }
+                synced_lsn.store(max_lsn, Ordering::Release);
 
                 // Notify all waiters of success
                 for pending in batch.drain(..) {
@@ -869,6 +876,43 @@ mod tests {
         let stats = coordinator.stats();
         assert_eq!(stats.records_committed, 5);
         assert!(stats.fsync_count >= 1);
+    }
+
+    #[test]
+    fn wait_for_lsn_publishes_statistics_for_each_batch() {
+        let dir = tempdir().expect("create temp dir");
+        let wal_path = dir.path().join("published-stats.wal");
+        let async_config = AsyncWalConfig::with_pending_dir(dir.path().join("pending"));
+        let archive_config = WalConfig {
+            archive_dir: dir.path().join("archive"),
+            ..Default::default()
+        };
+        let wal = Arc::new(
+            AsyncWalWriter::create(&wal_path, async_config, archive_config).expect("create WAL"),
+        );
+        let coordinator = GroupCommitCoordinator::new(
+            wal,
+            GroupCommitConfig {
+                max_batch_size: 1,
+                max_batch_delay_us: 100_000,
+                dedicated_commit_thread: true,
+                adaptive_batching: false,
+                ..Default::default()
+            },
+        )
+        .expect("create coordinator");
+
+        for expected in 1..=64_u64 {
+            let lsn = coordinator
+                .append_async(WalRecord::Insert {
+                    term: format!("term-{expected}").into_bytes(),
+                    value: None,
+                })
+                .expect("queue WAL record");
+            coordinator.wait_for_lsn(lsn);
+
+            assert_eq!(coordinator.stats().records_committed, expected);
+        }
     }
 
     #[test]
