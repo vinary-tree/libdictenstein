@@ -575,7 +575,7 @@ def check_facades(report: Report, model: dict) -> None:
             elif parser == "fortran-bindc":
                 referenced |= fortran_bindc_symbols(source)
             elif parser == "c-source":
-                refs, _defined = c_source_symbols(source)
+                refs, _ = c_source_symbols(source)
                 referenced |= refs
             else:
                 report.fail("facades", f"{language}: unknown parser {parser!r} in api.json")
