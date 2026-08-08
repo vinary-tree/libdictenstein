@@ -410,7 +410,7 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// **Production-write/read-path router.** `true` iff reads/writes/checkpoint
     /// take the lock-free overlay path for this trie. Thin delegator to
-    /// [`LockFreeOverlay::route_overlay`]. Since L3.3 deleted the owned tree, every
+    /// `LockFreeOverlay::route_overlay`. Since L3.3 deleted the owned tree, every
     /// constructor installs the overlay, so this is universally `true`.
     #[inline]
     pub fn route_overlay(&self) -> bool {

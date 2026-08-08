@@ -2,9 +2,9 @@
 //!
 //! Methods covered:
 //!
-//! - `iter_prefix` (Result<Option<Vec<String>>>)
-//! - `iter_prefix_with_values` (Result<Option<Vec<(String, V)>>>)
-//! - `iter_prefix_with_arena` (Result<Option<Vec<PrefixTermWithArena>>>)
+//! - `iter_prefix` (`Result<Option<Vec<String>>>`)
+//! - `iter_prefix_with_values` (`Result<Option<Vec<(String, V)>>>`)
+//! - `iter_prefix_with_arena` (`Result<Option<Vec<PrefixTermWithArena>>>`)
 //! - `iter_prefix_with_values_and_arena`
 //! - `remove_prefix` / `remove_prefix_batched`
 //!

@@ -732,7 +732,7 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
 
     /// Iterate over children
     ///
-    /// Returns an iterator over (char, &CharTrieNodeInner<V>) pairs.
+    /// Returns an iterator over `(char, &CharTrieNodeInner<V>)` pairs.
     pub fn iter_children(&self) -> impl Iterator<Item = (char, &CharTrieNodeInner<V>)> {
         self.node.iter_children().filter_map(|(key, ptr)| {
             ptr.as_ptr::<CharTrieNodeInner<V>>().map(|p| {

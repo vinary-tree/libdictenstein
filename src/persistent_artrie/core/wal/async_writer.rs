@@ -755,7 +755,7 @@ impl AsyncWalWriter {
     }
 
     /// **F7 (FIX C) — the max LSN over a segment set.** Delegates to
-    /// [`WalWriter::max_lsn_in_segments`] (a free function on the sync writer). Used to
+    /// `WalWriter::max_lsn_in_segments` (a free function on the sync writer). Used to
     /// seed the committed-watermark BASE from the FULL segment set (archive + active) at
     /// reopen so `watermark() >= tail_max` before the first post-conversion checkpoint
     /// (so the checkpoint-subsumed skip applies the BatchIncrement delta EXACTLY ONCE).

@@ -405,7 +405,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
     /// **Order-A durable** lock-free insert (Migration Phase E).
     ///
-    /// Unlike [`Self::insert_cas`] (which bypasses the WAL), this establishes the
+    /// Unlike `Self::insert_cas` (which bypasses the WAL), this establishes the
     /// durability invariant **`visible ⊆ durable-prefix`**: the WAL record is
     /// appended AND synced durable BEFORE the visibility-publishing root CAS, and
     /// the committed watermark is advanced only once the CAS lands. A crash
@@ -561,7 +561,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// node's in-place `try_set_final` (`fetch_or`) is the single arbiter. Remove
     /// breaks 0→1-only (it does 1→0). R-B keeps the protocol sound by NEVER
     /// clearing a shared node in place: the cleared leaf is a FRESH
-    /// [`OverlayNode::as_non_final`] copy spliced into a NEW spine and published
+    /// [`OverlayNode::as_non_final`](crate::persistent_artrie::core::overlay::OverlayNode::as_non_final)
+    /// copy spliced into a NEW spine and published
     /// ONLY via the root CAS, so the root-CAS total order linearizes inserts and
     /// removes together (last-writer-wins). The composite linearizability is
     /// machine-checked by the RB2 loom schedules, the RB3 remove-aware proptest,
@@ -1484,7 +1485,7 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     }
 
     /// Lock-free path-copy increment (non-durable). Thin wrapper over
-    /// [`Self::try_increment_cas_inner`] that drops the commit generation, preserving
+    /// `Self::try_increment_cas_inner` that drops the commit generation, preserving
     /// the public signature for the existing callers (the non-durable / increment_cas
     /// paths and tests do not rank, so they ignore the generation).
     pub fn try_increment_cas(&self, key: &str, delta: u64) -> Result<u64> {
@@ -1551,7 +1552,7 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     /// **Flip F0 — thin Order-A durable VALUED insert** (`V = u64`). The valued
     /// analogue of [`Self::insert_cas_durable`] (which writes membership only,
     /// `value = None`): this bakes a `u64` value into the leaf via
-    /// [`Self::build_value_path_recursive`] (single-phase — finality + value
+    /// `Self::build_value_path_recursive` (single-phase — finality + value
     /// publish atomically with the root CAS).
     ///
     /// **Insert semantics (NOT upsert):** if the term is already present this is a

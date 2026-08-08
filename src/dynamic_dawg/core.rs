@@ -10,7 +10,7 @@
 //! The generic implementation handles:
 //! - Node storage with [`SmallVec`]-optimized edges
 //! - Suffix caching for memory reduction (20-40% savings)
-//! - Incremental minimization via [`NodeSignature`](crate::node_signature::NodeSignature)
+//! - Incremental minimization via [`NodeSignature`]
 //! - Optional Bloom filter for negative lookup rejection
 //! - Serialization-compatible state used by the lock-free public wrappers
 //!

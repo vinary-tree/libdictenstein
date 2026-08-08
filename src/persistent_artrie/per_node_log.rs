@@ -214,11 +214,11 @@ impl NodeLogEntry {
     /// Serialize the log entry to bytes.
     ///
     /// Format varies by type:
-    /// - InsertChild: [0x01][key:1][child_id:8] = 10 bytes
-    /// - RemoveChild: [0x02][key:1] = 2 bytes
-    /// - SetValue: [0x03][len:2][value:len] = 3 + len bytes
-    /// - ClearValue: [0x04] = 1 byte
-    /// - SetPrefix: [0x05][len:1][prefix:len] = 2 + len bytes
+    /// - InsertChild: `[0x01][key:1][child_id:8]` = 10 bytes
+    /// - RemoveChild: `[0x02][key:1]` = 2 bytes
+    /// - SetValue: `[0x03][len:2][value:len]` = 3 + len bytes
+    /// - ClearValue: `[0x04]` = 1 byte
+    /// - SetPrefix: `[0x05][len:1][prefix:len]` = 2 + len bytes
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(16);
         match self {

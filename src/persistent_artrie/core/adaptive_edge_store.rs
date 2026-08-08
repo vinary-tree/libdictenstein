@@ -19,7 +19,7 @@ const BYTE_INDEXED_LIMIT: usize = 48;
 const BYTE_INDEX48_SENTINEL: u8 = u8::MAX;
 const BYTE_DENSE_SENTINEL: u16 = u16::MAX;
 
-/// Label types supported by [`AdaptiveEdgeStore`].
+/// Label types supported by `AdaptiveEdgeStore`.
 pub trait AdaptiveLabel: Copy + Eq + Ord + Hash + Send + Sync + 'static {
     /// Return the byte value for byte-specialized ART tiers.
     #[inline]

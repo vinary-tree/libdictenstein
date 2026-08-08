@@ -389,7 +389,7 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     /// The snapshot is decoupled from later mutations of this dictionary and
     /// can be queried lock-free (e.g. handed to a `Transducer`). The current
     /// term count is captured so the snapshot reports an exact
-    /// [`Dictionary::len`](crate::Dictionary::len).
+    /// [`Dictionary::len`].
     pub fn snapshot(&self) -> PathMapSnapshot<V> {
         let state = self.load_state();
         PathMapSnapshot::from_map(state.map.clone()).with_len(state.len)
@@ -500,7 +500,7 @@ impl<V: DictionaryValue> crate::MutableMappedDictionary for PathMapDictionary<V>
 /// Byte-level dictionary node for [`PathMapDictionary`].
 ///
 /// A thin [`TrieRefNode`] over an owned, `𝒪(1)` copy-on-write snapshot
-/// ([`TrieRefOwned`]) of the map, taken when [`Dictionary::root`](crate::Dictionary::root)
+/// ([`TrieRefOwned`]) of the map, taken when [`Dictionary::root`]
 /// is called. Every `is_final` / `transition` / `edges` / `value` call is
 /// **lock-free** and descends `𝒪(1)` per byte from the focus — no per-operation
 /// lock and no replay of the path from the root. (The historical path-replay

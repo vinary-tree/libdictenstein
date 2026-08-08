@@ -20,7 +20,7 @@ use std::sync::Arc;
 ///
 /// The zipper stores:
 /// - `node`: Arc reference to the current node
-/// - `path`: Path from root to current position (Vec<u64>)
+/// - `path`: Path from root to current position (`Vec<u64>`)
 ///
 /// All operations are wait-free over one immutable root revision.
 ///

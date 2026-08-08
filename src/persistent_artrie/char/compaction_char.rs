@@ -11,7 +11,7 @@
 //! # Correctness on EVICTED tries
 //!
 //! The source term set is enumerated with the FAULTING overlay reader
-//! ([`PersistentARTrieChar::iter_prefix_with_values`] → the Phase-A `overlay_collect_with_values`
+//! ([`PersistentARTrieChar::iter_prefix_with_values`](super::PersistentARTrieChar::iter_prefix_with_values) → the Phase-A `overlay_collect_with_values`
 //! that loads `Child::OnDisk` subtrees), so a trie whose cold nodes were evicted to disk is
 //! compacted WITHOUT losing the evicted terms. A value-faithful verify-by-reopen confirms the
 //! rebuilt image before the swap. (`self.len()` / `overlay_len` is NOT used as a completeness oracle

@@ -31,7 +31,8 @@
 //!
 //! # ACID Guarantees
 //!
-//! This implementation provides the same ACID properties as [`super::persistent_artrie`]:
+//! This implementation provides the same ACID properties as the byte-keyed
+//! [`PersistentARTrie`](super::PersistentARTrie):
 //!
 //! ## Atomicity
 //!
@@ -831,7 +832,7 @@ impl<'a, V: DictionaryValue + Default> FromIterator<&'a str> for PersistentARTri
 ///
 /// The handle holds an owned `Arc<OverlayNode>` snapshot (immutable + reference-
 /// counted, so descent needs no pin and no `unsafe`; the `Arc` keeps the node + its
-/// in-memory subtree alive) plus an optional SAFE [`OverlayFaulter`] for
+/// in-memory subtree alive) plus an optional SAFE [`OverlayFaulter`](crate::persistent_artrie::core::overlay::OverlayFaulter) for
 /// `Child::OnDisk` overlay children. **The two former hand-written
 /// `unsafe impl Send/Sync for PersistentARTrieCharNode` are GONE** — the shared
 /// `OverlayDictionaryNode` AUTO-DERIVES `Send`/`Sync` (the `OverlayFaulter` trait
@@ -1690,7 +1691,7 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// checkpoints (`bench_immutable_checkpoint_with_eviction`). The
     /// `bench_immutable_checkpoint*` methods are `PersistentARTrieChar` methods, so
     /// the TREATMENT trie cannot be a `SharedCharARTrie`; this enabler is the
-    /// bare-trie analogue of [`SharedCharARTrie::enable_eviction`].
+    /// bare-trie analogue of [`SharedCharARTrie::enable_eviction`](crate::EvictableARTrie::enable_eviction).
     ///
     /// Mirrors that construction: validate the config, share THIS trie's own
     /// `epoch_manager` with the coordinator (so a walk and the coordinator pin the
@@ -1777,7 +1778,7 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// invalidated registry, yielding 0 = liveness-not-safety), then filters the
     /// selected candidates to COLD paths (`cold_filter`, e.g.
     /// `|p| p.first() == Some(&'c')`) and reclaims them via the driver
-    /// [`evict_overlay_nodes`]. ONLY COLD nodes are ever evicted (SF5(ii)
+    /// `evict_overlay_nodes`. ONLY COLD nodes are ever evicted (SF5(ii)
     /// `faultin_count == 0`): fault-in is absent, so a re-touchable LIVE node must
     /// never be evicted.
     ///

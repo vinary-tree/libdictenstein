@@ -1,8 +1,8 @@
 //! Dynamic DAWG dictionary family — incrementally updatable automata.
 //!
 //! - [`ascii`] — byte-level (`u8`) [`DynamicDawg`].
-//! - [`char`] — Unicode (`char`) [`DynamicDawgChar`].
-//! - [`u64`] — `u64`-labeled [`DynamicDawgU64`] (time-series / sequence keys).
+//! - [`mod@char`] — Unicode (`char`) [`DynamicDawgChar`].
+//! - [`mod@u64`] — `u64`-labeled [`DynamicDawgU64`] (time-series / sequence keys).
 //! - [`zipper`] / [`char_zipper`] / [`u64_zipper`] — zipper navigators.
 //! - [`core`] — the unit-generic minimization core ([`DawgCore`], [`DawgNode`])
 //!   shared by all three variants.

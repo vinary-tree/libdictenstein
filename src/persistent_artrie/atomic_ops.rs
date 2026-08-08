@@ -51,7 +51,7 @@ impl<V: DictionaryValue + serde::Serialize + serde::de::DeserializeOwned, S: Blo
     /// with a non-negative delta this routes to the proven Order-A
     /// [`try_increment_cas_durable`](Self::try_increment_cas_durable) (durable
     /// add-only `BatchIncrement`, commutative on replay) via the SAFE `Any` dispatch
-    /// in [`super::lockfree_value_route::route_increment_bytes`], whose `i128` count
+    /// in `super::lockfree_value_route::route_increment_bytes`, whose `i128` count
     /// is re-encoded into `V`. A `u64` byte counter DECREMENT, an `i64` counter, or
     /// arbitrary `V` routes to the general value-CAS path (no dropped functionality;
     /// it replaces the prior FALL-THROUGH to the owned body — an unranked owned write

@@ -5,8 +5,8 @@
 //!
 //! ## Structure
 //!
-//! - **BASE[s]**: Contains the offset for computing child state indices
-//! - **CHECK[s]**: Verifies that a state `s` is valid (stores parent state)
+//! - **BASE\[s\]**: Contains the offset for computing child state indices
+//! - **CHECK\[s\]**: Verifies that a state `s` is valid (stores parent state)
 //! - **IS_FINAL**: BitVec marking final states (end of valid terms)
 //!
 //! ## Transition Function

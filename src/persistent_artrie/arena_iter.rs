@@ -69,7 +69,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     ///
     /// **C6 + the audit's §C.2 VALUE-CARRYING rule.** The overlay is the sole
     /// representation, so this routes to the VALUE-CARRYING overlay enumerator
-    /// [`overlay_iter_prefix_with_values`](Self::overlay_iter_prefix_with_values) —
+    /// `overlay_iter_prefix_with_values` (private on `Self`) —
     /// NOT enumerate-overlay-then-value-owned. `arena_id` is `None` for every resident
     /// overlay term. This is the value-carrying read chokepoint: `iter_prefix_with_values`
     /// funnels through it, so routing it here routes that surface too.

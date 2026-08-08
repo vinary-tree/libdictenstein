@@ -626,7 +626,7 @@ impl<V: DictionaryValue> crate::MappedDictionary for DynamicDawgU64<V> {
 
     /// String-keyed value lookup (the trait's `&str` surface). Sequence-keyed
     /// lookups use the inherent [`get_sequence_value`](DynamicDawgU64::get_sequence_value);
-    /// value-yielding fuzzy queries read [`MappedDictionaryNode::value`] during the
+    /// value-yielding fuzzy queries read [`MappedDictionaryNode::value`](crate::MappedDictionaryNode::value) during the
     /// walk and never call this. `contains_with_value` uses the trait default.
     fn get_value(&self, term: &str) -> Option<Self::Value> {
         DynamicDawgU64::get_value(self, term)

@@ -51,7 +51,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// error logged as no-insert).
     ///
     /// **Routing (design §2 + C0):** the overlay is the sole representation, so this
-    /// routes to the generic Order-A [`upsert_cas_durable_default`](DurableOverlayWrite::upsert_cas_durable_default)
+    /// routes to the generic Order-A `upsert_cas_durable_default` (on the `pub(crate)` `DurableOverlayWrite` trait)
     /// for ANY `V` (overwrite = last-writer-wins root-CAS). (C0 fix: previously routed
     /// to the insert-once `insert_cas_with_value_durable_default`, diverging from the
     /// overwrite semantics — a silent mismatch on duplicate keys.) A durable failure

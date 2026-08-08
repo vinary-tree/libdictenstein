@@ -1,7 +1,7 @@
 //! Compressed Suffix-DAWG (SCDAWG) dictionary family.
 //!
 //! - [`ascii`] — byte-level (`u8`) [`Scdawg`].
-//! - [`char`] — Unicode (`char`) [`ScdawgChar`].
+//! - [`mod@char`] — Unicode (`char`) [`ScdawgChar`].
 //! - [`core`] — the unit-generic substring-automaton core shared by both.
 
 pub mod ascii;

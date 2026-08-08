@@ -691,7 +691,7 @@ impl WalWriter {
     }
 
     /// Stamp the header BACK to the Owned regime (`MAGIC` + `rank_regime=Owned`) and
-    /// persist it — the inverse of [`set_overlay_regime`], for the S5 kill-switch
+    /// persist it — the inverse of [`Self::set_overlay_regime`], for the S5 kill-switch
     /// (Overlay→Owned rollback). **ENFORCED to be EMPTY** (S5-4) for the symmetric
     /// reason: an in-place restamp of a non-empty Overlay WAL would place its Overlay
     /// records under the Owned keep-all rule (resurrecting dropped orphans). Returns

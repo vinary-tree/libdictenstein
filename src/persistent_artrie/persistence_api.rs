@@ -291,7 +291,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// DECISION (the OWNED tree is gone — the live data is in the immutable overlay,
     /// so route to the overlay capture + watermark-bounded retaining publisher) + the
     /// total-loss-guard assert live ONCE in the SHARED GENERIC
-    /// [`OverlayCheckpoint::checkpoint_route_split`](crate::persistent_artrie::core::overlay::checkpoint::OverlayCheckpoint::checkpoint_route_split);
+    /// `OverlayCheckpoint::checkpoint_route_split` (in the `pub(crate)` module
+    /// `crate::persistent_artrie::core::overlay::checkpoint`);
     /// this method is a thin wrapper calling it. The per-variant capture/publish seams
     /// (`overlay_checkpoint.rs`) delegate to byte's overlay serialize path.
     ///

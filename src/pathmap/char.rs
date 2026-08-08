@@ -330,7 +330,7 @@ impl<V: DictionaryValue> PathMapDictionaryChar<V> {
     ///
     /// The snapshot is decoupled from later mutations and can be queried
     /// lock-free; the current term count is captured for an exact
-    /// [`Dictionary::len`](crate::Dictionary::len).
+    /// [`Dictionary::len`].
     pub fn snapshot(&self) -> PathMapSnapshotChar<V> {
         let state = self.load_state();
         PathMapSnapshotChar::from_map(state.map.clone()).with_len(state.len)
@@ -437,7 +437,7 @@ impl<V: DictionaryValue> crate::MutableMappedDictionary for PathMapDictionaryCha
 /// focus** and reading child masks — never by replaying the byte path from the
 /// root, and never under a per-operation lock (cf. the path-replay node it
 /// replaces). Binds to a consistent snapshot at
-/// [`Dictionary::root`](crate::Dictionary::root) time (snapshot isolation).
+/// [`Dictionary::root`] time (snapshot isolation).
 pub type PathMapNodeChar<V> = TrieRefNodeChar<V, TrieRefOwned<V>>;
 
 #[cfg(test)]

@@ -319,7 +319,7 @@ impl EvictionCoordinator {
     /// uses), giving callers a deterministic, single-threaded eviction path with
     /// no eviction thread, quiescence wait, or cooldown.
     ///
-    /// Selection mirrors [`perform_eviction_char`](Self::perform_eviction_char):
+    /// Selection mirrors `perform_eviction_char` (private on `Self`):
     /// it refuses to act on an invalidated registry (`is_valid()`), reads the
     /// published `char_locations`, and respects `min_eviction_depth`. The
     /// registry read lock is released **before** `callback` runs, because the
@@ -410,7 +410,7 @@ impl EvictionCoordinator {
     /// per-pass node count — pass `resident_budget_eviction_cap.unwrap_or(usize::MAX)`
     /// (uncapped = budget-precise one-time large first pass; an opt-in cap bounds the
     /// `checkpoint_lock`-held latency but must be ≥ per-checkpoint cold growth or the
-    /// budget never converges). Lock discipline mirrors [`force_eviction_char`]. If the
+    /// budget never converges). Lock discipline mirrors [`Self::force_eviction_char`]. If the
     /// eligible (≥ `min_eviction_depth`) cold set is exhausted below `target_bytes`
     /// WITHOUT hitting the cap, the budget is unreachable (shallow nodes are pinned) —
     /// evict all eligible and `log::warn` (no silent cap).
@@ -461,7 +461,7 @@ impl EvictionCoordinator {
     }
 
     /// The CHECKPOINT-TAIL budget arity (byte) — the `Vec<u8>`-path twin of
-    /// [`force_eviction_char_resident`]. `STRUCT_OVERHEAD_BYTE` per node.
+    /// [`Self::force_eviction_char_resident`]. `STRUCT_OVERHEAD_BYTE` per node.
     pub fn force_eviction_bytes_resident<F>(
         &self,
         target_bytes: usize,

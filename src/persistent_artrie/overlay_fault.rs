@@ -149,7 +149,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
 /// Byte impl of the SAFE overlay fault-in capability (resolves `Child::OnDisk`
 /// overlay children during an overlay-backed `DictionaryNode` walk). Delegates to
-/// the inherent [`PersistentARTrie::load_overlay_node_from_disk`]; an I/O / decode
+/// the inherent `PersistentARTrie::load_overlay_node_from_disk`; an I/O / decode
 /// error degrades to `None` (no child) — never UB, never a fabricated term.
 impl<V: DictionaryValue, S: BlockStorage> OverlayFaulter<ByteKey, V> for PersistentARTrie<V, S> {
     #[inline]

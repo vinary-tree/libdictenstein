@@ -21,7 +21,7 @@ use std::sync::Arc;
 ///
 /// The zipper stores:
 /// - `node`: Shared reference to the current node
-/// - `path`: Path from root to current position (Vec<char>)
+/// - `path`: Path from root to current position (`Vec<char>`)
 ///
 /// Operations retain immutable nodes from one published root revision and
 /// never take a dictionary lock.

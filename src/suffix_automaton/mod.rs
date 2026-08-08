@@ -1,7 +1,7 @@
 //! Suffix-Automaton dictionary family — substring (infix) search.
 //!
 //! - [`ascii`] — byte-level (`u8`) [`SuffixAutomaton`].
-//! - [`char`] — Unicode (`char`) [`SuffixAutomatonChar`].
+//! - [`mod@char`] — Unicode (`char`) [`SuffixAutomatonChar`].
 //! - [`zipper`] / [`char_zipper`] — zipper navigators for each.
 //! - [`core`] — the unit-generic suffix-automaton core shared by both.
 

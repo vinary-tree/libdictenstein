@@ -1,7 +1,7 @@
 //! Double-Array Trie (DAT) dictionary family — fast read-only static dictionaries.
 //!
 //! - [`ascii`] — byte-level (`u8`) [`DoubleArrayTrie`] (+ [`DoubleArrayTrieBuilder`]).
-//! - [`char`] — Unicode (`char`) [`DoubleArrayTrieChar`].
+//! - [`mod@char`] — Unicode (`char`) [`DoubleArrayTrieChar`].
 //! - [`zipper`] / [`char_zipper`] — zipper navigators for each.
 //! - [`core`] — the unit-generic double-array storage shared by both.
 

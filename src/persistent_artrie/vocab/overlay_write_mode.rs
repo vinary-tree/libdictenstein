@@ -365,7 +365,7 @@ impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabAR
 
 impl<S: BlockStorage> PersistentVocabARTrie<S> {
     /// `true` iff reads/writes/checkpoint take the lock-free overlay path. Thin
-    /// delegator to [`LockFreeOverlay::route_overlay`].
+    /// delegator to `LockFreeOverlay::route_overlay`.
     #[inline]
     pub fn route_overlay(&self) -> bool {
         <Self as LockFreeOverlay<CharKey, u64, S>>::route_overlay(self)

@@ -309,7 +309,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     /// Open an existing disk-backed trie.
     ///
     /// Selects the reopen loader for an Overlay-regime file via the F5 gate
-    /// [`crate::persistent_artrie::core::overlay::flip::LockFreeOverlay::USE_F5_REOPEN_LOADER`]
+    /// `crate::persistent_artrie::core::overlay::flip::LockFreeOverlay::USE_F5_REOPEN_LOADER`
     /// (S1: dormant `false` ⇒ the legacy owned-loader→reestablish path; S3 flips it
     /// to the direct dense→overlay F5 loader). An Owned-regime file always uses the
     /// legacy owned loader.
@@ -322,7 +322,7 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
     }
 
     /// **F5 (S2 test surface) — reopen via the DIRECT dense→overlay loader**,
-    /// regardless of the [`Self::USE_F5_REOPEN_LOADER`] gate. Identical to [`Self::open`]
+    /// regardless of the `Self::USE_F5_REOPEN_LOADER` gate. Identical to [`Self::open`]
     /// except an Overlay-regime file is reopened through `load_root_immutable`
     /// (eager-load + walk-convert + install pre-built root) + `replay_records_lww_overlay`
     /// (WAL tail INTO the overlay) instead of the owned-loader→reestablish path. An

@@ -1,6 +1,6 @@
 //! io_uring-based Block Storage Backend
 //!
-//! This module provides an alternative to [`MmapDiskManager`] using Linux io_uring
+//! This module provides an alternative to [`MmapDiskManager`](super::disk_manager::MmapDiskManager) using Linux io_uring
 //! and `O_DIRECT` for block I/O. This eliminates double-caching (no kernel page cache)
 //! and provides predictable latency with explicit I/O scheduling.
 //!
@@ -380,7 +380,7 @@ impl IoUringDiskManager {
     /// Create a new io_uring disk manager, creating the file if it doesn't exist.
     ///
     /// The file is opened with `O_DIRECT` to bypass the kernel page cache.
-    /// An io_uring ring is created with [`DEFAULT_RING_ENTRIES`] (256) SQEs.
+    /// An io_uring ring is created with `DEFAULT_RING_ENTRIES` (256) SQEs.
     ///
     /// # Arguments
     /// * `path` - Path to the data file

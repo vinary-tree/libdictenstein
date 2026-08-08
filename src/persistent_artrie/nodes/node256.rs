@@ -39,7 +39,7 @@ pub struct Node256 {
     pub header: NodeHeader,
     /// Compressed prefix for path compression
     pub prefix: CompressedPrefix,
-    /// Direct child array: children[key] is the child for that key byte
+    /// Direct child array: `children[key]` is the child for that key byte
     pub children: [SwizzledPtr; NODE256_MAX_CHILDREN],
 }
 

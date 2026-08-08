@@ -37,13 +37,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// **Semantics — UPSERT (overwrite on duplicate):** `insert_with_value` is the
     /// canonical map "insert or update" (see [`crate::MutableMappedDictionary`]); the
     /// owned body overwrites an existing term's value
-    /// ([`super::mutation_core`]'s `try_insert_impl_no_wal_with_value` returns
+    /// (`super::mutation_core`'s `try_insert_impl_no_wal_with_value` returns
     /// `Ok(false)` *after* writing the new value), matching every other backend and the
     /// dictionary map laws. Returns `Ok(true)` iff the term was newly inserted
     /// (`Ok(false)` = an existing term's value was overwritten).
     ///
     /// **Flip routing (design §2 + C0):** under `route_overlay()` this routes to the
-    /// generic Order-A [`upsert_cas_durable_default`](crate::persistent_artrie::core::overlay::durable_write::DurableOverlayWrite::upsert_cas_durable_default)
+    /// generic Order-A `upsert_cas_durable_default` (on the `pub(crate)` `DurableOverlayWrite` trait)
     /// for ANY `V` (overwrite = last-writer-wins root-CAS) — NEVER falling through to
     /// the owned tree (a fall-through owned write for arbitrary `V` post-flip would be
     /// unranked → dropped on Overlay reopen = data loss). Empty `""` flows through the

@@ -57,9 +57,9 @@
 //!
 //! # References
 //!
-//! - PostgreSQL group commit: https://www.postgresql.org/docs/current/wal-async-commit.html
-//! - MySQL group commit: https://dev.mysql.com/doc/refman/8.0/en/group-commit.html
-//! - RocksDB WriteAheadLog: https://github.com/facebook/rocksdb/wiki/Write-Ahead-Log
+//! - PostgreSQL group commit: <https://www.postgresql.org/docs/current/wal-async-commit.html>
+//! - MySQL group commit: <https://dev.mysql.com/doc/refman/8.0/en/group-commit.html>
+//! - RocksDB WriteAheadLog: <https://github.com/facebook/rocksdb/wiki/Write-Ahead-Log>
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};

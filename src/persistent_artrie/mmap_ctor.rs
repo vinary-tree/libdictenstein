@@ -317,7 +317,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     }
 
     /// **F5 (S2 test surface) — reopen via the DIRECT dense→overlay loader**,
-    /// regardless of the [`Self::USE_F5_REOPEN_LOADER`] gate (byte twin of char's
+    /// regardless of the `Self::USE_F5_REOPEN_LOADER` gate (byte twin of char's
     /// `open_with_f5_loader`). An Overlay-regime file is reopened through
     /// `load_root_immutable` + `replay_records_lww_overlay`; an Owned-regime file still
     /// uses the owned loader. Used by the F5 both-loaders correspondence proptest.

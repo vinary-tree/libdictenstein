@@ -395,7 +395,7 @@ pub struct EvictionStats {
     /// Current resident-overlay heap estimate in on-disk-equivalent bytes (a gauge,
     /// not a cumulative counter). Reflects the live overlay heap the resident-budget
     /// checkpoint tail bounds; 0 when no coordinator/registry is populated. Filled in
-    /// by [`EvictionCoordinator::stats`], which has the disk registry the atomic
+    /// by [`EvictionCoordinator::stats`](super::EvictionCoordinator::stats), which has the disk registry the atomic
     /// counters lack — so the existing `eviction_stats()` trait method carries it for
     /// byte, char, and vocab with no per-variant code.
     pub resident_bytes: u64,

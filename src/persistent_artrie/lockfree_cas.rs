@@ -561,13 +561,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     // overlay is the sole representation, so production `insert`/`remove` route here.
     // ====================================================================
 
-    /// **Order-A durable** lock-free insert (membership). Unlike [`Self::insert_cas`]
+    /// **Order-A durable** lock-free insert (membership). Unlike `Self::insert_cas`
     /// (no WAL), this establishes `visible ⊆ durable-prefix`: the `Insert` WAL record
     /// is appended AND synced DURABLE BEFORE the visibility-publishing root CAS, and
     /// the committed watermark advances only once the CAS lands. A crash loses no
     /// acknowledged write — in-WAL replays, not-in-WAL was never acknowledged. The
     /// byte twin of char's `insert_cas_durable`; the gate + commit-rank/watermark
-    /// tail route through the SHARED GENERIC [`DurableOverlayWrite`] defaults.
+    /// tail route through the SHARED GENERIC `DurableOverlayWrite` defaults.
     ///
     /// Requires `install_overlay()` and a synchronous durability policy
     /// (`Immediate`/`GroupCommit`). Returns `Ok(true)` iff this call newly inserted
@@ -695,7 +695,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// durably: the `Remove` WAL record is appended AND synced DURABLE BEFORE the
     /// visibility-publishing root CAS, and the committed watermark advances only once
     /// the CAS lands. A crash loses no acknowledged remove. The cleared leaf is a
-    /// FRESH [`OverlayNode::as_non_final`] copy spliced into a NEW spine and published
+    /// FRESH [`OverlayNode::as_non_final`](crate::persistent_artrie::core::overlay::OverlayNode::as_non_final)
+    /// copy spliced into a NEW spine and published
     /// ONLY via the root CAS (never an in-place clear of a shared node — the root-CAS
     /// total order linearizes inserts and removes together, last-writer-wins).
     ///
@@ -1170,7 +1171,7 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
     /// The root CAS is the single linearization point, formally checked by the
     /// char loom race test.
     ///
-    /// Thin wrapper over [`Self::try_increment_cas_inner`] that drops the commit
+    /// Thin wrapper over `Self::try_increment_cas_inner` that drops the commit
     /// generation, preserving the public signature for the existing callers (the
     /// non-durable / `increment_cas` paths and tests do not rank, so they ignore
     /// the generation) — mirrors char's `try_increment_cas`.
@@ -1320,16 +1321,16 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
     /// increment — the durable delta replays (deltas are commutative, so recovery
     /// SUMS them regardless of commit order); an un-acknowledged one was never
     /// durable. The visibility step REUSES the proven path-copy
-    /// [`Self::try_increment_cas_inner`] verbatim.
+    /// `Self::try_increment_cas_inner` verbatim.
     ///
     /// `delta` is `u64` (the byte overlay counter domain is now a full `u64`,
-    /// matching char — the C4 [`DurableOverlayWrite::bound_increment_delta`] seam
+    /// matching char — the C4 `DurableOverlayWrite::bound_increment_delta` seam
     /// chunks a delta above `i64::MAX` into commutative WAL deltas rather than
     /// rejecting it). Requires `install_overlay()` and a synchronous durability
     /// policy (`Immediate`/`GroupCommit`). Returns the new accumulated count.
     ///
     /// Thin wrapper over the SHARED GENERIC Order-A increment template
-    /// [`DurableOverlayWrite::try_increment_cas_durable_default`] — the default owns
+    /// `DurableOverlayWrite::try_increment_cas_durable_default` — the default owns
     /// the data-loss-critical skeleton (gate, empty short-circuit, the C4
     /// value-domain bound via the seam, the append→publish→commit-rank→mark ORDER);
     /// this wrapper supplies only the key-byte boundary + the empty-key return value.
@@ -1353,7 +1354,7 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
     /// **M2b — Order-A durable VALUED insert** (`V = u64`), the byte twin of char's
     /// `insert_cas_with_value_durable`. The valued analogue of
     /// [`Self::insert_cas_durable`] (membership only): bakes a `u64` value into the
-    /// leaf via [`Self::build_value_path_recursive`] (single-phase — finality + value
+    /// leaf via `Self::build_value_path_recursive` (single-phase — finality + value
     /// publish atomically with the root CAS).
     ///
     /// **Insert semantics (NOT upsert):** if the term is already present this is a

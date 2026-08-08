@@ -10,7 +10,7 @@
 //!
 //! The overlay-read DFS engine (count/navigate/collect in `K::Unit` space) was
 //! extracted into the SHARED GENERIC
-//! [`LockFreeOverlay`](crate::persistent_artrie::core::overlay::flip::LockFreeOverlay)
+//! `LockFreeOverlay` (`crate::persistent_artrie::core::overlay::flip::LockFreeOverlay`)
 //! trait (`docs/design/overlay-flip-genericization.md` §2). The char methods below
 //! are now thin **per-variant skins** over that engine: they call
 //! `overlay_collect_units`/`overlay_collect_units_with_values` (which accumulate

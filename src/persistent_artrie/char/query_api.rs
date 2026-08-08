@@ -142,7 +142,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// Try an optimistic read for get.
     ///
     /// Returns `Some(result)` if the read was consistent, `None` if retry needed.
-    /// Note: Returns Option<Option<V>> - outer Option for consistency, inner for value.
+    /// Note: Returns `Option<Option<V>>` - outer Option for consistency, inner for value.
     pub fn try_get_optimistic(&self, term: &str) -> Option<Option<V>> {
         let guard = OptimisticReadGuard::new(&self.version);
 

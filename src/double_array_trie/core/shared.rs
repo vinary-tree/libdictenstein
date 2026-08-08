@@ -27,7 +27,7 @@ use crate::CharUnit;
 /// # Serialization
 ///
 /// Custom serde plumbing routes through
-/// [`crate::serialization::serde_helpers`] so the on-disk format
+/// `crate::serialization::serde_helpers` so the on-disk format
 /// matches the previous byte-for-byte layout used by both
 /// `DoubleArrayTrie<V>` and `DoubleArrayTrieChar<V>`.
 #[cfg_attr(

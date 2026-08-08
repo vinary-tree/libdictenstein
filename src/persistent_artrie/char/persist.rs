@@ -649,10 +649,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// **REVERSIBLE BENCH SHIM** (gated entirely behind the existing
     /// `bench-internals` feature). The TREATMENT (lock-free-flip) checkpoint as a
     /// single `()` -returning primitive a bench *binary* (an external crate that
-    /// cannot name the `pub(crate)` [`CheckpointSnapshot`]) can call: it captures
-    /// the immutable-overlay snapshot via [`Self::capture_snapshot_immutable`]
+    /// cannot name the `pub(crate)` `CheckpointSnapshot`) can call: it captures
+    /// the immutable-overlay snapshot via `Self::capture_snapshot_immutable`
     /// and publishes it durably (WAL-retaining) via
-    /// [`Self::publish_immutable_snapshot_retaining_wal`] — exactly the two steps
+    /// `Self::publish_immutable_snapshot_retaining_wal` — exactly the two steps
     /// the Phase-E flip would wire into `checkpoint()`, with NO write lock held
     /// against concurrent `insert_cas_durable` writers. Returns `Ok(())` on a
     /// successful durable publish.
@@ -676,10 +676,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// **REVERSIBLE BENCH SHIM — EVICTION-ON** (gated entirely behind the existing
     /// `bench-internals` feature). The eviction-ON counterpart of
     /// [`Self::bench_immutable_checkpoint`]: captures the immutable-overlay
-    /// snapshot via [`Self::capture_snapshot_immutable`] (which builds the
+    /// snapshot via `Self::capture_snapshot_immutable` (which builds the
     /// `DiskLocationRegistry` when eviction is enabled) and publishes it durably
     /// (WAL-retaining) WITH eviction-registry publication via
-    /// [`Self::publish_immutable_snapshot_retaining_wal_with_eviction`] — the two
+    /// `Self::publish_immutable_snapshot_retaining_wal_with_eviction` — the two
     /// steps the eviction-ON flip would wire into `checkpoint()`, with NO write
     /// lock held against concurrent `insert_cas_durable` writers and NO destructive
     /// WAL truncation. Used by the `lockfree_flip_benchmark` `--eviction` TREATMENT

@@ -427,7 +427,7 @@ impl DiskLocationRegistry {
     }
 
     /// Resident-heap estimate over the BYTE map only: Σ(on-disk `size_bytes` +
-    /// [`STRUCT_OVERHEAD_BYTE`]). The per-trie resident budget compares against THIS;
+    /// `STRUCT_OVERHEAD_BYTE`). The per-trie resident budget compares against THIS;
     /// a trie is byte XOR char so the two maps never mix. APPROXIMATE (the overhead is
     /// a calibrated constant) — massif is the physical witness (Phase 8).
     pub fn byte_resident_estimate_bytes(&self) -> usize {
@@ -438,7 +438,7 @@ impl DiskLocationRegistry {
     }
 
     /// Resident-heap estimate over the CHAR map only: Σ(on-disk `size_bytes` +
-    /// [`STRUCT_OVERHEAD_CHAR`]).
+    /// `STRUCT_OVERHEAD_CHAR`).
     pub fn char_resident_estimate_bytes(&self) -> usize {
         self.char_locations
             .values()

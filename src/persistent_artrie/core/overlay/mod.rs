@@ -4,7 +4,9 @@
 //! token-for-token-identical node implementations (`persistent_node.rs` /
 //! `atomic_ptr.rs`) that differed only in the key-unit type, `MAX_PREFIX_LEN`
 //! (12 vs 6), the inline zero filler (`0u8` vs `0u32`), and prose. G4 collapses
-//! both into a single generic [`OverlayNode<K, V>`] / [`AtomicNodePtr<K, V>`]
+//! both into a single generic
+//! [`OverlayNode<K, V>`](crate::persistent_artrie::core::overlay::OverlayNode) /
+//! [`AtomicNodePtr<K, V>`](crate::persistent_artrie::core::overlay::AtomicNodePtr)
 //! parameterized over `K: KeyEncoding` (its `Unit` is the key-unit width) and
 //! the value `V`. The variants alias it:
 //!

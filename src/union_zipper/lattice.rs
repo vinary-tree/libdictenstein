@@ -3,7 +3,7 @@
 //! The [`Lattice`] trait itself lives in the [`llattice`] crate and is
 //! re-exported here so that `libdictenstein::union_zipper::Lattice` keeps
 //! resolving. [`LatticeJoin`] and [`LatticeMeet`] adapt any `Lattice` impl into
-//! a [`ValueMergeStrategy`](super::merge_strategies::ValueMergeStrategy).
+//! a [`ValueMergeStrategy`].
 //!
 //! Extracted from `union_zipper.rs` (C6 dedup); the trait itself moved to the
 //! `llattice` leaf crate to break a dependency cycle. Re-exported from

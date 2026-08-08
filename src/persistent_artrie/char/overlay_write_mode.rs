@@ -498,7 +498,7 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCheckpoint<CharKey, V, S>
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// **Production-write/read-path router.** `true` iff reads/writes/checkpoint
     /// take the lock-free overlay path for this trie. Thin delegator to
-    /// [`LockFreeOverlay::route_overlay`]. Kept `pub` (external tests call it).
+    /// `LockFreeOverlay::route_overlay`. Kept `pub` (external tests call it).
     #[inline]
     pub fn route_overlay(&self) -> bool {
         <Self as LockFreeOverlay<CharKey, V, S>>::route_overlay(self)
