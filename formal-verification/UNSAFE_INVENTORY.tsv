@@ -43,7 +43,7 @@ src/scdawg/char.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Sync for ScdawgCh
 src/substring.rs	unsafe_impl	unsafe impl Send for MockNode {}	1	substring-test-mock-thread-contract
 src/substring.rs	unsafe_impl	unsafe impl Sync for MockNode {}	1	substring-test-mock-thread-contract
 src/bindings.rs	unsafe_block	unsafe { resource_release(self.raw.context) };	1	abi-owned-resource-release-once
-src/bindings.rs	unsafe_block	let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };	2	abi-test-context-probe
 src/bindings.rs	unsafe_block	let live = unsafe { &*dynamic_resource.raw.context.cast::<ResourceContext>() };	1	abi-test-context-probe
 src/bindings.rs	unsafe_block	let vtable = unsafe { &*dictionary_vtable(domain, flags) };	1	abi-test-context-probe
 src/ffi.rs	unsafe_fn	unsafe fn slice<'a, T>(	1	ffi-caller-pointer-contracts
@@ -51,3 +51,25 @@ src/ffi.rs	unsafe_fn	unsafe fn text_operation(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn u64_operation(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn persistent_path<'a>(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn persistent_open_or_create(	1	ffi-caller-pointer-contracts
+src/bindings.rs	unsafe_block	assert_eq!(unsafe { context_strong_count(captured) }, 1);	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	assert_eq!(unsafe { context_strong_count(copied) }, 1);	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	assert_eq!(unsafe { context_strong_count(copied) }, 2);	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	assert_eq!(unsafe { context_strong_count(copied_again) }, 1);	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	assert_eq!(unsafe { context_strong_count(first.as_raw()) }, 1);	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	assert_eq!(unsafe { context_strong_count(nested) }, 1);	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	assert_eq!(unsafe { context_strong_count(resource.as_raw()) }, 1);	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	assert_eq!(unsafe { context_strong_count(second.as_raw()) }, 1);	2	abi-test-context-probe
+src/bindings.rs	unsafe_block	let captured_observer = unsafe { context_weak_observer(captured) };	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	let nested_observer = unsafe { context_weak_observer(nested) };	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	let observer = unsafe { context_weak_observer(first.as_raw()) };	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	let status = unsafe { dictionary_snapshot(captured.context, &mut nested) };	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	let status = unsafe { dictionary_snapshot(resource.raw.context, &mut captured) };	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	let vtable = unsafe { &*dictionary_vtable(domain, requested) };	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	unsafe { resource_release(captured.context) };	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	unsafe { resource_release(copied.context) };	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	unsafe { resource_release(nested.context) };	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	unsafe { resource_release(std::ptr::null_mut()) };	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	unsafe { resource_retain(copied.context) };	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	unsafe { resource_retain(std::ptr::null_mut()) };	1	abi-test-context-probe
+src/bindings.rs	unsafe_fn	unsafe fn context_strong_count(raw: VtResource) -> usize {	1	abi-test-context-probe
+src/bindings.rs	unsafe_fn	unsafe fn context_weak_observer(raw: VtResource) -> std::sync::Weak<ResourceContext> {	1	abi-test-context-probe

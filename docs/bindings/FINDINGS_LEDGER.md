@@ -308,3 +308,30 @@ check.
 — dirty reserved bytes rejected on both the insert path and the
 constructor-entry path with the exact message, and an all-zero control
 insert still succeeds (23/23 in the matrix suite).
+
+
+## Finding LDICT-B7 — pre-existing flaky persistent soak (routed, not a binding defect)
+
+| Field | Value |
+|-------|-------|
+| id | LDICT-B7 |
+| date | 2026-08-08 |
+| component | `tests/persistent_f4_lock_collapse_soak.rs` via the `debug_assert!` at `src/persistent_artrie/char/persist.rs:399` |
+| class | concurrency (pre-existing; observed under load) |
+| severity | low (debug-assert only; single occurrence) |
+| status | RECORDED — routed to the persistent-core owners |
+
+**Evidence.** During the wave-W2 full-suite runs the soak failed once via
+the eviction-registry `debug_assert!` on the eviction-disabled soak
+publisher, then passed 3/3 immediate retries and every subsequent full
+run. Both the assert and the test predate this wave by two months; no
+wave-W2 change touches that code path (run log preserved in the wave's
+scratchpad as `final-ffi-run.log`).
+
+**Analysis.** Possibly a latent race in the S5 checkpoint route-split's
+interaction with the eviction registry under load — persistent-core
+territory with its own TLA/loom program; not reachable from the binding
+layer this program owns.
+
+**Fix.** Ledger-routed: persistent-core owners; reproduction guidance =
+full-suite parallel load, debug profile.

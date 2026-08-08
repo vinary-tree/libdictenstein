@@ -83,6 +83,28 @@ all SANY-clean (SANY = the TLA⁺ syntactic analyzer). Many models ship a paired
 | Group-commit frontier: no early ack; ordered FIFO / returned-LSN | `DurabilityFrontier.tla`, `AsyncWalGroupCommit.tla` | — | [group-commit](group-commit.md) |
 | Vocab reopen bijection ownership | `VocabPersistenceOwnership.tla` | `Spec/PersistentVocabCheckpointSpec.v` | [families](families.md) |
 
+### ABI resource layer (vt.dictionary.v1 producer)
+
+The language-binding boundary joined the correspondence program in wave W2
+of the family ABI plan. Its registry is
+[`formal-verification/ABI_INVARIANTS.tsv`](../../formal-verification/ABI_INVARIANTS.tsv)
+(checked by `scripts/check-abi-invariants.py` inside this gate), and its
+artifacts follow the same spec ↔ test convention as every concern above:
+
+| Model | Checks | Executable mirror |
+|---|---|---|
+| `formal-verification/tla+/AbiProducerSnapshot.tla` (+`_Unsafe.cfg` negative control) | immutable-capture law, fresh-capture visibility, content-preserving maintenance publishes [LDICT-SNAP-1..3] | `tests/ffi_snapshot_law.rs`, `tests/ffi_crud_model_correspondence.rs`, torn-capture regression in `tests/ffi_concurrent_snapshot_stress.rs` |
+| `formal-verification/rocq/Spec/AbiTraversalSnapshotSpec.v` | ABI-local node-id arena laws: stable, append-only, unambiguous, write-once memoization, well-formedness preservation [LDICT-ARENA-1..5] | `src/bindings.rs` node-id unit tests |
+| `formal-verification/rocq/Spec/AbiPagingProducerSpec.v` | paging bounds, out_total stability, lossless page decomposition [LDICT-PAGE-1..2] | `tests/ffi_resource_paging_proptest.rs` |
+| `formal-verification/rocq/Spec/AbiStatusMappingSpec.v` | status-table bijections and the deliberate project/interop divergence (raw-integer reuse provably misroutes) [LDICT-STAT-1..2] | `tests/ffi_status_matrix.rs` |
+
+Lifecycle (retain/release) is deliberately NOT re-modeled here: the protocol
+is owned by the interop lifecycle model in the liblevenshtein-rust repo
+(`docs/verification/tla/AbiResourceLifecycle.tla`, invariants VT-LIFE-1..6);
+this repo realizes it and pins the realization with the
+`abi-owned-resource-release-once` unsafe-contract row plus the balance and
+cross-thread teardown tests [LDICT-LIFE-1..2].
+
 ## The negative-control methodology
 
 A model that only checks the *safe* configuration proves nothing if its invariant is

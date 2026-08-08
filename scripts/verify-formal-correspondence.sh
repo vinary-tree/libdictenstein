@@ -32,6 +32,9 @@ run_filtered_cargo_test() {
 echo "== Unsafe boundary inventory =="
 run_capped bash scripts/verify-unsafe-boundary-inventory.sh
 
+echo "== ABI invariant registry =="
+run_capped python3 scripts/check-abi-invariants.py
+
 echo "== Rust feature profile compile checks =="
 run_capped cargo test --no-run
 run_capped cargo test --all-features --no-run

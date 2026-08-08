@@ -1671,6 +1671,10 @@ mod tests {
     /// enumeration and transition agree) and independent across snapshots
     /// (a later snapshot's ids neither move nor validate an earlier one's
     /// id space).
+    ///
+    /// INVARIANT-HOOK: LDICT-ARENA-1..5 — the executable mirror of the arena
+    /// laws proved in
+    /// formal-verification/rocq/Spec/AbiTraversalSnapshotSpec.v.
     #[test]
     fn node_ids_are_stable_within_and_independent_across_snapshots() {
         let dictionary = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
