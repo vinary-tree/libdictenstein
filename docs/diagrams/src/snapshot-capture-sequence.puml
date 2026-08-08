@@ -1,0 +1,97 @@
+@startuml snapshot-capture-sequence
+' ============================================================================
+' Consumer-driven snapshot capture and node walk over vt.dictionary.v1.
+' Source of truth: src/bindings.rs (dictionary_snapshot, TraversalSnapshot,
+' dictionary_edges) + src/ffi.rs (ldict_dictionary_resource); verified live by
+' the compile-and-run example in docs/bindings/c-abi-reference.md.
+' Color key (family palette + ABI concept colors):
+'   #FADBD8 foreign consumer (e.g. liblevenshtein)
+'   #D5F5E3 libdictenstein producer surfaces
+'   #DCEDC8 VtResource handle / ResourceContext
+'   #FFECB3 leased node-id arena (TraversalSnapshot)
+'   #FFCDD2 + #B71C1C trust boundary between the two binaries
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam wrapWidth 150
+skinparam maxMessageSize 150
+skinparam shadowing false
+skinparam sequenceArrowColor #37474F
+skinparam sequenceLifeLineBorderColor #90A4AE
+skinparam sequenceGroupBorderColor #B71C1C
+skinparam sequenceGroupBackgroundColor #FFEBEE
+skinparam noteBackgroundColor #ECEFF1
+skinparam noteBorderColor #90A4AE
+skinparam participantBorderColor #37474F
+skinparam sequenceDividerBackgroundColor #FFCDD2
+skinparam sequenceDividerBorderColor #B71C1C
+
+title Snapshot capture and walk — retain → query_interface → snapshot →\n<latex>\mathcal{O}(1)</latex> revision capture → lazy node-id walk → release chain
+
+participant "Consumer\n(foreign binary,\ne.g. liblevenshtein)" as C #FADBD8
+participant "ldict_* C ABI\n(src/ffi.rs)" as F #D5F5E3
+participant "ResourceContext\n(payload: Live)" as R #DCEDC8
+participant "Backend revision\n(e.g. DynamicDAWG)" as B #D5F5E3
+participant "TraversalSnapshot\n(Mutex arena)" as S #FFECB3
+
+== every call below crosses the trust boundary: two independently compiled binaries ==
+
+C -> F : ldict_dictionary_resource(dict, &res)
+activate F
+F --> C : res = { context, vtable } — **borrowed** two words
+deactivate F
+note right of C #FFEBEE
+  **Copy-not-retain law**: copying the two words
+  confers no ownership. A consumer that stores
+  them must retain first.
+end note
+C -> R : res.vtable->retain(res.context)
+note right of R : Arc strong count += 1\n(one owned retain per stored copy)
+
+C -> R : query_interface("vt.dictionary.v1",\nminimum_version = 1, &vt)
+R --> C : 'static VtDictionaryVTable\n(unit_domain, flags = PARALLEL_REENTRANT)
+
+C -> R : vt->snapshot(res.context, &snap)
+activate R
+R -> B : backend.root()
+activate B
+B --> R : root handle of the **published revision**
+deactivate B
+note right of R #FFECB3
+  <latex>\mathcal{O}(1)</latex> capture: the revision is immutable and
+  structurally shared — no traversal, no copy
+  (Driscoll et al. 1989). The arena starts as
+  the single entry id 0 ↦ root.
+end note
+R -> S : TraversalSnapshot::new(root)
+R --> C : snap — **born with one retain**\n(mem::forget transfers it to the consumer)
+deactivate R
+
+C -> F : ldict_dictionary_remove_text(dict, "cot")
+F -> B : publish successor revision
+note right of B : Mutations after capture are\ninvisible to the pinned revision.
+
+== node walk — ABI-local ids, valid only while snap stays retained ==
+
+C -> S : snap query_interface → flags now\ninclude IMMUTABLE; root() → id 0
+loop until start ≥ out_total
+  C -> S : node_edges(node, start, out_edges,\ncapacity, &written, &total)
+  activate S
+  S -> S : ensure_edges(node): first visit\nmaterializes children, assigns\nappend-only ids under the mutex
+  S --> C : one page: written ≤ capacity,\ntotal stable across pages
+  deactivate S
+end
+note right of C
+  Paging law: pages concatenate losslessly;
+  <latex>\mathrm{written} = \min(\mathrm{capacity},\ \mathrm{total} - \mathrm{start})</latex>
+end note
+C -> S : node_is_final(id) · node_value_u64(id) ·\nnode_transition(id, label)
+
+== teardown — one release per owned retain; any order ==
+
+C -> S : snap.vtable->release(snap.context)
+note right of S : strong count 1 → 0:\narena and pinned revision freed
+C -> R : res.vtable->release(res.context)
+note right of R : handle keeps its own retain —\nthe dictionary stays alive until\nldict_dictionary_free
+C -> F : ldict_dictionary_free(dict)
+@enduml

@@ -1,0 +1,99 @@
+@startuml abi-producer-component
+' ============================================================================
+' libdictenstein as the vt.dictionary.v1 PRODUCER — component view.
+' Source of truth: src/bindings.rs (four backend bindings, ResourceContext,
+' TraversalSnapshot arena, 'static vtables, OwnedDictionaryResource) and
+' src/ffi.rs (the 35-function ldict_* C ABI). Machine-readable model:
+' bindings/api.json.
+' Color key (family palette + ABI concept colors):
+'   #D5F5E3 libdictenstein (producer)   #FADBD8 liblevenshtein / interop host
+'   #D6EAF8 duallity (consumer)         #DCEDC8 + #33691E VtResource handle
+'   #FFCDD2 + #B71C1C trust boundary    #FFECB3 + #FF6F00 leased node-id arena
+' ============================================================================
+top to bottom direction
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam wrapWidth 120
+skinparam ArrowColor #37474F
+skinparam packageStyle rectangle
+skinparam componentBorderColor #37474F
+skinparam rectangleBorderColor #B71C1C
+skinparam packageBorderColor #37474F
+skinparam noteBackgroundColor #ECEFF1
+skinparam noteBorderColor #90A4AE
+skinparam defaultFontSize 12
+skinparam nodesep 10
+skinparam ranksep 24
+
+title libdictenstein producer stack\nbackends → bindings → 'static vtables → exported VtResource
+
+rectangle "**Trust boundary** — independently compiled consumers\nreach the producer only through the C ABI\nand the resource vtables" as consumers #FFCDD2 {
+  component "liblevenshtein\ntransducer" as llev #FADBD8
+  component "duallity WFST\nconstructor" as dual #D6EAF8
+  component "any C-ABI or\nfacade caller" as ccaller #FFFFFF
+}
+
+package "libdictenstein cdylib — the producer" #D5F5E3 {
+  package "C ABI — src/ffi.rs" {
+    component "ldict_* × 35 — catch_unwind → LdictStatus,\nthread-local last error" as ffi #FFFFFF
+    component "LdictDictionary handle\n{ binding, resource }" as handle #FFFFFF
+  }
+
+  package "Producer bindings — src/bindings.rs" {
+    component "DynamicDawgBinding\nRwLock(DynamicBackend)\n→ DynamicDawg u8·char·u64" as dynb #FFFFFF
+    component "DoubleArrayTrieBinding\nArc(SecondaryBackend)\n→ DoubleArrayTrie u8·char" as datb #FFFFFF
+    component "ScdawgBinding\nArc(SecondaryBackend)\n→ SCDAWG u8·char" as scdb #FFFFFF
+    component "PersistentARTrieBinding\nArc(PersistentBackend)\n→ PersistentARTrie + WAL\nu8·char·u64·vocab" as perb #FFFFFF
+    component "OwnedDictionaryResource\nborn with one retain" as owned #DCEDC8
+    component "ResourceContext — payload:\nLive | Secondary |\nPersistent | Snapshot" as ctx #FFFFFF
+    component "TraversalSnapshot\nMutex(NodeArena) — lazy,\nappend-only ABI-local ids" as snap #FFECB3
+    component "'static vtables\nRESOURCE_VTABLE +\n10 × VtDictionaryVTable" as statics #FFFFFF
+  }
+}
+
+package "vinary-tree-interop — the family contract\n(no_std crate hosted in liblevenshtein-rust)" #FADBD8 {
+  component "VtResource\n{ context, vtable }" as vtres #DCEDC8
+  component "VtDictionaryVTable\nsnapshot · root · len ·\nnode_is_final · node_value_u64 ·\nnode_transition · node_edges" as vtdict #FFFFFF
+}
+
+' --- layout hints: keep the binding grid two columns wide -------------------
+dynb -[hidden]right- datb
+scdb -[hidden]right- perb
+dynb -[hidden]down- scdb
+
+llev -down-> ffi : ldict_* calls
+dual -down-> ffi : ldict_* calls
+ccaller -down-> ffi : ldict_* calls
+ffi -down-> handle : owns
+handle -down-> dynb
+handle -down-> datb
+handle -down-> scdb
+handle -down-> perb
+
+dynb -down-> owned : resource()
+datb -down-> owned : resource()
+scdb -down-> owned : resource()
+perb -down-> owned : resource()
+owned -down-> ctx : Arc(ResourceContext) —\nstrong count = retain ledger
+ctx -down-> snap : snapshot() —\n<latex>\mathcal{O}(1)</latex> revision capture
+ctx -down-> statics : query_interface selects\ndomain × flags
+owned -down-> vtres : as_raw() —\ntwo borrowed words
+statics .down.> vtdict : conforms to
+vtres .right.> vtdict : vtable points at\none 'static instance
+
+consumers -down-> vtres : retain · release · query_interface · node walks
+
+note right of snap
+  Node ids are **leased**: valid only
+  inside this snapshot and only while
+  it stays retained.
+end note
+
+note right of statics
+  'static and immutable — vtable
+  pointers stay valid for the process
+  lifetime, so a stale vtable pointer
+  can never dangle.
+end note
+@enduml

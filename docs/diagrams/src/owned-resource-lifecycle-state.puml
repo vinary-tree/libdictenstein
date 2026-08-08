@@ -1,0 +1,61 @@
+@startuml owned-resource-lifecycle-state
+' ============================================================================
+' OwnedDictionaryResource / ResourceContext lifecycle — the retain ledger.
+' Source of truth: src/bindings.rs (OwnedDictionaryResource::new / as_raw /
+' Drop; resource_retain / resource_release; dictionary_snapshot's
+' std::mem::forget transfer). The count is the Arc<ResourceContext> strong
+' count (Collins 1960 reference counting).
+' Color key (ABI concept colors):
+'   #DCEDC8 + #33691E producer-owned handle states
+'   #FFECB3 + #FF6F00 states with foreign-held (leased) retains
+'   #FFCDD2 + #B71C1C undefined-behavior warning
+' ============================================================================
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam wrapWidth 160
+skinparam ArrowColor #37474F
+skinparam noteBackgroundColor #ECEFF1
+skinparam noteBorderColor #90A4AE
+skinparam state {
+  BorderColor #37474F
+  BackgroundColor #FFFFFF
+}
+
+title OwnedDictionaryResource lifecycle — every stored copy is one retain;\nthe last release destroys the context
+
+state "ProducerOwned\nstrong = 1" as ProducerOwned #DCEDC8 : the Rust guard\n(OwnedDictionaryResource)\nowns the only retain
+state "CoOwned\nstrong = 1 + n, n ≥ 1" as CoOwned #FFECB3 : guard retain plus n\nforeign stored copies
+state "ForeignOwned\nstrong = n ≥ 1" as ForeignOwned #FFECB3 : every remaining retain\nis foreign-held
+state "Destroyed" as Destroyed #FFFFFF : ResourceContext dropped;\npayload Arc released;\nbackend freed with its\nlast co-owner
+
+[*] --> ProducerOwned : OwnedDictionaryResource::new\n(handle construction · resource())\nstrong := 1 — **born with one retain**
+
+ProducerOwned --> ProducerOwned : as_raw() — borrow of the two\nwords, **no retain** (copy-not-retain)
+ProducerOwned --> CoOwned : foreign vtable.retain\n(consumer stores a copy)
+CoOwned --> CoOwned : further retain / release\nwhile both sides hold ≥ 1
+CoOwned --> ProducerOwned : last foreign release
+CoOwned --> ForeignOwned : guard dropped\n(ldict_dictionary_free) —\nDrop releases the guard retain
+ProducerOwned --> ForeignOwned : dictionary_snapshot export:\nstd::mem::forget hands the\nborn retain to the consumer
+ProducerOwned --> Destroyed : guard dropped —\nstrong 1 → 0
+ForeignOwned --> ForeignOwned : foreign retain / release\nwhile strong stays ≥ 1
+ForeignOwned --> Destroyed : last foreign release —\nstrong 1 → 0
+Destroyed --> [*]
+
+note bottom of ForeignOwned #FFECB3
+  This state is why a retained resource
+  **outlives** ldict_dictionary_free: the
+  consumer's leased references keep the
+  captured payload alive.
+end note
+
+note bottom of Destroyed #FFCDD2
+  **After zero there is no recovery.** A release
+  without a matching retain, or any vtable call
+  after the last release, is undefined behavior —
+  the producer cannot detect it. The ledger
+  invariant is the consumer's proof obligation:
+  releases ≤ retains on every path, exactly
+  equal at the end.
+end note
+@enduml
