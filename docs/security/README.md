@@ -15,6 +15,7 @@ matter, and where each is covered:
 | **Untrusted input** | Can adversarial keys or crafted serialized data cause OOM, panic, or stack overflow? | [untrusted-input.md](untrusted-input.md) |
 | **Deserialization** | What are the trust boundaries when loading a dictionary from bytes? | [deserialization-safety.md](deserialization-safety.md) |
 | **Memory safety** | Where is the `unsafe`, and what proves it sound? | [unsafe-contracts.md](unsafe-contracts.md) |
+| **FFI boundary** | What can a foreign ABI caller cause through the `ldict_*` C ABI and the exported resource vtables, and whose duty is each defense? | [ffi-boundary.md](ffi-boundary.md) |
 
 ## The one-paragraph posture
 

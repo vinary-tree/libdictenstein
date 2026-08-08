@@ -3,8 +3,9 @@
 **Navigation**: [← Security](README.md)
 
 This document states who the adversary is, what they control, and what is in and out of scope. It is
-the frame for [untrusted-input.md](untrusted-input.md) and
-[deserialization-safety.md](deserialization-safety.md). Notation follows [`docs/notation.md`](../notation.md).
+the frame for [untrusted-input.md](untrusted-input.md),
+[deserialization-safety.md](deserialization-safety.md), and
+[ffi-boundary.md](ffi-boundary.md). Notation follows [`docs/notation.md`](../notation.md).
 
 ## Assets
 
@@ -29,6 +30,8 @@ application is wired, they may control one or more of these inputs:
 | **Query** — the string passed to a lookup | `contains`, `transition`, substring search | choose adversarial queries (very long, non-matching) |
 | **Serialized blob** — bytes loaded into a dictionary | `deserialize` (feature `serialization` / `protobuf` / `compression`) | craft a malformed or hostile encoding |
 | **Concurrency** — the schedule of concurrent calls | any `&self` method | race readers against writers |
+| **Foreign ABI caller** — an independently compiled binary invoking the exported C surface (features `ffi` / `bindings-core`) | the 35 `ldict_*` entry points (`src/ffi.rs`); the exported `vt.dictionary.v1` resource vtables (`src/bindings.rs`) | pass null or malformed arguments and descriptors; misuse the retain/release ledger; forge snapshot node ids; abuse paging parameters (`start`, `capacity`); supply hostile persistence paths; drive snapshot/arena allocation; race calls against `free` |
+| **Foreign vtable / resource** *(inbound, family-level)* | none in this crate — libdictenstein **produces** resources and consumes none | (defended by consumers; see the [family security model](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/security-model.md)) |
 
 The adversary does **not** control the process's code, its other memory, or the filesystem beyond
 what the application hands the library.
@@ -51,6 +54,13 @@ resources.
   in [unsafe-contracts.md](unsafe-contracts.md).
 - **Deserialization** of adversarial encodings — parse-safety and allocation-sizing
   ([deserialization-safety.md](deserialization-safety.md)).
+- **The exported ABI surface** — what a buggy or hostile foreign caller can cause through the
+  `ldict_*` C ABI (host role: total validation, `catch_unwind` containment, thread-local errors) and
+  through the exported resource vtables (producer role: ledger misuse, node-id forgery, paging
+  abuse, path policy, exhaustion). Analyzed vector-by-vector in [ffi-boundary.md](ffi-boundary.md),
+  which instantiates the
+  [family security model](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/security-model.md)
+  for this repository.
 
 ## Out of scope
 
@@ -75,3 +85,8 @@ The safety claims are not merely asserted:
 - **loom** exhaustively explores the lock-free interleavings; **ThreadSanitizer / AddressSanitizer /
   Miri** run the suite for races and UB; see [engineering/testing-strategy.md](../engineering/testing-strategy.md).
 - The **`unsafe` inventory** is CI-gated for drift; see [unsafe-contracts.md](unsafe-contracts.md).
+- The **binding contract gate** (`scripts/check-bindings.py`, CI job `binding-contract`) pins the
+  exported ABI surface — symbol parity, status/kind/capability values, header identity — against
+  the machine-readable model [`bindings/api.json`](../../bindings/api.json); the boundary's
+  behavioral claims and their scheduled executable/formal pinning are tracked in
+  [ffi-boundary.md §Verification status](ffi-boundary.md#verification-status).
