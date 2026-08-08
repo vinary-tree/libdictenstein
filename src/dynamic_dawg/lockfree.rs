@@ -1,20 +1,19 @@
 //! Unit-generic lock-free dynamic DAWG core.
 //!
 //! This core is the non-blocking counterpart to [`super::core::DawgCore`].
-//! Nodes are reference-counted and publish immutable edge-list snapshots via
-//! atomic pointer swaps. Readers only perform atomic loads and `Arc` clones;
-//! writers install new edge-list snapshots with CAS loops.
+//! Nodes are reference-counted and immutable after publication. Readers retain
+//! an atomically published graph revision; writers path-copy the affected route
+//! and publish a new revision with a CAS loop.
 
 #[cfg(any(feature = "serialization", test))]
 use super::core::DawgCore;
 use crate::nonblocking::CasBackoff;
 use crate::value::DictionaryValue;
 use crate::CharUnit;
-use arc_swap::{ArcSwap, ArcSwapOption};
+use arc_swap::ArcSwap;
 use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// A node's outgoing edges: `(key unit, target)` pairs, inline up to four.
@@ -73,23 +72,42 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeEdgeList<U, V> {
 /// Lock-free DAWG node.
 #[derive(Debug)]
 pub(crate) struct LockFreeDawgNode<U: CharUnit, V: DictionaryValue> {
-    pub(crate) edges: ArcSwap<LockFreeEdgeList<U, V>>,
-    pub(crate) is_final: AtomicBool,
-    pub(crate) value: ArcSwapOption<V>,
+    pub(crate) edges: LockFreeEdgeList<U, V>,
+    pub(crate) is_final: bool,
+    pub(crate) value: Option<Arc<V>>,
+}
+
+/// One atomically published dictionary revision.
+///
+/// Nodes reachable from a published revision are never mutated.  A reader can
+/// therefore retain this `Arc` (or just its root) for as long as it needs and
+/// observe an exact query-start snapshot while writers publish newer roots.
+#[derive(Debug)]
+struct GraphVersion<U: CharUnit, V: DictionaryValue> {
+    root: Arc<LockFreeDawgNode<U, V>>,
+    term_count: usize,
+    needs_compaction: bool,
+    revision: u64,
+}
+
+struct Rewrite<U: CharUnit, V: DictionaryValue> {
+    node: Arc<LockFreeDawgNode<U, V>>,
+    changed: bool,
+    inserted: bool,
 }
 
 impl<U: CharUnit, V: DictionaryValue> LockFreeDawgNode<U, V> {
     fn new(is_final: bool) -> Self {
         Self {
-            edges: ArcSwap::from_pointee(LockFreeEdgeList::new()),
-            is_final: AtomicBool::new(is_final),
-            value: ArcSwapOption::empty(),
+            edges: LockFreeEdgeList::new(),
+            is_final,
+            value: None,
         }
     }
 
     #[inline]
     pub(crate) fn is_final(&self) -> bool {
-        self.is_final.load(Ordering::Acquire)
+        self.is_final
     }
 
     #[inline]
@@ -98,35 +116,25 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawgNode<U, V> {
             return None;
         }
 
-        self.value.load().as_ref().map(|value| (**value).clone())
+        self.value.as_ref().map(|value| (**value).clone())
     }
 }
 
 impl<U: CharUnit, V: DictionaryValue> Drop for LockFreeDawgNode<U, V> {
     fn drop(&mut self) {
-        let edges = self.edges.load_full();
-        self.edges.store(Arc::new(LockFreeEdgeList::new()));
-
-        let Ok(edge_list) = Arc::try_unwrap(edges) else {
-            return;
-        };
-
-        let mut stack = Vec::with_capacity(edge_list.edges.len());
-        for (_, child) in edge_list.edges {
+        let edges = std::mem::take(&mut self.edges);
+        let mut stack = Vec::with_capacity(edges.edges.len());
+        for (_, child) in edges.edges {
             if let Ok(child) = Arc::try_unwrap(child) {
                 stack.push(child);
             }
         }
 
-        while let Some(node) = stack.pop() {
-            let edges = node.edges.load_full();
-            node.edges.store(Arc::new(LockFreeEdgeList::new()));
-
-            if let Ok(edge_list) = Arc::try_unwrap(edges) {
-                for (_, child) in edge_list.edges {
-                    if let Ok(child) = Arc::try_unwrap(child) {
-                        stack.push(child);
-                    }
+        while let Some(mut node) = stack.pop() {
+            let edges = std::mem::take(&mut node.edges);
+            for (_, child) in edges.edges {
+                if let Ok(child) = Arc::try_unwrap(child) {
+                    stack.push(child);
                 }
             }
         }
@@ -161,11 +169,7 @@ impl<U: CharUnit> Hash for MergeSignature<U> {
 
 /// Unit-generic lock-free dynamic DAWG.
 pub(crate) struct LockFreeDawg<U: CharUnit, V: DictionaryValue> {
-    root: Arc<LockFreeDawgNode<U, V>>,
-    term_count: AtomicUsize,
-    needs_compaction: AtomicBool,
-    active_writers: AtomicUsize,
-    compaction_active: AtomicBool,
+    version: ArcSwap<GraphVersion<U, V>>,
 }
 
 impl<U: CharUnit, V: DictionaryValue> std::fmt::Debug for LockFreeDawg<U, V> {
@@ -186,33 +190,21 @@ impl<U: CharUnit, V: DictionaryValue> Default for LockFreeDawg<U, V> {
 impl<U: CharUnit, V: DictionaryValue> Clone for LockFreeDawg<U, V> {
     fn clone(&self) -> Self {
         Self {
-            root: Arc::new(Self::deep_clone_node(&self.root)),
-            term_count: AtomicUsize::new(self.term_count()),
-            needs_compaction: AtomicBool::new(self.needs_compaction()),
-            active_writers: AtomicUsize::new(0),
-            compaction_active: AtomicBool::new(false),
+            version: ArcSwap::from(self.version.load_full()),
         }
-    }
-}
-
-struct WriteGuard<'a, U: CharUnit, V: DictionaryValue> {
-    dawg: &'a LockFreeDawg<U, V>,
-}
-
-impl<U: CharUnit, V: DictionaryValue> Drop for WriteGuard<'_, U, V> {
-    fn drop(&mut self) {
-        self.dawg.active_writers.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
 impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
     pub(crate) fn new() -> Self {
+        let root = Arc::new(LockFreeDawgNode::new(false));
         Self {
-            root: Arc::new(LockFreeDawgNode::new(false)),
-            term_count: AtomicUsize::new(0),
-            needs_compaction: AtomicBool::new(false),
-            active_writers: AtomicUsize::new(0),
-            compaction_active: AtomicBool::new(false),
+            version: ArcSwap::from_pointee(GraphVersion {
+                root,
+                term_count: 0,
+                needs_compaction: false,
+                revision: 0,
+            }),
         }
     }
 
@@ -231,11 +223,12 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
         let entries: Vec<_> = entries.into_iter().collect();
         let root = Self::build_minimized_root(&entries);
         Self {
-            root,
-            term_count: AtomicUsize::new(entries.len()),
-            needs_compaction: AtomicBool::new(false),
-            active_writers: AtomicUsize::new(0),
-            compaction_active: AtomicBool::new(false),
+            version: ArcSwap::from_pointee(GraphVersion {
+                root,
+                term_count: entries.len(),
+                needs_compaction: false,
+                revision: 0,
+            }),
         }
     }
 
@@ -253,123 +246,72 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
         core
     }
 
-    fn deep_clone_node(node: &Arc<LockFreeDawgNode<U, V>>) -> LockFreeDawgNode<U, V> {
-        let edges = node.edges.load();
-        let cloned_edges: SmallVec<_> = edges
-            .edges
-            .iter()
-            .map(|(label, child)| (*label, Arc::new(Self::deep_clone_node(child))))
-            .collect();
-
-        let value = node.value.load().as_ref().map(|value| (**value).clone());
-
-        LockFreeDawgNode {
-            edges: ArcSwap::from_pointee(LockFreeEdgeList {
-                edges: cloned_edges,
-            }),
-            is_final: AtomicBool::new(node.is_final()),
-            value: match value {
-                Some(value) => ArcSwapOption::from_pointee(Some(value)),
-                None => ArcSwapOption::empty(),
-            },
-        }
-    }
-
-    fn begin_write(&self) -> WriteGuard<'_, U, V> {
-        let mut backoff = CasBackoff::new();
-        loop {
-            while self.compaction_active.load(Ordering::Acquire) {
-                backoff.snooze();
-            }
-
-            self.active_writers.fetch_add(1, Ordering::AcqRel);
-            if !self.compaction_active.load(Ordering::Acquire) {
-                return WriteGuard { dawg: self };
-            }
-            self.active_writers.fetch_sub(1, Ordering::AcqRel);
-            backoff.snooze();
-        }
-    }
-
-    fn acquire_compaction(&self) -> bool {
-        self.compaction_active
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-    }
-
-    fn release_compaction(&self) {
-        self.compaction_active.store(false, Ordering::Release);
-    }
-
-    fn wait_for_writers_to_quiesce(&self) {
-        let mut backoff = CasBackoff::new();
-        while self.active_writers.load(Ordering::Acquire) != 0 {
-            backoff.snooze();
-        }
-    }
-
     #[inline]
     pub(crate) fn root_arc(&self) -> Arc<LockFreeDawgNode<U, V>> {
-        self.root.clone()
+        self.version.load().root.clone()
     }
 
     pub(crate) fn insert_units(&self, units: &[U]) -> bool {
-        let _write = self.begin_write();
-        if units.is_empty() {
-            if self
-                .root
-                .is_final
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-            {
-                self.term_count.fetch_add(1, Ordering::Relaxed);
-                return true;
+        let terminal = |node: &Arc<LockFreeDawgNode<U, V>>| {
+            if node.is_final() {
+                return Rewrite {
+                    node: node.clone(),
+                    changed: false,
+                    inserted: false,
+                };
             }
-            return false;
-        }
+            Rewrite {
+                node: Self::copy_node(node.edges.clone(), true, node.value.clone()),
+                changed: true,
+                inserted: true,
+            }
+        };
 
-        let terminal = self.find_or_create_path(units);
-        if terminal
-            .is_final
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-        {
-            self.term_count.fetch_add(1, Ordering::Relaxed);
-            true
-        } else {
-            false
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.version.load_full();
+            let rewrite = Self::rewrite_path(&current.root, units, &terminal);
+            if !rewrite.changed {
+                return false;
+            }
+            let inserted = rewrite.inserted;
+            let next = Arc::new(GraphVersion {
+                root: rewrite.node,
+                term_count: current.term_count + usize::from(inserted),
+                needs_compaction: current.needs_compaction,
+                revision: current.revision.wrapping_add(1),
+            });
+            let previous = self.version.compare_and_swap(&current, next);
+            if Arc::ptr_eq(&previous, &current) {
+                return inserted;
+            }
+            backoff.snooze();
         }
     }
 
     pub(crate) fn insert_units_with_value(&self, units: &[U], value: V) -> bool {
-        let _write = self.begin_write();
-        if units.is_empty() {
-            self.root.value.store(Some(Arc::new(value.clone())));
-            if self
-                .root
-                .is_final
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-            {
-                self.term_count.fetch_add(1, Ordering::Relaxed);
-                return true;
-            }
-            self.root.value.store(Some(Arc::new(value)));
-            return false;
-        }
+        let terminal = |node: &Arc<LockFreeDawgNode<U, V>>| Rewrite {
+            node: Self::copy_node(node.edges.clone(), true, Some(Arc::new(value.clone()))),
+            changed: true,
+            inserted: !node.is_final(),
+        };
 
-        let terminal = self.find_or_create_path(units);
-        terminal.value.store(Some(Arc::new(value.clone())));
-        if terminal
-            .is_final
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-        {
-            self.term_count.fetch_add(1, Ordering::Relaxed);
-            true
-        } else {
-            terminal.value.store(Some(Arc::new(value)));
-            false
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.version.load_full();
+            let rewrite = Self::rewrite_path(&current.root, units, &terminal);
+            let inserted = rewrite.inserted;
+            let next = Arc::new(GraphVersion {
+                root: rewrite.node,
+                term_count: current.term_count + usize::from(inserted),
+                needs_compaction: current.needs_compaction,
+                revision: current.revision.wrapping_add(1),
+            });
+            let previous = self.version.compare_and_swap(&current, next);
+            if Arc::ptr_eq(&previous, &current) {
+                return inserted;
+            }
+            backoff.snooze();
         }
     }
 
@@ -382,175 +324,170 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
     where
         F: Fn(&mut V),
     {
-        let _write = self.begin_write();
-        let terminal = if units.is_empty() {
-            self.root.clone()
-        } else {
-            self.find_or_create_path(units)
-        };
-
-        self.update_or_insert_terminal(&terminal, &default_value, &update_fn)
-    }
-
-    fn find_or_create_path(&self, units: &[U]) -> Arc<LockFreeDawgNode<U, V>> {
-        let mut current = self.root.clone();
-        for &label in units {
-            current = Self::find_or_create_child(&current, label);
-        }
-        current
-    }
-
-    fn find_or_create_child(
-        current: &Arc<LockFreeDawgNode<U, V>>,
-        label: U,
-    ) -> Arc<LockFreeDawgNode<U, V>> {
         let mut backoff = CasBackoff::new();
         loop {
-            let edges = current.edges.load();
-            if let Some(child) = edges.find(label) {
-                return child.clone();
-            }
-
-            let new_node = Arc::new(LockFreeDawgNode::new(false));
-            let new_edges = Arc::new(edges.with_edge(label, new_node.clone()));
-            let previous = current.edges.compare_and_swap(&edges, new_edges);
-            if Arc::ptr_eq(&previous, &edges) {
-                return new_node;
-            }
-            backoff.snooze();
-        }
-    }
-
-    fn update_value_cas<F>(node: &Arc<LockFreeDawgNode<U, V>>, default_value: &V, update_fn: &F)
-    where
-        F: Fn(&mut V),
-    {
-        let mut backoff = CasBackoff::new();
-        loop {
-            let current = node.value.load_full();
-            let new_value = if let Some(value) = current.as_ref() {
-                let mut updated = (**value).clone();
-                update_fn(&mut updated);
-                updated
-            } else {
-                default_value.clone()
-            };
-
-            if Self::compare_store_value(node, current, Some(Arc::new(new_value))) {
-                return;
-            }
-            backoff.snooze();
-        }
-    }
-
-    fn update_or_insert_terminal<F>(
-        &self,
-        terminal: &Arc<LockFreeDawgNode<U, V>>,
-        default_value: &V,
-        update_fn: &F,
-    ) -> bool
-    where
-        F: Fn(&mut V),
-    {
-        let mut backoff = CasBackoff::new();
-        loop {
-            if terminal.is_final.load(Ordering::Acquire) {
-                Self::update_value_cas(terminal, default_value, update_fn);
-                return false;
-            }
-
-            if Self::compare_store_value(terminal, None, Some(Arc::new(default_value.clone()))) {
-                if terminal
-                    .is_final
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                {
-                    self.term_count.fetch_add(1, Ordering::Relaxed);
-                    return true;
+            let current = self.version.load_full();
+            let terminal = |node: &Arc<LockFreeDawgNode<U, V>>| {
+                let inserted = !node.is_final();
+                let next_value = if node.is_final() {
+                    if let Some(value) = &node.value {
+                        let mut updated = (**value).clone();
+                        update_fn(&mut updated);
+                        updated
+                    } else {
+                        default_value.clone()
+                    }
+                } else {
+                    default_value.clone()
+                };
+                Rewrite {
+                    node: Self::copy_node(node.edges.clone(), true, Some(Arc::new(next_value))),
+                    changed: true,
+                    inserted,
                 }
-
-                Self::update_value_cas(terminal, default_value, update_fn);
-                return false;
+            };
+            let rewrite = Self::rewrite_path(&current.root, units, &terminal);
+            let inserted = rewrite.inserted;
+            let next = Arc::new(GraphVersion {
+                root: rewrite.node,
+                term_count: current.term_count + usize::from(inserted),
+                needs_compaction: current.needs_compaction,
+                revision: current.revision.wrapping_add(1),
+            });
+            let previous = self.version.compare_and_swap(&current, next);
+            if Arc::ptr_eq(&previous, &current) {
+                return inserted;
             }
-
             backoff.snooze();
         }
     }
 
-    fn compare_store_value(
-        node: &LockFreeDawgNode<U, V>,
-        expected: Option<Arc<V>>,
-        new_value: Option<Arc<V>>,
-    ) -> bool {
-        match expected {
-            Some(expected) => {
-                let previous = node.value.compare_and_swap(&expected, new_value);
-                previous
-                    .as_ref()
-                    .is_some_and(|actual| Arc::ptr_eq(actual, &expected))
-            }
-            None => {
-                let expected_none = None::<Arc<V>>;
-                let previous = node.value.compare_and_swap(&expected_none, new_value);
-                previous.as_ref().is_none()
-            }
-        }
-    }
-
-    pub(crate) fn get_units_value(&self, units: &[U]) -> Option<V> {
-        let terminal = self.find_node(units)?;
-        terminal.value()
-    }
-
-    #[inline]
-    pub(crate) fn contains_units(&self, units: &[U]) -> bool {
-        self.find_node(units)
-            .is_some_and(|node| node.is_final.load(Ordering::Acquire))
-    }
-
-    pub(crate) fn remove_units(&self, units: &[U]) -> bool {
-        let _write = self.begin_write();
-        let Some(terminal) = self.find_node(units) else {
-            return false;
-        };
-
-        let previous_value = terminal.value.load_full();
-        if terminal
-            .is_final
-            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-        {
-            let _ = Self::compare_store_value(&terminal, previous_value, None);
-            self.term_count.fetch_sub(1, Ordering::Relaxed);
-            self.needs_compaction.store(true, Ordering::Relaxed);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub(crate) fn find_node(&self, units: &[U]) -> Option<Arc<LockFreeDawgNode<U, V>>> {
-        let mut current = self.root.clone();
+    fn rewrite_path<F>(
+        node: &Arc<LockFreeDawgNode<U, V>>,
+        units: &[U],
+        terminal: &F,
+    ) -> Rewrite<U, V>
+    where
+        F: Fn(&Arc<LockFreeDawgNode<U, V>>) -> Rewrite<U, V>,
+    {
+        // Retain the original nodes and their immutable edge lists while walking
+        // down the path, then path-copy bottom-up. Keeping this iterative is
+        // important because terms supplied through bindings are not necessarily
+        // small enough to fit safely on the Rust call stack.
+        let mut current = node.clone();
+        let mut frames = Vec::with_capacity(units.len());
         for &label in units {
-            let edges = current.edges.load();
-            let child = edges.find(label)?.clone();
+            let child = current
+                .edges
+                .find(label)
+                .cloned()
+                .unwrap_or_else(|| Arc::new(LockFreeDawgNode::new(false)));
+            frames.push((current, label));
+            current = child;
+        }
+
+        let mut rewrite = terminal(&current);
+        if !rewrite.changed {
+            return Rewrite {
+                node: node.clone(),
+                changed: false,
+                inserted: false,
+            };
+        }
+
+        for (parent, label) in frames.into_iter().rev() {
+            let new_edges = parent.edges.with_edge(label, rewrite.node);
+            rewrite.node = Self::copy_node(new_edges, parent.is_final(), parent.value.clone());
+        }
+        rewrite
+    }
+
+    fn copy_node(
+        edges: LockFreeEdgeList<U, V>,
+        is_final: bool,
+        value: Option<Arc<V>>,
+    ) -> Arc<LockFreeDawgNode<U, V>> {
+        Arc::new(LockFreeDawgNode {
+            edges,
+            is_final,
+            value,
+        })
+    }
+
+    fn find_node_from(
+        root: &Arc<LockFreeDawgNode<U, V>>,
+        units: &[U],
+    ) -> Option<Arc<LockFreeDawgNode<U, V>>> {
+        let mut current = root.clone();
+        for &label in units {
+            let child = current.edges.find(label)?.clone();
             current = child;
         }
         Some(current)
     }
 
+    pub(crate) fn get_units_value(&self, units: &[U]) -> Option<V> {
+        let version = self.version.load_full();
+        let terminal = Self::find_node_from(&version.root, units)?;
+        terminal.value()
+    }
+
+    #[inline]
+    pub(crate) fn contains_units(&self, units: &[U]) -> bool {
+        let version = self.version.load_full();
+        Self::find_node_from(&version.root, units).is_some_and(|node| node.is_final)
+    }
+
+    pub(crate) fn remove_units(&self, units: &[U]) -> bool {
+        let terminal = |node: &Arc<LockFreeDawgNode<U, V>>| {
+            if !node.is_final() {
+                return Rewrite {
+                    node: node.clone(),
+                    changed: false,
+                    inserted: false,
+                };
+            }
+            Rewrite {
+                node: Self::copy_node(node.edges.clone(), false, None),
+                changed: true,
+                inserted: false,
+            }
+        };
+
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.version.load_full();
+            let rewrite = Self::rewrite_path(&current.root, units, &terminal);
+            if !rewrite.changed {
+                return false;
+            }
+            let next = Arc::new(GraphVersion {
+                root: rewrite.node,
+                term_count: current.term_count.saturating_sub(1),
+                needs_compaction: true,
+                revision: current.revision.wrapping_add(1),
+            });
+            let previous = self.version.compare_and_swap(&current, next);
+            if Arc::ptr_eq(&previous, &current) {
+                return true;
+            }
+            backoff.snooze();
+        }
+    }
+
     #[inline]
     pub(crate) fn term_count(&self) -> usize {
-        self.term_count.load(Ordering::Relaxed)
+        self.version.load().term_count
     }
 
     pub(crate) fn node_count(&self) -> usize {
-        Self::count_unique_nodes_from(&self.root)
+        let version = self.version.load_full();
+        Self::count_unique_nodes_from(&version.root)
     }
 
     #[inline]
     pub(crate) fn needs_compaction(&self) -> bool {
-        self.needs_compaction.load(Ordering::Relaxed)
+        self.version.load().needs_compaction
     }
 
     pub(crate) fn compact(&self) -> usize {
@@ -562,32 +499,38 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
     }
 
     fn rebuild_from_visible_entries(&self) -> usize {
-        if !self.acquire_compaction() {
-            return 0;
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.version.load_full();
+            let old_node_count = Self::count_unique_nodes_from(&current.root);
+            let entries = Self::collect_visible_entries_from(&current.root, current.term_count);
+            let new_root = Self::build_minimized_root(&entries);
+            let new_node_count = Self::count_unique_nodes_from(&new_root);
+            let next = Arc::new(GraphVersion {
+                root: new_root,
+                term_count: entries.len(),
+                needs_compaction: false,
+                revision: current.revision.wrapping_add(1),
+            });
+
+            let previous = self.version.compare_and_swap(&current, next);
+            if Arc::ptr_eq(&previous, &current) {
+                return old_node_count.saturating_sub(new_node_count);
+            }
+            backoff.snooze();
         }
-
-        self.wait_for_writers_to_quiesce();
-
-        let old_node_count = self.node_count();
-        let entries = self.collect_visible_entries();
-        let new_root = Self::build_minimized_root(&entries);
-        let new_node_count = Self::count_unique_nodes_from(&new_root);
-
-        self.root.edges.store(new_root.edges.load_full());
-        self.root.value.store(new_root.value.load_full());
-        self.root
-            .is_final
-            .store(new_root.is_final.load(Ordering::Acquire), Ordering::Release);
-
-        self.term_count.store(entries.len(), Ordering::Release);
-        self.needs_compaction.store(false, Ordering::Release);
-        self.release_compaction();
-
-        old_node_count.saturating_sub(new_node_count)
     }
 
     pub(crate) fn collect_visible_entries(&self) -> Vec<(Vec<U>, Option<V>)> {
-        let mut entries = Vec::with_capacity(self.term_count());
+        let version = self.version.load_full();
+        Self::collect_visible_entries_from(&version.root, version.term_count)
+    }
+
+    fn collect_visible_entries_from(
+        root: &Arc<LockFreeDawgNode<U, V>>,
+        term_count: usize,
+    ) -> Vec<(Vec<U>, Option<V>)> {
+        let mut entries = Vec::with_capacity(term_count);
         let mut path = Vec::with_capacity(32);
 
         struct Frame<U: CharUnit, V: DictionaryValue> {
@@ -595,18 +538,13 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
             depth: usize,
         }
 
-        if self.root.is_final.load(Ordering::Acquire) {
-            let value = self
-                .root
-                .value
-                .load_full()
-                .as_ref()
-                .map(|value| (**value).clone());
+        if root.is_final {
+            let value = root.value.as_ref().map(|value| (**value).clone());
             entries.push((path.clone(), value));
         }
 
         let mut stack = Vec::with_capacity(64);
-        let mut root_children: Vec<_> = self.root.edges.load_full().edges.iter().cloned().collect();
+        let mut root_children: Vec<_> = root.edges.edges.iter().cloned().collect();
         root_children.reverse();
         stack.push(Frame {
             children: root_children,
@@ -618,17 +556,12 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
                 Some((label, child)) => {
                     let parent_depth = path.len();
                     path.push(label);
-                    if child.is_final.load(Ordering::Acquire) {
-                        let value = child
-                            .value
-                            .load_full()
-                            .as_ref()
-                            .map(|value| (**value).clone());
+                    if child.is_final {
+                        let value = child.value.as_ref().map(|value| (**value).clone());
                         entries.push((path.clone(), value));
                     }
 
-                    let mut children: Vec<_> =
-                        child.edges.load_full().edges.iter().cloned().collect();
+                    let mut children: Vec<_> = child.edges.edges.iter().cloned().collect();
                     children.reverse();
                     stack.push(Frame {
                         children,
@@ -673,52 +606,53 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
             nodes[node_idx].value = value;
         }
 
-        let mut interned = HashMap::with_capacity(nodes.len());
-        Self::intern_build_node(0, &nodes, &mut interned, true)
-    }
+        // Child indices are always greater than their parents, so reverse index
+        // order is a non-recursive post-order traversal. This keeps compaction
+        // safe for arbitrarily long terms as well as ordinary branching tries.
+        let mut interned: HashMap<MergeSignature<U>, Arc<LockFreeDawgNode<U, V>>> =
+            HashMap::with_capacity(nodes.len());
+        let mut built: Vec<Option<Arc<LockFreeDawgNode<U, V>>>> = vec![None; nodes.len()];
+        for idx in (0..nodes.len()).rev() {
+            let build = &nodes[idx];
+            let mut edges = SmallVec::<[(U, Arc<LockFreeDawgNode<U, V>>); 4]>::new();
+            let mut signature_edges = Vec::with_capacity(build.edges.len());
 
-    fn intern_build_node(
-        idx: usize,
-        nodes: &[BuildNode<U, V>],
-        interned: &mut HashMap<MergeSignature<U>, Arc<LockFreeDawgNode<U, V>>>,
-        is_root: bool,
-    ) -> Arc<LockFreeDawgNode<U, V>> {
-        let build = &nodes[idx];
-        let mut edges = SmallVec::<[(U, Arc<LockFreeDawgNode<U, V>>); 4]>::new();
-        let mut signature_edges = Vec::with_capacity(build.edges.len());
-
-        for (label, child_idx) in &build.edges {
-            let child = Self::intern_build_node(*child_idx, nodes, interned, false);
-            signature_edges.push((*label, Arc::as_ptr(&child) as usize));
-            edges.push((*label, child));
-        }
-
-        if !is_root && !build.is_final && build.value.is_none() {
-            let signature = MergeSignature {
-                is_final: false,
-                edges: signature_edges,
-            };
-            if let Some(existing) = interned.get(&signature) {
-                return existing.clone();
+            for (label, child_idx) in &build.edges {
+                let child = built[*child_idx]
+                    .as_ref()
+                    .expect("child must be built before its parent")
+                    .clone();
+                signature_edges.push((*label, Arc::as_ptr(&child) as usize));
+                edges.push((*label, child));
             }
 
-            let node = Arc::new(LockFreeDawgNode {
-                edges: ArcSwap::from_pointee(LockFreeEdgeList { edges }),
-                is_final: AtomicBool::new(false),
-                value: ArcSwapOption::empty(),
-            });
-            interned.insert(signature, node.clone());
-            return node;
+            let node = if idx != 0 && !build.is_final && build.value.is_none() {
+                let signature = MergeSignature {
+                    is_final: false,
+                    edges: signature_edges,
+                };
+                if let Some(existing) = interned.get(&signature) {
+                    existing.clone()
+                } else {
+                    let node = Arc::new(LockFreeDawgNode {
+                        edges: LockFreeEdgeList { edges },
+                        is_final: false,
+                        value: None,
+                    });
+                    interned.insert(signature, node.clone());
+                    node
+                }
+            } else {
+                Arc::new(LockFreeDawgNode {
+                    edges: LockFreeEdgeList { edges },
+                    is_final: build.is_final,
+                    value: build.value.clone().map(Arc::new),
+                })
+            };
+            built[idx] = Some(node);
         }
 
-        Arc::new(LockFreeDawgNode {
-            edges: ArcSwap::from_pointee(LockFreeEdgeList { edges }),
-            is_final: AtomicBool::new(build.is_final),
-            value: match build.value.clone() {
-                Some(value) => ArcSwapOption::from_pointee(Some(value)),
-                None => ArcSwapOption::empty(),
-            },
-        })
+        built[0].take().expect("the root is always built")
     }
 
     fn count_unique_nodes_from(root: &Arc<LockFreeDawgNode<U, V>>) -> usize {
@@ -731,8 +665,7 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
                 continue;
             }
 
-            let edges = node.edges.load_full();
-            for (_, child) in edges.edges.iter() {
+            for (_, child) in &node.edges.edges {
                 stack.push(child.clone());
             }
         }
@@ -782,5 +715,61 @@ mod tests {
         assert!(removed > 0 || dawg.node_count() <= before);
         assert!(dawg.contains_units(&['t', 'e', 's', 't']));
         assert!(!dawg.contains_units(&['t', 'e', 'a', 'm']));
+    }
+
+    #[test]
+    fn retained_root_has_query_start_snapshot_semantics() {
+        let dawg: LockFreeDawg<char, u64> = LockFreeDawg::new();
+        dawg.insert_units_with_value(&['c', 'a', 't'], 1);
+        dawg.insert_units_with_value(&['c', 'o', 't'], 2);
+        dawg.insert_units_with_value(&['c', 'u', 't'], 3);
+
+        let query_start_root = dawg.root_arc();
+
+        assert!(dawg.remove_units(&['c', 'o', 't']));
+        assert!(dawg.insert_units_with_value(&['c', 'i', 't'], 4));
+        assert!(!dawg.insert_units_with_value(&['c', 'u', 't'], 30));
+        dawg.compact();
+
+        let mut snapshot =
+            LockFreeDawg::<char, u64>::collect_visible_entries_from(&query_start_root, 3);
+        snapshot.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(
+            snapshot,
+            vec![
+                (vec!['c', 'a', 't'], Some(1)),
+                (vec!['c', 'o', 't'], Some(2)),
+                (vec!['c', 'u', 't'], Some(3)),
+            ]
+        );
+
+        let mut current = dawg.collect_visible_entries();
+        current.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(
+            current,
+            vec![
+                (vec!['c', 'a', 't'], Some(1)),
+                (vec!['c', 'i', 't'], Some(4)),
+                (vec!['c', 'u', 't'], Some(30)),
+            ]
+        );
+    }
+
+    #[test]
+    fn very_long_terms_use_iterative_path_copying_and_compaction() {
+        let dawg: LockFreeDawg<u8, u64> = LockFreeDawg::new();
+        let term = vec![b'x'; 20_000];
+
+        assert!(dawg.insert_units_with_value(&term, 1));
+        let query_start_root = dawg.root_arc();
+        assert!(!dawg.insert_units_with_value(&term, 2));
+        dawg.compact();
+
+        assert_eq!(dawg.get_units_value(&term), Some(2));
+        assert_eq!(
+            LockFreeDawg::<u8, u64>::find_node_from(&query_start_root, &term)
+                .and_then(|node| node.value()),
+            Some(1)
+        );
     }
 }

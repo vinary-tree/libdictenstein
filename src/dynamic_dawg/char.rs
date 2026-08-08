@@ -36,8 +36,8 @@ use std::sync::Arc;
 ///
 /// # Thread Safety
 ///
-/// Uses atomic edge-list publication. Reads are wait-free; normal writes use
-/// CAS loops and do not block readers.
+/// Uses immutable graph revisions. Reads retain one root and are wait-free;
+/// writes path-copy the affected route and publish it with a root CAS.
 ///
 /// # Performance
 ///
@@ -576,15 +576,18 @@ impl<V: DictionaryValue> DictionaryNode for DynamicDawgCharNode<V> {
     }
 
     fn transition(&self, label: char) -> Option<Self> {
-        let edges = self.node.edges.load();
-        edges.find(label).map(|child| DynamicDawgCharNode {
-            node: child.clone(),
-        })
+        self.node
+            .edges
+            .find(label)
+            .map(|child| DynamicDawgCharNode {
+                node: child.clone(),
+            })
     }
 
     fn edges(&self) -> Box<dyn Iterator<Item = (char, Self)> + '_> {
-        let edges = self.node.edges.load();
-        let edge_vec: Vec<_> = edges
+        let edge_vec: Vec<_> = self
+            .node
+            .edges
             .edges
             .iter()
             .map(|(ch, child)| (*ch, child.clone()))
@@ -597,7 +600,7 @@ impl<V: DictionaryValue> DictionaryNode for DynamicDawgCharNode<V> {
     }
 
     fn edge_count(&self) -> Option<usize> {
-        Some(self.node.edges.load().edges.len())
+        Some(self.node.edges.edges.len())
     }
 }
 

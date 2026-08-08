@@ -1,6 +1,6 @@
 [package]
 name = "libdictenstein"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 # Effective floor across `--all-features`: pathmap 0.2.2 and sysinfo 0.39 are the
 # binding constraints. The previously declared 1.70 was inaccurate — bincode 2.0.1
@@ -16,6 +16,10 @@ readme = "README.md"
 exclude = ["docs/", "formal-verification/"]
 
 [dependencies]
+# Stable retained-resource ABI shared with independently packaged Vinary Tree
+# consumers. The path is development-only; crates.io publication resolves the
+# exact version requirement.
+vinary-tree-interop = { path = "../liblevenshtein-rust/vinary-tree-interop", version = "0.1.0", optional = true }
 # Logging facade
 log = "0.4"
 # SmallVec for stack-allocated vectors (performance optimization)
@@ -132,6 +136,29 @@ loom = "0.7"  # Bounded schedule exploration for concurrency correspondence test
 
 [features]
 default = ["parking_lot"]
+bindings-core = ["dep:vinary-tree-interop"]
+# The stable project ABI includes the persistent constructors and checkpoint
+# operations. Keep the symbol set invariant for every FFI build; consumers can
+# select in-memory backends at runtime without producing an ABI-fragmented
+# shared library.
+ffi = ["bindings-core", "persistent-artrie"]
+native-bindings-full = ["ffi"]
+c-bindings = ["native-bindings-full"]
+cpp-bindings = ["native-bindings-full"]
+python-bindings = ["native-bindings-full"]
+jvm-bindings = ["native-bindings-full"]
+clojure-bindings = ["jvm-bindings"]
+javascript-bindings = ["bindings-core"]
+typescript-bindings = ["javascript-bindings"]
+clojurescript-bindings = ["javascript-bindings"]
+dotnet-bindings = ["native-bindings-full"]
+go-bindings = ["native-bindings-full"]
+swift-bindings = ["native-bindings-full"]
+ruby-bindings = ["native-bindings-full"]
+fortran-bindings = ["native-bindings-full"]
+ocaml-bindings = ["native-bindings-full"]
+haskell-bindings = ["native-bindings-full"]
+lua-bindings = ["native-bindings-full"]
 pathmap-backend = ["pathmap"]
 serialization = ["serde", "bincode"]
 compression = ["flate2"]
@@ -159,6 +186,7 @@ bench-internals = ["io-uring-backend"]
 [lib]
 name = "libdictenstein"
 path = "src/lib.rs"
+crate-type = ["rlib", "cdylib", "staticlib"]
 
 [profile.release]
 opt-level = 3

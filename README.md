@@ -13,7 +13,7 @@
 
 libdictenstein provides the **container** half of approximate string matching: efficient, traversable collections of terms (a *dictionary*), optionally mapping each term to a value. Every backend exposes a uniform [`Dictionary`](#core-traits) interface — `contains`, `root`, and node-by-node `transition` — so you can swap implementations without touching call sites.
 
-It is the companion to **[liblevenshtein](https://github.com/universal-automata/liblevenshtein-rust)**, which supplies the *query* half: a Levenshtein-automaton transducer that walks any `Dictionary` to find all terms within an edit distance. libdictenstein itself contains **no** fuzzy-matching code — it focuses on being the fastest, most correct set of dictionaries that transducer can traverse.
+It is the companion to **[liblevenshtein](https://github.com/vinary-tree/liblevenshtein-rust)**, which supplies the *query* half: a Levenshtein-automaton transducer that walks any `Dictionary` to find all terms within an edit distance. libdictenstein itself contains **no** fuzzy-matching code — it focuses on being the fastest, most correct set of dictionaries that transducer can traverse.
 
 > **Terminology.** A **term** is a string in the dictionary. A **prefix** is a leading substring (`"ca"` of `"cat"`); a **substring** occurs anywhere (`"at"` in `"cat"`). The atomic element of a term is a **unit** — a `u8` byte, a `char`, or a `u64` token. $`\Sigma`$ (sigma) is the *alphabet*: the set of units an edge can carry (256 byte values, or all Unicode scalar values). **Fanout** is a node's child count, and $`\lvert x\rvert`$ is the length of `x` in units. See [`docs/notation.md`](docs/notation.md) for the full symbol and terminology register.
 

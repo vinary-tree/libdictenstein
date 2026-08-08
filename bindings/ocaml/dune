@@ -1,0 +1,10 @@
+(library
+ (name vinary_tree_libdictenstein)
+ (public_name vinary-tree-libdictenstein)
+ (libraries vinary-tree-interop)
+ (foreign_stubs
+  (language c)
+  (names libdictenstein_stubs)
+  (include_dirs include)
+  (flags (:standard -std=c17 -Wall -Wextra -Werror)))
+ (c_library_flags -llibdictenstein))

@@ -64,7 +64,7 @@ note in part 1 and re-attached from a `← from part 1` note in part 2.
 
 > The query half of approximate string matching — a Levenshtein-automaton
 > transducer that walks any of these dictionaries — lives in the companion crate
-> **[liblevenshtein](https://github.com/universal-automata/liblevenshtein-rust)**.
+> **[liblevenshtein](https://github.com/vinary-tree/liblevenshtein-rust)**.
 > libdictenstein contains no fuzzy-matching code itself.
 
 ---

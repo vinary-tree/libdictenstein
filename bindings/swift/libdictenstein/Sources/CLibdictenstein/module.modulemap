@@ -1,0 +1,5 @@
+module CLibdictenstein [system] {
+  header "CLibdictenstein.h"
+  link "libdictenstein"
+  export *
+}

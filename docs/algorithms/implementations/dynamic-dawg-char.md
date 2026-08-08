@@ -34,7 +34,7 @@ multi-byte characters.
 
 - ✅ **Correct Unicode distances**: Treats 'é' as 1 character, not 2 bytes
 - 🔄 **Full dynamic updates**: Insert AND remove Unicode terms at runtime
-- 🔓 **Non-blocking**: wait-free concurrent reads AND lock-free concurrent writes (no locks; per-node CAS)
+- 🔓 **Non-blocking**: wait-free concurrent reads and lock-free root-CAS writes
 - 🌍 **Full Unicode support**: CJK, emoji, accents, all scripts
 - 💾 **Space-efficient**: Shares common suffixes (20-40% reduction)
 
@@ -153,18 +153,14 @@ pub struct DynamicDawgChar<V: DictionaryValue = ()> {
 type DynamicDawgCharInner<V = ()> = LockFreeDawg<char, V>;
 
 struct LockFreeDawg<U: CharUnit, V: DictionaryValue> {
-    root: Arc<LockFreeDawgNode<U, V>>,      // entry node (edges swapped, not the node)
-    term_count: AtomicUsize,                // live term count
-    needs_compaction: AtomicBool,           // set by remove()
-    active_writers: AtomicUsize,            // writer registry for compaction quiescence
-    compaction_active: AtomicBool,          // single-compactor guard (CAS)
+    version: ArcSwap<GraphVersion<U, V>>,   // sole atomic publication point
 }
 
-// Each node publishes its state through atomic cells — there is no lock:
+// Every node reachable from a published version is immutable:
 struct LockFreeDawgNode<U: CharUnit, V: DictionaryValue> {
-    edges: ArcSwap<LockFreeEdgeList<U, V>>, // atomically-swapped edge-list snapshot
-    is_final: AtomicBool,                   // marks a valid term
-    value: ArcSwapOption<V>,                // associated value (optional)
+    edges: LockFreeEdgeList<U, V>,          // sorted immutable edge list
+    is_final: bool,                         // term marker
+    value: Option<Arc<V>>,                  // associated value (optional)
 }
 
 // Immutable, copy-on-write edge list published atomically by a node.
@@ -178,18 +174,14 @@ struct LockFreeEdgeList<U: CharUnit, V: DictionaryValue> {
 
 | Component | Size | Notes |
 | --- | --- | --- |
-| `edges: ArcSwap<EdgeList>` | 8 bytes | atomic ptr → COW |
-|  |  | edge list ($`\le`$4 |
-|  |  | inline, ~48 bytes*) |
-| `is_final: AtomicBool` | 1 byte | term marker |
-| `value: ArcSwapOption<V>` | 8 bytes | atomic ptr → V |
-| Node cells | ~17 bytes | + edge-list heap |
+| `edges: SmallVec` | inline storage for up to four edges | immutable, path-copied |
+| `is_final: bool` | 1 byte | immutable term marker |
+| `value: Option<Arc<V>>` | one nullable pointer | shared on path copies |
 | Shared handle overhead | Arc → core | 8 bytes (one ptr) |
 
 *Each inline edge is a `(char, Arc<Node>)` tuple = 4 + 8 = 12 bytes, so 4
-edges $`\approx`$ 48 bytes inline. There is no lock-object byte cost: the per-node
-`ArcSwap`/`AtomicBool`/`ArcSwapOption` cells provide atomic interior mutability,
-and the whole structure is reached through a single shared `Arc`.
+edges $`\approx`$ 48 bytes inline. There is no lock-object or per-node atomic-cell
+cost; one `ArcSwap<GraphVersion>` publishes immutable roots for the whole dictionary.
 
 **Comparison with DynamicDawg**:
 - DynamicDawg: ~25 bytes/node
@@ -224,7 +216,7 @@ assert_eq!(dict2.len(), Some(3));  // Same count
 | **Space Complexity** | $`O(1)`$ | ~16 bytes (Arc pointer only) |
 | **Data Sharing** | ✅ Complete | All clones share same node graph |
 | **Mutation Visibility** | ✅ Global | Changes via any clone affect all |
-| **Thread Safety** | ✅ Lock-free | Wait-free reads AND lock-free writes (per-node CAS) |
+| **Thread Safety** | ✅ Lock-free | Wait-free reads and path-copy/root-CAS writes |
 | **Independence** | ❌ None | No isolation between clones |
 
 #### Unicode Considerations
@@ -374,7 +366,7 @@ let writer = {
 
 **Lock-free guarantees remain the same:**
 - Wait-free concurrent readers (never block)
-- Lock-free concurrent writers (per-node CAS; never block readers)
+- Lock-free concurrent writers (path-copy plus root CAS; never block readers)
 - No data races regardless of character encoding
 
 #### Summary
@@ -619,7 +611,7 @@ let dicts: Vec<DynamicDawgChar<Vec<u32>>> = documents
 // Merge using union_with (see Union Operations section)
 ```
 
-→ See [Parallel Workspace Indexing](https://github.com/universal-automata/liblevenshtein-rust) for complete pattern (works with both variants).
+→ See [Parallel Workspace Indexing](https://github.com/vinary-tree/liblevenshtein-rust) for complete pattern (works with both variants).
 
 ### When to Use Character-Level
 
@@ -1094,7 +1086,7 @@ Benefit: Correct Unicode distance calculations
 ### When to Use Union Operations
 
 ✅ **Use `union_with()` when:**
-- **Parallel workspace indexing**: Merging per-document Unicode dictionaries built in parallel (→ [Parallel Workspace Pattern](https://github.com/universal-automata/liblevenshtein-rust))
+- **Parallel workspace indexing**: Merging per-document Unicode dictionaries built in parallel (→ [Parallel Workspace Pattern](https://github.com/vinary-tree/liblevenshtein-rust))
 - Merging multilingual dictionaries (internationalized applications)
 - Aggregating statistics from Unicode text (emoji usage, CJK text analysis)
 - Combining user-specific and system internationalized dictionaries

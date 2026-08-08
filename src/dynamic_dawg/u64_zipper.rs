@@ -8,7 +8,6 @@
 use super::u64::{DawgNodeU64, DynamicDawgU64};
 use crate::value::DictionaryValue;
 use crate::zipper::{DictZipper, ValuedDictZipper};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 /// Zipper for lock-free Dynamic DAWG u64 dictionaries.
@@ -23,14 +22,14 @@ use std::sync::Arc;
 /// - `node`: Arc reference to the current node
 /// - `path`: Path from root to current position (Vec<u64>)
 ///
-/// All operations are wait-free, using only atomic loads to read node state.
+/// All operations are wait-free over one immutable root revision.
 ///
 /// # Thread Safety
 ///
 /// The zipper is fully thread-safe:
 /// - Multiple zippers can navigate concurrently (no contention)
 /// - Zippers can navigate while writers are modifying the DAWG
-/// - Writers may add edges/nodes; readers see a consistent snapshot
+/// - Writers publish newer roots; readers retain their original revision
 ///
 /// # Performance
 ///
@@ -112,15 +111,12 @@ impl<V: DictionaryValue> DictZipper for DynamicDawgU64Zipper<V> {
     type Unit = u64;
 
     fn is_final(&self) -> bool {
-        self.node.is_final.load(Ordering::Acquire)
+        self.node.is_final
     }
 
     fn descend(&self, label: Self::Unit) -> Option<Self> {
-        // Load the current edge list (wait-free)
-        let edges = self.node.edges.load();
-
         // Find the edge with the given label
-        edges.find(label).map(|child| {
+        self.node.edges.find(label).map(|child| {
             let mut new_path = self.path.clone();
             new_path.push(label);
             DynamicDawgU64Zipper {
@@ -135,11 +131,8 @@ impl<V: DictionaryValue> DictZipper for DynamicDawgU64Zipper<V> {
     }
 
     fn children(&self) -> impl Iterator<Item = (Self::Unit, Self)> {
-        // Load the edge list once (wait-free snapshot)
-        let edges = self.node.edges.load();
-
         // Clone the edges to allow independent iteration
-        let edge_vec: Vec<_> = edges.edges.iter().cloned().collect();
+        let edge_vec: Vec<_> = self.node.edges.edges.iter().cloned().collect();
         let base_path = self.path.clone();
 
         edge_vec.into_iter().map(move |(label, child)| {
@@ -160,12 +153,8 @@ impl<V: DictionaryValue> ValuedDictZipper for DynamicDawgU64Zipper<V> {
     type Value = V;
 
     fn value(&self) -> Option<Self::Value> {
-        if self.node.is_final.load(Ordering::Acquire) {
-            // Load the value (wait-free)
-            // value_guard is Guard<Option<Arc<V>>>; *value_guard is Option<Arc<V>>
-            let value_guard = self.node.value.load();
-            // Map to clone the inner V
-            value_guard.as_ref().map(|arc| (**arc).clone())
+        if self.node.is_final {
+            self.node.value.as_ref().map(|arc| (**arc).clone())
         } else {
             None
         }

@@ -668,7 +668,7 @@ Substring matching? ❌             ✅           ❌          ✅
 
 - **Prefix Dictionaries**: Compare with [DoubleArrayTrie](double-array-trie.md)
 - **Dynamic Updates**: Explore [DynamicDawg](dynamic-dawg.md)
-- **Fuzzy Matching**: Read [Levenshtein Automata](https://github.com/universal-automata/liblevenshtein-rust)
+- **Fuzzy Matching**: Read [Levenshtein Automata](https://github.com/vinary-tree/liblevenshtein-rust)
 
 ---
 

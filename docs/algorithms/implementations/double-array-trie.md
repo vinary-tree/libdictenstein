@@ -17,7 +17,7 @@
 
 ## Overview
 
-`DoubleArrayTrie` (DAT) is the **recommended default read-mostly dictionary** for most applications. It is the container half; the companion crate [liblevenshtein](https://github.com/universal-automata/liblevenshtein-rust) supplies the Levenshtein transducer that walks it. It provides exceptional performance for fuzzy matching queries through a cache-efficient array-based representation of trie structures.
+`DoubleArrayTrie` (DAT) is the **recommended default read-mostly dictionary** for most applications. It is the container half; the companion crate [liblevenshtein](https://github.com/vinary-tree/liblevenshtein-rust) supplies the Levenshtein transducer that walks it. It provides exceptional performance for fuzzy matching queries through a cache-efficient array-based representation of trie structures.
 
 ### Key Advantages
 
@@ -407,7 +407,7 @@ let results: Vec<String> = automaton.query(&dict).collect();
 
 **Performance**: ~16.3µs for distance 2, 10,000-term dictionary
 
-See [Levenshtein Automata](https://github.com/universal-automata/liblevenshtein-rust) for details.
+See [Levenshtein Automata](https://github.com/vinary-tree/liblevenshtein-rust) for details.
 
 ### Edge Iteration
 
@@ -1020,7 +1020,7 @@ let dict: DoubleArrayTrie = bincode::deserialize(&mmap).unwrap();
 - **Unicode Support**: Learn about [DoubleArrayTrieChar](double-array-trie-char.md)
 - **Dynamic Updates**: Explore [DynamicDawg](dynamic-dawg.md)
 - **Value Storage**: Read the [Value Storage Guide](../serialization.md)
-- **Fuzzy Matching**: Understand [Levenshtein Automata](https://github.com/universal-automata/liblevenshtein-rust)
+- **Fuzzy Matching**: Understand [Levenshtein Automata](https://github.com/vinary-tree/liblevenshtein-rust)
 - **Navigation**: Try [Zipper Pattern](../zippers.md)
 
 ---

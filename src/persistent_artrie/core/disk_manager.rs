@@ -338,6 +338,9 @@ struct LockEntry {
     /// Owns the `flock`'d `.wlock` fd; the OS lock releases when this entry is removed (below).
     #[allow(dead_code)]
     file: File,
+    /// WASI has no advisory-lock syscall; its atomically-created sidecar is
+    /// removed when the final in-process owner closes.
+    wasi_sidecar: Option<String>,
     /// Number of live [`WLockGuard`]s for this path in THIS process.
     refs: usize,
 }
@@ -379,7 +382,11 @@ impl Drop for WLockGuard {
             if let Some(entry) = registry.get_mut(&self.key) {
                 entry.refs = entry.refs.saturating_sub(1);
                 if entry.refs == 0 {
-                    registry.remove(&self.key); // release the OS flock (drops the .wlock File)
+                    let removed = registry.remove(&self.key);
+                    drop(registry);
+                    if let Some(path) = removed.and_then(|entry| entry.wasi_sidecar) {
+                        let _ = std::fs::remove_file(path);
+                    }
                 }
             }
         }
@@ -457,7 +464,33 @@ impl MmapDiskManager {
             Ok(())
         }
 
-        #[cfg(not(unix))]
+        #[cfg(target_os = "wasi")]
+        {
+            // WASI Preview 1 cannot duplicate descriptors. Reopen the same
+            // preopened path to obtain an independent cursor for positional I/O.
+            let mut file = OpenOptions::new()
+                .read(true)
+                .open(&self.path)
+                .map_err(|e| PersistentARTrieError::IoError {
+                    operation: format!("{operation}: reopen file"),
+                    path: self.path.clone(),
+                    source: e,
+                })?;
+            file.seek(SeekFrom::Start(offset))
+                .map_err(|e| PersistentARTrieError::IoError {
+                    operation: format!("{operation}: seek"),
+                    path: self.path.clone(),
+                    source: e,
+                })?;
+            file.read_exact(buffer)
+                .map_err(|e| PersistentARTrieError::IoError {
+                    operation: operation.to_string(),
+                    path: self.path.clone(),
+                    source: e,
+                })
+        }
+
+        #[cfg(all(not(unix), not(target_os = "wasi")))]
         {
             let mut file = self
                 .file
@@ -512,7 +545,32 @@ impl MmapDiskManager {
             Ok(())
         }
 
-        #[cfg(not(unix))]
+        #[cfg(target_os = "wasi")]
+        {
+            let mut file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&self.path)
+                .map_err(|e| PersistentARTrieError::IoError {
+                    operation: format!("{operation}: reopen file"),
+                    path: self.path.clone(),
+                    source: e,
+                })?;
+            file.seek(SeekFrom::Start(offset))
+                .map_err(|e| PersistentARTrieError::IoError {
+                    operation: format!("{operation}: seek"),
+                    path: self.path.clone(),
+                    source: e,
+                })?;
+            file.write_all(data)
+                .map_err(|e| PersistentARTrieError::IoError {
+                    operation: operation.to_string(),
+                    path: self.path.clone(),
+                    source: e,
+                })
+        }
+
+        #[cfg(all(not(unix), not(target_os = "wasi")))]
         {
             let mut file = self
                 .file
@@ -626,11 +684,11 @@ impl MmapDiskManager {
 
         // Create memory map
         let mmap = if file_size > 0 {
-            #[cfg(miri)]
+            #[cfg(any(miri, target_os = "wasi"))]
             {
                 None
             }
-            #[cfg(not(miri))]
+            #[cfg(not(any(miri, target_os = "wasi")))]
             {
                 let mmap = unsafe {
                     MmapOptions::new()
@@ -693,9 +751,9 @@ impl MmapDiskManager {
         }
 
         // Create memory map
-        #[cfg(miri)]
+        #[cfg(any(miri, target_os = "wasi"))]
         let mmap = None;
-        #[cfg(not(miri))]
+        #[cfg(not(any(miri, target_os = "wasi")))]
         let mmap = unsafe {
             MmapOptions::new()
                 .len(file_size as usize)
@@ -705,7 +763,7 @@ impl MmapDiskManager {
                     source: e,
                 })?
         };
-        #[cfg(not(miri))]
+        #[cfg(not(any(miri, target_os = "wasi")))]
         let mmap = Some(RwLock::new(mmap));
 
         // Recover block count from file size (source of truth, handles crashes)
@@ -778,9 +836,9 @@ impl MmapDiskManager {
         }
 
         // Create memory map
-        #[cfg(miri)]
+        #[cfg(any(miri, target_os = "wasi"))]
         let mmap = None;
-        #[cfg(not(miri))]
+        #[cfg(not(any(miri, target_os = "wasi")))]
         let mmap = unsafe {
             MmapOptions::new()
                 .len(file_size as usize)
@@ -790,7 +848,7 @@ impl MmapDiskManager {
                     source: e,
                 })?
         };
-        #[cfg(not(miri))]
+        #[cfg(not(any(miri, target_os = "wasi")))]
         let mmap = Some(RwLock::new(mmap));
 
         // Recover block count from file size (source of truth, handles crashes)
@@ -830,13 +888,11 @@ impl MmapDiskManager {
 
         // Not held here — take the OS lock, which is what actually excludes OTHER processes.
         let lock_path = format!("{path_str}.wlock");
+        #[cfg(not(target_os = "wasi"))]
         let lock_file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            // The sidecar carries no content -- only the `flock` matters -- but keep the
-            // existing inode rather than truncating, so a concurrent opener's lock is
-            // never disturbed.
             .truncate(false)
             .open(&lock_path)
             .map_err(|e| PersistentARTrieError::IoError {
@@ -844,6 +900,26 @@ impl MmapDiskManager {
                 path: lock_path.clone(),
                 source: e,
             })?;
+        #[cfg(target_os = "wasi")]
+        let lock_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    PersistentARTrieError::FileLocked {
+                        path: path_str.to_string(),
+                    }
+                } else {
+                    PersistentARTrieError::IoError {
+                        operation: "atomically create WASI .wlock sidecar".to_string(),
+                        path: lock_path.clone(),
+                        source: error,
+                    }
+                }
+            })?;
+        #[cfg(not(target_os = "wasi"))]
         match rustix::fs::flock(
             &lock_file,
             rustix::fs::FlockOperation::NonBlockingLockExclusive,
@@ -864,6 +940,11 @@ impl MmapDiskManager {
             key.clone(),
             LockEntry {
                 file: lock_file,
+                wasi_sidecar: if cfg!(target_os = "wasi") {
+                    Some(lock_path)
+                } else {
+                    None
+                },
                 refs: 1,
             },
         );

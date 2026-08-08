@@ -27,36 +27,35 @@ Notation follows [`docs/notation.md`](../../notation.md).
 - ⚠️ For a *durable* `u64` sequence index, use the persistent
   [`PersistentARTrieU64Compact`](../native-u64-and-cx.md) instead; `DynamicDawgU64` is volatile.
 
-## Why a distinct type instead of `DynamicDawg<…>` over `u64`
+## Why a distinct public type
 
-The byte and `char` DAWGs share one arena-backed core (`DawgCore`, see [dynamic-dawg.md](dynamic-dawg.md#node-representation)).
-`DynamicDawgU64` deliberately uses a **different representation** — a vector of reference-counted
-nodes, each carrying its own atomically swappable edge list — because a `u64` alphabet makes two
-assumptions of the shared core false:
+The byte, `char`, and `u64` DAWGs now share the unit-generic immutable-revision core
+`LockFreeDawg<U, V>`. `DynamicDawgU64` remains a distinct public type because its primary API accepts
+token slices and exposes sequence/time-series conveniences rather than UTF-8 strings:
 
 - **No byte expansion.** A `char`/`u64` label is stored natively as one edge, not spread across up
   to four byte-edges, so per-transition work stays $`O(1)`$ amortized without a byte-decoding step.
-- **Wait-free reads over a mutating graph.** Each node holds its edges behind an
-  [`arc_swap::ArcSwap`](https://docs.rs/arc-swap), so a reader loads a stable edge list with no lock
-  and no risk of tearing while a writer publishes a new one by compare-and-swap (*CAS*).
+- **Native token APIs.** Insert, lookup, zipper, and iteration operate on `&[u64]` / `Vec<u64>`
+  without encoding or decoding through text.
 
-The trade-off is space: a per-node `Arc` plus an atomic edge-list pointer costs roughly
-2–3$`\times`$ the bytes of the shared arena core. You buy wait-free reads and fine-grained writes
-with that memory.
+Its `Clone` remains a detached $`O(1)`$ snapshot: the new handle begins from the same immutable
+`GraphVersion` but has its own publication cell, so later writes to either clone are independent.
+Use an outer `Arc<DynamicDawgU64<_>>` when threads should mutate one shared dictionary.
 
 ## Node representation
 
-<img src="../../diagrams/dawg-u64-node.svg" alt="Structure of a DynamicDawgU64 node. The dictionary holds a vector of Arc-wrapped DawgNodeU64 values. Each node has three fields: an ArcSwap pointer to an EdgeList (a small-vector of (u64 label, Arc to child node) pairs, inline up to four then spilling to the heap), an ArcSwapOption pointer to the node's optional value V, and an atomic is-final flag. A writer publishes an edit by CAS-swapping the ArcSwap edge-list pointer to a freshly built list; concurrent readers keep observing the old list until they reload." width="560"/>
+<img src="../../diagrams/dawg-u64-node.svg" alt="DynamicDawgU64 stores one ArcSwap GraphVersion publication cell. Each version points to an immutable Arc-wrapped root whose nodes contain a sorted SmallVec edge list, a plain final flag, and an optional Arc value. A writer path-copies one route and root-CAS publishes a new version; readers retain the old root." width="560"/>
 
 ```rust
-// src/dynamic_dawg/u64.rs (shape; field types verified against source)
-pub(crate) struct DawgNodeU64<V: DictionaryValue> {
-    edges: ArcSwap<EdgeList<V>>,       // atomically swappable child list
-    value: ArcSwapOption<V>,           // optional associated value
-    // … atomic is_final / bookkeeping …
+struct LockFreeDawg<U: CharUnit, V: DictionaryValue> {
+    version: ArcSwap<GraphVersion<U, V>>,
 }
 
-type EdgeList<V> = SmallVec<[(u64, Arc<DawgNodeU64<V>>); 4]>;   // inline ≤ 4 edges, then heap
+struct LockFreeDawgNode<U: CharUnit, V: DictionaryValue> {
+    edges: SmallVec<[(U, Arc<LockFreeDawgNode<U, V>>); 4]>,
+    is_final: bool,
+    value: Option<Arc<V>>,
+}
 ```
 
 Child lookup within a node scans linearly while the edge count is below
@@ -66,12 +65,12 @@ nodes logarithmic.
 
 ## Concurrency
 
-`DynamicDawgU64<V>` is `Arc`-cloneable and shares its node vector across clones. Reads are
-**wait-free**: `contains`, `contains_sequence`, and node `transition` load an `ArcSwap` snapshot and
-walk it without taking a lock. Writes are **lock-free**: an insert builds the new edge list for each
-touched node and publishes it with a CAS retry loop (`CasBackoff`), so a writer never blocks a
-reader and readers never observe a partially linked node. This is the **per-node CAS** strategy
-described in [the in-memory architecture doc](../../architecture/in-memory-dictionaries.md).
+Reads are **wait-free**: `contains`, `contains_sequence`, iterators, and node traversal retain one
+immutable root and walk it without a lock. Writes are **lock-free**: an insert/update/remove
+path-copies the touched route and publishes one replacement `GraphVersion` with a root-CAS retry
+loop (`CasBackoff`). A cursor cannot observe partially linked state or mix revisions. This is the
+**path-copy plus root CAS** strategy described in
+[the in-memory architecture doc](../../architecture/in-memory-dictionaries.md).
 
 ## Complexity
 
@@ -83,7 +82,7 @@ Let `q` be a query sequence and `n` the total number of `u64` tokens stored.
 | `insert_sequence(q)` | $`O(\lvert q\rvert)`$ amortized |
 | `update_or_insert_sequence(q, …)` | $`O(\lvert q\rvert)`$ amortized (may re-run the update closure on CAS conflict) |
 | `compact()` | $`O(n)`$ |
-| space | near-minimal after `compact()`; per-node `Arc` + atomic edge list, roughly 2–4$`\times`$ the shared-arena core between compactions |
+| space | near-minimal after `compact()`; unchanged paths and retained revisions share immutable `Arc` nodes |
 
 ## Trait support
 

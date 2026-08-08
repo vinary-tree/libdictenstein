@@ -1,6 +1,6 @@
 # Dictionary Layer
 
-**Navigation**: [↑ Documentation index](../README.md) · [Theory →](../theory/) · [Architecture →](../architecture/) · [Query half: liblevenshtein →](https://github.com/universal-automata/liblevenshtein-rust)
+**Navigation**: [↑ Documentation index](../README.md) · [Theory →](../theory/) · [Architecture →](../architecture/) · [Query half: liblevenshtein →](https://github.com/vinary-tree/liblevenshtein-rust)
 
 ## Overview
 
@@ -532,7 +532,7 @@ let results: Vec<String> = automaton.query(&dict).collect();
 
 The automaton traverses the dictionary graph using `DictionaryNode::transition()` to explore only paths within the distance threshold.
 
-See [Automata Layer](https://github.com/universal-automata/liblevenshtein-rust) for details.
+See [Automata Layer](https://github.com/vinary-tree/liblevenshtein-rust) for details.
 
 ## Thread Safety
 
@@ -643,7 +643,7 @@ See [Serialization Guide](serialization.md) for details.
 - [Core abstractions](../architecture/abstractions.md) - `CharUnit` + `KeyEncoding`: how one generic implementation serves bytes, Unicode, and `u64` alphabets ("three alphabets, one code path").
 - [WAL on-disk format](../persistence/wal-format.md) - The byte-level write-ahead-log codec behind the durable backends: file header, record frame, record types, and the Order-A write ordering.
 - [Performance Guide](../theory/disk-tries/07-benchmark-results.md) - Detailed benchmarks and optimization tips.
-- [Automata Layer](https://github.com/universal-automata/liblevenshtein-rust) - Levenshtein automata that query dictionaries (the fuzzy-matching query half).
+- [Automata Layer](https://github.com/vinary-tree/liblevenshtein-rust) - Levenshtein automata that query dictionaries (the fuzzy-matching query half).
 
 ## Academic References
 
@@ -683,8 +683,8 @@ See [Serialization Guide](serialization.md) for details.
 - **Deep Dive**: Read the [DoubleArrayTrie Implementation Guide](implementations/double-array-trie.md)
 - **Unicode**: Learn about [DoubleArrayTrieChar](implementations/double-array-trie-char.md)
 - **Values**: Explore [Serialization & values](serialization.md)
-- **Query**: Understand [Levenshtein Automata](https://github.com/universal-automata/liblevenshtein-rust)
+- **Query**: Understand [Levenshtein Automata](https://github.com/vinary-tree/liblevenshtein-rust)
 
 ---
 
-**Navigation**: [↑ Documentation index](../README.md) · [Theory →](../theory/) · [Architecture →](../architecture/) · [Query half: liblevenshtein →](https://github.com/universal-automata/liblevenshtein-rust)
+**Navigation**: [↑ Documentation index](../README.md) · [Theory →](../theory/) · [Architecture →](../architecture/) · [Query half: liblevenshtein →](https://github.com/vinary-tree/liblevenshtein-rust)

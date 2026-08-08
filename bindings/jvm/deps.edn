@@ -1,0 +1,6 @@
+{:paths ["build/classes/java/main" "build/resources/main"]
+ :deps
+ {io.vinarytree/vinary-tree-interop
+  {:local/root "../../../liblevenshtein-rust/vinary-tree-interop/bindings/jvm"}
+  io.vinarytree/liblevenshtein
+  {:local/root "../../../liblevenshtein-rust/bindings/jvm"}}}

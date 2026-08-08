@@ -20,11 +20,13 @@ use std::sync::Arc;
 /// - `node`: Shared reference to the current node
 /// - `path`: Path from root to current position
 ///
-/// Operations use atomic edge snapshots and never take a dictionary lock.
+/// Operations retain immutable nodes from one published root revision and
+/// never take a dictionary lock.
 ///
 /// # Thread Safety
 ///
-/// Multiple zippers can navigate while writers publish new edge snapshots.
+/// Multiple zippers can navigate while writers publish newer root revisions;
+/// each zipper remains on the revision from which it was created.
 ///
 /// # Performance
 ///
@@ -108,8 +110,7 @@ impl<V: DictionaryValue> DictZipper for DynamicDawgZipper<V> {
     }
 
     fn descend(&self, label: Self::Unit) -> Option<Self> {
-        let edges = self.node.edges.load();
-        edges.find(label).map(|child| {
+        self.node.edges.find(label).map(|child| {
             let mut new_path = self.path.clone();
             new_path.push(label);
             DynamicDawgZipper {
@@ -124,8 +125,7 @@ impl<V: DictionaryValue> DictZipper for DynamicDawgZipper<V> {
     }
 
     fn children(&self) -> impl Iterator<Item = (Self::Unit, Self)> {
-        let edges = self.node.edges.load();
-        let edge_vec: Vec<_> = edges.edges.iter().cloned().collect();
+        let edge_vec: Vec<_> = self.node.edges.edges.iter().cloned().collect();
         let base_path = self.path.clone();
         edge_vec.into_iter().map(move |(label, child)| {
             let mut new_path = base_path.clone();

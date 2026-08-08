@@ -3,9 +3,9 @@
 //! This module provides a unified API for synchronization primitives that works
 //! across both native and WASM targets:
 //!
-//! - On native platforms with `parking_lot` feature: Uses `parking_lot::RwLock`
+//! - With `parking_lot` enabled: Uses `parking_lot::RwLock` on native and WASM/WASI
 //!   for better performance (no poisoning, smaller size, spin-wait optimization)
-//! - On WASM or without `parking_lot`: Falls back to `std::sync::RwLock`
+//! - Without `parking_lot`: Falls back to `std::sync::RwLock`
 //!
 //! # Usage
 //!
@@ -20,13 +20,13 @@
 // parking_lot backend (native + feature enabled)
 // ============================================================================
 
-#[cfg(all(feature = "parking_lot", not(target_arch = "wasm32")))]
+#[cfg(feature = "parking_lot")]
 pub use parking_lot::RwLock;
 
-#[cfg(all(feature = "parking_lot", not(target_arch = "wasm32")))]
+#[cfg(feature = "parking_lot")]
 pub use parking_lot::RwLockReadGuard;
 
-#[cfg(all(feature = "parking_lot", not(target_arch = "wasm32")))]
+#[cfg(feature = "parking_lot")]
 pub use parking_lot::RwLockWriteGuard;
 
 // ============================================================================
@@ -35,11 +35,11 @@ pub use parking_lot::RwLockWriteGuard;
 
 /// A wrapper around `std::sync::RwLock` that provides a non-poisoning API
 /// matching `parking_lot::RwLock`.
-#[cfg(any(not(feature = "parking_lot"), target_arch = "wasm32"))]
+#[cfg(not(feature = "parking_lot"))]
 #[derive(Debug, Default)]
 pub struct RwLock<T>(std::sync::RwLock<T>);
 
-#[cfg(any(not(feature = "parking_lot"), target_arch = "wasm32"))]
+#[cfg(not(feature = "parking_lot"))]
 impl<T> RwLock<T> {
     /// Creates a new RwLock.
     #[inline]
@@ -94,10 +94,10 @@ impl<T> RwLock<T> {
     }
 }
 
-#[cfg(any(not(feature = "parking_lot"), target_arch = "wasm32"))]
+#[cfg(not(feature = "parking_lot"))]
 pub use std::sync::RwLockReadGuard;
 
-#[cfg(any(not(feature = "parking_lot"), target_arch = "wasm32"))]
+#[cfg(not(feature = "parking_lot"))]
 pub use std::sync::RwLockWriteGuard;
 
 #[cfg(test)]

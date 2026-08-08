@@ -59,27 +59,26 @@ Two structural notes that recur across the cores:
 ## 3. Two lock-free concurrency strategies
 
 Every *mutable* in-memory backend gives readers a **wait-free** path (no lock, no spin) and writers
-a **lock-free** path (CAS publication, no global mutation mutex). They reach that guarantee two
-different ways, and which one a backend uses follows directly from how localized its writes are. All
-publication rides [`arc_swap`](https://docs.rs/arc-swap) (`ArcSwap` / `ArcSwapOption`), whose `load`
-is a wait-free atomic read and whose `compare_and_swap` publishes a new pointer atomically.
+a **lock-free** path (CAS publication, no global mutation mutex). Publication rides
+[`arc_swap`](https://docs.rs/arc-swap): a reader loads one immutable revision and a writer
+`compare_and_swap`s a replacement root atomically.
 
-<img src="../diagrams/inmem-concurrency-strategies.svg" alt="The two lock-free strategies, stacked. Top (A, per-node CAS, the DAWG family): each node's edge list sits behind its own ArcSwap; a writer rebuilds and CAS-publishes only the edge lists of the nodes on the inserted path, and a reader loads any node's cell wait-free, so readers of other nodes are untouched. Bottom (B, whole-graph snapshot / copy-on-write, the suffix automaton, SCDAWG, and PathMap families): the whole structure sits behind one Arc-of-ArcSwap; a writer clones the inner structure, edits the clone into revision N+1, and publishes it with a single root CAS that is the linearization point, while readers keep observing the immutable revision N until they reload." width="540"/>
+<img src="../diagrams/inmem-concurrency-strategies.svg" alt="Immutable-revision publication: a reader retains revision N while a writer builds revision N+1 using copy-on-write and publishes it with one root CAS. DynamicDAWG path-copies only the affected route; suffix automaton, SCDAWG, and PathMap rebuild or structurally share according to their graph representation." width="540"/>
 
-### 3a. Per-node CAS — the DAWG family
+### 3a. Path-copy plus root CAS — the DAWG family
 
-`DynamicDawg`, `DynamicDawgChar`, and `DynamicDawgU64` place *each node's* edge list (and optional
-value) behind its own atomic cell: `LockFreeDawgNode` carries `edges: ArcSwap<LockFreeEdgeList<U,V>>`
-and `value: ArcSwapOption<V>` ([`src/dynamic_dawg/lockfree.rs`](../../src/dynamic_dawg/lockfree.rs);
-`DynamicDawgU64` mirrors this in [`src/dynamic_dawg/u64.rs`](../../src/dynamic_dawg/u64.rs)).
+`DynamicDawg`, `DynamicDawgChar`, and `DynamicDawgU64` share `LockFreeDawg`. Its
+`GraphVersion` contains an immutable root and revision metadata behind one `ArcSwap`.
+Published nodes contain plain immutable edge/finality/value fields
+([`src/dynamic_dawg/lockfree.rs`](../../src/dynamic_dawg/lockfree.rs)).
 
-A writer inserting or removing a term rebuilds only the edge lists of the nodes **on that path** and
-publishes each by CAS (with a bounded `CasBackoff` retry). Readers of any other node are never
-disturbed; a reader on a touched node observes either the old or the new edge list, never a torn
-one. This fine granularity is the right fit because DAWG edits are *local* — they touch a single
-root-to-node path plus whatever minimization merges.
+A writer inserting, updating, or removing a term path-copies only the nodes **on that
+route**, structurally shares every unchanged branch, then publishes the replacement
+`GraphVersion` with one CAS (and `CasBackoff` retry). A reader retains its old root for
+the full traversal, so a partially consumed iterator cannot mix revisions. Compaction
+rebuilds a minimized root and uses the same publication point.
 
-### 3b. Whole-graph snapshot (copy-on-write) — suffix automaton, SCDAWG, PathMap
+### 3b. Whole-graph copy-on-write — suffix automaton, SCDAWG, PathMap
 
 The suffix automaton, SCDAWG, and PathMap families place the **entire structure** behind a single
 `Arc<ArcSwap<Inner>>`: `LockFreeSuffixAutomaton` wraps `Arc<ArcSwap<SuffixAutomatonInner<U,V>>>`,
@@ -89,17 +88,17 @@ The suffix automaton, SCDAWG, and PathMap families place the **entire structure*
 whole new revision. Readers hold a stable snapshot of the *previous* revision until they reload, so
 they always see an internally consistent graph.
 
-Why the whole-graph swap here rather than per-node CAS? Because an edit to these structures is
+Why the whole-graph rebuild here rather than DAWG-style path copying? Because an edit to these structures is
 **not** local: a suffix-automaton `extend` can clone-and-split a state and rewire suffix links across
 the graph; an SCDAWG is built once; and PathMap is itself a persistent (structurally shared) trie
 whose "clone" is an $`O(1)`$ shallow copy, so republishing the whole state is cheap. Snapshot
 publication gives these families the simplest correct linearization point — the single CAS on the
 root pointer.
 
-### 3c. `BijectiveMap` uses both
+### 3c. `BijectiveMap` composes two revisioned structures
 
 [`BijectiveMap`](../algorithms/implementations/bijective.md) composes the two: its **forward**
-direction is a `DynamicDawgChar<V>` (per-node CAS), and its **reverse** direction is a
+direction is a `DynamicDawgChar<V>` (path-copy/root CAS), and its **reverse** direction is a
 `HashMap<V, String>` behind `Arc<ArcSwap<…>>` (whole-map snapshot). A write mutates the forward DAWG
 and CAS-publishes a new reverse map, with a rollback path that repairs the bijection invariant if a
 concurrent writer wins the race.
@@ -114,7 +113,7 @@ the packed arrays.
 
 ## 4. Memory reclamation
 
-Because readers hold `Arc` snapshots (of an edge list, or of a whole inner structure), a node or
+Because readers hold `Arc` snapshots (a DAWG root revision or a whole inner structure), a node or
 revision that a writer has replaced is freed automatically when the last reader `Arc` referencing it
 drops. There is no manual epoch scheme in the volatile backends — `Arc` reference counting *is* the
 reclamation mechanism, and it is safe precisely because the replaced data is immutable once

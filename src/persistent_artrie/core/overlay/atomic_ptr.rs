@@ -31,7 +31,10 @@
 
 use std::sync::Arc;
 
+#[cfg(not(target_os = "wasi"))]
 use arc_swap::ArcSwapOption;
+#[cfg(target_os = "wasi")]
+use std::sync::Mutex;
 
 use super::node::OverlayNode;
 use crate::persistent_artrie::core::key_encoding::KeyEncoding;
@@ -52,14 +55,27 @@ const NULL_PTR: u64 = 0;
 /// - replaced/rejected nodes are dropped by normal `Arc` ownership
 pub struct AtomicNodePtr<K: KeyEncoding, V = ()> {
     /// The current node slot — a genuinely-atomic, lock-free `Arc` cell.
+    #[cfg(not(target_os = "wasi"))]
     ptr: ArcSwapOption<OverlayNode<K, V>>,
+    /// WASI Preview 1 has no threads; its ArcSwap pointer publication is not
+    /// portable, so use a target-local serialized cell with identical semantics.
+    #[cfg(target_os = "wasi")]
+    ptr: Mutex<Option<Arc<OverlayNode<K, V>>>>,
 }
 
 // Manual `Debug` so neither `K::Unit` nor `V` need `Debug`.
 impl<K: KeyEncoding, V> std::fmt::Debug for AtomicNodePtr<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        #[cfg(not(target_os = "wasi"))]
+        let is_null = self.ptr.load().is_none();
+        #[cfg(target_os = "wasi")]
+        let is_null = self
+            .ptr
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_none();
         f.debug_struct("AtomicNodePtr")
-            .field("is_null", &self.ptr.load().is_none())
+            .field("is_null", &is_null)
             .finish()
     }
 }
@@ -70,21 +86,27 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
     /// The Arc's reference count is NOT incremented - ownership is transferred.
     pub fn new(node: Arc<OverlayNode<K, V>>) -> Self {
         Self {
+            #[cfg(not(target_os = "wasi"))]
             ptr: ArcSwapOption::new(Some(node)),
+            #[cfg(target_os = "wasi")]
+            ptr: Mutex::new(Some(node)),
         }
     }
 
     /// Create a null atomic pointer.
     pub fn null() -> Self {
         Self {
+            #[cfg(not(target_os = "wasi"))]
             ptr: ArcSwapOption::empty(),
+            #[cfg(target_os = "wasi")]
+            ptr: Mutex::new(None),
         }
     }
 
     /// Check if the pointer is null.
     #[inline]
     pub fn is_null(&self) -> bool {
-        self.ptr.load().is_none()
+        self.load().is_none()
     }
 
     /// Load the current node pointer.
@@ -92,7 +114,17 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
     /// This increments the Arc's reference count before returning,
     /// so the caller receives a valid Arc that they own.
     pub fn load(&self) -> Option<Arc<OverlayNode<K, V>>> {
-        self.ptr.load_full()
+        #[cfg(not(target_os = "wasi"))]
+        {
+            self.ptr.load_full()
+        }
+        #[cfg(target_os = "wasi")]
+        {
+            self.ptr
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        }
     }
 
     /// Load the current node, panicking if null.
@@ -111,12 +143,30 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
     /// This atomically replaces the current pointer with the new one.
     /// The old pointer's Arc is decremented.
     pub fn store(&self, node: Arc<OverlayNode<K, V>>) {
+        #[cfg(not(target_os = "wasi"))]
         self.ptr.store(Some(node));
+        #[cfg(target_os = "wasi")]
+        {
+            *self
+                .ptr
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(node);
+        }
     }
 
     /// Store null, returning the old value.
     pub fn take(&self) -> Option<Arc<OverlayNode<K, V>>> {
-        self.ptr.swap(None)
+        #[cfg(not(target_os = "wasi"))]
+        {
+            self.ptr.swap(None)
+        }
+        #[cfg(target_os = "wasi")]
+        {
+            self.ptr
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+        }
     }
 
     /// Atomically compare and exchange the node pointer.
@@ -138,11 +188,30 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
         // raw pointer with no extra refcount bump. `compare_and_swap` returns the
         // value stored BEFORE the operation; success <=> it is pointer-equal to
         // `expected`.
-        let prev = self.ptr.compare_and_swap(expected, Some(new));
-        match &*prev {
-            Some(p) if Arc::ptr_eq(p, expected) => Ok(Arc::clone(p)),
-            Some(p) => Err(Arc::clone(p)),
-            None => Err(Arc::new(OverlayNode::new())),
+        #[cfg(not(target_os = "wasi"))]
+        {
+            let prev = self.ptr.compare_and_swap(expected, Some(new));
+            match &*prev {
+                Some(p) if Arc::ptr_eq(p, expected) => Ok(Arc::clone(p)),
+                Some(p) => Err(Arc::clone(p)),
+                None => Err(Arc::new(OverlayNode::new())),
+            }
+        }
+        #[cfg(target_os = "wasi")]
+        {
+            let mut slot = self
+                .ptr
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match slot.as_ref() {
+                Some(actual) if Arc::ptr_eq(actual, expected) => {
+                    let previous = Arc::clone(actual);
+                    *slot = Some(new);
+                    Ok(previous)
+                }
+                Some(actual) => Err(Arc::clone(actual)),
+                None => Err(Arc::new(OverlayNode::new())),
+            }
         }
     }
 
@@ -163,20 +232,36 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
     /// - `Err(actual)` if the pointer was not null
     pub fn try_init(&self, new: Arc<OverlayNode<K, V>>) -> Result<(), Arc<OverlayNode<K, V>>> {
         // CAS None -> Some(new), atomically.
-        let prev = self
-            .ptr
-            .compare_and_swap(&None::<Arc<OverlayNode<K, V>>>, Some(new));
-        match &*prev {
-            None => Ok(()),
-            Some(p) => Err(Arc::clone(p)),
+        #[cfg(not(target_os = "wasi"))]
+        {
+            let prev = self
+                .ptr
+                .compare_and_swap(&None::<Arc<OverlayNode<K, V>>>, Some(new));
+            match &*prev {
+                None => Ok(()),
+                Some(p) => Err(Arc::clone(p)),
+            }
+        }
+        #[cfg(target_os = "wasi")]
+        {
+            let mut slot = self
+                .ptr
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match slot.as_ref() {
+                None => {
+                    *slot = Some(new);
+                    Ok(())
+                }
+                Some(actual) => Err(Arc::clone(actual)),
+            }
         }
     }
 
     /// Get the raw pointer value (for debugging/testing).
     #[inline]
     pub fn as_raw(&self) -> u64 {
-        self.ptr
-            .load()
+        self.load()
             .as_ref()
             .map(|node| Arc::as_ptr(node) as u64)
             .unwrap_or(NULL_PTR)

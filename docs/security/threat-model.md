@@ -55,7 +55,7 @@ resources.
 ## Out of scope
 
 - **The Levenshtein transducer.** Fuzzy matching lives in the companion crate
-  [liblevenshtein](https://github.com/universal-automata/liblevenshtein-rust); its query-side
+  [liblevenshtein](https://github.com/vinary-tree/liblevenshtein-rust); its query-side
   resource bounds are that crate's concern.
 - **The operating system and disk.** The persistent engine trusts the kernel's `mmap` / `io_uring` /
   `fsync` semantics and the integrity of the underlying block device; a hostile *kernel* or a

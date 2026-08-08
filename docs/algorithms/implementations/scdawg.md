@@ -274,7 +274,7 @@ assert!(dict.contains_substring("ï"));   // single code-point substring
 ### With a Levenshtein automaton
 
 `Scdawg` implements `Dictionary`, so wrap it in
-[liblevenshtein](https://github.com/universal-automata/liblevenshtein-rust)'s
+[liblevenshtein](https://github.com/vinary-tree/liblevenshtein-rust)'s
 `LevenshteinAutomaton` for fuzzy substring search — the automaton walks the
 SCDAWG via `DictionaryNode::transition`, exactly as it would any other backend.
 

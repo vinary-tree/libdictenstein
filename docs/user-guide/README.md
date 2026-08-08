@@ -28,7 +28,7 @@ terms are stored — the defining property of the trie-shaped indexes this crate
 > libdictenstein is the *container* half of approximate string matching. The *query* half — a
 > Levenshtein-automaton transducer that walks any of these dictionaries to find terms within an edit
 > distance — lives in the companion crate
-> [liblevenshtein](https://github.com/universal-automata/liblevenshtein-rust). This crate contains
+> [liblevenshtein](https://github.com/vinary-tree/liblevenshtein-rust). This crate contains
 > no fuzzy-matching code itself.
 
 Notation in these guides follows [`docs/notation.md`](../notation.md).

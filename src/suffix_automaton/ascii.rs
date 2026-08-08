@@ -36,7 +36,7 @@
 //! ```
 //!
 //! Approximate matching is provided by the downstream
-//! [`liblevenshtein`](https://github.com/universal-automata/liblevenshtein-rust)
+//! [`liblevenshtein`](https://github.com/vinary-tree/liblevenshtein-rust)
 //! crate's `Transducer`: wrap the `SuffixAutomaton` returned here and query
 //! with a target distance. The transducer is intentionally upstream-owned
 //! (same separation of concerns as `pathmap` in [`crate::pathmap`]).
@@ -223,7 +223,7 @@ mod _legacy_extend_byte {
 /// ```
 ///
 /// For approximate matching wrap the automaton in
-/// [`liblevenshtein`](https://github.com/universal-automata/liblevenshtein-rust)'s
+/// [`liblevenshtein`](https://github.com/vinary-tree/liblevenshtein-rust)'s
 /// `Transducer` (upstream-owned, not part of this crate). The `dict` value
 /// returned here implements the traversal traits the transducer needs.
 #[derive(Clone, Debug)]

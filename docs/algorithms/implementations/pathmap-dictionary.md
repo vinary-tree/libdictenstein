@@ -592,7 +592,7 @@ let dicts: Vec<PathMapDictionary<Vec<u32>>> = documents
 // Merge using union_with (see Union Operations section)
 ```
 
-→ See [Parallel Workspace Indexing](https://github.com/universal-automata/liblevenshtein-rust) for complete pattern.
+→ See [Parallel Workspace Indexing](https://github.com/vinary-tree/liblevenshtein-rust) for complete pattern.
 
 ### Comparison with Other Dictionaries
 
@@ -1036,7 +1036,7 @@ Trade-off: PathMap offers structural sharing and immutability
 ### When to Use Union Operations
 
 ✅ **Use `union_with()` when:**
-- **Parallel workspace indexing**: Merging per-document dictionaries built in parallel (→ [Parallel Workspace Pattern](https://github.com/universal-automata/liblevenshtein-rust))
+- **Parallel workspace indexing**: Merging per-document dictionaries built in parallel (→ [Parallel Workspace Pattern](https://github.com/vinary-tree/liblevenshtein-rust))
 - Merging configuration layers with override semantics
 - Combining statistics where structural sharing is beneficial
 - Building composite lookup tables from multiple sources

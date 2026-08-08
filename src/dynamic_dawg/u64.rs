@@ -4,29 +4,11 @@
 //! concurrent access. Reads are wait-free (no blocking, no retries), and
 //! writes use CAS (compare-and-swap) loops for lock-free progress guarantees.
 //!
-//! # Architectural divergence from `DawgCore<U, V>`
-//!
-//! Unlike [`DynamicDawg<V>`](super::ascii::DynamicDawg) and
-//! [`DynamicDawgChar<V>`](super::char::DynamicDawgChar), which use the
-//! unit-generic lock-free node core introduced for byte/char labels,
-//! `DynamicDawgU64<V>` keeps its original u64-specialized implementation.
-//! The divergence is now mostly representation-specific:
-//!
-//! - **Node storage**: `DynamicDawgU64<V>` uses
-//!   `Vec<Arc<DawgNodeU64<V>>>` with per-node `ArcSwap<EdgeList<V>>` for
-//!   lock-free copy-on-write edge mutation.
-//! - **Concurrency model**: the byte, char, and u64 dynamic DAWG variants all
-//!   provide wait-free reads and CAS-based writes.
-//! - **Memory cost**: `DynamicDawgU64`'s `Arc`-per-node and atomic-pointer-
-//!   per-edge-list cost ~2-3x the per-node footprint of `DawgCore`. The
-//!   trade-off is wait-free reads, which `DawgCore` cannot offer.
-//!
-//! Unifying the two would require extending `DawgCore` with an edge-storage
-//! trait that abstracts over `Vec`-of-nodes vs `Arc`-swappable-edges. This
-//! is genuinely a 1-2 week refactor of `DawgCore` itself; see
-//! `docs/benchmarks/c1-dawg-core-handoff.md` for the design. Until that
-//! extension lands, `DynamicDawgU64<V>` keeps its own algorithmic
-//! implementation by design.
+//! The byte, character, and u64 variants share one immutable-revision core.
+//! Writers path-copy only the affected route and atomically publish a new
+//! root; readers and iterators retain the revision they started from. This
+//! gives every traversal exact query-start snapshot semantics without holding
+//! a read lock or copying the whole dictionary.
 //!
 //! Unlike the byte-level `DynamicDawg` (u8 edges) or character-level
 //! `DynamicDawgChar` (char/u32 edges), this variant uses 64-bit labels (u64),
@@ -50,137 +32,17 @@
 //! # Thread Safety
 //!
 //! - **Reads**: Wait-free - multiple readers never block
-//! - **Writes**: Lock-free during normal insert/remove/update operations; explicit
-//!   compaction is an exclusive maintenance publication so it can safely replace
-//!   dead subgraphs without losing a concurrent write.
+//! - **Writes**: Lock-free CAS publication for insert/remove/update and
+//!   compaction, with retry if another writer publishes first.
 //! - **Memory**: Arc-based with automatic reclamation via arc-swap
 
+use super::lockfree::{LockFreeDawg, LockFreeDawgNode};
 use super::u64_zipper::DynamicDawgU64Zipper;
-use crate::nonblocking::CasBackoff;
 use crate::value::DictionaryValue;
 use crate::{Dictionary, DictionaryNode, SyncStrategy};
-use arc_swap::{ArcSwap, ArcSwapOption};
-use smallvec::SmallVec;
-use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-const EDGE_LINEAR_SCAN_LIMIT: usize = 16;
-
-/// Immutable edge list that can be atomically swapped.
-///
-/// When adding/removing edges, we clone this list, modify the clone,
-/// and atomically swap it in place using CAS.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct EdgeList<V: DictionaryValue> {
-    pub(crate) edges: SmallVec<[(u64, Arc<DawgNodeU64<V>>); 4]>,
-}
-
-impl<V: DictionaryValue> EdgeList<V> {
-    fn new() -> Self {
-        EdgeList {
-            edges: SmallVec::new(),
-        }
-    }
-
-    /// Find a child node by label.
-    #[inline]
-    pub(crate) fn find(&self, label: u64) -> Option<&Arc<DawgNodeU64<V>>> {
-        if self.edges.len() < EDGE_LINEAR_SCAN_LIMIT {
-            self.edges
-                .iter()
-                .find(|(edge_label, _)| *edge_label == label)
-                .map(|(_, node)| node)
-        } else {
-            self.edges
-                .binary_search_by_key(&label, |(edge_label, _)| *edge_label)
-                .ok()
-                .map(|idx| &self.edges[idx].1)
-        }
-    }
-
-    /// Insert an edge in sorted order, returning a new EdgeList.
-    fn with_edge(&self, label: u64, node: Arc<DawgNodeU64<V>>) -> Self {
-        let mut new_edges = self.edges.clone();
-
-        match new_edges.binary_search_by_key(&label, |(edge_label, _)| *edge_label) {
-            Ok(pos) => new_edges[pos] = (label, node),
-            Err(pos) => new_edges.insert(pos, (label, node)),
-        }
-
-        EdgeList { edges: new_edges }
-    }
-
-    /// Remove an edge by label, returning a new EdgeList.
-    #[allow(dead_code)]
-    fn without_edge(&self, label: u64) -> Self {
-        let mut new_edges = self.edges.clone();
-        if let Ok(pos) = new_edges.binary_search_by_key(&label, |(edge_label, _)| *edge_label) {
-            new_edges.remove(pos);
-        }
-        EdgeList { edges: new_edges }
-    }
-}
-
-/// A lock-free DAWG node with atomic fields.
-///
-/// - `edges`: Atomically swappable edge list (copy-on-write)
-/// - `is_final`: Atomic bool (monotonic: false → true only during normal ops)
-/// - `value`: Atomically swappable value
-#[derive(Debug)]
-pub(crate) struct DawgNodeU64<V: DictionaryValue> {
-    /// Edges to child nodes (atomically swappable)
-    pub(crate) edges: ArcSwap<EdgeList<V>>,
-    /// Whether this node represents a complete term
-    pub(crate) is_final: AtomicBool,
-    /// Value associated with this node (only meaningful if is_final)
-    pub(crate) value: ArcSwapOption<V>,
-}
-
-impl<V: DictionaryValue> Clone for DawgNodeU64<V> {
-    fn clone(&self) -> Self {
-        // Load edges: Guard<Arc<EdgeList>> -> clone inner EdgeList
-        let edges_guard = self.edges.load();
-        let edges_clone = (**edges_guard).clone();
-
-        // Load value: Guard<Option<Arc<V>>> -> clone inner V if present
-        let value_guard = self.value.load();
-        // (*value_guard) gives Option<Arc<V>>, as_ref() gives Option<&Arc<V>>
-        // Then map to clone the inner V
-        let value_clone: Option<V> = value_guard.as_ref().map(|arc| (**arc).clone());
-
-        DawgNodeU64 {
-            edges: ArcSwap::from_pointee(edges_clone),
-            is_final: AtomicBool::new(self.is_final.load(Ordering::Acquire)),
-            value: match value_clone {
-                Some(v) => ArcSwapOption::from_pointee(Some(v)),
-                None => ArcSwapOption::empty(),
-            },
-        }
-    }
-}
-
-impl<V: DictionaryValue> DawgNodeU64<V> {
-    fn new(is_final: bool) -> Self {
-        DawgNodeU64 {
-            edges: ArcSwap::from_pointee(EdgeList::new()),
-            is_final: AtomicBool::new(is_final),
-            value: ArcSwapOption::empty(),
-        }
-    }
-
-    fn new_with_value(is_final: bool, value: Option<V>) -> Self {
-        DawgNodeU64 {
-            edges: ArcSwap::from_pointee(EdgeList::new()),
-            is_final: AtomicBool::new(is_final),
-            value: match value {
-                Some(v) => ArcSwapOption::from_pointee(Some(v)),
-                None => ArcSwapOption::empty(),
-            },
-        }
-    }
-}
+pub(crate) type DawgNodeU64<V> = LockFreeDawgNode<u64, V>;
 
 /// A dynamic DAWG with lock-free concurrent access.
 ///
@@ -223,75 +85,22 @@ impl<V: DictionaryValue> DawgNodeU64<V> {
 /// }
 /// ```
 pub struct DynamicDawgU64<V: DictionaryValue = ()> {
-    /// Root node of the DAWG
-    root: Arc<DawgNodeU64<V>>,
-    /// Number of terms in the DAWG
-    term_count: AtomicUsize,
-    /// Whether compaction is recommended
-    needs_compaction: AtomicBool,
-    /// Number of writers currently mutating the lock-free graph.
-    active_writers: AtomicUsize,
-    /// Exclusive maintenance gate used only by `compact` / `minimize`.
-    compaction_active: AtomicBool,
+    core: LockFreeDawg<u64, V>,
 }
 
 impl<V: DictionaryValue> Clone for DynamicDawgU64<V> {
     fn clone(&self) -> Self {
-        // Deep clone the entire structure
-        DynamicDawgU64 {
-            root: Arc::new(self.deep_clone_node(&self.root)),
-            term_count: AtomicUsize::new(self.term_count.load(Ordering::Relaxed)),
-            needs_compaction: AtomicBool::new(self.needs_compaction.load(Ordering::Relaxed)),
-            active_writers: AtomicUsize::new(0),
-            compaction_active: AtomicBool::new(false),
+        Self {
+            core: self.core.clone(),
         }
-    }
-}
-
-struct WriteGuard<'a, V: DictionaryValue> {
-    dawg: &'a DynamicDawgU64<V>,
-}
-
-impl<V: DictionaryValue> Drop for WriteGuard<'_, V> {
-    fn drop(&mut self) {
-        self.dawg.active_writers.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct BuildNode<V: DictionaryValue> {
-    is_final: bool,
-    value: Option<V>,
-    edges: Vec<(u64, usize)>,
-}
-
-#[derive(Clone, Eq)]
-struct U64MergeSignature {
-    is_final: bool,
-    edges: Vec<(u64, usize)>,
-}
-
-impl PartialEq for U64MergeSignature {
-    fn eq(&self, other: &Self) -> bool {
-        self.is_final == other.is_final && self.edges == other.edges
-    }
-}
-
-impl Hash for U64MergeSignature {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.is_final.hash(state);
-        self.edges.hash(state);
     }
 }
 
 impl<V: DictionaryValue> std::fmt::Debug for DynamicDawgU64<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DynamicDawgU64")
-            .field("term_count", &self.term_count.load(Ordering::Relaxed))
-            .field(
-                "needs_compaction",
-                &self.needs_compaction.load(Ordering::Relaxed),
-            )
+            .field("term_count", &self.term_count())
+            .field("needs_compaction", &self.needs_compaction())
             .finish()
     }
 }
@@ -303,29 +112,6 @@ impl<V: DictionaryValue> Default for DynamicDawgU64<V> {
 }
 
 impl<V: DictionaryValue> DynamicDawgU64<V> {
-    /// Deep clone a node and all its descendants.
-    fn deep_clone_node(&self, node: &Arc<DawgNodeU64<V>>) -> DawgNodeU64<V> {
-        let edges = node.edges.load();
-        let new_edges: SmallVec<_> = edges
-            .edges
-            .iter()
-            .map(|(label, child)| (*label, Arc::new(self.deep_clone_node(child))))
-            .collect();
-
-        // Clone the value: Guard<Option<Arc<V>>> -> Option<V>
-        let value_guard = node.value.load();
-        let value_clone: Option<V> = value_guard.as_ref().map(|arc| (**arc).clone());
-
-        DawgNodeU64 {
-            edges: ArcSwap::from_pointee(EdgeList { edges: new_edges }),
-            is_final: AtomicBool::new(node.is_final.load(Ordering::Acquire)),
-            value: match value_clone {
-                Some(v) => ArcSwapOption::from_pointee(Some(v)),
-                None => ArcSwapOption::empty(),
-            },
-        }
-    }
-
     /// Create a new empty dynamic DAWG.
     ///
     /// # Example
@@ -335,121 +121,8 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     /// dawg.insert_sequence(&[1, 2, 3]);
     /// ```
     pub fn new() -> Self {
-        DynamicDawgU64 {
-            root: Arc::new(DawgNodeU64::new(false)),
-            term_count: AtomicUsize::new(0),
-            needs_compaction: AtomicBool::new(false),
-            active_writers: AtomicUsize::new(0),
-            compaction_active: AtomicBool::new(false),
-        }
-    }
-
-    fn begin_write(&self) -> WriteGuard<'_, V> {
-        let mut backoff = CasBackoff::new();
-        loop {
-            while self.compaction_active.load(Ordering::Acquire) {
-                backoff.snooze();
-            }
-
-            self.active_writers.fetch_add(1, Ordering::AcqRel);
-            if !self.compaction_active.load(Ordering::Acquire) {
-                return WriteGuard { dawg: self };
-            }
-            self.active_writers.fetch_sub(1, Ordering::AcqRel);
-            backoff.snooze();
-        }
-    }
-
-    fn acquire_compaction(&self) -> bool {
-        self.compaction_active
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-    }
-
-    fn release_compaction(&self) {
-        self.compaction_active.store(false, Ordering::Release);
-    }
-
-    fn wait_for_writers_to_quiesce(&self) {
-        let mut backoff = CasBackoff::new();
-        while self.active_writers.load(Ordering::Acquire) != 0 {
-            backoff.snooze();
-        }
-    }
-
-    fn update_value_cas<F>(node: &Arc<DawgNodeU64<V>>, default_value: &V, update_fn: &F)
-    where
-        F: Fn(&mut V),
-    {
-        let mut backoff = CasBackoff::new();
-        loop {
-            let current = node.value.load_full();
-            let new_value = if let Some(value) = current.as_ref() {
-                let mut updated = (**value).clone();
-                update_fn(&mut updated);
-                updated
-            } else {
-                default_value.clone()
-            };
-
-            if Self::compare_store_value(node, current, Some(Arc::new(new_value))) {
-                return;
-            }
-            backoff.snooze();
-        }
-    }
-
-    fn update_or_insert_terminal<F>(
-        &self,
-        terminal: &Arc<DawgNodeU64<V>>,
-        default_value: &V,
-        update_fn: &F,
-    ) -> bool
-    where
-        F: Fn(&mut V),
-    {
-        let mut backoff = CasBackoff::new();
-        loop {
-            if terminal.is_final.load(Ordering::Acquire) {
-                Self::update_value_cas(terminal, default_value, update_fn);
-                return false;
-            }
-
-            if Self::compare_store_value(terminal, None, Some(Arc::new(default_value.clone()))) {
-                if terminal
-                    .is_final
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                {
-                    self.term_count.fetch_add(1, Ordering::Relaxed);
-                    return true;
-                }
-
-                Self::update_value_cas(terminal, default_value, update_fn);
-                return false;
-            }
-
-            backoff.snooze();
-        }
-    }
-
-    fn compare_store_value(
-        node: &DawgNodeU64<V>,
-        expected: Option<Arc<V>>,
-        new_value: Option<Arc<V>>,
-    ) -> bool {
-        match expected {
-            Some(expected) => {
-                let previous = node.value.compare_and_swap(&expected, new_value);
-                previous
-                    .as_ref()
-                    .is_some_and(|actual| Arc::ptr_eq(actual, &expected))
-            }
-            None => {
-                let expected_none = None::<Arc<V>>;
-                let previous = node.value.compare_and_swap(&expected_none, new_value);
-                previous.as_ref().is_none()
-            }
+        Self {
+            core: LockFreeDawg::new(),
         }
     }
 
@@ -458,7 +131,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     /// This is primarily used by zippers and iterators for navigation.
     #[inline]
     pub(crate) fn root_arc(&self) -> Arc<DawgNodeU64<V>> {
-        self.root.clone()
+        self.core.root_arc()
     }
 
     /// Create a new empty dynamic DAWG with custom auto-minimize threshold.
@@ -478,11 +151,10 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     /// not install a Bloom filter. The configuration parameters are accepted
     /// for API compatibility with generic DAWG construction code; explicit
     /// compaction remains the maintenance mechanism.
-    pub fn with_config(
-        _auto_minimize_threshold: f32,
-        _bloom_filter_capacity: Option<usize>,
-    ) -> Self {
-        Self::new()
+    pub fn with_config(auto_minimize_threshold: f32, bloom_filter_capacity: Option<usize>) -> Self {
+        Self {
+            core: LockFreeDawg::with_config(auto_minimize_threshold, bloom_filter_capacity),
+        }
     }
 
     /// Create from an iterator of terms.
@@ -564,16 +236,16 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     /// final sequences.
     ///
     /// Reads remain wait-free while compaction builds the replacement graph.
-    /// Publication briefly gates writers so the rebuilt root cannot overwrite a
-    /// concurrent insert/remove/update that started on the old graph.
+    /// Publication uses the same revision CAS as normal writes, so a racing
+    /// compaction retries rather than overwriting a newer update.
     pub fn compact(&self) -> usize {
-        self.rebuild_from_visible_entries()
+        self.core.compact()
     }
 
     /// Minimize the DAWG by rebuilding and interning equivalent valueless
     /// suffix subgraphs.
     pub fn minimize(&self) -> usize {
-        self.rebuild_from_visible_entries()
+        self.core.minimize()
     }
 
     /// Batch insert multiple terms.
@@ -609,18 +281,18 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     /// Get the number of terms in the DAWG.
     #[inline]
     pub fn term_count(&self) -> usize {
-        self.term_count.load(Ordering::Relaxed)
+        self.core.term_count()
     }
 
     /// Get the number of nodes in the DAWG.
     pub fn node_count(&self) -> usize {
-        self.count_unique_nodes()
+        self.core.node_count()
     }
 
     /// Check if compaction is recommended.
     #[inline]
     pub fn needs_compaction(&self) -> bool {
-        self.needs_compaction.load(Ordering::Relaxed)
+        self.core.needs_compaction()
     }
 
     /// Check if a term is in the DAWG (string-based API).
@@ -644,146 +316,12 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     /// This method uses CAS loops to atomically update edge lists. At least one
     /// concurrent writer always makes progress, preventing livelock.
     pub fn insert_sequence(&self, sequence: &[u64]) -> bool {
-        let _write = self.begin_write();
-        if sequence.is_empty() {
-            // Mark root as final
-            if self
-                .root
-                .is_final
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-            {
-                self.term_count.fetch_add(1, Ordering::Relaxed);
-                return true;
-            }
-            return false;
-        }
-
-        let mut current: Arc<DawgNodeU64<V>> = self.root.clone();
-
-        for (i, &label) in sequence.iter().enumerate() {
-            let is_last = i == sequence.len() - 1;
-
-            let mut backoff = CasBackoff::new();
-            loop {
-                let edges = current.edges.load();
-
-                if let Some(child) = edges.find(label) {
-                    // Edge exists, follow it
-                    if is_last {
-                        // Mark child as final
-                        if child
-                            .is_final
-                            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-                            .is_ok()
-                        {
-                            self.term_count.fetch_add(1, Ordering::Relaxed);
-                            return true;
-                        }
-                        return false; // Already exists
-                    }
-                    // Clone the Arc to own it, then drop the edge guard
-                    current = child.clone();
-                    break;
-                } else {
-                    // Need to add edge - CAS loop
-                    let new_node = Arc::new(DawgNodeU64::new(is_last));
-                    let new_edges = Arc::new(edges.with_edge(label, new_node.clone()));
-
-                    // Try to swap the edge list
-                    let prev = current.edges.compare_and_swap(&edges, new_edges.clone());
-                    if Arc::ptr_eq(&prev, &edges) {
-                        // CAS succeeded
-                        if is_last {
-                            self.term_count.fetch_add(1, Ordering::Relaxed);
-                            return true;
-                        }
-                        // Continue with the node we just inserted
-                        current = new_node;
-                        break;
-                    }
-                    // CAS failed - another thread modified edges, retry
-                    backoff.snooze();
-                }
-            }
-        }
-
-        true
+        self.core.insert_units(sequence)
     }
 
     /// Insert a sequence with an associated value.
     pub fn insert_sequence_with_value(&self, sequence: &[u64], value: V) -> bool {
-        let _write = self.begin_write();
-        if sequence.is_empty() {
-            // Mark root as final with value
-            self.root.value.store(Some(Arc::new(value.clone())));
-            if self
-                .root
-                .is_final
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-            {
-                self.term_count.fetch_add(1, Ordering::Relaxed);
-                return true;
-            }
-            // Already final - update value
-            self.root.value.store(Some(Arc::new(value)));
-            return false;
-        }
-
-        let mut current: Arc<DawgNodeU64<V>> = self.root.clone();
-
-        for (i, &label) in sequence.iter().enumerate() {
-            let is_last = i == sequence.len() - 1;
-
-            let mut backoff = CasBackoff::new();
-            loop {
-                let edges = current.edges.load();
-
-                if let Some(child) = edges.find(label) {
-                    if is_last {
-                        // Mark child as final with value
-                        child.value.store(Some(Arc::new(value.clone())));
-                        if child
-                            .is_final
-                            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-                            .is_ok()
-                        {
-                            self.term_count.fetch_add(1, Ordering::Relaxed);
-                            return true;
-                        }
-                        // Already final - update value
-                        child.value.store(Some(Arc::new(value)));
-                        return false;
-                    }
-                    // Clone the Arc to own it
-                    current = child.clone();
-                    break;
-                } else {
-                    // Need to add edge
-                    let new_node = Arc::new(if is_last {
-                        DawgNodeU64::new_with_value(true, Some(value.clone()))
-                    } else {
-                        DawgNodeU64::new(false)
-                    });
-                    let new_edges = Arc::new(edges.with_edge(label, new_node.clone()));
-
-                    let prev = current.edges.compare_and_swap(&edges, new_edges.clone());
-                    if Arc::ptr_eq(&prev, &edges) {
-                        if is_last {
-                            self.term_count.fetch_add(1, Ordering::Relaxed);
-                            return true;
-                        }
-                        // Continue with the node we just inserted
-                        current = new_node;
-                        break;
-                    }
-                    backoff.snooze();
-                }
-            }
-        }
-
-        true
+        self.core.insert_units_with_value(sequence, value)
     }
 
     /// Update or insert a sequence with value.
@@ -796,62 +334,13 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     where
         F: Fn(&mut V),
     {
-        let _write = self.begin_write();
-        // Navigate to the node, creating path if needed, without overwriting an
-        // existing value before the update function can observe it.
-        if sequence.is_empty() {
-            return self.update_or_insert_terminal(&self.root, &default_value, &update_fn);
-        }
-
-        let mut current: Arc<DawgNodeU64<V>> = self.root.clone();
-
-        for &label in sequence {
-            let mut backoff = CasBackoff::new();
-            loop {
-                let edges = current.edges.load();
-
-                if let Some(child) = edges.find(label) {
-                    current = child.clone();
-                    break;
-                }
-
-                let new_node = Arc::new(DawgNodeU64::new(false));
-                let new_edges = Arc::new(edges.with_edge(label, new_node.clone()));
-                let prev = current.edges.compare_and_swap(&edges, new_edges);
-
-                if Arc::ptr_eq(&prev, &edges) {
-                    current = new_node;
-                    break;
-                }
-                backoff.snooze();
-            }
-        }
-
-        self.update_or_insert_terminal(&current, &default_value, &update_fn)
+        self.core
+            .update_or_insert_units(sequence, default_value, update_fn)
     }
 
     /// Get the value for a sequence.
     pub fn get_sequence_value(&self, sequence: &[u64]) -> Option<V> {
-        let mut current: Arc<DawgNodeU64<V>> = self.root.clone();
-
-        for &label in sequence {
-            let edges = current.edges.load();
-            {
-                let child = edges.find(label)?;
-                // Clone Arc to own the node, ensuring it outlives the guard
-                current = child.clone();
-            }
-        }
-
-        if current.is_final.load(Ordering::Acquire) {
-            let val = current.value.load();
-            // val is Guard<Option<Arc<V>>>; *val is Option<Arc<V>>
-            if let Some(v) = &*val {
-                // v is &Arc<V>, **v is V
-                return Some((**v).clone());
-            }
-        }
-        None
+        self.core.get_units_value(sequence)
     }
 
     /// Check if a sequence exists in the DAWG (wait-free).
@@ -859,20 +348,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     /// This is a wait-free operation - no locks, no retries, no blocking.
     #[inline]
     pub fn contains_sequence(&self, sequence: &[u64]) -> bool {
-        let mut current: Arc<DawgNodeU64<V>> = self.root.clone();
-
-        for &label in sequence {
-            let edges = current.edges.load();
-            match edges.find(label) {
-                Some(child) => {
-                    // Clone Arc to own the node, ensuring it outlives the guard
-                    current = child.clone();
-                }
-                None => return false,
-            }
-        }
-
-        current.is_final.load(Ordering::Acquire)
+        self.core.contains_units(sequence)
     }
 
     /// Remove a sequence from the DAWG.
@@ -880,51 +356,7 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     /// Note: This only unmarks the node as final. The node structure remains
     /// for potential future use. Call `compact()` to reclaim unused nodes.
     pub fn remove_sequence(&self, sequence: &[u64]) -> bool {
-        let _write = self.begin_write();
-        if sequence.is_empty() {
-            if self
-                .root
-                .is_final
-                .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-            {
-                let previous_value = self.root.value.load_full();
-                let _ = Self::compare_store_value(&self.root, previous_value, None);
-                self.term_count.fetch_sub(1, Ordering::Relaxed);
-                self.needs_compaction.store(true, Ordering::Relaxed);
-                return true;
-            }
-            return false;
-        }
-
-        // Navigate to the node
-        let mut current: Arc<DawgNodeU64<V>> = self.root.clone();
-
-        for &label in sequence {
-            let edges = current.edges.load();
-            match edges.find(label) {
-                Some(child) => {
-                    // Clone Arc to own the node, ensuring it outlives the guard
-                    current = child.clone();
-                }
-                None => return false,
-            }
-        }
-
-        // Try to unmark as final
-        if current
-            .is_final
-            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-        {
-            let previous_value = current.value.load_full();
-            let _ = Self::compare_store_value(&current, previous_value, None);
-            self.term_count.fetch_sub(1, Ordering::Relaxed);
-            self.needs_compaction.store(true, Ordering::Relaxed);
-            return true;
-        }
-
-        false
+        self.core.remove_units(sequence)
     }
 
     // =========================================================================
@@ -973,12 +405,6 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
         DynamicDawgU64Zipper::new_from_dict(self)
     }
 
-    /// Get the root node (for zipper access).
-    #[allow(dead_code)]
-    pub(crate) fn root_node(&self) -> &Arc<DawgNodeU64<V>> {
-        &self.root
-    }
-
     /// Iterate over all terms in the DAWG.
     pub fn iter(&self) -> impl Iterator<Item = Vec<u64>> + '_ {
         DawgIterator::new(self)
@@ -987,163 +413,6 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     /// Iterate over all terms with their values.
     pub fn iter_with_values(&self) -> impl Iterator<Item = (Vec<u64>, V)> + '_ {
         DawgIteratorWithValues::new(self)
-    }
-
-    fn rebuild_from_visible_entries(&self) -> usize {
-        if !self.acquire_compaction() {
-            return 0;
-        }
-
-        self.wait_for_writers_to_quiesce();
-
-        let old_node_count = self.count_unique_nodes();
-        let entries = self.collect_visible_entries();
-        let new_root = Self::build_minimized_root(&entries);
-        let new_node_count = Self::count_unique_nodes_from(&new_root);
-
-        let new_edges = new_root.edges.load_full();
-        self.root.edges.store(new_edges);
-
-        let new_value = new_root.value.load_full();
-        self.root.value.store(new_value);
-        self.root
-            .is_final
-            .store(new_root.is_final.load(Ordering::Acquire), Ordering::Release);
-
-        self.term_count.store(entries.len(), Ordering::Release);
-        self.needs_compaction.store(false, Ordering::Release);
-        self.release_compaction();
-
-        old_node_count.saturating_sub(new_node_count)
-    }
-
-    fn collect_visible_entries(&self) -> Vec<(Vec<u64>, Option<V>)> {
-        let mut entries = Vec::with_capacity(self.term_count());
-        let mut path = Vec::new();
-        Self::collect_visible_entries_from(&self.root, &mut path, &mut entries);
-        entries
-    }
-
-    fn collect_visible_entries_from(
-        node: &Arc<DawgNodeU64<V>>,
-        path: &mut Vec<u64>,
-        entries: &mut Vec<(Vec<u64>, Option<V>)>,
-    ) {
-        if node.is_final.load(Ordering::Acquire) {
-            let value = node
-                .value
-                .load_full()
-                .as_ref()
-                .map(|value| (**value).clone());
-            entries.push((path.clone(), value));
-        }
-
-        let edges = node.edges.load_full();
-        for (label, child) in edges.edges.iter() {
-            path.push(*label);
-            Self::collect_visible_entries_from(child, path, entries);
-            path.pop();
-        }
-    }
-
-    fn build_minimized_root(entries: &[(Vec<u64>, Option<V>)]) -> Arc<DawgNodeU64<V>> {
-        let max_trie_nodes = 1 + entries.iter().map(|(units, _)| units.len()).sum::<usize>();
-        let mut nodes = Vec::with_capacity(max_trie_nodes);
-        nodes.push(BuildNode::<V>::default());
-        let mut sorted_entries = entries.to_vec();
-        sorted_entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
-
-        for (sequence, value) in sorted_entries {
-            let mut node_idx = 0usize;
-            for label in sequence {
-                let next = match nodes[node_idx]
-                    .edges
-                    .binary_search_by_key(&label, |(edge_label, _)| *edge_label)
-                {
-                    Ok(pos) => nodes[node_idx].edges[pos].1,
-                    Err(pos) => {
-                        let new_idx = nodes.len();
-                        nodes.push(BuildNode::default());
-                        nodes[node_idx].edges.insert(pos, (label, new_idx));
-                        new_idx
-                    }
-                };
-                node_idx = next;
-            }
-            nodes[node_idx].is_final = true;
-            nodes[node_idx].value = value;
-        }
-
-        let mut interned: HashMap<U64MergeSignature, Arc<DawgNodeU64<V>>> =
-            HashMap::with_capacity(nodes.len());
-        Self::intern_build_node(0, &nodes, &mut interned, true)
-    }
-
-    fn intern_build_node(
-        idx: usize,
-        nodes: &[BuildNode<V>],
-        interned: &mut HashMap<U64MergeSignature, Arc<DawgNodeU64<V>>>,
-        is_root: bool,
-    ) -> Arc<DawgNodeU64<V>> {
-        let build = &nodes[idx];
-        let mut edges = SmallVec::<[(u64, Arc<DawgNodeU64<V>>); 4]>::new();
-        let mut signature_edges = Vec::with_capacity(build.edges.len());
-
-        for (label, child_idx) in &build.edges {
-            let child = Self::intern_build_node(*child_idx, nodes, interned, false);
-            signature_edges.push((*label, Arc::as_ptr(&child) as usize));
-            edges.push((*label, child));
-        }
-
-        if !is_root && !build.is_final && build.value.is_none() {
-            let signature = U64MergeSignature {
-                is_final: build.is_final,
-                edges: signature_edges,
-            };
-            if let Some(existing) = interned.get(&signature) {
-                return existing.clone();
-            }
-
-            let node = Arc::new(DawgNodeU64 {
-                edges: ArcSwap::from_pointee(EdgeList { edges }),
-                is_final: AtomicBool::new(build.is_final),
-                value: ArcSwapOption::empty(),
-            });
-            interned.insert(signature, node.clone());
-            return node;
-        }
-
-        Arc::new(DawgNodeU64 {
-            edges: ArcSwap::from_pointee(EdgeList { edges }),
-            is_final: AtomicBool::new(build.is_final),
-            value: match build.value.clone() {
-                Some(value) => ArcSwapOption::from_pointee(Some(value)),
-                None => ArcSwapOption::empty(),
-            },
-        })
-    }
-
-    fn count_unique_nodes(&self) -> usize {
-        Self::count_unique_nodes_from(&self.root)
-    }
-
-    fn count_unique_nodes_from(root: &Arc<DawgNodeU64<V>>) -> usize {
-        let mut visited = HashSet::new();
-        Self::count_unique_nodes_dfs(root, &mut visited)
-    }
-
-    fn count_unique_nodes_dfs(node: &Arc<DawgNodeU64<V>>, visited: &mut HashSet<usize>) -> usize {
-        let ptr = Arc::as_ptr(node) as usize;
-        if !visited.insert(ptr) {
-            return 0;
-        }
-
-        let mut count = 1;
-        let edges = node.edges.load_full();
-        for (_, child) in edges.edges.iter() {
-            count += Self::count_unique_nodes_dfs(child, visited);
-        }
-        count
     }
 }
 
@@ -1158,7 +427,7 @@ impl<'a, V: DictionaryValue> DawgIterator<'a, V> {
     fn new(dawg: &'a DynamicDawgU64<V>) -> Self {
         DawgIterator {
             dawg,
-            stack: vec![(dawg.root.clone(), Vec::new(), 0)],
+            stack: vec![(dawg.root_arc(), Vec::new(), 0)],
         }
     }
 }
@@ -1168,11 +437,9 @@ impl<V: DictionaryValue> Iterator for DawgIterator<'_, V> {
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some((node, path, edge_idx)) = self.stack.pop() {
-            let edges = node.edges.load();
-
             // Visit children
-            if edge_idx < edges.edges.len() {
-                let (label, child) = &edges.edges[edge_idx];
+            if edge_idx < node.edges.edges.len() {
+                let (label, child) = &node.edges.edges[edge_idx];
                 let mut new_path = path.clone();
                 new_path.push(*label);
 
@@ -1180,7 +447,7 @@ impl<V: DictionaryValue> Iterator for DawgIterator<'_, V> {
                 self.stack.push((node.clone(), path, edge_idx + 1));
                 // Push child to visit
                 self.stack.push((child.clone(), new_path, 0));
-            } else if node.is_final.load(Ordering::Acquire) {
+            } else if node.is_final {
                 // All children visited, and this is a final node - return the path
                 return Some(path);
             }
@@ -1200,7 +467,7 @@ impl<'a, V: DictionaryValue> DawgIteratorWithValues<'a, V> {
     fn new(dawg: &'a DynamicDawgU64<V>) -> Self {
         DawgIteratorWithValues {
             dawg,
-            stack: vec![(dawg.root.clone(), Vec::new(), 0)],
+            stack: vec![(dawg.root_arc(), Vec::new(), 0)],
         }
     }
 }
@@ -1210,20 +477,15 @@ impl<V: DictionaryValue> Iterator for DawgIteratorWithValues<'_, V> {
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some((node, path, edge_idx)) = self.stack.pop() {
-            let edges = node.edges.load();
-
-            if edge_idx < edges.edges.len() {
-                let (label, child) = &edges.edges[edge_idx];
+            if edge_idx < node.edges.edges.len() {
+                let (label, child) = &node.edges.edges[edge_idx];
                 let mut new_path = path.clone();
                 new_path.push(*label);
 
                 self.stack.push((node.clone(), path, edge_idx + 1));
                 self.stack.push((child.clone(), new_path, 0));
-            } else if node.is_final.load(Ordering::Acquire) {
-                let val = node.value.load();
-                // val is Guard<Option<Arc<V>>>; *val is Option<Arc<V>>
-                if let Some(v) = &*val {
-                    // v is &Arc<V>, **v is V
+            } else if node.is_final {
+                if let Some(v) = &node.value {
                     return Some((path, (**v).clone()));
                 }
             }
@@ -1253,19 +515,19 @@ impl<V: DictionaryValue> DictionaryNode for DynamicDawgU64Node<V> {
     type Unit = u64;
 
     fn is_final(&self) -> bool {
-        self.node.is_final.load(Ordering::Acquire)
+        self.node.is_final
     }
 
     fn transition(&self, label: Self::Unit) -> Option<Self> {
-        let edges = self.node.edges.load();
-        edges.find(label).map(|child| DynamicDawgU64Node {
+        self.node.edges.find(label).map(|child| DynamicDawgU64Node {
             node: child.clone(),
         })
     }
 
     fn edges(&self) -> Box<dyn Iterator<Item = (Self::Unit, Self)> + '_> {
-        let edges_guard = self.node.edges.load();
-        let edges_vec: Vec<_> = edges_guard
+        let edges_vec: Vec<_> = self
+            .node
+            .edges
             .edges
             .iter()
             .map(|(label, child)| {
@@ -1281,7 +543,7 @@ impl<V: DictionaryValue> DictionaryNode for DynamicDawgU64Node<V> {
     }
 
     fn edge_count(&self) -> Option<usize> {
-        Some(self.node.edges.load().edges.len())
+        Some(self.node.edges.edges.len())
     }
 }
 
@@ -1289,10 +551,10 @@ impl<V: DictionaryValue> crate::MappedDictionaryNode for DynamicDawgU64Node<V> {
     type Value = V;
 
     /// The value stored at this node, if any. Values are attached only at final
-    /// nodes (via `insert_sequence_with_value`); the backing `ArcSwapOption` is
+    /// nodes (via `insert_sequence_with_value`); the immutable value slot is
     /// empty elsewhere, so this yields `None` for non-final nodes.
     fn value(&self) -> Option<Self::Value> {
-        self.node.value.load_full().map(|value| (*value).clone())
+        self.node.value.as_ref().map(|value| (**value).clone())
     }
 }
 
@@ -1330,7 +592,7 @@ impl<V: DictionaryValue> Dictionary for DynamicDawgU64<V> {
 
     fn root(&self) -> Self::Node {
         DynamicDawgU64Node {
-            node: self.root.clone(),
+            node: self.root_arc(),
         }
     }
 

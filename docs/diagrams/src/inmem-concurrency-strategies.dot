@@ -14,11 +14,11 @@ digraph inmem_concurrency {
   edge [color="#37474F", fontname="DejaVu Sans", fontsize=10];
 
   subgraph cluster_A {
-    label="A · Per-node CAS  (DynamicDawg / …Char / …U64)\nLocal edit → only path nodes' cells change; other readers untouched.";
+    label="A · Path-copy + root CAS  (DynamicDawg / …Char / …U64)\nLocal edit → copy one route, share other nodes, publish one immutable revision.";
     fontname="DejaVu Sans"; fontsize=11; color="#37474F"; style=rounded; labelloc=b;
-    a_writer [label="writer: rebuild edge list\nof each node on the path", fillcolor="#FFCDD2"];
-    a_e1 [label="node.edges : ArcSwap", fillcolor="#B2DFDB"];
-    a_reader [label="reader: wait-free load", fillcolor="#C8E6C9"];
+    a_writer [label="writer: path-copy route\ninto revision N+1", fillcolor="#FFCDD2"];
+    a_e1 [label="ArcSwap<GraphVersion>", fillcolor="#B2DFDB"];
+    a_reader [label="reader retains immutable\nrevision N root", fillcolor="#C8E6C9"];
     a_writer -> a_e1 [label="CAS"];
     a_e1 -> a_reader [label="load", dir=back];
   }

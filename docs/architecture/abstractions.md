@@ -1,6 +1,6 @@
 # Core abstractions: `CharUnit` and `KeyEncoding`
 
-**Navigation**: [↑ Documentation index](../README.md) · [Dictionary layer →](../algorithms/) · [Persistence architecture →](persistence/) · [Disk-trie theory →](../theory/disk-tries/) · [Query half: liblevenshtein →](https://github.com/universal-automata/liblevenshtein-rust)
+**Navigation**: [↑ Documentation index](../README.md) · [Dictionary layer →](../algorithms/) · [Persistence architecture →](persistence/) · [Disk-trie theory →](../theory/disk-tries/) · [Query half: liblevenshtein →](https://github.com/vinary-tree/liblevenshtein-rust)
 
 ## Overview
 
@@ -247,4 +247,4 @@ parameterized by `Unit: CharUnit` or `K: KeyEncoding`.
 
 ---
 
-**Navigation**: [↑ Documentation index](../README.md) · [Dictionary layer →](../algorithms/) · [Persistence architecture →](persistence/) · [Disk-trie theory →](../theory/disk-tries/) · [Query half: liblevenshtein →](https://github.com/universal-automata/liblevenshtein-rust)
+**Navigation**: [↑ Documentation index](../README.md) · [Dictionary layer →](../algorithms/) · [Persistence architecture →](persistence/) · [Disk-trie theory →](../theory/disk-tries/) · [Query half: liblevenshtein →](https://github.com/vinary-tree/liblevenshtein-rust)

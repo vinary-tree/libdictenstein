@@ -39,9 +39,9 @@ The rationale for the split (detailed in
 [the architecture doc](../architecture/in-memory-dictionaries.md#3-two-lock-free-concurrency-strategies))
 comes down to **edit locality**:
 
-- **Per-node CAS** (`DynamicDawg`, `…Char`, `…U64`) — a DAWG edit touches only the nodes on one
-  root-to-node path (plus minimization merges), so publishing per-node is cheap and maximizes
-  reader/writer independence: a writer editing `"cat"` does not disturb a reader traversing `"dog"`.
+- **Path-copy plus root CAS** (`DynamicDawg`, `…Char`, `…U64`) — a DAWG edit touches only one
+  root-to-terminal route, so the writer copies that route, shares unchanged branches, and publishes
+  one new root. A reader that retained the earlier root remains completely undisturbed.
 - **Whole-graph snapshot / copy-on-write** (`SuffixAutomaton`, `Scdawg`, `PathMap`) — an edit here is
   *not* path-local (a suffix-automaton `extend` can clone-split a state and rewire suffix links
   graph-wide), so the simplest correct linearization point is a single CAS on the root pointer after
@@ -52,13 +52,13 @@ comes down to **edit locality**:
 
 The design rests on four invariants, each a direct consequence of *publish-immutable-state-by-CAS*:
 
-1. **No torn reads.** A reader observes either the pre-edit state or the post-edit state of any cell
-   it loads, never a partially linked one — because a writer never mutates published data in place;
-   it CAS-swaps a pointer to freshly built, immutable data.
+1. **No torn reads.** A reader observes one complete pre-edit or post-edit revision, never a mixture
+   — because a writer never mutates published data in place; it CAS-swaps a pointer to a freshly
+   built immutable root.
 2. **Linearizable single-key ops.** Each `insert` / `remove` / `contains` has a single atomic point
    at which it takes effect (the CAS that publishes the edit, or the `load` that reads the current
    pointer), so concurrent operations are equivalent to *some* sequential order.
-3. **No lost writes.** Two writers racing on the same cell resolve by CAS: the loser observes the
+3. **No lost writes.** Two writers racing at a publication point resolve by CAS: the loser observes the
    winner's new state and *retries* against it (via `CasBackoff`, [`src/nonblocking`](../../src/nonblocking.rs)),
    so no update is silently dropped. `BijectiveMap` additionally runs a rollback step to keep its
    term↔value bijection consistent if a reverse-map race is lost.
@@ -78,11 +78,9 @@ invariant 3 (no lost writes) holds no matter how many writers contend.
 
 The model is checked, not asserted:
 
-- **Exhaustive interleaving (loom).** [`tests/dynamic_dawg_u64_correspondence.rs`](../../tests/dynamic_dawg_u64_correspondence.rs)
-  runs the per-node CAS path under [`loom`](https://docs.rs/loom), which explores *all* legal thread
-  interleavings of the `ArcSwap` publish/load, so a lost-write or torn-read bug cannot hide behind a
-  lucky schedule. [`tests/bloom_filter_correspondence.rs`](../../tests/bloom_filter_correspondence.rs)
-  gives the shared bit-vector helper the same treatment.
+- **Snapshot correspondence.** [`tests/query_start_snapshot_correspondence.rs`](../../tests/query_start_snapshot_correspondence.rs)
+  retains one byte, character, or u64 root while inserts, removals, value replacements, and
+  compaction publish newer revisions, then asserts the retained traversal remains exact.
 - **Concurrent stress across every family.** [`tests/volatile_lockfree_concurrency.rs`](../../tests/volatile_lockfree_concurrency.rs)
   drives `DynamicDawg`, `SuffixAutomaton`, `Scdawg`, `PathMap`, and `BijectiveMap` under concurrent
   readers and writers, asserting that reads always observe a consistent dictionary and that no write

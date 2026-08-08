@@ -1,0 +1,28 @@
+project:
+  name: libdictenstein
+  version: 0.2.1
+  description: High-performance dictionaries and retained Vinary Tree resources
+  authors:
+    - Dylon Edwards
+  license: Apache-2.0
+  links:
+    homepage: https://github.com/vinary-tree/libdictenstein
+  java:
+    groupId: io.vinarytree
+    artifactId: libdictenstein
+
+signing:
+  pgp:
+    active: RELEASE
+    armored: true
+
+deploy:
+  maven:
+    mavenCentral:
+      sonatype:
+        active: RELEASE
+        url: https://central.sonatype.com/api/v1/publisher
+        authorization: BASIC
+        applyMavenCentralRules: true
+        stagingRepositories:
+          - build/staging-deploy

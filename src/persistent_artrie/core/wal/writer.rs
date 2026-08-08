@@ -8,7 +8,10 @@
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+#[cfg(all(unix, not(target_os = "wasi")))]
 use std::os::unix::fs::FileExt;
+#[cfg(windows)]
+use std::os::windows::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -37,6 +40,10 @@ pub struct WalWriter {
     /// Loaded lock-free by appends; swapped only by truncate/rotation lifecycle
     /// operations.
     segment_file: arc_swap::ArcSwap<File>,
+    /// WASI Preview 1 does not expose stable `pwrite`; serialize seek+write on
+    /// a cloned descriptor while retaining native lock-free positional writes.
+    #[cfg(target_os = "wasi")]
+    wasi_segment_write: Mutex<()>,
     /// Next byte offset for positional WAL appends.
     segment_next_offset: AtomicU64,
     /// Current LSN (next LSN to assign)
@@ -115,6 +122,8 @@ impl WalWriter {
             path,
             file: Mutex::new(writer),
             segment_file: arc_swap::ArcSwap::from_pointee(segment_file),
+            #[cfg(target_os = "wasi")]
+            wasi_segment_write: Mutex::new(()),
             segment_next_offset: AtomicU64::new(WalHeader::SIZE as u64),
             next_lsn: AtomicU64::new(1), // LSN 0 reserved for "no LSN"
             synced_lsn: AtomicU64::new(0),
@@ -170,6 +179,8 @@ impl WalWriter {
             path,
             file: Mutex::new(writer),
             segment_file: arc_swap::ArcSwap::from_pointee(segment_file),
+            #[cfg(target_os = "wasi")]
+            wasi_segment_write: Mutex::new(()),
             segment_next_offset: AtomicU64::new(segment_offset),
             next_lsn: AtomicU64::new(last_lsn + 1),
             synced_lsn: AtomicU64::new(last_lsn),
@@ -290,8 +301,44 @@ impl WalWriter {
             .segment_next_offset
             .fetch_add(frame.len() as u64, Ordering::AcqRel);
         let file = self.segment_file.load();
+        #[cfg(all(unix, not(target_os = "wasi")))]
         file.write_all_at(&frame, offset).map_err(WalError::Io)?;
+        #[cfg(windows)]
+        {
+            let mut written = 0usize;
+            while written < frame.len() {
+                let count = file
+                    .seek_write(&frame[written..], offset + written as u64)
+                    .map_err(WalError::Io)?;
+                if count == 0 {
+                    return Err(WalError::Io(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "short positional WAL write",
+                    )));
+                }
+                written += count;
+            }
+        }
+        #[cfg(target_os = "wasi")]
+        {
+            let _guard = self
+                .wasi_segment_write
+                .lock()
+                .expect("WASI segment write lock poisoned");
+            // WASI Preview 1 has no descriptor-dup operation, but `&File`
+            // implements seek/write over the original descriptor. The target-local
+            // mutex above gives that shared cursor exclusive access.
+            let mut positioned = &**file;
+            positioned
+                .seek(SeekFrom::Start(offset))
+                .map_err(WalError::Io)?;
+            positioned.write_all(&frame).map_err(WalError::Io)?;
+        }
+        #[cfg(not(target_os = "wasi"))]
         file.sync_data().map_err(WalError::Io)?;
+        // Node's WASI Preview 1 maps fd_sync but may reject fd_datasync.
+        #[cfg(target_os = "wasi")]
+        file.sync_all().map_err(WalError::Io)?;
 
         Ok(())
     }

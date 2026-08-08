@@ -37,7 +37,7 @@
 //! ```
 //!
 //! Approximate matching is provided by the downstream
-//! [`liblevenshtein`](https://github.com/universal-automata/liblevenshtein-rust)
+//! [`liblevenshtein`](https://github.com/vinary-tree/liblevenshtein-rust)
 //! crate's `Transducer`: wrap the `SuffixAutomatonChar` returned here and
 //! query with a target distance. The transducer is intentionally
 //! upstream-owned.
@@ -261,7 +261,7 @@ pub(crate) type SuffixAutomatonCharInner<V = ()> = super::core::SuffixAutomatonI
 /// ```
 ///
 /// For approximate matching wrap the automaton in
-/// [`liblevenshtein`](https://github.com/universal-automata/liblevenshtein-rust)'s
+/// [`liblevenshtein`](https://github.com/vinary-tree/liblevenshtein-rust)'s
 /// `Transducer` (upstream-owned, not part of this crate).
 #[derive(Clone, Debug)]
 pub struct SuffixAutomatonChar<V: DictionaryValue = ()> {

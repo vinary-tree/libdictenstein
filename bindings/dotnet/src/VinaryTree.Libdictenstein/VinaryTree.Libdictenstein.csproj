@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <PackageId>VinaryTree.Libdictenstein</PackageId>
+    <Version>0.2.1</Version>
+    <Description>High-performance modular dictionary backends for .NET</Description>
+    <Authors>Dylon Edwards</Authors>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/vinary-tree/libdictenstein</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../../../liblevenshtein-rust/bindings/dotnet/src/VinaryTree.Interop/VinaryTree.Interop.csproj" />
+    <None Include="../../../../README.md" Pack="true" PackagePath="README.md" />
+    <None Include="../../native/runtimes/**/*"
+          Pack="true"
+          PackagePath="runtimes/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

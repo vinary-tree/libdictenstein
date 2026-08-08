@@ -94,6 +94,91 @@ pub struct ScdawgChar<V: DictionaryValue = ()> {
     inner: LockFreeScdawg<char, V>,
 }
 
+/// Snapshot-owning iterator over exact SCDAWG terms and optional values.
+///
+/// The iterator retains one atomically published SCDAWG revision and clones
+/// only the entry currently yielded; it never clones or materializes the full
+/// term collection.
+pub struct ScdawgCharEntryIterator<V: DictionaryValue = ()> {
+    inner: Arc<ScdawgCharInner<V>>,
+    index: usize,
+}
+
+impl<V: DictionaryValue> Iterator for ScdawgCharEntryIterator<V> {
+    type Item = (String, Option<V>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let term = self.inner.terms.get(self.index)?.clone();
+        self.index += 1;
+        let value = self.inner.term_values.get(&term).cloned();
+        Some((term, value))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct OccurrenceFrame {
+    node: usize,
+    term_end_index: usize,
+    left_edge_index: usize,
+}
+
+enum OccurrenceState {
+    EmptyPattern { term_index: usize },
+    Missing,
+    Found { stack: Vec<OccurrenceFrame> },
+}
+
+/// Snapshot-owning iterator over SCDAWG substring occurrence locations.
+///
+/// Positions are Unicode scalar indices, matching [`ScdawgChar::locations`].
+/// Traversal uses an explicit stack and retains only O(graph depth) state.
+pub struct ScdawgCharOccurrenceIterator<V: DictionaryValue = ()> {
+    inner: Arc<ScdawgCharInner<V>>,
+    pattern_len: usize,
+    state: OccurrenceState,
+}
+
+impl<V: DictionaryValue> Iterator for ScdawgCharOccurrenceIterator<V> {
+    type Item = (String, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.state {
+            OccurrenceState::EmptyPattern { term_index } => {
+                let term = self.inner.terms.get(*term_index)?.clone();
+                *term_index += 1;
+                Some((term, 0))
+            }
+            OccurrenceState::Missing => None,
+            OccurrenceState::Found { stack } => loop {
+                let frame = stack.last_mut()?;
+                let node = &self.inner.nodes[frame.node];
+
+                while let Some(&(term_index, end_position)) =
+                    node.term_ends.get(frame.term_end_index)
+                {
+                    frame.term_end_index += 1;
+                    if end_position + 1 >= self.pattern_len {
+                        if let Some(term) = self.inner.terms.get(term_index) {
+                            return Some((term.clone(), end_position + 1 - self.pattern_len));
+                        }
+                    }
+                }
+
+                if let Some(&(_, child)) = node.left_edges.get(frame.left_edge_index) {
+                    frame.left_edge_index += 1;
+                    stack.push(OccurrenceFrame {
+                        node: child,
+                        term_end_index: 0,
+                        left_edge_index: 0,
+                    });
+                } else {
+                    stack.pop();
+                }
+            },
+        }
+    }
+}
+
 impl<V: DictionaryValue> Default for ScdawgChar<V> {
     fn default() -> Self {
         Self::new()
@@ -181,8 +266,15 @@ impl<V: DictionaryValue> ScdawgChar<V> {
 
     /// Iterate over all terms.
     pub fn iter(&self) -> impl Iterator<Item = String> {
-        let inner = self.inner.load();
-        inner.terms.clone().into_iter()
+        self.iter_entries().map(|(term, _)| term)
+    }
+
+    /// Iterate lazily over all exact terms and their optional values.
+    pub fn iter_entries(&self) -> ScdawgCharEntryIterator<V> {
+        ScdawgCharEntryIterator {
+            inner: self.inner.load(),
+            index: 0,
+        }
     }
 
     /// Get the number of terms in the SCDAWG.
@@ -256,8 +348,32 @@ impl<V: DictionaryValue> ScdawgChar<V> {
     /// This is the `locations(x)` operation from Blumer et al. (1987).
     /// Returns (term, start_position) pairs where position is in characters.
     pub fn locations(&self, pattern: &str) -> Vec<(String, usize)> {
+        self.locations_iter(pattern).collect()
+    }
+
+    /// Lazily enumerate all occurrence locations of a substring pattern.
+    pub fn locations_iter(&self, pattern: &str) -> ScdawgCharOccurrenceIterator<V> {
         let inner = self.inner.load();
-        inner.find_exact_substring(pattern)
+        let pattern_len = pattern.chars().count();
+        let state = if pattern.is_empty() {
+            OccurrenceState::EmptyPattern { term_index: 0 }
+        } else {
+            match inner.find_substring_fast(pattern) {
+                Some(node) => OccurrenceState::Found {
+                    stack: vec![OccurrenceFrame {
+                        node,
+                        term_end_index: 0,
+                        left_edge_index: 0,
+                    }],
+                },
+                None => OccurrenceState::Missing,
+            }
+        };
+        ScdawgCharOccurrenceIterator {
+            inner,
+            pattern_len,
+            state,
+        }
     }
 
     /// Get all occurrence locations from a specific SCDAWG node handle.
@@ -266,11 +382,26 @@ impl<V: DictionaryValue> ScdawgChar<V> {
         handle: &ScdawgCharNodeHandle<V>,
         pattern_len: usize,
     ) -> Vec<(String, usize)> {
-        let mut results = Vec::with_capacity(handle.inner.nodes[handle.node_idx].term_ends.len());
-        handle
-            .inner
-            .collect_term_positions(handle.node_idx, pattern_len, &mut results);
-        results
+        self.locations_at_iter(handle, pattern_len).collect()
+    }
+
+    /// Lazily enumerate occurrence locations from a captured state handle.
+    pub fn locations_at_iter(
+        &self,
+        handle: &ScdawgCharNodeHandle<V>,
+        pattern_len: usize,
+    ) -> ScdawgCharOccurrenceIterator<V> {
+        ScdawgCharOccurrenceIterator {
+            inner: Arc::clone(&handle.inner),
+            pattern_len,
+            state: OccurrenceState::Found {
+                stack: vec![OccurrenceFrame {
+                    node: handle.node_idx,
+                    term_end_index: 0,
+                    left_edge_index: 0,
+                }],
+            },
+        }
     }
 }
 
@@ -381,6 +512,18 @@ impl<V: DictionaryValue> DictionaryNode for ScdawgCharNodeHandle<V> {
                 .map(|node| node.forward_edges.len())
                 .unwrap_or(0),
         )
+    }
+}
+
+impl<V: DictionaryValue> crate::MappedDictionaryNode for ScdawgCharNodeHandle<V> {
+    type Value = V;
+
+    fn value(&self) -> Option<Self::Value> {
+        self.inner
+            .nodes
+            .get(self.node_idx)
+            .filter(|node| node.is_final)
+            .and_then(|node| node.value.clone())
     }
 }
 

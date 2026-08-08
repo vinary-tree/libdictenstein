@@ -446,6 +446,18 @@ impl<V: DictionaryValue> DictionaryNode for ScdawgNodeHandle<V> {
     }
 }
 
+impl<V: DictionaryValue> crate::MappedDictionaryNode for ScdawgNodeHandle<V> {
+    type Value = V;
+
+    fn value(&self) -> Option<Self::Value> {
+        self.inner
+            .nodes
+            .get(self.node_idx)
+            .filter(|node| node.is_final)
+            .and_then(|node| node.value.clone())
+    }
+}
+
 unsafe impl<V: DictionaryValue> Send for ScdawgNodeHandle<V> {}
 unsafe impl<V: DictionaryValue> Sync for ScdawgNodeHandle<V> {}
 

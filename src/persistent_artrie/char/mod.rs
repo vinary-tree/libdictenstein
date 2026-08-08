@@ -735,6 +735,35 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
             .into_iter()
     }
 
+    /// Lazily iterate over one immutable overlay revision.
+    ///
+    /// Unlike [`Self::iter_with_values`], this does not collect every entry before
+    /// returning. The iterator owns the root snapshot captured by this call, so a
+    /// concurrent mutation cannot change the entries or values it observes.
+    pub fn entries_stream(
+        &self,
+    ) -> crate::iterator::DictionaryIterator<PersistentARTrieCharZipper<V>>
+    where
+        V: Clone,
+    {
+        crate::iterator::DictionaryIterator::new(PersistentARTrieCharZipper::from_root(self.root()))
+    }
+
+    /// Lazily iterate over entries below `prefix` in one immutable overlay revision.
+    ///
+    /// Returns `None` when the prefix path does not exist. Terms yielded by the
+    /// iterator are complete terms, including the supplied prefix.
+    pub fn prefix_entries_stream(
+        &self,
+        prefix: &str,
+    ) -> Option<crate::iterator::DictionaryIterator<PersistentARTrieCharZipper<V>>>
+    where
+        V: Clone,
+    {
+        PersistentARTrieCharZipper::from_prefix_root(self.root(), prefix)
+            .map(crate::iterator::DictionaryIterator::new)
+    }
+
     /// Iterate over all terms with the given prefix (convenience wrapper returning iterator).
     ///
     /// Returns `None` if the prefix doesn't exist in the trie.
@@ -983,10 +1012,27 @@ pub struct PersistentARTrieCharZipper<V: DictionaryValue = ()> {
 impl<V: DictionaryValue> PersistentARTrieCharZipper<V> {
     /// Create a new zipper at the root
     pub fn new(dict: &PersistentARTrieChar<V>) -> Self {
+        Self::from_root(dict.root())
+    }
+
+    /// Create a zipper from an owned immutable root snapshot.
+    pub fn from_root(root: PersistentARTrieCharNode<V>) -> Self {
         Self {
-            node: dict.root(),
+            node: root,
             path_vec: Vec::new(),
         }
+    }
+
+    /// Create a zipper positioned at `prefix` within an owned root snapshot.
+    ///
+    /// The returned zipper retains the entire captured overlay revision. A later
+    /// mutation may publish a new root, but cannot change this traversal.
+    pub fn from_prefix_root(root: PersistentARTrieCharNode<V>, prefix: &str) -> Option<Self> {
+        let mut zipper = Self::from_root(root);
+        for label in prefix.chars() {
+            zipper = zipper.descend(label)?;
+        }
+        Some(zipper)
     }
 
     /// Get the current path as a string

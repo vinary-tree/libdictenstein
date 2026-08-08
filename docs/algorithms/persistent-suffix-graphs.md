@@ -38,7 +38,7 @@ an index over all of its substrings*.
 Typical uses: full-text search over a corpus that must survive process restarts;
 incremental document indexing where new documents are added online and the index
 must never be lost; fuzzy substring matching (a Levenshtein automaton from the
-companion [`liblevenshtein`](https://github.com/universal-automata/liblevenshtein-rust)
+companion [`liblevenshtein`](https://github.com/vinary-tree/liblevenshtein-rust)
 crate walks the persistent graph exactly as it would an in-memory one).
 
 ---

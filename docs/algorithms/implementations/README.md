@@ -87,8 +87,8 @@ Every mutable in-memory backend is lock-free for readers, but they reach it two 
 (see [`docs/architecture/in-memory-dictionaries.md`](../../architecture/in-memory-dictionaries.md)
 for the full treatment):
 
-1. **Per-node CAS** — the DAWG family (`DynamicDawg`, `…Char`, `…U64`) swaps individual node
-   edge-lists via `arc_swap`, so writers touch only the nodes on the inserted/removed path.
+1. **Path-copy plus root CAS** — the DAWG family (`DynamicDawg`, `…Char`, `…U64`) retains immutable
+   roots, copies only the inserted/removed path, and publishes one replacement `GraphVersion`.
 2. **Whole-graph snapshot (copy-on-write)** — the suffix automaton, SCDAWG, and PathMap families
    publish a freshly built revision of the entire structure through one `ArcSwap`, so readers always
    observe an internally consistent snapshot.

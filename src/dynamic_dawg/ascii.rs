@@ -26,8 +26,8 @@ use std::sync::Arc;
 ///
 /// # Thread Safety
 ///
-/// Uses atomic edge-list publication. Reads are wait-free; normal writes use
-/// CAS loops and do not block readers.
+/// Uses immutable graph revisions. Reads retain one root and are wait-free;
+/// writes path-copy the affected route and publish it with a root CAS.
 ///
 /// # Performance
 ///
@@ -274,8 +274,8 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     /// key as raw bytes with no UTF-8 requirement, so it is valid for arbitrary key
     /// bytes — including `0x00`, `0x80..=0xFF`, and the empty key. If `key` is
     /// absent, inserts `default_value`; if present, applies `update_fn` to the live
-    /// value under the same per-node arc-swap CAS retry loop, so concurrent `&self`
-    /// callers on the same key never lose an update. `update_fn` is `Fn` and MAY run
+    /// value under the same immutable-revision root-CAS retry loop, so concurrent
+    /// `&self` callers on the same key never lose an update. `update_fn` is `Fn` and MAY run
     /// more than once (once per CAS attempt, each on a fresh clone). Returns `true`
     /// iff newly inserted.
     pub fn update_or_insert_bytes<F>(&self, key: &[u8], default_value: V, update_fn: F) -> bool
@@ -509,6 +509,16 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     pub fn get_bytes_value(&self, bytes: &[u8]) -> Option<V> {
         self.inner.get_units_value(bytes)
     }
+
+    /// Remove a raw byte key from the DAWG.
+    ///
+    /// Returns `true` when the key was present. The removal publishes a new
+    /// immutable root revision, so iterators that started earlier retain the
+    /// removed key until they are exhausted. Call [`compact`](Self::compact)
+    /// to reclaim paths no longer reachable from the current revision.
+    pub fn remove_bytes(&self, bytes: &[u8]) -> bool {
+        self.inner.remove_units(bytes)
+    }
 }
 
 impl<V: DictionaryValue> DynamicDawg<V> {
@@ -659,15 +669,15 @@ impl<V: DictionaryValue> DictionaryNode for DynamicDawgNode<V> {
     }
 
     fn transition(&self, label: u8) -> Option<Self> {
-        let edges = self.node.edges.load();
-        edges.find(label).map(|child| DynamicDawgNode {
+        self.node.edges.find(label).map(|child| DynamicDawgNode {
             node: child.clone(),
         })
     }
 
     fn edges(&self) -> Box<dyn Iterator<Item = (u8, Self)> + '_> {
-        let edges = self.node.edges.load();
-        let edge_vec: Vec<_> = edges
+        let edge_vec: Vec<_> = self
+            .node
+            .edges
             .edges
             .iter()
             .map(|(byte, child)| (*byte, child.clone()))
@@ -680,7 +690,7 @@ impl<V: DictionaryValue> DictionaryNode for DynamicDawgNode<V> {
     }
 
     fn edge_count(&self) -> Option<usize> {
-        Some(self.node.edges.load().edges.len())
+        Some(self.node.edges.edges.len())
     }
 }
 

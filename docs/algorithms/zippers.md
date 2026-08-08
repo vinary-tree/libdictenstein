@@ -1,6 +1,6 @@
 # Zipper Set-Algebra — lazy navigable cursors that compose dictionaries
 
-**Navigation**: [↑ Documentation index](../README.md) · [Dictionary Layer →](README.md) · [Serialization & values →](serialization.md) · [Theory →](../theory/) · [Query half: liblevenshtein →](https://github.com/universal-automata/liblevenshtein-rust)
+**Navigation**: [↑ Documentation index](../README.md) · [Dictionary Layer →](README.md) · [Serialization & values →](serialization.md) · [Theory →](../theory/) · [Query half: liblevenshtein →](https://github.com/vinary-tree/liblevenshtein-rust)
 
 > The crate README advertises: *"Set algebra over dictionaries — union / intersection / difference / prefix zippers compose any two backends lazily."* This document is the conceptual and reference manual for that subsystem: what a **zipper** is, how the **set-combinators** layer over one or two operand cursors **without materializing** the combined set, and how associated **values merge** when the same term appears in more than one operand (the lattice / semilattice model).
 
@@ -528,8 +528,8 @@ The `\x00sys_meta` sentinel never matches the `pro` prefix here; to hide such en
 - [Dictionary Layer](README.md) — the backends whose cursors these combinators compose.
 - [Serialization & values](serialization.md) — the `DictionaryValue` / `FilterableValue` model that `value()` returns.
 - [`llattice` crate](../../../llattice/) — the `Lattice` trait, its laws, per-type semantics, and lawfulness proofs.
-- [Automata Layer (liblevenshtein)](https://github.com/universal-automata/liblevenshtein-rust) — the fuzzy transducer that walks any `DictZipper`, combinators included.
+- [Automata Layer (liblevenshtein)](https://github.com/vinary-tree/liblevenshtein-rust) — the fuzzy transducer that walks any `DictZipper`, combinators included.
 
 ---
 
-**Navigation**: [↑ Documentation index](../README.md) · [Dictionary Layer →](README.md) · [Serialization & values →](serialization.md) · [Theory →](../theory/) · [Query half: liblevenshtein →](https://github.com/universal-automata/liblevenshtein-rust)
+**Navigation**: [↑ Documentation index](../README.md) · [Dictionary Layer →](README.md) · [Serialization & values →](serialization.md) · [Theory →](../theory/) · [Query half: liblevenshtein →](https://github.com/vinary-tree/liblevenshtein-rust)

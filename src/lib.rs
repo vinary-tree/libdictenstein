@@ -4,7 +4,7 @@
 //!
 //! libdictenstein provides the *container* half of approximate string matching: efficient,
 //! traversable collections of terms. The *query* half — a Levenshtein-automaton transducer —
-//! lives in the companion crate [`liblevenshtein`](https://github.com/universal-automata/liblevenshtein-rust),
+//! lives in the companion crate [`liblevenshtein`](https://github.com/vinary-tree/liblevenshtein-rust),
 //! which walks any type implementing [`Dictionary`]. This crate contains no fuzzy-matching code itself.
 //!
 //! # Architecture
@@ -87,9 +87,13 @@
 
 // === Shared infrastructure ===
 pub mod bijective;
+#[cfg(feature = "bindings-core")]
+pub mod bindings;
 pub mod bloom_filter;
 pub mod char_unit;
 pub mod factory;
+#[cfg(feature = "ffi")]
+pub mod ffi;
 pub mod iterator;
 pub mod node_signature;
 mod nonblocking;
@@ -208,7 +212,15 @@ pub trait Dictionary {
     /// The node type used for dictionary traversal
     type Node: DictionaryNode;
 
-    /// Get the root node of the dictionary
+    /// Get a root node for one immutable dictionary revision.
+    ///
+    /// The returned node and every descendant reached from it must keep
+    /// query-start snapshot semantics: later insertions, removals, value
+    /// updates, clears, or compactions on the dictionary cannot change what is
+    /// observable through this root. Implementations should use structural
+    /// sharing or another O(1) snapshot mechanism rather than copying the
+    /// complete dictionary or retaining a read lock for the traversal's
+    /// lifetime.
     fn root(&self) -> Self::Node;
 
     /// Check if a term exists in the dictionary
