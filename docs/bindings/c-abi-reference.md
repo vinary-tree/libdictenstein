@@ -319,7 +319,11 @@ proceed; `OK` = supported):
 
 ¹ Vocabulary value semantics: on insert, a supplied value is the **index** to
 bind (`insert_with_index`); with no value the vocabulary assigns the next
-index itself. On lookup, the value returned **is** the term's index
+available index itself (nearly dense — a lost insert race may burn an id).
+Binding a *conflicting* index — one already assigned to a different term, a
+term already bound to a different index, or an index below the store's start
+index — is rejected by the engine and surfaces as `IO_ERROR` with a
+diagnostic. On lookup, the value returned **is** the term's index
 (`out_found == 1` always pairs with `has_value == 1` for vocabulary members).
 
 ² A DynamicDAWG or persistent ARTrie constructed for the Byte or UnicodeScalar
@@ -550,7 +554,7 @@ replay time.
 - **Statuses**: none — `void`. A panic during destruction would abort (there is no status channel), which is why the drop paths hold no panicking operations.
 - **Ownership**: consumes the handle.
 - **Thread-safety**: may be called from any thread, but never concurrently with other calls on the **same** handle.
-- **Complexity**: $`\mathcal{O}(1)`$ amortized (dropping the last co-owner of a backend frees its structures; deferred reclamation for lock-free cores).
+- **Complexity**: $`\Theta(1)`$ while other co-owners remain (retained resources, cloned bindings — the drop is a reference-count decrement); the **last** co-owner pays the backend teardown, $`\mathcal{O}(n)`$ in its structures, with deferred reclamation on the lock-free cores.
 
 ### `ldict_dictionary_resource`
 
