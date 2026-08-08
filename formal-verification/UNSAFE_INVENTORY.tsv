@@ -42,3 +42,12 @@ src/scdawg/char.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Send for ScdawgCh
 src/scdawg/char.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Sync for ScdawgCharNodeHandle<V> {}	1	scdawg-char-handle-rwlock-thread-contract
 src/substring.rs	unsafe_impl	unsafe impl Send for MockNode {}	1	substring-test-mock-thread-contract
 src/substring.rs	unsafe_impl	unsafe impl Sync for MockNode {}	1	substring-test-mock-thread-contract
+src/bindings.rs	unsafe_block	unsafe { resource_release(self.raw.context) };	1	abi-owned-resource-release-once
+src/bindings.rs	unsafe_block	let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	let live = unsafe { &*dynamic_resource.raw.context.cast::<ResourceContext>() };	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	let vtable = unsafe { &*dictionary_vtable(domain, flags) };	1	abi-test-context-probe
+src/ffi.rs	unsafe_fn	unsafe fn slice<'a, T>(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_fn	unsafe fn text_operation(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_fn	unsafe fn u64_operation(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_fn	unsafe fn persistent_path<'a>(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_fn	unsafe fn persistent_open_or_create(	1	ffi-caller-pointer-contracts
