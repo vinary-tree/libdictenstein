@@ -282,6 +282,19 @@ impl<V: DictionaryValue> ScdawgChar<V> {
         self.inner.load().term_count()
     }
 
+    /// Capture the current root handle together with its term count from
+    /// one atomically published revision.
+    ///
+    /// [`Dictionary::root`](crate::Dictionary::root) and
+    /// [`Dictionary::len`](crate::Dictionary::len) load the inner SCDAWG
+    /// revision independently, so a concurrent insert can tear the pair
+    /// (finding LDICT-B4). Snapshot capture uses this coherent accessor.
+    pub fn root_with_term_count(&self) -> (ScdawgCharNodeHandle<V>, usize) {
+        let inner = self.inner.load();
+        let term_count = inner.term_count();
+        (ScdawgCharNodeHandle { inner, node_idx: 0 }, term_count)
+    }
+
     /// Get the number of nodes in the SCDAWG.
     pub fn node_count(&self) -> usize {
         self.inner.load().nodes.len()

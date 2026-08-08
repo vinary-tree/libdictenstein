@@ -165,3 +165,75 @@ in `scripts/check-bindings.py` last, per the family plan's scrutiny protocol).
 
 **Verification.** Pending W7 (gate flips from referenced-symbol mode to
 completeness mode and stays green).
+
+---
+
+## Finding LDICT-B4 — torn snapshot capture: root and len read from different revisions
+
+| Field | Value |
+|-------|-------|
+| id | LDICT-B4 |
+| date | 2026-08-08 |
+| component | `src/bindings.rs` snapshot capture (`DynamicBackend::snapshot`, `SecondaryBackend::snapshot`, `PersistentBackend::snapshot`) |
+| class | concurrency / snapshot-coherence |
+| severity | medium |
+| status | **FIXED** for the in-memory families (DynamicDAWG × 3 domains, SCDAWG × 2 domains); **OPEN** for the persistent family (scheduled: W2 FV `AbiProducerSnapshot` capture-protocol work) |
+
+**Evidence.** Every `snapshot()` arm captured the traversal root and the
+advertised term count with two independent atomic loads
+(`dictionary.root()` then `dictionary.len()`). For the lock-free DynamicDAWG
+the two calls are two separate `version.load()`s
+(`src/dynamic_dawg/lockfree.rs`), so a writer CAS between them pairs
+revision `$`N`$`'s root with revision `$`N\pm k`$`'s count. Reproduction
+(release mode, one writer cycling insert/remove over 64 single-token u64
+terms, one capturer comparing each snapshot's walked FINAL-node count with
+its `dictionary_len`):
+
+```text
+concurrent captures: 2163 / 100000 torn   (~2.2%)
+quiescent  captures:    0 /  10000 torn   (control: rules out counter drift)
+```
+
+The same two-load shape exists in the SCDAWG arms (two `inner.load()`s on
+the ArcSwap'd core; insert-only, same tear mechanics) and in the persistent
+arms, where the byte-trie reproduction under insert/remove churn showed
+`30 / 30000` torn captures with a clean `0 / 2000` quiescent control.
+
+**Analysis.** A `vt.dictionary.v1` snapshot is contractually ONE immutable
+revision; a torn `(root, len)` pair makes `dictionary_len` on the captured
+snapshot report a neighbouring revision's count (`out_known == 1`), which
+consumers may use for preallocation or completeness checks. The walked
+structure itself is never corrupted — the root `Arc` is a coherent revision
+— only the advertised length lies. Note the correct oracle for detection is
+the walked FINAL-node count: after removals the DAWG legitimately keeps
+non-final ghost edges until compaction, so root degree may exceed `len`
+without any defect.
+
+**Fix.** Commit-fixed for the in-memory families: new coherent accessors
+that read both fields from ONE published revision —
+`LockFreeDawg::root_arc_with_term_count` (single `version.load()`) surfaced
+as `DynamicDawg::root_with_term_count`,
+`DynamicDawgChar::root_with_term_count`,
+`DynamicDawgU64::root_with_term_count`, and
+`Scdawg::root_with_term_count` / `ScdawgChar::root_with_term_count`
+(single `inner.load()`); `src/bindings.rs` snapshot arms now use them.
+DoubleArrayTrie arms are immutable (no writer exists) and provably cannot
+tear. The persistent arms remain on two overlay loads because a sound fix
+needs a coherent `(root, count)` publication in the overlay flip itself:
+`overlay_len()` walks a FRESH root load, `PersistentARTrieU64` has both a
+counter-based and a walk-based `term_count`, and the vocabulary's
+`entry_count` increments AFTER the root CAS — re-read/retry protocols at
+the binding layer are provably unsound against post-flip counter updates.
+That design belongs to the persistent core. The capture protocol is now
+modelled in `formal-verification/tla+/AbiProducerSnapshot.tla` (obligation
+#10), whose `Capture` action is ATOMIC — it appends the whole published
+version in one step. The in-memory fix realizes exactly that action; the
+persistent family must be brought to the same atomic-capture realization
+(a coherent `(root, count)` publication in the overlay flip).
+
+**Verification.** Post-fix reproduction run: `0 / 100000` torn concurrent
+captures, `0 / 10000` quiescent (same probe). Permanent regression:
+`tests/ffi_concurrent_snapshot_stress.rs::snapshot_len_is_never_torn_from_its_root_under_write_churn`
+(12,000 captures under insert/remove churn, asserts walked == len on every
+capture; INVARIANT-HOOK LDICT-SNAP-1) under
+`cargo test --no-default-features --features ffi`.

@@ -251,6 +251,20 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
         self.version.load().root.clone()
     }
 
+    /// Load the published root together with its term count from ONE
+    /// version load.
+    ///
+    /// `root_arc()` followed by `term_count()` performs two independent
+    /// `version` loads, so a writer CAS between them pairs one revision's
+    /// root with a neighbouring revision's count — a torn capture
+    /// (reproduced at ~2% of captures under insert/remove churn; see
+    /// docs/bindings/FINDINGS_LEDGER.md finding LDICT-B4). Snapshot capture
+    /// must read both fields from the same `DawgVersion`.
+    pub(crate) fn root_arc_with_term_count(&self) -> (Arc<LockFreeDawgNode<U, V>>, usize) {
+        let version = self.version.load();
+        (version.root.clone(), version.term_count)
+    }
+
     pub(crate) fn insert_units(&self, units: &[U]) -> bool {
         let terminal = |node: &Arc<LockFreeDawgNode<U, V>>| {
             if node.is_final() {

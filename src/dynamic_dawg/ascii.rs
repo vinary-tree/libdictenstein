@@ -425,6 +425,18 @@ impl<V: DictionaryValue> DynamicDawg<V> {
         self.inner.term_count()
     }
 
+    /// Capture the current root together with its term count from one
+    /// atomically published revision.
+    ///
+    /// Calling [`Dictionary::root`] and [`Dictionary::len`] separately
+    /// performs two independent revision loads, so a concurrent writer can
+    /// tear the pair (finding LDICT-B4). Snapshot capture uses this
+    /// coherent accessor instead.
+    pub fn root_with_term_count(&self) -> (DynamicDawgNode<V>, usize) {
+        let (root, term_count) = self.inner.root_arc_with_term_count();
+        (DynamicDawgNode { node: root }, term_count)
+    }
+
     /// Get the number of nodes in the DAWG.
     pub fn node_count(&self) -> usize {
         self.inner.node_count()

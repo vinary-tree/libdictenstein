@@ -132,25 +132,38 @@ impl DynamicBackend {
     }
 
     fn snapshot(&self) -> Arc<dyn SnapshotOps> {
+        // Root and length MUST come from one published revision: separate
+        // `root()` + `len()` calls perform two independent lock-free version
+        // loads, and a writer between them produces a torn capture (finding
+        // LDICT-B4, reproduced at ~2% of captures under churn).
         match self {
-            Self::Byte(dictionary) => Arc::new(TraversalSnapshot::new(
-                dictionary.root(),
-                dictionary.len(),
-                VtUnitDomain::Byte,
-                false,
-            )),
-            Self::Unicode(dictionary) => Arc::new(TraversalSnapshot::new(
-                dictionary.root(),
-                dictionary.len(),
-                VtUnitDomain::UnicodeScalar,
-                false,
-            )),
-            Self::U64(dictionary) => Arc::new(TraversalSnapshot::new(
-                dictionary.root(),
-                dictionary.len(),
-                VtUnitDomain::U64,
-                false,
-            )),
+            Self::Byte(dictionary) => {
+                let (root, term_count) = dictionary.root_with_term_count();
+                Arc::new(TraversalSnapshot::new(
+                    root,
+                    Some(term_count),
+                    VtUnitDomain::Byte,
+                    false,
+                ))
+            }
+            Self::Unicode(dictionary) => {
+                let (root, term_count) = dictionary.root_with_term_count();
+                Arc::new(TraversalSnapshot::new(
+                    root,
+                    Some(term_count),
+                    VtUnitDomain::UnicodeScalar,
+                    false,
+                ))
+            }
+            Self::U64(dictionary) => {
+                let (root, term_count) = dictionary.root_with_term_count();
+                Arc::new(TraversalSnapshot::new(
+                    root,
+                    Some(term_count),
+                    VtUnitDomain::U64,
+                    false,
+                ))
+            }
         }
     }
 }
@@ -187,6 +200,15 @@ impl PersistentBackend {
     }
 
     fn snapshot(&self) -> Arc<dyn SnapshotOps> {
+        // KNOWN LIMITATION (finding LDICT-B4, status OPEN for this family):
+        // root and length are read with two independent overlay loads, so a
+        // writer between them can tear the captured (root, len) pair
+        // (reproduced at ~0.1% of captures under byte-trie churn). The
+        // in-memory backends were fixed with single-revision accessors; the
+        // persistent overlay needs a coherent (root, count) publication,
+        // which belongs to the W2 formal-verification workstream's
+        // AbiProducerSnapshot capture-protocol work. See
+        // docs/bindings/FINDINGS_LEDGER.md.
         match self {
             Self::Byte(dictionary) => Arc::new(TraversalSnapshot::new(
                 dictionary.root(),
@@ -472,6 +494,8 @@ impl SecondaryBackend {
 
     fn snapshot(&self) -> Arc<dyn SnapshotOps> {
         match self {
+            // DoubleArrayTrie backends are immutable after construction, so
+            // separate root()/len() reads cannot tear (no writer exists).
             Self::DoubleArrayByte(dictionary) => Arc::new(TraversalSnapshot::new(
                 dictionary.root(),
                 dictionary.len(),
@@ -484,18 +508,26 @@ impl SecondaryBackend {
                 VtUnitDomain::UnicodeScalar,
                 false,
             )),
-            Self::ScdawgByte(dictionary) => Arc::new(TraversalSnapshot::new(
-                dictionary.root(),
-                dictionary.len(),
-                VtUnitDomain::Byte,
-                true,
-            )),
-            Self::ScdawgUnicode(dictionary) => Arc::new(TraversalSnapshot::new(
-                dictionary.root(),
-                dictionary.len(),
-                VtUnitDomain::UnicodeScalar,
-                true,
-            )),
+            // SCDAWGs are mutable: pair the root with the count from ONE
+            // published revision (finding LDICT-B4).
+            Self::ScdawgByte(dictionary) => {
+                let (root, term_count) = dictionary.root_with_term_count();
+                Arc::new(TraversalSnapshot::new(
+                    root,
+                    Some(term_count),
+                    VtUnitDomain::Byte,
+                    true,
+                ))
+            }
+            Self::ScdawgUnicode(dictionary) => {
+                let (root, term_count) = dictionary.root_with_term_count();
+                Arc::new(TraversalSnapshot::new(
+                    root,
+                    Some(term_count),
+                    VtUnitDomain::UnicodeScalar,
+                    true,
+                ))
+            }
         }
     }
 }
