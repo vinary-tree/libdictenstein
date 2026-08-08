@@ -1,0 +1,345 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "name": "libdictenstein",
+  "crate": "libdictenstein",
+  "author": {
+    "name": "Dylon Edwards",
+    "email": "dylon.devo@gmail.com"
+  },
+  "organization": {
+    "github": "vinary-tree",
+    "npmScope": "vinary-tree",
+    "mavenGroup": "io.vinarytree",
+    "javaPackage": "io.vinarytree.libdictenstein",
+    "fpmNamespace": "vinary-tree"
+  },
+  "interop": {
+    "crate": "vinary-tree-interop",
+    "cPrefix": "vt_",
+    "cHeader": "vinary_tree_interop.h",
+    "headerMirror": "include/vinary_tree_interop.h",
+    "npm": "@vinary-tree/interop",
+    "maven": "io.vinarytree:vinary-tree-interop",
+    "javaPackage": "io.vinarytree.interop",
+    "version": "0.1.0",
+    "resourceLayout": ["context", "vtable"],
+    "dictionaryInterfaceId": "vt.dictionary.v1",
+    "dictionaryInterfaceVersion": 1,
+    "recommendedEdgeBatch": 256
+  },
+  "packages": {
+    "pypi": "vinary-tree-libdictenstein",
+    "npm": "@vinary-tree/libdictenstein",
+    "maven": "io.vinarytree:libdictenstein",
+    "clojars": "io.vinarytree/libdictenstein-clojure",
+    "nuget": "VinaryTree.Libdictenstein",
+    "goModule": "github.com/vinary-tree/libdictenstein/bindings/go",
+    "swift": "VinaryTreeLibdictenstein",
+    "rubygems": "vinary-tree-libdictenstein",
+    "fpm": "vinary-tree-libdictenstein",
+    "opam": "vinary-tree-libdictenstein",
+    "hackage": "vinary-tree-libdictenstein",
+    "luarocks": "vinary-tree-libdictenstein",
+    "_source": {
+      "pypi": "bindings/python/pyproject.toml [project].name",
+      "npm": "bindings/javascript/package.json .name",
+      "maven": "bindings/jvm/build.gradle.kts group + publication artifactId",
+      "clojars": "bindings/clojure/project.clj defproject coordinate",
+      "nuget": "bindings/dotnet/src/VinaryTree.Libdictenstein/VinaryTree.Libdictenstein.csproj <PackageId>",
+      "goModule": "bindings/go/go.mod module directive",
+      "swift": "Package.swift (repository root) Package name",
+      "rubygems": "bindings/ruby/vinary-tree-libdictenstein.gemspec spec.name",
+      "fpm": "bindings/fortran/fpm.toml + fpm.publish.toml name",
+      "opam": "bindings/ocaml/dune-project (package (name ...))",
+      "hackage": "bindings/haskell/vinary-tree-libdictenstein.cabal name",
+      "luarocks": "bindings/lua/vinary-tree-libdictenstein-0.2.1-1.rockspec package"
+    }
+  },
+  "packageVersion": "0.2.1",
+  "siblingPins": {
+    "liblevenshtein": "0.10.0",
+    "llattice": "0.1.0",
+    "_source": "release pins in .github/workflows/release-bindings.yml; dev facade pins in bindings/go/go.mod, Package.swift, bindings/jvm/build.gradle.kts (test scope), bindings/clojure/project.clj (:test profile), bindings/javascript/package.json (@vinary-tree/vinary-tree umbrella). Recorded verbatim; tag existence is a release concern tracked in docs/bindings/FINDINGS_LEDGER.md (LDICT-B1)."
+  },
+  "abiVersion": 1,
+  "apiRevision": 4,
+  "cPrefix": "ldict_",
+  "cHeader": "include/libdictenstein.h",
+  "featureGates": {
+    "ffi": ["bindings-core", "persistent-artrie"],
+    "_source": "Cargo.toml [features]: the ffi feature always enables persistent-artrie so the exported ldict_* symbol set is invariant across FFI builds"
+  },
+  "snapshot": {
+    "boundary": "query-start",
+    "revision": "immutable-resource",
+    "captureComplexity": "O(1)",
+    "cursorMayOutliveSource": true,
+    "retainedResourceOutlivesHandle": true
+  },
+  "marshalling": {
+    "resourceHandoff": "O(1)-retained-two-word-resource",
+    "nodeExpansion": "batched-contiguous-edges",
+    "crudBatching": "single-crossing-contiguous-descriptors",
+    "errorChannel": "thread-local-last-error-message",
+    "panicPolicy": "catch-unwind-to-status"
+  },
+  "unitDomains": {
+    "BYTE": 1,
+    "UNICODE_SCALAR": 2,
+    "U64": 3
+  },
+  "valueDomain": "OPTIONAL_U64",
+  "structs": {
+    "LdictOptionalU64": {
+      "fields": [
+        {"name": "value", "type": "u64"},
+        {"name": "has_value", "type": "u8"},
+        {"name": "reserved", "type": "[u8; 7]", "mustBeZero": true}
+      ]
+    },
+    "LdictTextEntry": {
+      "fields": [
+        {"name": "data", "type": "*const u8"},
+        {"name": "len", "type": "usize"},
+        {"name": "value", "type": "LdictOptionalU64"}
+      ]
+    },
+    "LdictU64Entry": {
+      "fields": [
+        {"name": "data", "type": "*const u64"},
+        {"name": "len", "type": "usize"},
+        {"name": "value", "type": "LdictOptionalU64"}
+      ]
+    }
+  },
+  "enums": {
+    "status": {
+      "cType": "LdictStatus",
+      "cPrefix": "LDICT_STATUS_",
+      "values": {
+        "OK": 0,
+        "END": 1,
+        "INVALID_ARGUMENT": 2,
+        "INVALID_UTF8": 3,
+        "NULL_POINTER": 4,
+        "PANIC": 5,
+        "UNSUPPORTED": 6,
+        "IO_ERROR": 7,
+        "CLOSED": 8,
+        "DOMAIN_MISMATCH": 9,
+        "LIMIT_EXCEEDED": 10
+      }
+    }
+  },
+  "kinds": {
+    "cPrefix": "LDICT_KIND_",
+    "values": {
+      "DYNAMIC_DAWG": 1,
+      "DOUBLE_ARRAY_TRIE": 2,
+      "SCDAWG": 3,
+      "PERSISTENT_ARTRIE": 4,
+      "PERSISTENT_VOCAB_ARTRIE": 5
+    }
+  },
+  "capabilities": {
+    "cPrefix": "LDICT_CAP_",
+    "cType": "uint64_t bitset",
+    "bits": {
+      "READ": 0,
+      "INSERT": 1,
+      "REMOVE": 2,
+      "CLEAR": 3,
+      "COMPACT": 4,
+      "SUBSTRING": 5,
+      "CHECKPOINT": 6
+    }
+  },
+  "backends": [
+    {
+      "kind": "DYNAMIC_DAWG",
+      "producer": "DynamicDawgBinding",
+      "unitDomains": ["BYTE", "UNICODE_SCALAR", "U64"],
+      "capabilities": ["READ", "INSERT", "REMOVE", "CLEAR", "COMPACT"]
+    },
+    {
+      "kind": "DOUBLE_ARRAY_TRIE",
+      "producer": "DoubleArrayTrieBinding",
+      "unitDomains": ["BYTE", "UNICODE_SCALAR"],
+      "capabilities": ["READ"]
+    },
+    {
+      "kind": "SCDAWG",
+      "producer": "ScdawgBinding",
+      "unitDomains": ["BYTE", "UNICODE_SCALAR"],
+      "capabilities": ["READ", "INSERT", "SUBSTRING"]
+    },
+    {
+      "kind": "PERSISTENT_ARTRIE",
+      "producer": "PersistentARTrieBinding",
+      "feature": "persistent-artrie",
+      "unitDomains": ["BYTE", "UNICODE_SCALAR", "U64"],
+      "capabilities": ["READ", "INSERT", "REMOVE", "CHECKPOINT"]
+    },
+    {
+      "kind": "PERSISTENT_VOCAB_ARTRIE",
+      "producer": "PersistentARTrieBinding",
+      "feature": "persistent-artrie",
+      "unitDomains": ["UNICODE_SCALAR"],
+      "capabilities": ["READ", "INSERT", "CHECKPOINT"]
+    }
+  ],
+  "producers": {
+    "DynamicDawgBinding": {"module": "src/bindings.rs", "kind": "DYNAMIC_DAWG"},
+    "DoubleArrayTrieBinding": {"module": "src/bindings.rs", "kind": "DOUBLE_ARRAY_TRIE"},
+    "ScdawgBinding": {"module": "src/bindings.rs", "kind": "SCDAWG"},
+    "PersistentARTrieBinding": {
+      "module": "src/bindings.rs",
+      "kinds": ["PERSISTENT_ARTRIE", "PERSISTENT_VOCAB_ARTRIE"],
+      "feature": "persistent-artrie"
+    },
+    "OwnedDictionaryResource": {
+      "module": "src/bindings.rs",
+      "role": "retained vt.dictionary.v1 two-word resource handle"
+    }
+  },
+  "cFunctions": [
+    {"name": "ldict_abi_version", "group": "meta"},
+    {"name": "ldict_api_revision", "group": "meta"},
+    {"name": "ldict_last_error_message", "group": "meta"},
+    {"name": "ldict_dynamic_dawg_new", "group": "constructor"},
+    {"name": "ldict_double_array_trie_new", "group": "constructor"},
+    {"name": "ldict_scdawg_new", "group": "constructor"},
+    {"name": "ldict_persistent_artrie_create", "group": "constructor", "feature": "persistent-artrie"},
+    {"name": "ldict_persistent_artrie_open", "group": "constructor", "feature": "persistent-artrie"},
+    {"name": "ldict_persistent_vocab_create", "group": "constructor", "feature": "persistent-artrie"},
+    {"name": "ldict_persistent_vocab_open", "group": "constructor", "feature": "persistent-artrie"},
+    {"name": "ldict_dictionary_kind", "group": "handle"},
+    {"name": "ldict_dictionary_capabilities", "group": "handle"},
+    {"name": "ldict_dictionary_free", "group": "handle"},
+    {"name": "ldict_dictionary_resource", "group": "handle"},
+    {"name": "ldict_dictionary_len", "group": "handle"},
+    {"name": "ldict_dictionary_checkpoint", "group": "maintenance", "feature": "persistent-artrie"},
+    {"name": "ldict_vocab_get_term", "group": "vocabulary", "feature": "persistent-artrie"},
+    {"name": "ldict_dictionary_clear", "group": "maintenance"},
+    {"name": "ldict_dictionary_compact", "group": "maintenance"},
+    {"name": "ldict_dictionary_insert_text", "group": "crud-text"},
+    {"name": "ldict_dictionary_insert_text_value", "group": "crud-text"},
+    {"name": "ldict_dictionary_remove_text", "group": "crud-text"},
+    {"name": "ldict_dictionary_contains_text", "group": "crud-text"},
+    {"name": "ldict_dictionary_get_text", "group": "crud-text"},
+    {"name": "ldict_dictionary_get_text_value", "group": "crud-text"},
+    {"name": "ldict_dictionary_insert_u64", "group": "crud-u64"},
+    {"name": "ldict_dictionary_insert_u64_value", "group": "crud-u64"},
+    {"name": "ldict_dictionary_remove_u64", "group": "crud-u64"},
+    {"name": "ldict_dictionary_contains_u64", "group": "crud-u64"},
+    {"name": "ldict_dictionary_get_u64", "group": "crud-u64"},
+    {"name": "ldict_dictionary_get_u64_value", "group": "crud-u64"},
+    {"name": "ldict_scdawg_contains_substring", "group": "substring"},
+    {"name": "ldict_scdawg_substring_frequency", "group": "substring"},
+    {"name": "ldict_dictionary_insert_text_batch", "group": "batch"},
+    {"name": "ldict_dictionary_insert_u64_batch", "group": "batch"}
+  ],
+  "facades": {
+    "clojure": {
+      "root": "bindings/clojure",
+      "parser": "clojure-defs",
+      "importLayers": ["bindings/clojure/src/vinary_tree/libdictenstein.clj"],
+      "package": "clojars",
+      "symbolAccess": "mediated (calls through the JVM facade io.vinarytree/libdictenstein)",
+      "requiredDefs": [
+        "dynamic-dawg", "double-array-trie", "scdawg",
+        "create-persistent-artrie", "open-persistent-artrie",
+        "create-persistent-vocabulary", "open-persistent-vocabulary",
+        "size", "contains?", "get", "put!", "put-all!", "remove!",
+        "clear!", "compact!", "checkpoint!",
+        "contains-substring?", "frequency", "vocabulary-term", "close!"
+      ]
+    },
+    "cpp": {
+      "root": "include",
+      "parser": "c-source",
+      "importLayers": ["include/libdictenstein.hpp"],
+      "package": null,
+      "_source": "header-only RAII facade over include/libdictenstein.h; distributed with the native package via cmake/ and pkgconfig/, no separate registry coordinate"
+    },
+    "dotnet": {
+      "root": "bindings/dotnet",
+      "parser": "dotnet-entrypoints",
+      "importLayers": ["bindings/dotnet/src/VinaryTree.Libdictenstein/Native.cs"],
+      "package": "nuget"
+    },
+    "fortran": {
+      "root": "bindings/fortran",
+      "parser": "fortran-bindc",
+      "importLayers": ["bindings/fortran/src/vinary_tree_libdictenstein.f90"],
+      "package": "fpm"
+    },
+    "go": {
+      "root": "bindings/go",
+      "parser": "cgo",
+      "importLayers": ["bindings/go/libdictenstein.go"],
+      "package": "goModule"
+    },
+    "haskell": {
+      "root": "bindings/haskell",
+      "parser": "haskell-foreign",
+      "importLayers": ["bindings/haskell/src/VinaryTree/Libdictenstein.hs"],
+      "shimLayers": ["bindings/haskell/cbits/libdictenstein_hs.c"],
+      "package": "hackage"
+    },
+    "javascript": {
+      "root": "bindings/javascript",
+      "parser": "javascript-exports",
+      "importLayers": ["bindings/javascript/package.json"],
+      "package": "npm",
+      "symbolAccess": "mediated (runtime object exported by the @vinary-tree/vinary-tree umbrella)"
+    },
+    "jvm": {
+      "root": "bindings/jvm",
+      "parser": "java-downcalls",
+      "importLayers": ["bindings/jvm/src/main/java/io/vinarytree/libdictenstein/Native.java"],
+      "package": "maven"
+    },
+    "lua": {
+      "root": "bindings/lua",
+      "parser": "c-source",
+      "importLayers": ["bindings/lua/src/libdictenstein_lua.c"],
+      "package": "luarocks"
+    },
+    "ocaml": {
+      "root": "bindings/ocaml",
+      "parser": "c-source",
+      "importLayers": ["bindings/ocaml/libdictenstein_stubs.c"],
+      "package": "opam"
+    },
+    "python": {
+      "root": "bindings/python",
+      "parser": "python-ctypes",
+      "importLayers": ["bindings/python/src/libdictenstein/_native.py"],
+      "package": "pypi"
+    },
+    "ruby": {
+      "root": "bindings/ruby",
+      "parser": "ruby-fiddle",
+      "importLayers": ["bindings/ruby/lib/vinary_tree/libdictenstein/native.rb"],
+      "package": "rubygems"
+    },
+    "swift": {
+      "root": "bindings/swift/libdictenstein",
+      "parser": "swift",
+      "importLayers": ["bindings/swift/libdictenstein/Sources/Libdictenstein/Libdictenstein.swift"],
+      "modulemap": "bindings/swift/libdictenstein/Sources/CLibdictenstein/module.modulemap",
+      "shimHeader": "bindings/swift/libdictenstein/Sources/CLibdictenstein/CLibdictenstein.h",
+      "package": "swift"
+    }
+  },
+  "wasm": {
+    "umbrellaPackage": "@vinary-tree/vinary-tree",
+    "umbrellaVersion": "0.10.0",
+    "projectPackage": "@vinary-tree/libdictenstein",
+    "interopPackage": "@vinary-tree/interop",
+    "exports": [".", "./typescript", "./clojurescript", "./wasm", "./wasi"],
+    "runtimeMediated": true,
+    "_source": "bindings/javascript/package.json"
+  }
+}
