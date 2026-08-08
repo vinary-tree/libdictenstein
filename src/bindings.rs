@@ -1225,6 +1225,15 @@ unsafe extern "C" fn query_interface(
     interface_id: *const VtInterfaceId,
     minimum_version: u32,
     out_vtable: *mut *const c_void,
+) -> u32 {
+    query_interface_status(context, interface_id, minimum_version, out_vtable).to_raw()
+}
+
+unsafe fn query_interface_status(
+    context: *mut c_void,
+    interface_id: *const VtInterfaceId,
+    minimum_version: u32,
+    out_vtable: *mut *const c_void,
 ) -> VtStatus {
     if context.is_null() || interface_id.is_null() || out_vtable.is_null() {
         return VtStatus::NullPointer;
@@ -1242,6 +1251,13 @@ unsafe extern "C" fn query_interface(
 unsafe extern "C" fn dictionary_snapshot(
     context: *mut c_void,
     out_snapshot: *mut VtResource,
+) -> u32 {
+    dictionary_snapshot_status(context, out_snapshot).to_raw()
+}
+
+unsafe fn dictionary_snapshot_status(
+    context: *mut c_void,
+    out_snapshot: *mut VtResource,
 ) -> VtStatus {
     if context.is_null() || out_snapshot.is_null() {
         return VtStatus::NullPointer;
@@ -1253,7 +1269,11 @@ unsafe extern "C" fn dictionary_snapshot(
     VtStatus::Ok
 }
 
-unsafe extern "C" fn dictionary_root(context: *mut c_void, out_node: *mut u64) -> VtStatus {
+unsafe extern "C" fn dictionary_root(context: *mut c_void, out_node: *mut u64) -> u32 {
+    dictionary_root_status(context, out_node).to_raw()
+}
+
+unsafe fn dictionary_root_status(context: *mut c_void, out_node: *mut u64) -> VtStatus {
     if context.is_null() || out_node.is_null() {
         return VtStatus::NullPointer;
     }
@@ -1268,6 +1288,14 @@ unsafe extern "C" fn dictionary_root(context: *mut c_void, out_node: *mut u64) -
 }
 
 unsafe extern "C" fn dictionary_len(
+    context: *mut c_void,
+    out_len: *mut usize,
+    out_known: *mut u8,
+) -> u32 {
+    dictionary_len_status(context, out_len, out_known).to_raw()
+}
+
+unsafe fn dictionary_len_status(
     context: *mut c_void,
     out_len: *mut usize,
     out_known: *mut u8,
@@ -1296,6 +1324,14 @@ unsafe extern "C" fn dictionary_is_final(
     context: *mut c_void,
     node: u64,
     out_is_final: *mut u8,
+) -> u32 {
+    dictionary_is_final_status(context, node, out_is_final).to_raw()
+}
+
+unsafe fn dictionary_is_final_status(
+    context: *mut c_void,
+    node: u64,
+    out_is_final: *mut u8,
 ) -> VtStatus {
     if context.is_null() || out_is_final.is_null() {
         return VtStatus::NullPointer;
@@ -1314,6 +1350,14 @@ unsafe extern "C" fn dictionary_is_final(
 }
 
 unsafe extern "C" fn dictionary_value(
+    context: *mut c_void,
+    node: u64,
+    out_value: *mut VtOptionalU64,
+) -> u32 {
+    dictionary_value_status(context, node, out_value).to_raw()
+}
+
+unsafe fn dictionary_value_status(
     context: *mut c_void,
     node: u64,
     out_value: *mut VtOptionalU64,
@@ -1344,6 +1388,16 @@ unsafe extern "C" fn dictionary_transition(
     label: u64,
     out_child: *mut u64,
     out_found: *mut u8,
+) -> u32 {
+    dictionary_transition_status(context, node, label, out_child, out_found).to_raw()
+}
+
+unsafe fn dictionary_transition_status(
+    context: *mut c_void,
+    node: u64,
+    label: u64,
+    out_child: *mut u64,
+    out_found: *mut u8,
 ) -> VtStatus {
     if context.is_null() || out_child.is_null() || out_found.is_null() {
         return VtStatus::NullPointer;
@@ -1363,6 +1417,27 @@ unsafe extern "C" fn dictionary_transition(
 }
 
 unsafe extern "C" fn dictionary_edges(
+    context: *mut c_void,
+    node: u64,
+    start: usize,
+    out_edges: *mut VtDictionaryEdge,
+    capacity: usize,
+    out_written: *mut usize,
+    out_total: *mut usize,
+) -> u32 {
+    dictionary_edges_status(
+        context,
+        node,
+        start,
+        out_edges,
+        capacity,
+        out_written,
+        out_total,
+    )
+    .to_raw()
+}
+
+unsafe fn dictionary_edges_status(
     context: *mut c_void,
     node: u64,
     start: usize,
@@ -1642,7 +1717,7 @@ mod tests {
 
         let mut captured = VtResource::NULL;
         let status = unsafe { dictionary_snapshot(resource.raw.context, &mut captured) };
-        assert_eq!(status, VtStatus::Ok);
+        assert_eq!(status, VtStatus::Ok.to_raw());
         assert!(!captured.context.is_null());
         assert_eq!(unsafe { context_strong_count(captured) }, 1);
         // The source context's count is unchanged by the capture.
@@ -1651,7 +1726,7 @@ mod tests {
         // Snapshot-of-snapshot: a NEW context (shared arena), one retain.
         let mut nested = VtResource::NULL;
         let status = unsafe { dictionary_snapshot(captured.context, &mut nested) };
-        assert_eq!(status, VtStatus::Ok);
+        assert_eq!(status, VtStatus::Ok.to_raw());
         assert!(
             !std::ptr::eq(nested.context, captured.context),
             "snapshot-of-snapshot mints a fresh context"

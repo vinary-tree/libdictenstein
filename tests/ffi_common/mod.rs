@@ -82,6 +82,12 @@ pub fn last_error() -> String {
 }
 
 /// Owning guard over one `LdictDictionary` handle.
+/// Decode a raw interop wire status, failing the test on out-of-range
+/// values (the from_raw half of the family's LLEV-B6 wire hardening).
+pub fn vt_status(raw: u32) -> VtStatus {
+    VtStatus::from_raw(raw).expect("provider returned an out-of-range status")
+}
+
 pub struct DictGuard(pub *mut LdictDictionary);
 
 impl DictGuard {
@@ -284,7 +290,7 @@ pub fn u64_entry(term: &[u64], value: Option<u64>) -> LdictU64Entry {
 pub fn dictionary_interface(resource: VtResource) -> &'static VtDictionaryVTable {
     let mut vtable: *const c_void = std::ptr::null();
     let base = unsafe { &*resource.vtable };
-    let status = unsafe {
+    let status = vt_status(unsafe {
         (base
             .query_interface
             .expect("producer publishes query_interface"))(
@@ -293,7 +299,7 @@ pub fn dictionary_interface(resource: VtResource) -> &'static VtDictionaryVTable
             VT_DICTIONARY_INTERFACE_VERSION,
             &mut vtable,
         )
-    };
+    });
     assert_eq!(status, VtStatus::Ok, "interface negotiation failed");
     assert!(!vtable.is_null());
     unsafe { &*vtable.cast::<VtDictionaryVTable>() }
@@ -326,9 +332,9 @@ impl Drop for SnapshotGuard {
 pub fn capture_snapshot(resource: VtResource) -> SnapshotGuard {
     let vtable = dictionary_interface(resource);
     let mut captured = VtResource::NULL;
-    let status = unsafe {
+    let status = vt_status(unsafe {
         (vtable.snapshot.expect("producer publishes snapshot"))(resource.context, &mut captured)
-    };
+    });
     assert_eq!(status, VtStatus::Ok, "snapshot capture failed");
     assert!(!captured.is_null(), "captured snapshot is null");
     SnapshotGuard { resource: captured }
@@ -338,8 +344,9 @@ pub fn capture_snapshot(resource: VtResource) -> SnapshotGuard {
 pub fn snapshot_root(snapshot: VtResource) -> u64 {
     let vtable = dictionary_interface(snapshot);
     let mut root = u64::MAX;
-    let status =
-        unsafe { (vtable.root.expect("producer publishes root"))(snapshot.context, &mut root) };
+    let status = vt_status(unsafe {
+        (vtable.root.expect("producer publishes root"))(snapshot.context, &mut root)
+    });
     assert_eq!(status, VtStatus::Ok, "root read failed");
     root
 }
@@ -349,9 +356,9 @@ pub fn snapshot_len(snapshot: VtResource) -> (usize, bool) {
     let vtable = dictionary_interface(snapshot);
     let mut len = usize::MAX;
     let mut known: u8 = u8::MAX;
-    let status = unsafe {
+    let status = vt_status(unsafe {
         (vtable.len.expect("producer publishes len"))(snapshot.context, &mut len, &mut known)
-    };
+    });
     assert_eq!(status, VtStatus::Ok, "len read failed");
     (len, known == 1)
 }
@@ -371,7 +378,7 @@ pub fn edges_page(
         0 => std::ptr::null_mut(),
         _ => page.as_mut_ptr(),
     };
-    let status = unsafe {
+    let status = vt_status(unsafe {
         (vtable.node_edges.expect("producer publishes node_edges"))(
             snapshot.context,
             node,
@@ -381,7 +388,7 @@ pub fn edges_page(
             &mut written,
             &mut total,
         )
-    };
+    });
     match status {
         VtStatus::Ok => {
             assert!(written <= capacity, "written exceeds capacity");
@@ -425,7 +432,7 @@ pub fn transition(
 ) -> (VtStatus, Option<u64>) {
     let mut child = u64::MAX;
     let mut found: u8 = u8::MAX;
-    let status = unsafe {
+    let status = vt_status(unsafe {
         (vtable
             .node_transition
             .expect("producer publishes node_transition"))(
@@ -435,7 +442,7 @@ pub fn transition(
             &mut child,
             &mut found,
         )
-    };
+    });
     let observed = match (status, found) {
         (VtStatus::Ok, 1) => Some(child),
         _ => None,
@@ -450,13 +457,13 @@ pub fn node_is_final(
     node: u64,
 ) -> (VtStatus, bool) {
     let mut is_final: u8 = u8::MAX;
-    let status = unsafe {
+    let status = vt_status(unsafe {
         (vtable
             .node_is_final
             .expect("producer publishes node_is_final"))(
             snapshot.context, node, &mut is_final
         )
-    };
+    });
     (status, is_final == 1)
 }
 
@@ -467,11 +474,11 @@ pub fn node_value(
     node: u64,
 ) -> (VtStatus, Option<u64>) {
     let mut value = vinary_tree_interop::VtOptionalU64::default();
-    let status = unsafe {
+    let status = vt_status(unsafe {
         (vtable
             .node_value_u64
             .expect("producer publishes node_value_u64"))(snapshot.context, node, &mut value)
-    };
+    });
     let observed = match (status, value.has_value) {
         (VtStatus::Ok, 1) => Some(value.value),
         _ => None,

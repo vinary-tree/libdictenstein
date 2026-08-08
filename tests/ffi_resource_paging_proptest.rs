@@ -32,8 +32,8 @@ use std::collections::BTreeMap;
 
 use ffi_common::{
     all_edges, capture_snapshot, dictionary_interface, edges_page, insert_text, insert_u64,
-    node_is_final, node_value, snapshot_len, snapshot_root, transition, unicode_labels, DictGuard,
-    DOMAIN_U64, DOMAIN_UNICODE,
+    node_is_final, node_value, snapshot_len, snapshot_root, transition, unicode_labels, vt_status,
+    DictGuard, DOMAIN_U64, DOMAIN_UNICODE,
 };
 use libdictenstein::ffi::LdictStatus;
 use proptest::prelude::*;
@@ -326,13 +326,15 @@ fn live_resources_reject_traversal_until_a_snapshot_is_captured() {
     let vtable = dictionary_interface(live);
 
     let mut root = u64::MAX;
-    let status = unsafe { (vtable.root.expect("root published"))(live.context, &mut root) };
+    let status =
+        vt_status(unsafe { (vtable.root.expect("root published"))(live.context, &mut root) });
     assert_eq!(status, VtStatus::InvalidArgument);
     assert_eq!(root, u64::MAX, "failed root must not write");
 
     let (mut len, mut known) = (usize::MAX, u8::MAX);
-    let status =
-        unsafe { (vtable.len.expect("len published"))(live.context, &mut len, &mut known) };
+    let status = vt_status(unsafe {
+        (vtable.len.expect("len published"))(live.context, &mut len, &mut known)
+    });
     assert_eq!(status, VtStatus::InvalidArgument);
 
     let (status, _, written, total) = edges_page(vtable, live, 0, 0, 4);
