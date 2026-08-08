@@ -8,6 +8,17 @@ Date format is ISO-8601 (YYYY-MM-DD).
 
 ### Added
 
+- **Binding contract gate.** `bindings/api.json` is the machine-readable model of the
+  35-function `ldict_*` C ABI (status/kind/capability/unit-domain pins, registry coordinates
+  for all 13 language facades, sibling pins), and `scripts/check-bindings.py` (stdlib-only,
+  `--json` capable) enforces it: model ↔ `src/ffi.rs` ↔ `include/libdictenstein.h` symbol and
+  constant parity, per-facade referenced-symbol validity, coordinate/version coherence, the
+  publishable-file identity guard, exact npm pins, and byte-equality of
+  `include/vinary_tree_interop.h` against the canonical sibling header
+  (`LDICT_INTEROP_HEADER_CANONICAL` overrides; skip-with-warning when the sibling checkout is
+  absent). Wired into CI as the `binding-contract` job. Binding-scrutiny findings now live in
+  `docs/bindings/FINDINGS_LEDGER.md` (seeded with LDICT-B1…B3).
+
 - **Tier-1 single-owner file lock (multi-process safety).** Opening a persistent ARTrie (byte,
   char, or vocab; `mmap` or `io_uring` backend) now takes an advisory `flock(LOCK_EX | LOCK_NB)` on
   a `"<path>.wlock"` sidecar at the six `DiskManager` open chokepoints. A second OS process — or a
