@@ -85,6 +85,12 @@ pub struct LdictOptionalU64 {
 
 impl LdictOptionalU64 {
     fn decode(self) -> Result<Option<u64>, (LdictStatus, String)> {
+        if self.reserved != [0; 7] {
+            return Err((
+                LdictStatus::InvalidArgument,
+                "reserved bytes must be zero".into(),
+            ));
+        }
         match self.has_value {
             0 => Ok(None),
             1 => Ok(Some(self.value)),

@@ -57,6 +57,17 @@ pub fn bad_optional() -> LdictOptionalU64 {
     }
 }
 
+/// Optional value with nonzero reserved bytes; must be rejected with
+/// `LdictStatus::InvalidArgument` (`mustBeZero` law from bindings/api.json,
+/// the producer-side parallel of interop VT-ABI-5).
+pub fn dirty_reserved_optional() -> LdictOptionalU64 {
+    LdictOptionalU64 {
+        value: 7,
+        has_value: 1,
+        reserved: [1, 0, 0, 0, 0, 0, 0],
+    }
+}
+
 /// Read the calling thread's last ABI error message.
 pub fn last_error() -> String {
     let pointer = ldict_last_error_message();

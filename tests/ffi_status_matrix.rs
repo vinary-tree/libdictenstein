@@ -24,8 +24,9 @@
 mod ffi_common;
 
 use ffi_common::{
-    bad_optional, contains_text, contains_u64, get_text, insert_text, insert_u64, last_error, none,
-    remove_text, remove_u64, some, text_entry, DictGuard, DOMAIN_BYTE, DOMAIN_U64, DOMAIN_UNICODE,
+    bad_optional, contains_text, contains_u64, dirty_reserved_optional, get_text, insert_text,
+    insert_u64, last_error, none, remove_text, remove_u64, some, text_entry, DictGuard,
+    DOMAIN_BYTE, DOMAIN_U64, DOMAIN_UNICODE,
 };
 use libdictenstein::ffi::{
     ldict_abi_version, ldict_api_revision, ldict_dictionary_capabilities,
@@ -1141,6 +1142,59 @@ fn optional_decode_precedes_the_handle_null_check() {
     };
     assert_eq!(status, LdictStatus::InvalidArgument);
     assert_eq!(last_error(), "has_value must be zero or one");
+}
+
+/// LDICT-STAT-2: nonzero reserved bytes in `LdictOptionalU64` are rejected
+/// on both the insert path and the constructor-entry path (the api.json
+/// `mustBeZero` law; regression for ledger finding LDICT-B6), while an
+/// all-zero reserved block continues to insert cleanly.
+#[test]
+fn reserved_bytes_must_be_zero() {
+    let dictionary = DictGuard::dynamic(DOMAIN_BYTE);
+    let mut inserted = u8::MAX;
+    let status = unsafe {
+        ldict_dictionary_insert_text(
+            dictionary.0,
+            TERM.as_ptr(),
+            TERM.len(),
+            dirty_reserved_optional(),
+            &mut inserted,
+        )
+    };
+    assert_eq!(status, LdictStatus::InvalidArgument);
+    assert_eq!(last_error(), "reserved bytes must be zero");
+
+    // Control: the same insert with clean reserved bytes succeeds.
+    let clean = LdictOptionalU64 {
+        value: 7,
+        has_value: 1,
+        reserved: [0; 7],
+    };
+    let mut inserted = u8::MAX;
+    let status = unsafe {
+        ldict_dictionary_insert_text(
+            dictionary.0,
+            TERM.as_ptr(),
+            TERM.len(),
+            clean,
+            &mut inserted,
+        )
+    };
+    assert_eq!(status, LdictStatus::Ok);
+    assert_eq!(inserted, 1);
+
+    // Constructor entries validate the same law.
+    let entries = [LdictTextEntry {
+        data: TERM.as_ptr(),
+        len: TERM.len(),
+        value: dirty_reserved_optional(),
+    }];
+    let mut out: *mut LdictDictionary = std::ptr::null_mut();
+    let status = unsafe {
+        ldict_double_array_trie_new(DOMAIN_BYTE, entries.as_ptr(), entries.len(), &mut out)
+    };
+    assert_eq!(status, LdictStatus::InvalidArgument);
+    assert!(out.is_null());
 }
 
 // ---------------------------------------------------------------------------

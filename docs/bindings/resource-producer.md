@@ -202,6 +202,26 @@ enforceable at the type level of the protocol — there is no API through which
 a consumer can accidentally walk a moving revision. The `IMMUTABLE` flag
 ([§ 6](#6-the-flag-truth-table)) is the discoverable marker of walkability.
 
+### 4.2 Count coherence: what `len` promises per family
+
+A captured snapshot answers `len` only when the pair `(root, count)` is
+coherent — both drawn from one published revision:
+
+- **In-memory families** (DynamicDAWG ×3 domains, SCDAWG ×2) capture both
+  fields through single-revision accessors (`root_with_term_count`, one
+  `version.load()`/`inner.load()`), so their snapshots answer
+  `out_known = 1` with the count of exactly the captured revision.
+- **The persistent family** publishes its root and its term counters in
+  separate atomic steps, and a two-load capture provably tears under a
+  concurrent writer (ledger finding
+  [LDICT-B4](FINDINGS_LEDGER.md#finding-ldict-b4--torn-snapshot-capture-root-and-len-read-from-different-revisions)).
+  Persistent snapshots therefore pin the **root only** — coherent by
+  construction, still `$`\Theta(1)`$` — and answer `out_known = 0`; the
+  interop contract defines that answer as "not cheaply available", and
+  consumers walk when they need an exact count. Restoring `out_known = 1`
+  here requires a coherent `(root, count)` publication inside the overlay
+  flip itself (persistent-core design work tracked in the same finding).
+
 ---
 
 ## 5. The eleven `'static` vtables

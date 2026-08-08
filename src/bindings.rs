@@ -200,37 +200,41 @@ impl PersistentBackend {
     }
 
     fn snapshot(&self) -> Arc<dyn SnapshotOps> {
-        // KNOWN LIMITATION (finding LDICT-B4, status OPEN for this family):
-        // root and length are read with two independent overlay loads, so a
-        // writer between them can tear the captured (root, len) pair
-        // (reproduced at ~0.1% of captures under byte-trie churn). The
-        // in-memory backends were fixed with single-revision accessors; the
-        // persistent overlay needs a coherent (root, count) publication,
-        // which belongs to the W2 formal-verification workstream's
-        // AbiProducerSnapshot capture-protocol work. See
-        // docs/bindings/FINDINGS_LEDGER.md.
+        // Coherence over convenience (finding LDICT-B4, persistent family):
+        // the overlay publishes its root and its term counters in SEPARATE
+        // atomic steps, so any (root, count) pair assembled from two loads
+        // can tear under a concurrent writer (reproduced at ~0.1% of
+        // captures under churn), and a binding-side retry protocol is
+        // provably unsound against post-flip counter updates. The interop
+        // contract has the honest affordance for exactly this situation:
+        // `len` may report out_known = 0. Persistent captures therefore pin
+        // the ROOT ONLY — coherent by construction, still O(1) — and report
+        // the count as not-cheaply-known. Restoring out_known = 1 for this
+        // family requires a coherent (root, count) publication inside the
+        // overlay flip itself (persistent-core design work, tracked in
+        // docs/bindings/FINDINGS_LEDGER.md LDICT-B4).
         match self {
             Self::Byte(dictionary) => Arc::new(TraversalSnapshot::new(
                 dictionary.root(),
-                dictionary.len(),
+                None,
                 VtUnitDomain::Byte,
                 false,
             )),
             Self::Unicode(dictionary) => Arc::new(TraversalSnapshot::new(
                 dictionary.root(),
-                Some(dictionary.len()),
+                None,
                 VtUnitDomain::UnicodeScalar,
                 false,
             )),
             Self::U64(dictionary) => Arc::new(TraversalSnapshot::new(
                 dictionary.root(),
-                dictionary.len(),
+                None,
                 VtUnitDomain::U64,
                 false,
             )),
             Self::Vocab(dictionary) => Arc::new(TraversalSnapshot::new(
                 dictionary.root(),
-                Some(dictionary.len()),
+                None,
                 VtUnitDomain::UnicodeScalar,
                 false,
             )),
@@ -398,19 +402,28 @@ impl PersistentARTrieBinding {
     }
 
     /// Insert/update a native-u64 term.
+    ///
+    /// Engine write failures propagate as I/O errors exactly like the byte
+    /// and Unicode profiles; the infallible `insert_sequence_with_value`
+    /// wrapper (which logs and returns `false`) is deliberately not used
+    /// here — the ABI must report `IO_ERROR`, never a silent no-op `OK`.
     pub fn insert_u64(&self, term: &[u64], value: Option<u64>) -> Result<bool, BindingError> {
         match self.shared.as_ref() {
-            PersistentBackend::U64(dictionary) => {
-                Ok(dictionary.insert_sequence_with_value(term, BindingValue::from_option(value)))
-            }
+            PersistentBackend::U64(dictionary) => dictionary
+                .try_insert_sequence_with_value(term, BindingValue::from_option(value))
+                .map_err(io_error),
             _ => Err(BindingError::DomainMismatch),
         }
     }
 
     /// Remove a native-u64 term.
+    ///
+    /// Engine write failures propagate as I/O errors (see `insert_u64`).
     pub fn remove_u64(&self, term: &[u64]) -> Result<bool, BindingError> {
         match self.shared.as_ref() {
-            PersistentBackend::U64(dictionary) => Ok(dictionary.remove_sequence(term)),
+            PersistentBackend::U64(dictionary) => {
+                dictionary.try_remove_sequence(term).map_err(io_error)
+            }
             _ => Err(BindingError::DomainMismatch),
         }
     }

@@ -177,7 +177,7 @@ completeness mode and stays green).
 | component | `src/bindings.rs` snapshot capture (`DynamicBackend::snapshot`, `SecondaryBackend::snapshot`, `PersistentBackend::snapshot`) |
 | class | concurrency / snapshot-coherence |
 | severity | medium |
-| status | **FIXED** for the in-memory families (DynamicDAWG × 3 domains, SCDAWG × 2 domains); **OPEN** for the persistent family (scheduled: W2 FV `AbiProducerSnapshot` capture-protocol work) |
+| status | **FIXED** for the in-memory families (coherent single-revision accessors); **RESOLVED AT THE ABI** for the persistent family (root-only capture, `out_known = 0` — the torn observable is unrepresentable); coherent `(root, count)` publication in the overlay flip remains an OPEN persistent-core enhancement to restore `out_known = 1` |
 
 **Evidence.** Every `snapshot()` arm captured the traversal root and the
 advertised term count with two independent atomic loads
@@ -237,3 +237,74 @@ captures, `0 / 10000` quiescent (same probe). Permanent regression:
 (12,000 captures under insert/remove churn, asserts walked == len on every
 capture; INVARIANT-HOOK LDICT-SNAP-1) under
 `cargo test --no-default-features --features ffi`.
+
+**Addendum (same day, W2 reconciliation).** The persistent arms no longer
+assemble a `(root, count)` pair at all: `PersistentBackend::snapshot` pins
+the root only and passes `None` as the captured count, which the interop
+`len` callback surfaces as `out_known = 0` ("not cheaply available") — the
+contract's honest affordance for exactly this situation. The tear is now
+unrepresentable for every family while capture stays $`O(1)`$; the coherent
+overlay-flip publication that would restore `out_known = 1` for the
+persistent family remains open persistent-core work (binding-side retries
+were shown unsound above). Full `--features ffi` suite green after the
+change.
+
+
+## Finding LDICT-B5 — persistent u64 writes swallowed engine errors into `OK`
+
+| Field | Value |
+|-------|-------|
+| id | LDICT-B5 |
+| date | 2026-08-08 |
+| component | `src/bindings.rs` `PersistentARTrieBinding::{insert_u64, remove_u64}` |
+| class | correctness (error propagation) |
+| severity | high |
+| status | **FIXED** |
+
+**Evidence.** Surfaced by the W2 C-ABI documentation pass (per-function
+status audit): the u64 arms called the infallible wrappers
+`PersistentARTrieU64::{insert_sequence_with_value, remove_sequence}`
+(`src/persistent_artrie/u64.rs`), which `log::warn!` and return `false` on
+engine failure — so a failed durable write surfaced across the ABI as
+`LDICT_STATUS_OK` with `out_inserted = 0`, indistinguishable from a clean
+idempotent no-op, while the byte and Unicode profiles propagate the same
+failures as `IO_ERROR` via `map_err(io_error)`.
+
+**Fix.** The arms now call `try_insert_sequence_with_value` /
+`try_remove_sequence` and map engine errors with the same `io_error`
+adapter the sibling profiles use; doc comments on both methods pin the
+rule (the ABI must report `IO_ERROR`, never a silent no-op `OK`).
+
+**Verification.** Type-level: the swallowing wrappers are no longer
+reachable from any ABI path (the `Result` now flows end-to-end);
+`tests/ffi_persistent_checkpoint_reopen.rs` (happy path) and
+`tests/ffi_crud_model_correspondence.rs` green after the change; the
+engine-side failure injection itself is exercised by the persistent
+crash-recovery suites that own the WAL fault model.
+
+## Finding LDICT-B6 — `LdictOptionalU64.reserved` accepted nonzero bytes
+
+| Field | Value |
+|-------|-------|
+| id | LDICT-B6 |
+| date | 2026-08-08 |
+| component | `src/ffi.rs` `LdictOptionalU64::decode` |
+| class | correctness (ABI validation) |
+| severity | medium |
+| status | **FIXED** |
+
+**Evidence.** `bindings/api.json` pins the struct's `reserved` bytes as
+`mustBeZero`, and the interop family law (VT-ABI-5, llev pre-registered
+finding F2) requires consumers and producers to enforce reserved-zero so
+the bytes stay available for compatible evolution — but revision 4's
+decoder checked only `has_value`, silently accepting garbage reserved
+bytes a future revision would reinterpret.
+
+**Fix.** `decode` rejects nonzero reserved bytes with
+`INVALID_ARGUMENT` ("reserved bytes must be zero") before the `has_value`
+check.
+
+**Verification.** `tests/ffi_status_matrix.rs::reserved_bytes_must_be_zero`
+— dirty reserved bytes rejected on both the insert path and the
+constructor-entry path with the exact message, and an all-zero control
+insert still succeeds (23/23 in the matrix suite).
