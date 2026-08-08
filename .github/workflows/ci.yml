@@ -414,6 +414,31 @@ jobs:
           python3 scripts/check-doc-math.py
 
   # -----------------------------------------------------------------
+  # Binding contract gate. Cross-checks bindings/api.json against
+  # src/ffi.rs, include/libdictenstein.h, and the 13 language facades:
+  # symbol parity, LdictStatus/kind/capability pins, registry
+  # coordinates and versions, identity guard, and exact npm pins.
+  # The canonical vinary_tree_interop.h byte-equality leg reads the
+  # liblevenshtein-rust sibling checkout; the gate downgrades that one
+  # leg to a warning when the sibling (or its interop header) is
+  # absent, so the clone step below is best-effort by design.
+  # -----------------------------------------------------------------
+  binding-contract:
+    name: Binding contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout dev sibling (liblevenshtein-rust) for the canonical interop header
+        run: |
+          parent=$(dirname "$GITHUB_WORKSPACE")
+          git clone --depth 1 \
+            https://github.com/vinary-tree/liblevenshtein-rust.git \
+            "$parent/liblevenshtein-rust" \
+            || echo "::warning::liblevenshtein-rust sibling clone failed; the interop-header byte-equality leg will be skipped"
+      - name: Run the binding architecture gate
+        run: python3 scripts/check-bindings.py
+
+  # -----------------------------------------------------------------
   # Scheduled/manual deep bounded model check. This is intentionally
   # not a PR job because several focused TLC models are large.
   # -----------------------------------------------------------------
