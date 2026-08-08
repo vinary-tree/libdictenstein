@@ -267,7 +267,8 @@ if command -v tla2sany >/dev/null 2>&1; then
       LockFreeOverlayRemoveCas \
       LockFreeOverlayDurableReplay \
       LockFreeOverlayValueCas \
-      ConcurrentCheckpointSerialization
+      ConcurrentCheckpointSerialization \
+      AbiProducerSnapshot
     do
       run_capped tla2sany "${module}.tla"
     done
@@ -325,7 +326,8 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       LockFreeOverlayRemoveCas \
       LockFreeOverlayDurableReplay \
       LockFreeOverlayValueCas \
-      ConcurrentCheckpointSerialization
+      ConcurrentCheckpointSerialization \
+      AbiProducerSnapshot
     do
       run_capped tlc -workers 1 -config "${module}.cfg" "${module}.tla"
     done
@@ -359,6 +361,12 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
     #     ends ABSENT = the acked-net-present-key loss) — proving the durable
     #     commit-generation reconcile (design C′, §3) is REQUIRED so replay order
     #     equals CAS/visibility order.
+    #   * AbiProducerSnapshot sets USE_IMMUTABLE_CAPTURE = FALSE (the rejected
+    #     design where snapshot() aliases the live head instead of pinning the
+    #     captured revision) and MUST violate `CapturedRevisionImmutable`: any
+    #     post-capture publish rewrites what an ABI consumer already captured —
+    #     proving the pinned-immutable-revision capture (vt.dictionary.v1, family
+    #     FV obligation #10) is REQUIRED.
     # If TLC unexpectedly PASSES one of these, the model no longer exhibits the
     # bug it must catch → the negative control is broken → fail the whole gate.
     #   * ConcurrentCheckpointSerialization sets USE_LOCK = FALSE (no checkpoint_lock —
@@ -381,7 +389,8 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       LockFreeOverlayRemoveCas \
       LockFreeOverlayDurableReplay \
       LockFreeOverlayValueCas \
-      ConcurrentCheckpointSerialization
+      ConcurrentCheckpointSerialization \
+      AbiProducerSnapshot
     do
       echo "== Negative control: ${unsafe_module}_Unsafe.cfg (MUST violate a safety invariant) =="
       if run_capped tlc -workers 1 -config "${unsafe_module}_Unsafe.cfg" "${unsafe_module}.tla"; then
