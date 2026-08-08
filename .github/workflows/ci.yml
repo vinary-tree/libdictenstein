@@ -38,6 +38,12 @@ jobs:
           - features-name: persistent-artrie
             features: --no-default-features --features persistent-artrie
             os: ubuntu-latest
+          # Producer C ABI + resource bindings: runs the ffi_* test suite
+          # (status/capability matrix, batch edges, paging + CRUD oracles,
+          # snapshot law, persistent checkpoint/reopen, concurrency stress).
+          - features-name: ffi
+            features: --no-default-features --features ffi
+            os: ubuntu-latest
           - features-name: pathmap-backend
             features: --no-default-features --features pathmap-backend
             os: ubuntu-latest
@@ -62,6 +68,9 @@ jobs:
             os: macos-latest
     steps:
       - uses: actions/checkout@v4
+      # Path dependencies: ../llattice (every build) and
+      # ../liblevenshtein-rust/vinary-tree-interop (bindings-core/ffi legs).
+      - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
       - name: cargo build
         run: cargo build ${{ matrix.features }} --verbose
@@ -77,6 +86,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -99,6 +109,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # cargo-deny resolves the full dependency graph, so the path
+      # dependencies must be present.
+      - uses: ./.github/actions/checkout-dev-siblings
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans sources licenses
@@ -113,6 +126,7 @@ jobs:
       RUSTDOCFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
       - name: cargo doc --all-features --no-deps
         run: cargo doc --all-features --no-deps
@@ -147,6 +161,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.95"
@@ -163,6 +178,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: llvm-tools-preview
@@ -193,6 +209,7 @@ jobs:
         sanitizer: [address, thread]
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
@@ -230,6 +247,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-java@v4
         with:
@@ -269,6 +287,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri,rust-src
@@ -316,6 +335,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-java@v4
         with:
@@ -448,6 +468,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-java@v4
         with:

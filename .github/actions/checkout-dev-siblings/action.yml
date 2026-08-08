@@ -1,0 +1,58 @@
+name: Checkout dev sibling crates
+description: >
+  Clone the in-development related crates (llattice, liblevenshtein-rust)
+  into the workspace parent directory so libdictenstein's `path = "../..."`
+  dependencies resolve against their development versions (mirroring the
+  local checkout layout): `llattice` is a mandatory dependency of every
+  build, and `liblevenshtein-rust` provides the `vinary-tree-interop` path
+  dependency required by the `bindings-core`/`ffi` feature family. This is
+  for development / CI workflows only — release workflows pin the siblings
+  at tagged versions instead (see release-bindings.yml).
+
+inputs:
+  ref:
+    description: Git ref (branch, tag, or SHA) to check out for the sibling crates.
+    required: false
+    default: master
+  llattice-ref:
+    description: Exact llattice ref; defaults to `ref`.
+    required: false
+    default: ""
+  liblevenshtein-rust-ref:
+    description: Exact liblevenshtein-rust ref; defaults to `ref`.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Clone sibling crates into the workspace parent
+      shell: bash
+      run: |
+        set -euo pipefail
+        # The main repo is checked out at $GITHUB_WORKSPACE; its parent is
+        # where the path dependencies resolve to.
+        parent="$(dirname "$GITHUB_WORKSPACE")"
+        for repo in llattice liblevenshtein-rust; do
+          case "$repo" in
+            llattice) selected_ref="${{ inputs.llattice-ref }}" ;;
+            liblevenshtein-rust) selected_ref="${{ inputs.liblevenshtein-rust-ref }}" ;;
+          esac
+          if [ -z "$selected_ref" ]; then
+            selected_ref="${{ inputs.ref }}"
+          fi
+          dest="$parent/$repo"
+          if [ -d "$dest/.git" ]; then
+            echo "::group::Updating $repo to $selected_ref"
+            git -C "$dest" fetch --depth 1 origin "$selected_ref"
+            git -C "$dest" checkout -f FETCH_HEAD
+            echo "::endgroup::"
+          else
+            echo "::group::Cloning $repo @ $selected_ref"
+            git clone --depth 1 --branch "$selected_ref" \
+              "https://github.com/vinary-tree/$repo.git" "$dest"
+            echo "::endgroup::"
+          fi
+        done
+        echo "Sibling crates available under $parent:"
+        ls -1d "$parent"/llattice "$parent"/liblevenshtein-rust
