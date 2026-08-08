@@ -1539,4 +1539,261 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------
+    // W2 producer-invariant extensions. The tests below reach the internal
+    // `Arc<ResourceContext>` that realizes the ABI reference counter, which
+    // no consumer can do across the boundary — this is the numeric half of
+    // the LDICT-LIFE-1 balance law (the behavioural half lives in
+    // tests/ffi_concurrent_snapshot_stress.rs).
+    // -----------------------------------------------------------------
+
+    /// Observe the realized reference count of a resource context.
+    unsafe fn context_strong_count(raw: VtResource) -> usize {
+        let context = raw.context.cast::<ResourceContext>();
+        Arc::increment_strong_count(context);
+        let probe = Arc::from_raw(context);
+        let count = Arc::strong_count(&probe) - 1;
+        drop(probe);
+        count
+    }
+
+    /// A `Weak` observer that outlives every ABI retain of the context.
+    unsafe fn context_weak_observer(raw: VtResource) -> std::sync::Weak<ResourceContext> {
+        let context = raw.context.cast::<ResourceContext>();
+        Arc::increment_strong_count(context);
+        let probe = Arc::from_raw(context);
+        let observer = Arc::downgrade(&probe);
+        drop(probe);
+        observer
+    }
+
+    /// INVARIANT-HOOK: LDICT-LIFE-1 (numeric): each `resource()` borrow is
+    /// an independent context owning exactly one retain; copying the two
+    /// words is not a retain; vtable retain/release move the counter by
+    /// exactly one; dropping the owner destroys the context exactly once.
+    #[test]
+    fn owned_resources_balance_their_retains_exactly() {
+        let dictionary = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
+        dictionary
+            .insert_text(b"cat", Some(1))
+            .expect("insert must succeed");
+
+        let first = dictionary.resource();
+        let second = dictionary.resource();
+        assert!(
+            !std::ptr::eq(first.raw.context, second.raw.context),
+            "each borrow mints an independent context"
+        );
+        assert_eq!(unsafe { context_strong_count(first.as_raw()) }, 1);
+        assert_eq!(unsafe { context_strong_count(second.as_raw()) }, 1);
+
+        // Copying the two words never moves the counter.
+        let copied = first.as_raw();
+        let copied_again = copied;
+        assert_eq!(unsafe { context_strong_count(copied_again) }, 1);
+
+        // Vtable retain/release move it by exactly one.
+        unsafe { resource_retain(copied.context) };
+        assert_eq!(unsafe { context_strong_count(copied) }, 2);
+        unsafe { resource_release(copied.context) };
+        assert_eq!(unsafe { context_strong_count(copied) }, 1);
+
+        // retain/release of NULL are documented no-ops.
+        unsafe { resource_retain(std::ptr::null_mut()) };
+        unsafe { resource_release(std::ptr::null_mut()) };
+
+        // Dropping the owner is the final release: the context dies once.
+        let observer = unsafe { context_weak_observer(first.as_raw()) };
+        drop(first);
+        assert_eq!(observer.strong_count(), 0, "drop released the last retain");
+        assert!(
+            observer.upgrade().is_none(),
+            "context destroyed exactly once"
+        );
+        // The sibling context is untouched.
+        assert_eq!(unsafe { context_strong_count(second.as_raw()) }, 1);
+    }
+
+    /// INVARIANT-HOOK: LDICT-LIFE-1 + LDICT-SNAP-3: `dictionary_snapshot`
+    /// transfers exactly one owned retain to the caller (the `mem::forget`
+    /// in the producer is the ownership handoff, not a leak), for captures
+    /// of live resources and of snapshots alike.
+    #[test]
+    fn dictionary_snapshot_transfers_exactly_one_owned_retain() {
+        let dictionary = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
+        dictionary
+            .insert_text(b"cot", Some(2))
+            .expect("insert must succeed");
+        let resource = dictionary.resource();
+
+        let mut captured = VtResource::NULL;
+        let status = unsafe { dictionary_snapshot(resource.raw.context, &mut captured) };
+        assert_eq!(status, VtStatus::Ok);
+        assert!(!captured.context.is_null());
+        assert_eq!(unsafe { context_strong_count(captured) }, 1);
+        // The source context's count is unchanged by the capture.
+        assert_eq!(unsafe { context_strong_count(resource.as_raw()) }, 1);
+
+        // Snapshot-of-snapshot: a NEW context (shared arena), one retain.
+        let mut nested = VtResource::NULL;
+        let status = unsafe { dictionary_snapshot(captured.context, &mut nested) };
+        assert_eq!(status, VtStatus::Ok);
+        assert!(
+            !std::ptr::eq(nested.context, captured.context),
+            "snapshot-of-snapshot mints a fresh context"
+        );
+        assert_eq!(unsafe { context_strong_count(nested) }, 1);
+
+        // Releasing the transferred retains destroys each context once.
+        let captured_observer = unsafe { context_weak_observer(captured) };
+        let nested_observer = unsafe { context_weak_observer(nested) };
+        unsafe { resource_release(nested.context) };
+        assert_eq!(nested_observer.strong_count(), 0);
+        unsafe { resource_release(captured.context) };
+        assert_eq!(captured_observer.strong_count(), 0);
+    }
+
+    /// ABI-local node identifiers are stable within one snapshot (repeated
+    /// enumeration and transition agree) and independent across snapshots
+    /// (a later snapshot's ids neither move nor validate an earlier one's
+    /// id space).
+    #[test]
+    fn node_ids_are_stable_within_and_independent_across_snapshots() {
+        let dictionary = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
+        dictionary
+            .insert_text(b"ab", Some(1))
+            .expect("insert must succeed");
+        dictionary
+            .insert_text(b"ac", Some(2))
+            .expect("insert must succeed");
+        let resource = dictionary.resource();
+        let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };
+
+        let first_snapshot = live.snapshot();
+        let root_edges = first_snapshot.edges(0).expect("root edges");
+        assert_eq!(root_edges.len(), 1, "both terms share the 'a' prefix");
+        // Stability: re-enumeration returns identical (label, id) pairs.
+        assert_eq!(
+            first_snapshot.edges(0).expect("root edges again"),
+            root_edges
+        );
+        // Agreement: transition resolves every listed edge to the same id.
+        for (label, child) in &root_edges {
+            assert_eq!(
+                first_snapshot.transition(0, *label).expect("transition"),
+                Some(*child)
+            );
+        }
+        // Materialize one level deeper; ids stay stable there too.
+        let a_node = root_edges[0].1;
+        let deeper = first_snapshot.edges(a_node).expect("deeper edges");
+        assert_eq!(deeper.len(), 2, "'b' and 'c' leaves");
+        assert_eq!(first_snapshot.edges(a_node).expect("deeper again"), deeper);
+
+        // Mutate, then capture a second snapshot: its id space is its own.
+        dictionary
+            .insert_text(b"zz", Some(3))
+            .expect("insert must succeed");
+        let second_snapshot = live.snapshot();
+        let second_root = second_snapshot.edges(0).expect("second root edges");
+        assert_eq!(second_root.len(), 2, "'a' and 'z' branches");
+        // The first snapshot is untouched by the second's materialization.
+        assert_eq!(first_snapshot.edges(0).expect("still stable"), root_edges);
+        // An id far beyond the first snapshot's arena is invalid THERE,
+        // regardless of what any other snapshot materialized.
+        assert_eq!(
+            first_snapshot.is_final(10_000),
+            Err(VtStatus::InvalidArgument)
+        );
+        assert_eq!(first_snapshot.value(10_000), Err(VtStatus::InvalidArgument));
+        assert_eq!(first_snapshot.edges(10_000), Err(VtStatus::InvalidArgument));
+    }
+
+    /// The emitted base vtable and all ten dictionary vtables pin their
+    /// struct sizes, versions, reserved fields, domains, flag sets, and
+    /// fully populated operation slots.
+    #[test]
+    fn emitted_vtables_pin_sizes_versions_domains_and_flags() {
+        assert_eq!(
+            RESOURCE_VTABLE.struct_size,
+            std::mem::size_of::<VtResourceVTable>()
+        );
+        assert_eq!(RESOURCE_VTABLE.abi_version, VT_ABI_VERSION);
+        assert_eq!(RESOURCE_VTABLE.reserved, 0, "reserved must be zero");
+        assert!(RESOURCE_VTABLE.retain.is_some());
+        assert!(RESOURCE_VTABLE.release.is_some());
+        assert!(RESOURCE_VTABLE.query_interface.is_some());
+
+        const PR: u64 = dictionary_flags::PARALLEL_REENTRANT;
+        const SUF: u64 = dictionary_flags::SUFFIX_BASED;
+        const IMM: u64 = dictionary_flags::IMMUTABLE;
+        // (requested domain, immutable, suffix) -> exact emitted flag set.
+        // The U64 rows pin the aliasing in `dictionary_vtable`: no suffix
+        // U64 vtable exists, so the suffix bit is dropped for that domain.
+        let expectations = [
+            (VtUnitDomain::Byte, false, false, PR),
+            (VtUnitDomain::UnicodeScalar, false, false, PR),
+            (VtUnitDomain::U64, false, false, PR),
+            (VtUnitDomain::Byte, false, true, PR | SUF),
+            (VtUnitDomain::UnicodeScalar, false, true, PR | SUF),
+            (VtUnitDomain::U64, false, true, PR),
+            (VtUnitDomain::Byte, true, false, PR | IMM),
+            (VtUnitDomain::UnicodeScalar, true, false, PR | IMM),
+            (VtUnitDomain::U64, true, false, PR | IMM),
+            (VtUnitDomain::Byte, true, true, PR | IMM | SUF),
+            (VtUnitDomain::UnicodeScalar, true, true, PR | IMM | SUF),
+            (VtUnitDomain::U64, true, true, PR | IMM),
+        ];
+        for (domain, immutable, suffix, expected_flags) in expectations {
+            let mut requested = PR;
+            if immutable {
+                requested |= IMM;
+            }
+            if suffix {
+                requested |= SUF;
+            }
+            let vtable = unsafe { &*dictionary_vtable(domain, requested) };
+            assert_eq!(
+                vtable.struct_size,
+                std::mem::size_of::<VtDictionaryVTable>(),
+                "{domain:?}/{immutable}/{suffix}: struct_size"
+            );
+            assert_eq!(
+                vtable.interface_version, VT_DICTIONARY_INTERFACE_VERSION,
+                "{domain:?}/{immutable}/{suffix}: interface_version"
+            );
+            assert_eq!(
+                vtable.unit_domain, domain,
+                "{domain:?}/{immutable}/{suffix}: unit_domain"
+            );
+            assert_eq!(
+                vtable.value_domain,
+                VtValueDomain::OptionalU64,
+                "{domain:?}/{immutable}/{suffix}: value_domain"
+            );
+            assert_eq!(
+                vtable.flags, expected_flags,
+                "{domain:?}/{immutable}/{suffix}: exact flag set"
+            );
+            assert!(vtable.snapshot.is_some(), "snapshot slot");
+            assert!(vtable.root.is_some(), "root slot");
+            assert!(vtable.len.is_some(), "len slot");
+            assert!(vtable.node_is_final.is_some(), "node_is_final slot");
+            assert!(vtable.node_value_u64.is_some(), "node_value_u64 slot");
+            assert!(vtable.node_transition.is_some(), "node_transition slot");
+            assert!(vtable.node_edges.is_some(), "node_edges slot");
+        }
+
+        // The U64 aliasing is pointer-level: suffix requests reuse the
+        // non-suffix statics rather than minting lookalike tables.
+        assert!(std::ptr::eq(
+            dictionary_vtable(VtUnitDomain::U64, PR | SUF),
+            dictionary_vtable(VtUnitDomain::U64, PR)
+        ));
+        assert!(std::ptr::eq(
+            dictionary_vtable(VtUnitDomain::U64, PR | IMM | SUF),
+            dictionary_vtable(VtUnitDomain::U64, PR | IMM)
+        ));
+    }
 }
