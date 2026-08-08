@@ -290,6 +290,11 @@ impl PersistentARTrieBinding {
         self.shared.len()
     }
 
+    /// Whether the current revision has no visible terms.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Whether this is the bidirectional vocabulary ARTrie variant.
     pub fn is_vocab(&self) -> bool {
         matches!(self.shared.as_ref(), PersistentBackend::Vocab(_))
@@ -606,6 +611,11 @@ impl ScdawgBinding {
     /// Number of indexed exact terms.
     pub fn len(&self) -> usize {
         self.shared.len()
+    }
+
+    /// Whether no exact terms are indexed.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Insert or update a term and optional metadata.
