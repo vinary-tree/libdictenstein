@@ -17,5 +17,12 @@ let package = Package(
                 .product(name: "VinaryTreeInterop", package: "vinary-tree-interop"),
             ]
         ),
+        .testTarget(
+            name: "LibdictensteinTests",
+            dependencies: [
+                "Libdictenstein",
+                .product(name: "VinaryTreeInterop", package: "vinary-tree-interop"),
+            ]
+        ),
     ]
 )

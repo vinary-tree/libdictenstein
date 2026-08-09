@@ -62,6 +62,30 @@ open class Dictionary: DictionaryResource, @unchecked Sendable {
         return try withUnsafePointer(to: &resource, body)
     }
 
+    /// Native ABI version (LDICT_ABI_VERSION); always 1 for this family.
+    public static func abiVersion() -> UInt32 { ldict_abi_version() }
+
+    /// Compatible-additions revision within the ABI version (LDICT_API_REVISION).
+    public static func apiRevision() -> UInt32 { ldict_api_revision() }
+
+    /// Stable native backend identifier (LDICT_KIND_*).
+    public var kind: Int {
+        get throws {
+            var value: UInt32 = 0
+            try checked(ldict_dictionary_kind(try handle(), &value))
+            return Int(value)
+        }
+    }
+
+    /// Bitset of operations implemented by this backend (LDICT_CAP_*).
+    public var capabilities: UInt64 {
+        get throws {
+            var value: UInt64 = 0
+            try checked(ldict_dictionary_capabilities(try handle(), &value))
+            return value
+        }
+    }
+
     public var count: Int {
         get throws {
             var result = 0
