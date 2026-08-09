@@ -8,6 +8,12 @@ module VinaryTree
     UNICODE_SCALAR = 2
     U64 = 3
 
+    # Native ABI version (LDICT_ABI_VERSION); always 1 for this family.
+    def self.abi_version = Native.ldict_abi_version
+
+    # Compatible-additions revision within the ABI version (LDICT_API_REVISION).
+    def self.api_revision = Native.ldict_api_revision
+
     Lookup = Data.define(:found?, :value)
 
     class Error < StandardError

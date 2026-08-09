@@ -34,6 +34,8 @@ module VinaryTree
         "uint8_t reserved[7]"
       ]
 
+      extern "uint32_t ldict_abi_version(void)"
+      extern "uint32_t ldict_api_revision(void)"
       extern "const char* ldict_last_error_message(void)"
       extern "uint32_t ldict_dynamic_dawg_new(uint32_t, void*)"
       extern "uint32_t ldict_double_array_trie_new(uint32_t, void*, size_t, void*)"
