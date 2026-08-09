@@ -1,6 +1,12 @@
 type t
 type lookup = { found : bool; value : int64 option }
 
+(** Native ABI version (LDICT_ABI_VERSION); always 1 for this family. *)
+val abi_version : unit -> int
+
+(** Compatible-additions revision within the ABI version (LDICT_API_REVISION). *)
+val api_revision : unit -> int
+
 val dynamic_dawg : ?domain:Vinary_tree_interop.unit_domain -> unit -> t
 val double_array_trie :
   ?domain:Vinary_tree_interop.unit_domain -> (string * int64 option) array -> t

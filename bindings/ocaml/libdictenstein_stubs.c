@@ -75,6 +75,16 @@ static uint64_t* copy_u64_array(value input, size_t* out_length) {
     return output;
 }
 
+CAMLprim value ocaml_ldict_abi_version(value unit) {
+    CAMLparam1(unit);
+    CAMLreturn(Val_int((int)ldict_abi_version()));
+}
+
+CAMLprim value ocaml_ldict_api_revision(value unit) {
+    CAMLparam1(unit);
+    CAMLreturn(Val_int((int)ldict_api_revision()));
+}
+
 CAMLprim value ocaml_ldict_dynamic_dawg(value domain) {
     CAMLparam1(domain);
     LdictDictionary* output = NULL;

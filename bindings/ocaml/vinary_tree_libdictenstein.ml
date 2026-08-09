@@ -1,6 +1,8 @@
 type t
 type lookup = { found : bool; value : int64 option }
 
+external abi_version : unit -> int = "ocaml_ldict_abi_version"
+external api_revision : unit -> int = "ocaml_ldict_api_revision"
 external raw_dynamic_dawg : Vinary_tree_interop.unit_domain -> t
   = "ocaml_ldict_dynamic_dawg"
 external raw_double_array_trie :
