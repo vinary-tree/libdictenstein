@@ -350,6 +350,15 @@ static int frequency(lua_State* state) {
     return 1;
 }
 
+static int abi_version(lua_State* state) {
+    lua_pushinteger(state, (lua_Integer)ldict_abi_version());
+    return 1;
+}
+static int api_revision(lua_State* state) {
+    lua_pushinteger(state, (lua_Integer)ldict_api_revision());
+    return 1;
+}
+
 static const luaL_Reg dictionary_methods[] = {
     {"close", close_dictionary}, {"len", length}, {"kind", kind}, {"capabilities", capabilities},
     {"put", put}, {"remove", remove_term}, {"get", get}, {"contains", contains},
@@ -366,6 +375,7 @@ int luaopen_vinary_tree_libdictenstein(lua_State* state) {
     lua_newtable(state); luaL_setfuncs(state, dictionary_methods, 0); lua_setfield(state, -2, "__index");
     lua_pop(state, 1);
     luaL_Reg functions[] = {
+        {"abi_version", abi_version}, {"api_revision", api_revision},
         {"dynamic_dawg", dynamic_new}, {"double_array_trie", double_array_trie_new},
         {"scdawg", scdawg_new},
         {"create_persistent_artrie", persistent_create}, {"open_persistent_artrie", persistent_open},
