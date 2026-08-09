@@ -37,6 +37,10 @@ internal sealed class DictionaryHandle : SafeHandleZeroOrMinusOneIsInvalid
 internal static unsafe partial class Native
 {
     private const string Library = "libdictenstein";
+    [LibraryImport(Library, EntryPoint = "ldict_abi_version")]
+    internal static partial uint AbiVersion();
+    [LibraryImport(Library, EntryPoint = "ldict_api_revision")]
+    internal static partial uint ApiRevision();
     [LibraryImport(Library, EntryPoint = "ldict_last_error_message")]
     internal static partial nint LastError();
     [LibraryImport(Library, EntryPoint = "ldict_dynamic_dawg_new")]

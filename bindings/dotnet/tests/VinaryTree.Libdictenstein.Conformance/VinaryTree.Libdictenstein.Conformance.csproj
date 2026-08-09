@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Uniform facade C1 through C10 conformance runner for the .NET binding.
+
+    Self-contained: references only libdictenstein (and interop transitively),
+    never liblevenshtein, so it pins the producer ABI in isolation. It is a
+    console app that returns a non-zero exit code on any failed check.
+
+    Run it (with the shared library on the loader path) via `dotnet run` on this
+    project, passing the fixture path as the sole program argument and setting
+    LD_LIBRARY_PATH to the directory holding liblibdictenstein.so. See README.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/VinaryTree.Libdictenstein/VinaryTree.Libdictenstein.csproj" />
+  </ItemGroup>
+</Project>

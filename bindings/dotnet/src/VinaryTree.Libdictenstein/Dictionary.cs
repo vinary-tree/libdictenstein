@@ -38,6 +38,11 @@ public abstract class Dictionary : IDictionaryResource, IDisposable
     internal DictionaryHandle Handle { get; }
     internal Dictionary(nint handle) => Handle = handle != 0 ? new DictionaryHandle(handle) : throw new InvalidOperationException("native dictionary was not returned");
 
+    /// <summary>Native ABI version (LDICT_ABI_VERSION); always 1 for this family.</summary>
+    public static uint AbiVersion => Native.AbiVersion();
+    /// <summary>Compatible-additions revision within the ABI version (LDICT_API_REVISION).</summary>
+    public static uint ApiRevision => Native.ApiRevision();
+
     /// <summary>The concrete backend.</summary>
     public BackendKind Kind { get { Native.Check(Native.Kind(Handle, out uint result)); return (BackendKind)result; } }
     /// <summary>The stable capability bit set.</summary>
