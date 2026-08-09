@@ -12,4 +12,17 @@
     io.vinarytree/liblevenshtein
     {:local/root "../../../liblevenshtein-rust/bindings/jvm"}
     io.vinarytree/libdictenstein {:local/root "../jvm"}}
-   :main-opts ["-m" "vinary-tree.libdictenstein-test-runner"]}}}
+   :main-opts ["-m" "vinary-tree.libdictenstein-test-runner"]}
+  ;; Producer-only C1-C10 conformance: needs libdictenstein + the canonical
+  ;; fixture, never a liblevenshtein transducer. data.json parses the fixture.
+  :conformance
+  {:extra-paths ["test"]
+   :extra-deps {org.clojure/data.json {:mvn/version "2.5.2"}}
+   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]
+   :override-deps
+   {io.vinarytree/vinary-tree-interop
+    {:local/root "../../../liblevenshtein-rust/vinary-tree-interop/bindings/jvm"}
+    io.vinarytree/liblevenshtein
+    {:local/root "../../../liblevenshtein-rust/bindings/jvm"}
+    io.vinarytree/libdictenstein {:local/root "../jvm"}}
+   :main-opts ["-m" "vinary-tree.libdictenstein-conformance-runner"]}}}

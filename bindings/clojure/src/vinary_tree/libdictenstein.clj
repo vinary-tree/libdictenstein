@@ -41,6 +41,16 @@
       (.put output (str term) (optional value)))
     output))
 
+(defn abi-version
+  "Native ABI version (LDICT_ABI_VERSION); always 1 for this family."
+  []
+  (Dictionary/abiVersion))
+
+(defn api-revision
+  "Compatible-additions revision within the ABI version (LDICT_API_REVISION)."
+  []
+  (Dictionary/apiRevision))
+
 (defn dynamic-dawg
   "Construct an empty full-CRUD DynamicDAWG."
   ([] (DynamicDawg.))
