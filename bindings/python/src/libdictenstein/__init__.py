@@ -8,6 +8,8 @@ from ._native import (
     PersistentVocabulary,
     Scdawg,
     UnitDomain,
+    abi_version,
+    api_revision,
 )
 
 __all__ = [
@@ -18,4 +20,6 @@ __all__ = [
     "PersistentVocabulary",
     "Scdawg",
     "UnitDomain",
+    "abi_version",
+    "api_revision",
 ]

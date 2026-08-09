@@ -78,6 +78,7 @@ def _load_library() -> ctypes.CDLL:
 
 _lib = _load_library()
 _lib.ldict_abi_version.restype = ctypes.c_uint32
+_lib.ldict_api_revision.restype = ctypes.c_uint32
 _lib.ldict_last_error_message.restype = ctypes.c_char_p
 _lib.ldict_dynamic_dawg_new.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
 _lib.ldict_dynamic_dawg_new.restype = ctypes.c_uint32
@@ -196,6 +197,16 @@ _lib.ldict_vocab_get_term.restype = ctypes.c_uint32
 
 if _lib.ldict_abi_version() != 1:
     raise ImportError("libdictenstein native ABI version mismatch")
+
+
+def abi_version() -> int:
+    """Native ABI version (LDICT_ABI_VERSION); always 1 for this family."""
+    return int(_lib.ldict_abi_version())
+
+
+def api_revision() -> int:
+    """Compatible-additions revision within the ABI version (LDICT_API_REVISION)."""
+    return int(_lib.ldict_api_revision())
 
 
 def _error() -> str:

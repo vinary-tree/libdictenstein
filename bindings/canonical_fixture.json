@@ -1,0 +1,50 @@
+{
+  "description": "Canonical cross-language conformance oracle for the ldict_* producer ABI. Every language facade's conformance suite replays this identical fixture (contract C4). Expected values were derived empirically from the reference implementation (liblibdictenstein) and must agree byte-for-byte across facades. Terms are UTF-8; the unit domain is unicode_scalar.",
+  "unit_domain": "unicode_scalar",
+  "entries": [
+    {"term": "cat", "value": 1},
+    {"term": "cot", "value": 2},
+    {"term": "cut", "value": null},
+    {"term": "scat", "value": null},
+    {"term": "café", "value": 7},
+    {"term": "🦀", "value": 255}
+  ],
+  "size": 6,
+  "contains": [
+    {"term": "cat", "expected": true},
+    {"term": "cot", "expected": true},
+    {"term": "cut", "expected": true},
+    {"term": "scat", "expected": true},
+    {"term": "café", "expected": true},
+    {"term": "🦀", "expected": true},
+    {"term": "dog", "expected": false},
+    {"term": "ca", "expected": false},
+    {"term": "caf", "expected": false}
+  ],
+  "get": [
+    {"term": "cot", "found": true, "value": 2},
+    {"term": "cut", "found": true, "value": null},
+    {"term": "café", "found": true, "value": 7},
+    {"term": "🦀", "found": true, "value": 255},
+    {"term": "zzz", "found": false, "value": null}
+  ],
+  "substring_frequency": [
+    {"pattern": "c", "expected": 5},
+    {"pattern": "a", "expected": 3},
+    {"pattern": "at", "expected": 2},
+    {"pattern": "t", "expected": 4},
+    {"pattern": "ca", "expected": 3},
+    {"pattern": "co", "expected": 1},
+    {"pattern": "é", "expected": 1},
+    {"pattern": "caf", "expected": 1},
+    {"pattern": "🦀", "expected": 1},
+    {"pattern": "z", "expected": 0}
+  ],
+  "substring_contains": [
+    {"pattern": "at", "expected": true},
+    {"pattern": "co", "expected": true},
+    {"pattern": "🦀", "expected": true},
+    {"pattern": "xyz", "expected": false},
+    {"pattern": "z", "expected": false}
+  ]
+}
