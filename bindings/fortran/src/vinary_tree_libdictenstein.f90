@@ -46,6 +46,7 @@ module vinary_tree_libdictenstein
   public :: new_dynamic_dawg, new_double_array_trie, new_scdawg
   public :: create_persistent_artrie, open_persistent_artrie
   public :: create_persistent_vocabulary, open_persistent_vocabulary
+  public :: abi_version, api_revision, last_error_message
 
   interface
     function c_dynamic(domain, output) bind(c, name="ldict_dynamic_dawg_new") result(status)
@@ -175,9 +176,55 @@ module vinary_tree_libdictenstein
       integer(c_size_t), value :: capacity; integer(c_size_t), intent(out) :: count
       integer(c_int8_t), intent(out) :: found; integer(c_int32_t) :: status
     end function
+    ! ABI meta group: identity constants and thread-local last-error text.
+    function c_abi_version() bind(c, name="ldict_abi_version") result(value)
+      import c_int32_t; integer(c_int32_t) :: value
+    end function
+    function c_api_revision() bind(c, name="ldict_api_revision") result(value)
+      import c_int32_t; integer(c_int32_t) :: value
+    end function
+    function c_last_error() bind(c, name="ldict_last_error_message") result(pointer)
+      import c_ptr; type(c_ptr) :: pointer
+    end function
+    ! libc strlen: bounds the NUL-terminated last-error string for safe copy.
+    function c_strlen(pointer) bind(c, name="strlen") result(length)
+      import c_ptr, c_size_t; type(c_ptr), value :: pointer; integer(c_size_t) :: length
+    end function
   end interface
 
 contains
+
+  ! Native ABI version, always 1 for this revision family.
+  function abi_version() result(value)
+    integer(c_int32_t) :: value
+    value = c_abi_version()
+  end function
+  ! Compatible-additions revision within the ABI version.
+  function api_revision() result(value)
+    integer(c_int32_t) :: value
+    value = c_api_revision()
+  end function
+  ! Thread-local text for the most recent failing call on this thread; an
+  ! empty string when no message is set. Marshals the borrowed, NUL-terminated
+  ! C string into an owned Fortran string without reading past the terminator.
+  function last_error_message() result(message)
+    character(kind=c_char, len=:), allocatable :: message
+    type(c_ptr) :: pointer
+    character(kind=c_char), pointer :: chars(:)
+    integer(c_size_t) :: length
+    integer :: i
+    pointer = c_last_error()
+    if (.not. c_associated(pointer)) then
+      allocate(character(kind=c_char, len=0) :: message)
+      return
+    end if
+    length = c_strlen(pointer)
+    call c_f_pointer(pointer, chars, [length])
+    allocate(character(kind=c_char, len=int(length)) :: message)
+    do i = 1, int(length)
+      message(i:i) = chars(i)
+    end do
+  end function
 
   function string_bytes(text) result(bytes)
     character(len=*), intent(in) :: text

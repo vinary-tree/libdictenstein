@@ -166,6 +166,21 @@ in `scripts/check-bindings.py` last, per the family plan's scrutiny protocol).
 **Verification.** Pending W7 (gate flips from referenced-symbol mode to
 completeness mode and stays green).
 
+**Addendum (2026-08-09, W7 uniform sweep).** The specifically-flagged Fortran
+gap is closed: `bindings/fortran/src/vinary_tree_libdictenstein.f90` now binds
+the whole ABI meta group — `ldict_abi_version`, `ldict_api_revision`, and
+`ldict_last_error_message` — surfaced as the public module functions
+`abi_version()`, `api_revision()`, and `last_error_message()`. The last of
+these marshals the borrowed, NUL-terminated thread-local C string into an owned
+Fortran string (length bounded by a `strlen` interop binding, so no read runs
+past the terminator), returning an empty string when no message is set.
+Fortran gate coverage rose 27 → 30 / 35; the four aggregate-by-value CRUD forms
+(`insert_text`, `insert_u64`, `get_text`, `get_u64`) and `insert_u64_batch`
+remain intentionally uncovered — the scalar `…_value` twins and the text batch
+are the calling conventions the Fortran `bind(c)` layer uses. Regression:
+`bindings/fortran/test/conformance.f90` (`test_error_message` asserts a
+non-empty `last_error_message()` after an INVALID_UTF8 insert).
+
 ---
 
 ## Finding LDICT-B4 — torn snapshot capture: root and len read from different revisions
