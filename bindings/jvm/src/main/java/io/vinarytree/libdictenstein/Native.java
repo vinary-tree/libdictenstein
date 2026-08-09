@@ -31,6 +31,8 @@ final class Native {
     static final long ENTRY_VALUE = ENTRY.byteOffset(groupElement("value"));
 
     private static final Linker LINKER = Linker.nativeLinker();
+    private static final MethodHandle ABI_VERSION;
+    private static final MethodHandle API_REVISION;
     private static final MethodHandle LAST_ERROR;
     private static final MethodHandle NEW;
     private static final MethodHandle DAT_NEW;
@@ -64,6 +66,8 @@ final class Native {
     static {
         NativeLibraryLoader.load();
         SymbolLookup symbols = SymbolLookup.loaderLookup();
+        ABI_VERSION = downcall(symbols, "ldict_abi_version", FunctionDescriptor.of(JAVA_INT));
+        API_REVISION = downcall(symbols, "ldict_api_revision", FunctionDescriptor.of(JAVA_INT));
         LAST_ERROR = downcall(symbols, "ldict_last_error_message", FunctionDescriptor.of(ADDRESS));
         NEW = downcall(symbols, "ldict_dynamic_dawg_new",
                 FunctionDescriptor.of(JAVA_INT, JAVA_INT, ADDRESS));
@@ -141,6 +145,10 @@ final class Native {
             SymbolLookup symbols, String name, FunctionDescriptor descriptor) {
         return LINKER.downcallHandle(symbols.find(name).orElseThrow(), descriptor);
     }
+
+    static int abiVersion() { return (int) invoke(ABI_VERSION); }
+
+    static int apiRevision() { return (int) invoke(API_REVISION); }
 
     static void check(int status) {
         if (status != OK) throw new NativeException(status, lastError());

@@ -93,6 +93,12 @@ public abstract class Dictionary implements DictionaryResource {
         }
     }
 
+    /** Native ABI version (LDICT_ABI_VERSION); always 1 for this family. */
+    public static int abiVersion() { return Native.abiVersion(); }
+
+    /** Compatible-additions revision within the ABI version (LDICT_API_REVISION). */
+    public static int apiRevision() { return Native.apiRevision(); }
+
     /** Unit domain fixed at construction/open time. */
     public final UnitDomain domain() { return domain; }
 
