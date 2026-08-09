@@ -95,6 +95,14 @@ func optional(value *uint64) C.LdictOptionalU64 {
 }
 func valueOf(value uint64) *uint64 { result := value; return &result }
 
+// AbiVersion reports the native ABI version (LDICT_ABI_VERSION); always 1 for
+// this family. Consumers gate on it before trusting any other symbol.
+func AbiVersion() uint32 { return uint32(C.ldict_abi_version()) }
+
+// ApiRevision reports the compatible-additions revision within the ABI version
+// (LDICT_API_REVISION). It increases monotonically as symbols are added.
+func ApiRevision() uint32 { return uint32(C.ldict_api_revision()) }
+
 // Entry is one term/value mutation descriptor.
 type Entry struct {
 	Term  string
