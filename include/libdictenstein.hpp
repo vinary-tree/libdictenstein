@@ -29,6 +29,13 @@ inline void check(LdictStatus status) {
     if (status != LDICT_STATUS_OK) throw error(status);
 }
 
+// Native ABI version (LDICT_ABI_VERSION); always 1 for this family. Consumers
+// gate on it before trusting any other symbol.
+[[nodiscard]] inline std::uint32_t abi_version() noexcept { return ldict_abi_version(); }
+
+// Compatible-additions revision within the ABI version (LDICT_API_REVISION).
+[[nodiscard]] inline std::uint32_t api_revision() noexcept { return ldict_api_revision(); }
+
 enum class unit_domain : std::uint32_t {
     byte = VT_UNIT_DOMAIN_BYTE,
     unicode_scalar = VT_UNIT_DOMAIN_UNICODE_SCALAR,
