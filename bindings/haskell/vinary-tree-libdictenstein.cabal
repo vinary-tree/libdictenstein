@@ -28,3 +28,21 @@ library
     bytestring >=0.11 && <0.13,
     text >=2.0 && <2.2,
     vinary-tree-interop >=0.1 && <0.2
+
+-- Uniform facade C1-C10 conformance suite. Self-contained: it needs only
+-- libdictenstein and the canonical fixture, never a liblevenshtein transducer,
+-- and hand-parses the fixture JSON so it adds no dependency beyond the boot
+-- packages and the two Vinary Tree libraries.
+test-suite conformance
+  type: exitcode-stdio-1.0
+  main-is: Conformance.hs
+  hs-source-dirs: test
+  default-language: GHC2021
+  ghc-options: -Wall -threaded -rtsopts "-with-rtsopts=-N4"
+  build-depends:
+    base >=4.18 && <5,
+    bytestring >=0.11 && <0.13,
+    containers >=0.6 && <0.9,
+    text >=2.0 && <2.2,
+    vinary-tree-interop >=0.1 && <0.2,
+    vinary-tree-libdictenstein

@@ -1,0 +1,7 @@
+-- Dev/CI build: resolve the vinary-tree-interop dependency from the sibling
+-- checkout rather than Hackage (mirrors the go/jvm/clojure dev-sibling model).
+-- CI's `cabal sdist --ignore-project` bypasses this file, so it never affects
+-- the published package.
+packages:
+  .
+  ../../../liblevenshtein-rust/vinary-tree-interop/bindings/haskell

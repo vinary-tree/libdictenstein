@@ -4,6 +4,8 @@ module VinaryTree.Libdictenstein
   ( Dictionary
   , UnitDomain(..)
   , Lookup(..)
+  , abiVersion
+  , apiRevision
   , dynamicDawg
   , doubleArrayTrie
   , scdawg
@@ -64,6 +66,10 @@ data Lookup = Lookup { found :: !Bool, mappedValue :: !(Maybe Word64) }
 
 type Status = CInt
 
+foreign import ccall unsafe "ldict_abi_version"
+  cAbiVersion :: IO Word32
+foreign import ccall unsafe "ldict_api_revision"
+  cApiRevision :: IO Word32
 foreign import ccall unsafe "ldict_last_error_message"
   cLastError :: IO (Ptr CChar)
 foreign import ccall unsafe "&ldict_dictionary_free"
@@ -129,6 +135,14 @@ foreign import ccall unsafe "ldict_scdawg_substring_frequency"
 foreign import ccall unsafe "ldict_vocab_get_term"
   cVocabTerm :: Ptr LdictDictionary -> Word64 -> Ptr Word8 -> CSize
              -> Ptr CSize -> Ptr Word8 -> IO Status
+
+-- | Native ABI version (LDICT_ABI_VERSION); always 1 for this family.
+abiVersion :: IO Word32
+abiVersion = cAbiVersion
+
+-- | Compatible-additions revision within the ABI version (LDICT_API_REVISION).
+apiRevision :: IO Word32
+apiRevision = cApiRevision
 
 check :: Status -> IO ()
 check 0 = pure ()
