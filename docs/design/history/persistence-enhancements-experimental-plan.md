@@ -4008,7 +4008,7 @@ perf script | stackcollapse-perf.pl | flamegraph.pl > flamegraph.svg
    - Transactions: https://github.com/facebook/rocksdb/wiki/WritePrepared-Transactions
 
 10. **BzTree (VLDB 2018)**: Arulraj, J., et al. "BzTree: A High-Performance Latch-Free Range Index for Non-Volatile Memory"
-    - Paper: https://dl.acm.org/doi/10.1145/3164135.3164147
+    - Paper: https://dl.acm.org/doi/10.1145/3187009.3164147
     - Key contribution: PMwCAS-based latch-free B-tree
 
 11. **B-Tree Logging Survey (TODS 2012)**: Graefe, G. "A Survey of B-Tree Logging and Recovery Techniques"

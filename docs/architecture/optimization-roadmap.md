@@ -137,5 +137,5 @@ coverage to make their trade-offs visible.
 - Leis, Kemper, and Neumann, "The Adaptive Radix Tree: ARTful Indexing for Main-Memory Databases", ICDE 2013, DOI: <https://doi.org/10.1109/ICDE.2013.6544812>.
 - Daciuk, Mihov, Watson, and Watson, "Incremental Construction of Minimal Acyclic Finite-State Automata", Computational Linguistics 2000, DOI: <https://doi.org/10.1162/089120100561601>.
 - Blumer, Blumer, Haussler, Ehrenfeucht, Chen, and Seiferas, "The Smallest Automaton Recognizing the Subwords of a Text", Theoretical Computer Science 1985, DOI: <https://doi.org/10.1016/0304-3975(85)90157-4>.
-- Blumer, Blumer, Ehrenfeucht, Haussler, and McConnell, "Complete Inverted Files for Efficient Text Retrieval and Analysis", Journal of the ACM 1987, DOI: <https://doi.org/10.1145/32204.32208>.
+- Blumer, Blumer, Ehrenfeucht, Haussler, and McConnell, "Complete Inverted Files for Efficient Text Retrieval and Analysis", Journal of the ACM 1987, DOI: <https://doi.org/10.1145/28869.28873>.
 - Michael, "Hazard Pointers: Safe Memory Reclamation for Lock-Free Objects", IEEE Transactions on Parallel and Distributed Systems 2004, DOI: <https://doi.org/10.1109/TPDS.2004.8>.
