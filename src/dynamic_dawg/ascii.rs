@@ -138,13 +138,13 @@ impl<V: DictionaryValue> DynamicDawg<V> {
         S: AsRef<str>,
     {
         let mut term_vec: Vec<String> = terms.into_iter().map(|s| s.as_ref().to_string()).collect();
+        crate::causal_perf::record_batch_sort_calls(1);
+        crate::causal_perf::record_batch_sort_terms(term_vec.len() as u64);
+        crate::causal_perf::record_batch_sort_units(
+            term_vec.iter().map(String::len).sum::<usize>() as u64,
+        );
         term_vec.sort_unstable();
-
-        let dawg = Self::new();
-        for term in term_vec {
-            dawg.insert(&term);
-        }
-        dawg
+        Self::from_sorted_terms(term_vec)
     }
 
     /// Create from sorted terms (assumes pre-sorted input).
@@ -161,16 +161,22 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     /// terms.sort();  // Already sorted
     /// let dawg: DynamicDawg<()> = DynamicDawg::from_sorted_terms(terms);
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if the supplied terms are not in lexicographically
+    /// nondecreasing byte order.
     pub fn from_sorted_terms<I, S>(terms: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let dawg = Self::new();
-        for term in terms {
-            dawg.insert(term.as_ref());
+        Self {
+            inner: Arc::new(DynamicDawgInner::from_sorted_terms_by(
+                terms,
+                |term, units| units.extend_from_slice(term.as_ref().as_bytes()),
+            )),
         }
-        dawg
     }
 
     /// Create from an iterator of `(term, value)` pairs.
@@ -186,13 +192,50 @@ impl<V: DictionaryValue> DynamicDawg<V> {
             .into_iter()
             .map(|(s, v)| (s.as_ref().to_string(), v))
             .collect();
+        crate::causal_perf::record_batch_sort_calls(1);
+        crate::causal_perf::record_batch_sort_terms(pairs.len() as u64);
+        crate::causal_perf::record_batch_sort_units(
+            pairs.iter().map(|(term, _)| term.len()).sum::<usize>() as u64,
+        );
+        // Stable ordering preserves input order among duplicates, so the last
+        // value supplied for a term remains the winner.
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        Self::from_sorted_terms_with_values(pairs)
+    }
 
-        let dawg = Self::new();
-        for (term, value) in pairs {
-            dawg.insert_with_value(&term, value);
+    /// Create from lexicographically ordered `(term, value)` pairs.
+    ///
+    /// This skips sorting and constructs one immutable minimal graph. Duplicate
+    /// terms are allowed and the last value wins.
+    ///
+    /// # Panics
+    ///
+    /// Panics if terms are not in lexicographically nondecreasing byte order.
+    pub fn from_sorted_terms_with_values<I, S>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (S, V)>,
+        S: AsRef<str>,
+    {
+        Self {
+            inner: Arc::new(DynamicDawgInner::from_sorted_entries_by(
+                entries.into_iter().map(|(term, value)| (term, Some(value))),
+                |term, units| units.extend_from_slice(term.as_ref().as_bytes()),
+            )),
         }
-        dawg
+    }
+
+    /// Crate-internal unit-native variant used by zero-copy binding batches.
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn from_sorted_byte_entries<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (Vec<u8>, Option<V>)>,
+    {
+        Self {
+            inner: Arc::new(DynamicDawgInner::from_sorted_entries_by(
+                entries,
+                |term, units| units.extend_from_slice(term),
+            )),
+        }
     }
 
     /// Insert a term into the DAWG.
@@ -494,6 +537,12 @@ impl<V: DictionaryValue> DynamicDawg<V> {
         self.inner.insert_units_with_value(bytes, value)
     }
 
+    /// Insert/update a raw byte term while preserving an absent mapped value.
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn insert_bytes_with_optional_value(&self, bytes: &[u8], value: Option<V>) -> bool {
+        self.inner.insert_units_with_optional_value(bytes, value)
+    }
+
     /// Check if raw bytes exist in the DAWG.
     ///
     /// # Example
@@ -520,6 +569,12 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     /// ```
     pub fn get_bytes_value(&self, bytes: &[u8]) -> Option<V> {
         self.inner.get_units_value(bytes)
+    }
+
+    /// Read membership and optional value from one immutable graph revision.
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn get_bytes_optional_value(&self, bytes: &[u8]) -> Option<Option<V>> {
+        self.inner.get_units_optional_value(bytes)
     }
 
     /// Remove a raw byte key from the DAWG.
@@ -699,6 +754,21 @@ impl<V: DictionaryValue> DictionaryNode for DynamicDawgNode<V> {
                 .into_iter()
                 .map(|(byte, child)| (byte, DynamicDawgNode { node: child })),
         )
+    }
+
+    #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        F: FnMut(u8, Self),
+    {
+        for (label, child) in &self.node.edges.edges {
+            visitor(
+                *label,
+                DynamicDawgNode {
+                    node: child.clone(),
+                },
+            );
+        }
     }
 
     fn edge_count(&self) -> Option<usize> {
@@ -919,6 +989,38 @@ mod tests {
         assert_eq!(dawg.term_count(), 2);
         assert!(dawg.contains("test"));
         assert!(!dawg.contains("testing"));
+    }
+
+    #[test]
+    fn sorted_and_unordered_bulk_builders_share_the_minimal_kernel() {
+        let sorted: DynamicDawg<()> = DynamicDawg::from_sorted_terms(["ab", "cb"]);
+        let unordered: DynamicDawg<()> = DynamicDawg::from_terms(["cb", "ab"]);
+
+        for dawg in [&sorted, &unordered] {
+            assert_eq!(dawg.node_count(), 3);
+            assert_eq!(dawg.term_count(), 2);
+            assert!(dawg.contains("ab"));
+            assert!(dawg.contains("cb"));
+        }
+    }
+
+    #[test]
+    fn mapped_bulk_builders_preserve_values_and_duplicate_precedence() {
+        let unordered = DynamicDawg::from_terms_with_values([("cb", 3_u32), ("ab", 1), ("ab", 2)]);
+        let sorted =
+            DynamicDawg::from_sorted_terms_with_values([("ab", 1_u32), ("ab", 2), ("cb", 3)]);
+
+        for dawg in [&unordered, &sorted] {
+            assert_eq!(dawg.term_count(), 2);
+            assert_eq!(dawg.get_value("ab"), Some(2));
+            assert_eq!(dawg.get_value("cb"), Some(3));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "requires lexicographically nondecreasing input")]
+    fn mapped_sorted_builder_rejects_decreasing_input() {
+        let _ = DynamicDawg::from_sorted_terms_with_values([("z", 1_u32), ("a", 2)]);
     }
 
     #[test]

@@ -288,6 +288,16 @@ impl<V: DictionaryValue, R: TrieRefLike<V>> DictionaryNode for TrieRefNode<V, R>
     }
 
     #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        F: FnMut(u8, Self),
+    {
+        for byte in self.r.child_mask().iter() {
+            visitor(byte, Self::new(self.r.descend_bytes(&[byte])));
+        }
+    }
+
+    #[inline]
     fn edge_count(&self) -> Option<usize> {
         Some(self.r.child_count())
     }
@@ -330,6 +340,53 @@ impl<V: DictionaryValue, R: TrieRefLike<V>> TrieRefNodeChar<V, R> {
     pub fn trie_ref(&self) -> &R {
         &self.r
     }
+
+    /// Decode the outgoing UTF-8 paths once into public character labels and
+    /// focused PathMap handles. Both traversal APIs share this representation;
+    /// the visitor path avoids the additional boxed iterator allocation.
+    fn collect_char_edges(&self) -> Vec<(char, R)> {
+        let mut char_edges = Vec::new();
+
+        for first_byte in self.r.child_mask().iter() {
+            let Some(seq_len) = utf8_sequence_len(first_byte) else {
+                continue;
+            };
+
+            let mut partials: Vec<Vec<u8>> = vec![vec![first_byte]];
+            for _ in 1..seq_len {
+                let mut next_partials = Vec::new();
+                for partial in &partials {
+                    let node = self.r.descend_bytes(partial);
+                    if !node.path_exists() {
+                        continue;
+                    }
+                    for cont_byte in node.child_mask().iter() {
+                        if (cont_byte & 0b1100_0000) == 0b1000_0000 {
+                            let mut extended = Vec::with_capacity(partial.len() + 1);
+                            extended.extend_from_slice(partial);
+                            extended.push(cont_byte);
+                            next_partials.push(extended);
+                        }
+                    }
+                }
+                partials = next_partials;
+            }
+
+            for utf8_bytes in partials {
+                if utf8_bytes.len() != seq_len {
+                    continue;
+                }
+                if let Ok(s) = std::str::from_utf8(&utf8_bytes) {
+                    let mut chars = s.chars();
+                    if let (Some(label), None) = (chars.next(), chars.next()) {
+                        char_edges.push((label, self.r.descend_bytes(&utf8_bytes)));
+                    }
+                }
+            }
+        }
+
+        char_edges
+    }
 }
 
 impl<V: DictionaryValue, R: TrieRefLike<V>> Clone for TrieRefNodeChar<V, R> {
@@ -366,59 +423,28 @@ impl<V: DictionaryValue, R: TrieRefLike<V>> DictionaryNode for TrieRefNodeChar<V
         // locally from the focus: read the focus child mask for leading bytes,
         // then for each multi-byte lead descend the partial sequence and read
         // *its* child mask for valid continuation bytes (`0b10xx_xxxx`).
-        let mut char_edges: Vec<(char, R)> = Vec::new();
-
-        for first_byte in self.r.child_mask().iter() {
-            let seq_len = match utf8_sequence_len(first_byte) {
-                Some(len) => len,
-                None => continue, // stray continuation/invalid lead byte
-            };
-
-            // Grow complete UTF-8 byte sequences one continuation byte at a time.
-            let mut partials: Vec<Vec<u8>> = vec![vec![first_byte]];
-            for _ in 1..seq_len {
-                let mut next_partials = Vec::new();
-                for partial in &partials {
-                    let node = self.r.descend_bytes(partial);
-                    if !node.path_exists() {
-                        continue;
-                    }
-                    for cont_byte in node.child_mask().iter() {
-                        if (cont_byte & 0b1100_0000) == 0b1000_0000 {
-                            let mut extended = Vec::with_capacity(partial.len() + 1);
-                            extended.extend_from_slice(partial);
-                            extended.push(cont_byte);
-                            next_partials.push(extended);
-                        }
-                    }
-                }
-                partials = next_partials;
-            }
-
-            for utf8_bytes in partials {
-                if utf8_bytes.len() != seq_len {
-                    continue;
-                }
-                if let Ok(s) = std::str::from_utf8(&utf8_bytes) {
-                    let mut chars = s.chars();
-                    if let (Some(c), None) = (chars.next(), chars.next()) {
-                        char_edges.push((c, self.r.descend_bytes(&utf8_bytes)));
-                    }
-                }
-            }
-        }
-
         Box::new(
-            char_edges
+            self.collect_char_edges()
                 .into_iter()
                 .map(|(c, child)| (c, Self::new(child))),
         )
     }
 
     #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        F: FnMut(char, Self),
+    {
+        for (label, child) in self.collect_char_edges() {
+            visitor(label, Self::new(child));
+        }
+    }
+
+    #[inline]
     fn edge_count(&self) -> Option<usize> {
-        // Character count requires UTF-8 decoding, so reuse `edges()`.
-        Some(self.edges().count())
+        // Character count requires UTF-8 decoding, but not child wrapping or a
+        // boxed compatibility iterator.
+        Some(self.collect_char_edges().len())
     }
 }
 

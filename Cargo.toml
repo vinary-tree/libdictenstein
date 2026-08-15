@@ -182,6 +182,8 @@ parallel-merge = ["persistent-artrie", "rayon"]
 io-uring-backend = ["persistent-artrie", "dep:io-uring", "dep:libc"]
 # Expose internal APIs for benchmarks (not in default features)
 bench-internals = ["io-uring-backend"]
+# Causal work counters for profiling builds; never enable for timing runs.
+perf-instrumentation = []
 
 [lib]
 name = "libdictenstein"

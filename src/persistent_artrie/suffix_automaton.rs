@@ -1645,6 +1645,28 @@ impl<V: DictionaryValue> DictionaryNode for PersistentSuffixAutomatonNode<V> {
         Box::new(edges.into_iter())
     }
 
+    #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        F: FnMut(Self::Unit, Self),
+    {
+        let Some(state) = self.state_id else {
+            return;
+        };
+        let Some(node) = self.graph.nodes.get(state) else {
+            return;
+        };
+        for &(unit, target) in &node.edges {
+            visitor(
+                unit,
+                Self {
+                    graph: self.graph.clone(),
+                    state_id: Some(target),
+                },
+            );
+        }
+    }
+
     fn edge_count(&self) -> Option<usize> {
         self.state_id
             .and_then(|state| self.graph.nodes.get(state))
@@ -1702,6 +1724,28 @@ impl<V: DictionaryValue> DictionaryNode for PersistentSuffixAutomatonCharNode<V>
             })
             .collect();
         Box::new(edges.into_iter())
+    }
+
+    #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        F: FnMut(Self::Unit, Self),
+    {
+        let Some(state) = self.state_id else {
+            return;
+        };
+        let Some(node) = self.graph.nodes.get(state) else {
+            return;
+        };
+        for &(unit, target) in &node.edges {
+            visitor(
+                unit,
+                Self {
+                    graph: self.graph.clone(),
+                    state_id: Some(target),
+                },
+            );
+        }
     }
 
     fn edge_count(&self) -> Option<usize> {

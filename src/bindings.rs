@@ -19,9 +19,10 @@ use std::ffi::c_void;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 use vinary_tree_interop::{
-    dictionary_flags, VtDictionaryEdge, VtDictionaryVTable, VtInterfaceId, VtOptionalU64,
-    VtResource, VtResourceVTable, VtStatus, VtUnitDomain, VtValueDomain, VT_ABI_VERSION,
-    VT_DICTIONARY_INTERFACE_ID, VT_DICTIONARY_INTERFACE_VERSION,
+    dictionary_flags, VtDictionaryEdge, VtDictionaryVTable, VtDictionaryVisitVTable, VtInterfaceId,
+    VtOptionalU64, VtResource, VtResourceVTable, VtStatus, VtUnitDomain, VtValueDomain,
+    VT_ABI_VERSION, VT_DICTIONARY_INTERFACE_ID, VT_DICTIONARY_INTERFACE_VERSION,
+    VT_DICTIONARY_VISIT_INTERFACE_ID, VT_DICTIONARY_VISIT_INTERFACE_VERSION,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -37,6 +38,13 @@ struct BindingValue {
 impl crate::DictionaryValue for BindingValue {}
 
 impl BindingValue {
+    fn present(value: u64) -> Self {
+        Self {
+            value,
+            has_value: true,
+        }
+    }
+
     fn from_option(value: Option<u64>) -> Self {
         Self {
             value: value.unwrap_or_default(),
@@ -783,14 +791,86 @@ impl DynamicDawgBinding {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         match &*backend {
             DynamicBackend::Byte(dictionary) => {
-                Ok(dictionary.insert_bytes_with_value(term, BindingValue::from_option(value)))
+                Ok(dictionary
+                    .insert_bytes_with_optional_value(term, value.map(BindingValue::present)))
             }
             DynamicBackend::Unicode(dictionary) => {
                 let term = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
-                Ok(dictionary.insert_with_value(term, BindingValue::from_option(value)))
+                Ok(dictionary.insert_with_optional_value(term, value.map(BindingValue::present)))
             }
             DynamicBackend::U64(_) => Err(BindingError::DomainMismatch),
         }
+    }
+
+    /// Insert/update a complete text batch, selecting the freeze-once builder
+    /// when the dictionary is empty.
+    ///
+    /// Ordered input is detected in linear time and skips sorting. Unordered
+    /// input is stably sorted so duplicate entries retain last-value-wins
+    /// semantics. Replacing the backend under the binding write lock preserves
+    /// the shared resource identity; snapshots captured before the replacement
+    /// keep their immutable roots.
+    pub fn insert_text_batch<'a, I>(&self, entries: I) -> Result<usize, BindingError>
+    where
+        I: IntoIterator<Item = (&'a [u8], Option<u64>)>,
+    {
+        let entries: Vec<_> = entries.into_iter().collect();
+        let mut backend = self
+            .shared
+            .backend
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if backend.len() == 0 {
+            let replacement = match &*backend {
+                DynamicBackend::Byte(_) => {
+                    let mut owned: Vec<_> = entries
+                        .iter()
+                        .map(|(term, value)| (term.to_vec(), value.map(BindingValue::present)))
+                        .collect();
+                    if !owned.windows(2).all(|pair| pair[0].0 <= pair[1].0) {
+                        crate::causal_perf::record_batch_sort_calls(1);
+                        crate::causal_perf::record_batch_sort_terms(owned.len() as u64);
+                        crate::causal_perf::record_batch_sort_units(
+                            owned.iter().map(|(term, _)| term.len()).sum::<usize>() as u64,
+                        );
+                        owned.sort_by(|left, right| left.0.cmp(&right.0));
+                    }
+                    DynamicBackend::Byte(DynamicDawg::from_sorted_byte_entries(owned))
+                }
+                DynamicBackend::Unicode(_) => {
+                    let mut owned = Vec::with_capacity(entries.len());
+                    for (term, value) in &entries {
+                        let term = std::str::from_utf8(term)
+                            .map_err(|_| BindingError::InvalidUtf8)?
+                            .to_owned();
+                        owned.push((term, value.map(BindingValue::present)));
+                    }
+                    if !owned.windows(2).all(|pair| pair[0].0 <= pair[1].0) {
+                        crate::causal_perf::record_batch_sort_calls(1);
+                        crate::causal_perf::record_batch_sort_terms(owned.len() as u64);
+                        crate::causal_perf::record_batch_sort_units(
+                            owned
+                                .iter()
+                                .map(|(term, _)| term.chars().count())
+                                .sum::<usize>() as u64,
+                        );
+                        owned.sort_by(|left, right| left.0.cmp(&right.0));
+                    }
+                    DynamicBackend::Unicode(DynamicDawgChar::from_sorted_optional_entries(owned))
+                }
+                DynamicBackend::U64(_) => return Err(BindingError::DomainMismatch),
+            };
+            *backend = replacement;
+            return Ok(backend.len());
+        }
+        drop(backend);
+
+        let mut inserted = 0usize;
+        for (term, value) in entries {
+            inserted += usize::from(self.insert_text(term, value)?);
+        }
+        Ok(inserted)
     }
 
     /// Remove a UTF-8/byte term.
@@ -836,11 +916,13 @@ impl DynamicDawgBinding {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         match &*backend {
             DynamicBackend::Byte(dictionary) => Ok(dictionary
-                .get_bytes_value(term)
-                .map(BindingValue::into_option)),
+                .get_bytes_optional_value(term)
+                .map(|value| value.and_then(BindingValue::into_option))),
             DynamicBackend::Unicode(dictionary) => {
                 let term = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
-                Ok(dictionary.get_value(term).map(BindingValue::into_option))
+                Ok(dictionary
+                    .get_optional_value(term)
+                    .map(|value| value.and_then(BindingValue::into_option)))
             }
             DynamicBackend::U64(_) => Err(BindingError::DomainMismatch),
         }
@@ -854,11 +936,51 @@ impl DynamicDawgBinding {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         match &*backend {
-            DynamicBackend::U64(dictionary) => {
-                Ok(dictionary.insert_sequence_with_value(term, BindingValue::from_option(value)))
-            }
+            DynamicBackend::U64(dictionary) => Ok(dictionary
+                .insert_sequence_with_optional_value(term, value.map(BindingValue::present))),
             _ => Err(BindingError::DomainMismatch),
         }
+    }
+
+    /// Insert/update a complete u64 batch with the same empty-dictionary
+    /// freeze-once fast path as [`insert_text_batch`](Self::insert_text_batch).
+    pub fn insert_u64_batch<'a, I>(&self, entries: I) -> Result<usize, BindingError>
+    where
+        I: IntoIterator<Item = (&'a [u64], Option<u64>)>,
+    {
+        let entries: Vec<_> = entries.into_iter().collect();
+        let mut backend = self
+            .shared
+            .backend
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if backend.len() == 0 {
+            if !matches!(&*backend, DynamicBackend::U64(_)) {
+                return Err(BindingError::DomainMismatch);
+            }
+            let mut owned: Vec<_> = entries
+                .iter()
+                .map(|(term, value)| (term.to_vec(), value.map(BindingValue::present)))
+                .collect();
+            if !owned.windows(2).all(|pair| pair[0].0 <= pair[1].0) {
+                crate::causal_perf::record_batch_sort_calls(1);
+                crate::causal_perf::record_batch_sort_terms(owned.len() as u64);
+                crate::causal_perf::record_batch_sort_units(
+                    owned.iter().map(|(term, _)| term.len()).sum::<usize>() as u64,
+                );
+                owned.sort_by(|left, right| left.0.cmp(&right.0));
+            }
+            *backend = DynamicBackend::U64(DynamicDawgU64::from_sorted_sequence_entries(owned));
+            return Ok(backend.len());
+        }
+        drop(backend);
+
+        let mut inserted = 0usize;
+        for (term, value) in entries {
+            inserted += usize::from(self.insert_u64(term, value)?);
+        }
+        Ok(inserted)
     }
 
     /// Remove a u64-token term.
@@ -896,8 +1018,8 @@ impl DynamicDawgBinding {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         match &*backend {
             DynamicBackend::U64(dictionary) => Ok(dictionary
-                .get_sequence_value(term)
-                .map(BindingValue::into_option)),
+                .get_sequence_optional_value(term)
+                .map(|value| value.and_then(BindingValue::into_option))),
             _ => Err(BindingError::DomainMismatch),
         }
     }
@@ -985,6 +1107,8 @@ struct TraversalSnapshot<N> {
 
 impl<N> TraversalSnapshot<N> {
     fn new(root: N, len: Option<usize>, domain: VtUnitDomain, suffix: bool) -> Self {
+        crate::causal_perf::record_resource_snapshots_created(1);
+        crate::causal_perf::record_resource_nodes_materialized(1);
         Self {
             arena: Mutex::new(NodeArena {
                 nodes: vec![root],
@@ -1004,7 +1128,22 @@ trait SnapshotOps: Send + Sync {
     fn is_final(&self, node: u64) -> Result<bool, VtStatus>;
     fn value(&self, node: u64) -> Result<Option<u64>, VtStatus>;
     fn transition(&self, node: u64, label: u64) -> Result<Option<u64>, VtStatus>;
-    fn edges(&self, node: u64) -> Result<Vec<(u64, u64)>, VtStatus>;
+    fn copy_edges(
+        &self,
+        node: u64,
+        start: usize,
+        output: &mut [VtDictionaryEdge],
+    ) -> Result<(usize, usize), VtStatus>;
+    fn copy_node(
+        &self,
+        node: u64,
+        start: usize,
+        output: &mut [VtDictionaryEdge],
+    ) -> Result<(bool, usize, usize), VtStatus> {
+        let is_final = self.is_final(node)?;
+        let (written, total) = self.copy_edges(node, start, output)?;
+        Ok((is_final, written, total))
+    }
 }
 
 impl<N> TraversalSnapshot<N>
@@ -1020,7 +1159,9 @@ where
         if arena.edges[node].is_some() {
             return Ok(());
         }
-        let children: Vec<_> = arena.nodes[node].edges().collect();
+        let children = crate::collect_node_edges(&arena.nodes[node]);
+        crate::causal_perf::record_resource_native_edges_enumerated(children.len() as u64);
+        crate::causal_perf::record_resource_nodes_materialized(children.len() as u64);
         let mut descriptors = Vec::with_capacity(children.len());
         for (label, child) in children {
             let child_id = u64::try_from(arena.nodes.len()).map_err(|_| VtStatus::LimitExceeded)?;
@@ -1053,6 +1194,8 @@ where
 
     fn is_final(&self, node: u64) -> Result<bool, VtStatus> {
         let node = usize::try_from(node).map_err(|_| VtStatus::InvalidArgument)?;
+        crate::causal_perf::record_resource_is_final_calls(1);
+        crate::causal_perf::record_resource_arena_locks(1);
         let arena = self
             .arena
             .lock()
@@ -1066,6 +1209,8 @@ where
 
     fn value(&self, node: u64) -> Result<Option<u64>, VtStatus> {
         let node = usize::try_from(node).map_err(|_| VtStatus::InvalidArgument)?;
+        crate::causal_perf::record_resource_value_calls(1);
+        crate::causal_perf::record_resource_arena_locks(1);
         let arena = self
             .arena
             .lock()
@@ -1079,11 +1224,19 @@ where
 
     fn transition(&self, node: u64, label: u64) -> Result<Option<u64>, VtStatus> {
         let node = usize::try_from(node).map_err(|_| VtStatus::InvalidArgument)?;
+        crate::causal_perf::record_resource_arena_locks(1);
         let mut arena = self
             .arena
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cache_miss = arena
+            .edges
+            .get(node)
+            .is_some_and(|descriptors| descriptors.is_none());
         Self::ensure_edges(&mut arena, node)?;
+        if cache_miss {
+            crate::causal_perf::record_resource_edge_cache_misses(1);
+        }
         Ok(arena.edges[node].as_ref().and_then(|edges| {
             edges
                 .iter()
@@ -1091,14 +1244,80 @@ where
         }))
     }
 
-    fn edges(&self, node: u64) -> Result<Vec<(u64, u64)>, VtStatus> {
+    fn copy_edges(
+        &self,
+        node: u64,
+        start: usize,
+        output: &mut [VtDictionaryEdge],
+    ) -> Result<(usize, usize), VtStatus> {
         let node = usize::try_from(node).map_err(|_| VtStatus::InvalidArgument)?;
+        crate::causal_perf::record_resource_edges_calls(1);
+        crate::causal_perf::record_resource_arena_locks(1);
         let mut arena = self
             .arena
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cache_miss = arena
+            .edges
+            .get(node)
+            .is_some_and(|descriptors| descriptors.is_none());
         Self::ensure_edges(&mut arena, node)?;
-        Ok(arena.edges[node].clone().unwrap_or_default())
+        if cache_miss {
+            crate::causal_perf::record_resource_edge_cache_misses(1);
+        }
+        let descriptors = arena.edges[node].as_deref().unwrap_or_default();
+        let total = descriptors.len();
+        let page = descriptors.iter().skip(start).zip(output.iter_mut());
+        let mut written = 0usize;
+        for ((label, child), slot) in page {
+            *slot = VtDictionaryEdge {
+                label: *label,
+                node: *child,
+            };
+            written += 1;
+        }
+        Ok((written, total))
+    }
+
+    fn copy_node(
+        &self,
+        node: u64,
+        start: usize,
+        output: &mut [VtDictionaryEdge],
+    ) -> Result<(bool, usize, usize), VtStatus> {
+        let node = usize::try_from(node).map_err(|_| VtStatus::InvalidArgument)?;
+        crate::causal_perf::record_resource_is_final_calls(1);
+        crate::causal_perf::record_resource_edges_calls(1);
+        crate::causal_perf::record_resource_arena_locks(1);
+        let mut arena = self
+            .arena
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cache_miss = arena
+            .edges
+            .get(node)
+            .is_some_and(|descriptors| descriptors.is_none());
+        let is_final = arena
+            .nodes
+            .get(node)
+            .map(DictionaryNode::is_final)
+            .ok_or(VtStatus::InvalidArgument)?;
+        Self::ensure_edges(&mut arena, node)?;
+        if cache_miss {
+            crate::causal_perf::record_resource_edge_cache_misses(1);
+        }
+        let descriptors = arena.edges[node].as_deref().unwrap_or_default();
+        let total = descriptors.len();
+        let page = descriptors.iter().skip(start).zip(output.iter_mut());
+        let mut written = 0usize;
+        for ((label, child), slot) in page {
+            *slot = VtDictionaryEdge {
+                label: *label,
+                node: *child,
+            };
+            written += 1;
+        }
+        Ok((is_final, written, total))
     }
 }
 
@@ -1238,14 +1457,20 @@ unsafe fn query_interface_status(
     if context.is_null() || interface_id.is_null() || out_vtable.is_null() {
         return VtStatus::NullPointer;
     }
-    if (*interface_id).bytes != VT_DICTIONARY_INTERFACE_ID.bytes
-        || minimum_version > VT_DICTIONARY_INTERFACE_VERSION
-    {
-        return VtStatus::Unsupported;
-    }
     let context = &*context.cast::<ResourceContext>();
-    out_vtable.write(dictionary_vtable(context.domain(), context.flags()).cast());
-    VtStatus::Ok
+    if (*interface_id).bytes == VT_DICTIONARY_INTERFACE_ID.bytes
+        && minimum_version <= VT_DICTIONARY_INTERFACE_VERSION
+    {
+        out_vtable.write(dictionary_vtable(context.domain(), context.flags()).cast());
+        VtStatus::Ok
+    } else if (*interface_id).bytes == VT_DICTIONARY_VISIT_INTERFACE_ID.bytes
+        && minimum_version <= VT_DICTIONARY_VISIT_INTERFACE_VERSION
+    {
+        out_vtable.write((&DICTIONARY_VISIT_VTABLE as *const VtDictionaryVisitVTable).cast());
+        VtStatus::Ok
+    } else {
+        VtStatus::Unsupported
+    }
 }
 
 unsafe extern "C" fn dictionary_snapshot(
@@ -1454,24 +1679,90 @@ unsafe fn dictionary_edges_status(
         return VtStatus::NullPointer;
     }
     let context = &*context.cast::<ResourceContext>();
-    let edges = match context
+    if capacity > isize::MAX as usize / std::mem::size_of::<VtDictionaryEdge>() {
+        return VtStatus::LimitExceeded;
+    }
+    let output = if capacity == 0 {
+        &mut []
+    } else {
+        std::slice::from_raw_parts_mut(out_edges, capacity)
+    };
+    let (written, total) = match context
         .immutable()
-        .and_then(|snapshot| snapshot.edges(node))
+        .and_then(|snapshot| snapshot.copy_edges(node, start, output))
     {
-        Ok(edges) => edges,
+        Ok(page) => page,
         Err(status) => return status,
     };
-    out_total.write(edges.len());
-    let page = edges.iter().skip(start).take(capacity);
-    let mut written = 0usize;
-    for (index, (label, child)) in page.enumerate() {
-        out_edges.add(index).write(VtDictionaryEdge {
-            label: *label,
-            node: *child,
-        });
-        written += 1;
-    }
+    out_total.write(total);
     out_written.write(written);
+    VtStatus::Ok
+}
+
+unsafe extern "C" fn dictionary_visit(
+    context: *mut c_void,
+    node: u64,
+    start: usize,
+    out_is_final: *mut u8,
+    out_edges: *mut VtDictionaryEdge,
+    capacity: usize,
+    out_written: *mut usize,
+    out_total: *mut usize,
+) -> u32 {
+    dictionary_visit_status(
+        context,
+        node,
+        start,
+        out_is_final,
+        out_edges,
+        capacity,
+        out_written,
+        out_total,
+    )
+    .to_raw()
+}
+
+// Keep the status-returning helper isomorphic to the public C callback. The
+// eight fields are fixed by `VtDictionaryVisitVTable`, not an internal API
+// design choice, and grouping them would obscure the boundary validation.
+#[allow(clippy::too_many_arguments)]
+unsafe fn dictionary_visit_status(
+    context: *mut c_void,
+    node: u64,
+    start: usize,
+    out_is_final: *mut u8,
+    out_edges: *mut VtDictionaryEdge,
+    capacity: usize,
+    out_written: *mut usize,
+    out_total: *mut usize,
+) -> VtStatus {
+    if context.is_null()
+        || out_is_final.is_null()
+        || out_written.is_null()
+        || out_total.is_null()
+        || (capacity != 0 && out_edges.is_null())
+    {
+        return VtStatus::NullPointer;
+    }
+    if capacity > isize::MAX as usize / std::mem::size_of::<VtDictionaryEdge>() {
+        return VtStatus::LimitExceeded;
+    }
+    let output = if capacity == 0 {
+        &mut []
+    } else {
+        std::slice::from_raw_parts_mut(out_edges, capacity)
+    };
+    let context = &*context.cast::<ResourceContext>();
+    let (is_final, written, total) = match context
+        .immutable()
+        .and_then(|snapshot| snapshot.copy_node(node, start, output))
+    {
+        Ok(page) => page,
+        Err(status) => return status,
+    };
+    out_is_final.write(u8::from(is_final));
+    out_written.write(written);
+    out_total.write(total);
     VtStatus::Ok
 }
 
@@ -1482,6 +1773,13 @@ static RESOURCE_VTABLE: VtResourceVTable = VtResourceVTable {
     retain: Some(resource_retain),
     release: Some(resource_release),
     query_interface: Some(query_interface),
+};
+
+static DICTIONARY_VISIT_VTABLE: VtDictionaryVisitVTable = VtDictionaryVisitVTable {
+    struct_size: std::mem::size_of::<VtDictionaryVisitVTable>(),
+    interface_version: VT_DICTIONARY_VISIT_INTERFACE_VERSION,
+    reserved: 0,
+    node_visit: Some(dictionary_visit),
 };
 
 macro_rules! dictionary_vtable {
@@ -1580,6 +1878,18 @@ fn dictionary_vtable(domain: VtUnitDomain, flags: u64) -> *const VtDictionaryVTa
 mod tests {
     use super::*;
 
+    fn snapshot_edges(snapshot: &dyn SnapshotOps, node: u64) -> Result<Vec<(u64, u64)>, VtStatus> {
+        let (_, total) = snapshot.copy_edges(node, 0, &mut [])?;
+        let mut edges = vec![VtDictionaryEdge::default(); total];
+        let (written, confirmed_total) = snapshot.copy_edges(node, 0, &mut edges)?;
+        assert_eq!(confirmed_total, total);
+        assert_eq!(written, total);
+        Ok(edges
+            .into_iter()
+            .map(|edge| (edge.label, edge.node))
+            .collect())
+    }
+
     #[test]
     fn resource_snapshot_keeps_the_query_start_revision() {
         let dictionary = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
@@ -1594,8 +1904,121 @@ mod tests {
 
         assert_eq!(snapshot.len(), Some(2));
         assert_eq!(dictionary.len(), 2);
-        let root_edges = snapshot.edges(0).unwrap();
+        let root_edges = snapshot_edges(&*snapshot, 0).unwrap();
         assert_eq!(root_edges.len(), 1);
+    }
+
+    #[test]
+    fn empty_dynamic_batches_use_minimal_builders_in_every_unit_domain() {
+        let bytes = DynamicDawgBinding::new(BindingUnitDomain::Byte);
+        assert_eq!(
+            bytes
+                .insert_text_batch([
+                    (b"cb".as_slice(), None),
+                    (b"ab".as_slice(), Some(1)),
+                    (b"ab".as_slice(), None),
+                ])
+                .unwrap(),
+            2
+        );
+        assert_eq!(bytes.value_text(b"ab").unwrap(), Some(None));
+        assert_eq!(bytes.value_text(b"cb").unwrap(), Some(None));
+
+        let unicode = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
+        assert_eq!(
+            unicode
+                .insert_text_batch([("γβ".as_bytes(), None), ("αβ".as_bytes(), Some(7)),])
+                .unwrap(),
+            2
+        );
+        assert_eq!(unicode.value_text("αβ".as_bytes()).unwrap(), Some(Some(7)));
+
+        let tokens = DynamicDawgBinding::new(BindingUnitDomain::U64);
+        assert_eq!(
+            tokens
+                .insert_u64_batch([
+                    ([2_u64, 9].as_slice(), None),
+                    ([1_u64, 9].as_slice(), Some(11)),
+                ])
+                .unwrap(),
+            2
+        );
+        assert_eq!(tokens.value_u64(&[1, 9]).unwrap(), Some(Some(11)));
+
+        let byte_backend = bytes
+            .shared
+            .backend
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let DynamicBackend::Byte(byte_dawg) = &*byte_backend else {
+            panic!("byte binding changed domains");
+        };
+        assert_eq!(byte_dawg.node_count(), 3);
+        drop(byte_backend);
+
+        let unicode_backend = unicode
+            .shared
+            .backend
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let DynamicBackend::Unicode(unicode_dawg) = &*unicode_backend else {
+            panic!("Unicode binding changed domains");
+        };
+        // The two suffix nodes cannot merge because one final carries a value
+        // and the other is valueless: finality plus value is part of the
+        // minimized-state signature.
+        assert_eq!(unicode_dawg.node_count(), 5);
+        drop(unicode_backend);
+
+        let token_backend = tokens
+            .shared
+            .backend
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let DynamicBackend::U64(token_dawg) = &*token_backend else {
+            panic!("u64 binding changed domains");
+        };
+        assert_eq!(token_dawg.node_count(), 5);
+    }
+
+    #[test]
+    fn dynamic_batch_replacement_preserves_snapshots_and_incremental_updates() {
+        let dictionary = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
+        let resource = dictionary.resource();
+        let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };
+        let empty_snapshot = live.snapshot();
+
+        assert_eq!(
+            dictionary
+                .insert_text_batch([(b"cat".as_slice(), Some(5)), (b"cot".as_slice(), None),])
+                .unwrap(),
+            2
+        );
+        assert_eq!(empty_snapshot.len(), Some(0));
+        assert_eq!(dictionary.len(), 2);
+
+        // A later batch falls back to ordinary update semantics: one new term,
+        // and an existing valued term becomes explicitly valueless.
+        assert_eq!(
+            dictionary
+                .insert_text_batch([(b"cat".as_slice(), None), (b"cut".as_slice(), Some(9)),])
+                .unwrap(),
+            1
+        );
+        assert_eq!(dictionary.value_text(b"cat").unwrap(), Some(None));
+        assert_eq!(dictionary.value_text(b"cut").unwrap(), Some(Some(9)));
+    }
+
+    #[test]
+    fn invalid_unicode_empty_batch_does_not_publish_a_partial_dictionary() {
+        let dictionary = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
+        let invalid = [0xff_u8];
+        assert_eq!(
+            dictionary
+                .insert_text_batch([(b"valid".as_slice(), None), (invalid.as_slice(), None),]),
+            Err(BindingError::InvalidUtf8)
+        );
+        assert!(dictionary.is_empty());
     }
 
     #[test]
@@ -1763,11 +2186,11 @@ mod tests {
         let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };
 
         let first_snapshot = live.snapshot();
-        let root_edges = first_snapshot.edges(0).expect("root edges");
+        let root_edges = snapshot_edges(&*first_snapshot, 0).expect("root edges");
         assert_eq!(root_edges.len(), 1, "both terms share the 'a' prefix");
         // Stability: re-enumeration returns identical (label, id) pairs.
         assert_eq!(
-            first_snapshot.edges(0).expect("root edges again"),
+            snapshot_edges(&*first_snapshot, 0).expect("root edges again"),
             root_edges
         );
         // Agreement: transition resolves every listed edge to the same id.
@@ -1779,19 +2202,25 @@ mod tests {
         }
         // Materialize one level deeper; ids stay stable there too.
         let a_node = root_edges[0].1;
-        let deeper = first_snapshot.edges(a_node).expect("deeper edges");
+        let deeper = snapshot_edges(&*first_snapshot, a_node).expect("deeper edges");
         assert_eq!(deeper.len(), 2, "'b' and 'c' leaves");
-        assert_eq!(first_snapshot.edges(a_node).expect("deeper again"), deeper);
+        assert_eq!(
+            snapshot_edges(&*first_snapshot, a_node).expect("deeper again"),
+            deeper
+        );
 
         // Mutate, then capture a second snapshot: its id space is its own.
         dictionary
             .insert_text(b"zz", Some(3))
             .expect("insert must succeed");
         let second_snapshot = live.snapshot();
-        let second_root = second_snapshot.edges(0).expect("second root edges");
+        let second_root = snapshot_edges(&*second_snapshot, 0).expect("second root edges");
         assert_eq!(second_root.len(), 2, "'a' and 'z' branches");
         // The first snapshot is untouched by the second's materialization.
-        assert_eq!(first_snapshot.edges(0).expect("still stable"), root_edges);
+        assert_eq!(
+            snapshot_edges(&*first_snapshot, 0).expect("still stable"),
+            root_edges
+        );
         // An id far beyond the first snapshot's arena is invalid THERE,
         // regardless of what any other snapshot materialized.
         assert_eq!(
@@ -1799,7 +2228,10 @@ mod tests {
             Err(VtStatus::InvalidArgument)
         );
         assert_eq!(first_snapshot.value(10_000), Err(VtStatus::InvalidArgument));
-        assert_eq!(first_snapshot.edges(10_000), Err(VtStatus::InvalidArgument));
+        assert_eq!(
+            snapshot_edges(&*first_snapshot, 10_000),
+            Err(VtStatus::InvalidArgument)
+        );
     }
 
     /// The emitted base vtable and all ten dictionary vtables pin their

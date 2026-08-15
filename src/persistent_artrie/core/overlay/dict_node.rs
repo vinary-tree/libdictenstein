@@ -173,6 +173,24 @@ impl<K: KeyEncoding, V: DictionaryValue> DictionaryNode for OverlayDictionaryNod
         Box::new(edges.into_iter())
     }
 
+    #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        F: FnMut(K::Token, Self),
+    {
+        let Some(node) = &self.overlay else {
+            return;
+        };
+        for (&unit, child) in node.iter_children() {
+            let Some(token) = K::unit_to_token(unit) else {
+                continue;
+            };
+            if let Some(child_node) = Self::overlay_child_node(child, &self.overlay_faulter) {
+                visitor(token, child_node);
+            }
+        }
+    }
+
     fn edge_count(&self) -> Option<usize> {
         // overlay-only: the overlay node's child count is exact and O(1).
         self.overlay.as_ref().map(|node| node.num_children())

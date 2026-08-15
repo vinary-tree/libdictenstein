@@ -177,7 +177,7 @@ where
 
     let mut stack: Vec<Frame<D::Node>> = Vec::with_capacity(64);
     // Reverse so popping from the back yields edges in encounter order.
-    let mut root_children: Vec<(u8, D::Node)> = root.edges().collect();
+    let mut root_children = crate::collect_node_edges(&root);
     root_children.reverse();
     stack.push(Frame {
         children: root_children,
@@ -193,7 +193,7 @@ where
                 let parent_depth = current_term.len();
                 current_term.push(byte);
                 push_term_if_final(&child, &current_term, &mut terms);
-                let mut child_children: Vec<(u8, D::Node)> = child.edges().collect();
+                let mut child_children = crate::collect_node_edges(&child);
                 child_children.reverse();
                 drop(child);
                 stack.push(Frame {
@@ -250,7 +250,7 @@ where
     push_char_term_if_final(&root, &current_term, &mut terms);
 
     let mut stack: Vec<Frame<D::Node>> = Vec::with_capacity(64);
-    let mut root_children: Vec<(char, D::Node)> = root.edges().collect();
+    let mut root_children = crate::collect_node_edges(&root);
     root_children.reverse();
     stack.push(Frame {
         children: root_children,
@@ -263,7 +263,7 @@ where
                 let parent_depth = current_term.len();
                 current_term.push(ch);
                 push_char_term_if_final(&child, &current_term, &mut terms);
-                let mut child_children: Vec<(char, D::Node)> = child.edges().collect();
+                let mut child_children = crate::collect_node_edges(&child);
                 child_children.reverse();
                 drop(child);
                 stack.push(Frame {

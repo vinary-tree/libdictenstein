@@ -11,8 +11,9 @@ use crate::nonblocking::CasBackoff;
 use crate::value::DictionaryValue;
 use crate::CharUnit;
 use arc_swap::ArcSwap;
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -60,6 +61,8 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeEdgeList<U, V> {
     }
 
     fn with_edge(&self, label: U, node: Arc<LockFreeDawgNode<U, V>>) -> Self {
+        crate::causal_perf::record_edge_lists_cloned(1);
+        crate::causal_perf::record_edge_arcs_cloned(self.edges.len() as u64);
         let mut edges = self.edges.clone();
         match edges.binary_search_by_key(&label, |(edge_label, _)| *edge_label) {
             Ok(pos) => edges[pos] = (label, node),
@@ -98,6 +101,7 @@ struct Rewrite<U: CharUnit, V: DictionaryValue> {
 
 impl<U: CharUnit, V: DictionaryValue> LockFreeDawgNode<U, V> {
     fn new(is_final: bool) -> Self {
+        crate::causal_perf::record_nodes_created(1);
         Self {
             edges: LockFreeEdgeList::new(),
             is_final,
@@ -122,6 +126,7 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawgNode<U, V> {
 
 impl<U: CharUnit, V: DictionaryValue> Drop for LockFreeDawgNode<U, V> {
     fn drop(&mut self) {
+        crate::causal_perf::record_nodes_dropped(1);
         let edges = std::mem::take(&mut self.edges);
         let mut stack = Vec::with_capacity(edges.edges.len());
         for (_, child) in edges.edges {
@@ -141,11 +146,31 @@ impl<U: CharUnit, V: DictionaryValue> Drop for LockFreeDawgNode<U, V> {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-struct BuildNode<U: CharUnit, V: DictionaryValue> {
+struct PendingBuildNode<U: CharUnit, V: DictionaryValue> {
+    incoming_label: Option<U>,
     is_final: bool,
     value: Option<V>,
-    edges: Vec<(U, usize)>,
+    edges: LockFreeEdges<U, V>,
+}
+
+impl<U: CharUnit, V: DictionaryValue> PendingBuildNode<U, V> {
+    fn root() -> Self {
+        Self {
+            incoming_label: None,
+            is_final: false,
+            value: None,
+            edges: SmallVec::new(),
+        }
+    }
+
+    fn child(incoming_label: U) -> Self {
+        Self {
+            incoming_label: Some(incoming_label),
+            is_final: false,
+            value: None,
+            edges: SmallVec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Eq)]
@@ -164,6 +189,143 @@ impl<U: CharUnit> Hash for MergeSignature<U> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.is_final.hash(state);
         self.edges.hash(state);
+    }
+}
+
+/// Private ordered builder for a minimal immutable graph.
+///
+/// The pending stack is the unchecked suffix from Daciuk et al.'s incremental
+/// construction. Lexicographic input guarantees that a suffix can be frozen
+/// as soon as the next term diverges. Frozen nodes are interned by right
+/// language and attached to their still-mutable parent. Only the root is
+/// published, once, after the final suffix has been minimized.
+struct SortedDawgBuilder<U: CharUnit, V: DictionaryValue> {
+    pending: Vec<PendingBuildNode<U, V>>,
+    interned: FxHashMap<MergeSignature<U>, Arc<LockFreeDawgNode<U, V>>>,
+    previous: Vec<U>,
+    term_count: usize,
+}
+
+impl<U: CharUnit, V: DictionaryValue> SortedDawgBuilder<U, V> {
+    fn new() -> Self {
+        Self {
+            pending: vec![PendingBuildNode::root()],
+            interned: FxHashMap::default(),
+            previous: Vec::new(),
+            term_count: 0,
+        }
+    }
+
+    fn insert(&mut self, units: &[U], value: Option<V>) {
+        crate::causal_perf::record_term_insert_attempts(1);
+        crate::causal_perf::record_input_units(units.len() as u64);
+
+        let common_prefix = self
+            .previous
+            .iter()
+            .zip(units)
+            .take_while(|(left, right)| left == right)
+            .count();
+        let ordered = common_prefix == self.previous.len()
+            || (common_prefix < units.len() && self.previous[common_prefix] < units[common_prefix]);
+        assert!(
+            ordered,
+            "from_sorted_terms requires lexicographically nondecreasing input"
+        );
+
+        self.minimize_to(common_prefix);
+        for &label in &units[common_prefix..] {
+            self.pending.push(PendingBuildNode::child(label));
+        }
+
+        let terminal = self
+            .pending
+            .last_mut()
+            .expect("the pending builder always contains its root");
+        if !terminal.is_final {
+            self.term_count += 1;
+        }
+        terminal.is_final = true;
+        terminal.value = value;
+
+        self.previous.clear();
+        self.previous.extend_from_slice(units);
+    }
+
+    fn minimize_to(&mut self, prefix_len: usize) {
+        while self.pending.len() > prefix_len + 1 {
+            let pending = self
+                .pending
+                .pop()
+                .expect("a minimized suffix always has a pending node");
+            let label = pending
+                .incoming_label
+                .expect("only the root lacks an incoming label");
+            let frozen = self.freeze(pending);
+            let parent = self
+                .pending
+                .last_mut()
+                .expect("a minimized suffix always has a parent");
+            debug_assert!(
+                parent
+                    .edges
+                    .last()
+                    .is_none_or(|(previous_label, _)| *previous_label < label),
+                "ordered construction must append parent edges in label order"
+            );
+            parent.edges.push((label, frozen));
+        }
+    }
+
+    fn freeze(&mut self, pending: PendingBuildNode<U, V>) -> Arc<LockFreeDawgNode<U, V>> {
+        let signature = MergeSignature {
+            is_final: pending.is_final,
+            edges: pending
+                .edges
+                .iter()
+                .map(|(label, child)| (*label, Arc::as_ptr(child) as usize))
+                .collect(),
+        };
+
+        // DictionaryValue deliberately does not require Eq + Hash. Valueless
+        // nodes, including final nodes, are safe to merge by right language.
+        // Valued nodes remain distinct so arbitrary user values stay exact.
+        if pending.value.is_none() {
+            if let Some(existing) = self.interned.get(&signature) {
+                return existing.clone();
+            }
+        }
+
+        crate::causal_perf::record_nodes_created(1);
+        let node = Arc::new(LockFreeDawgNode {
+            edges: LockFreeEdgeList {
+                edges: pending.edges,
+            },
+            is_final: pending.is_final,
+            value: pending.value.map(Arc::new),
+        });
+        if node.value.is_none() {
+            self.interned.insert(signature, node.clone());
+        }
+        node
+    }
+
+    fn finish(mut self) -> (Arc<LockFreeDawgNode<U, V>>, usize) {
+        self.minimize_to(0);
+        let root = self
+            .pending
+            .pop()
+            .expect("the pending builder always contains its root");
+        debug_assert!(root.incoming_label.is_none());
+        debug_assert!(self.pending.is_empty());
+
+        crate::causal_perf::record_nodes_created(1);
+        let root = Arc::new(LockFreeDawgNode {
+            edges: LockFreeEdgeList { edges: root.edges },
+            is_final: root.is_final,
+            value: root.value.map(Arc::new),
+        });
+        (root, self.term_count)
     }
 }
 
@@ -198,6 +360,7 @@ impl<U: CharUnit, V: DictionaryValue> Clone for LockFreeDawg<U, V> {
 impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
     pub(crate) fn new() -> Self {
         let root = Arc::new(LockFreeDawgNode::new(false));
+        crate::causal_perf::record_graph_versions_created(1);
         Self {
             version: ArcSwap::from_pointee(GraphVersion {
                 root,
@@ -215,17 +378,62 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
         Self::new()
     }
 
+    /// Build from ordered terms through one unit-generic minimization kernel.
+    ///
+    /// The adapter decodes each public wrapper's input into a reusable buffer.
+    /// The builder itself is shared by byte, Unicode-scalar, and u64 DAWGs, so
+    /// representation adapters do not duplicate the algorithm.
+    pub(crate) fn from_sorted_terms_by<I, S, F>(terms: I, mut append_units: F) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        F: FnMut(&S, &mut Vec<U>),
+    {
+        Self::from_sorted_entries_by(
+            terms.into_iter().map(|term| (term, None)),
+            move |term, units| append_units(term, units),
+        )
+    }
+
+    /// Build from ordered term/value pairs through the shared minimal kernel.
+    ///
+    /// Values are moved into terminal nodes. Since [`DictionaryValue`] does
+    /// not require equality or hashing, valued terminals remain distinct;
+    /// valueless internal suffixes are still interned by right language.
+    pub(crate) fn from_sorted_entries_by<I, S, F>(entries: I, mut append_units: F) -> Self
+    where
+        I: IntoIterator<Item = (S, Option<V>)>,
+        F: FnMut(&S, &mut Vec<U>),
+    {
+        let mut builder = SortedDawgBuilder::new();
+        let mut units = Vec::new();
+        for (term, value) in entries {
+            units.clear();
+            append_units(&term, &mut units);
+            builder.insert(&units, value);
+        }
+        let (root, term_count) = builder.finish();
+        crate::causal_perf::record_graph_versions_created(1);
+        Self {
+            version: ArcSwap::from_pointee(GraphVersion {
+                root,
+                term_count,
+                needs_compaction: false,
+                revision: 0,
+            }),
+        }
+    }
+
     #[cfg(any(feature = "serialization", test))]
     pub(crate) fn from_entries<I>(entries: I) -> Self
     where
         I: IntoIterator<Item = (Vec<U>, Option<V>)>,
     {
         let entries: Vec<_> = entries.into_iter().collect();
-        let root = Self::build_minimized_root(&entries);
+        let (root, term_count) = Self::build_minimized_parts(&entries);
         Self {
             version: ArcSwap::from_pointee(GraphVersion {
                 root,
-                term_count: entries.len(),
+                term_count,
                 needs_compaction: false,
                 revision: 0,
             }),
@@ -266,6 +474,8 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
     }
 
     pub(crate) fn insert_units(&self, units: &[U]) -> bool {
+        crate::causal_perf::record_term_insert_attempts(1);
+        crate::causal_perf::record_input_units(units.len() as u64);
         let terminal = |node: &Arc<LockFreeDawgNode<U, V>>| {
             if node.is_final() {
                 return Rewrite {
@@ -283,12 +493,14 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
 
         let mut backoff = CasBackoff::new();
         loop {
+            crate::causal_perf::record_version_loads(1);
             let current = self.version.load_full();
             let rewrite = Self::rewrite_path(&current.root, units, &terminal);
             if !rewrite.changed {
                 return false;
             }
             let inserted = rewrite.inserted;
+            crate::causal_perf::record_graph_versions_created(1);
             let next = Arc::new(GraphVersion {
                 root: rewrite.node,
                 term_count: current.term_count + usize::from(inserted),
@@ -297,15 +509,29 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
             });
             let previous = self.version.compare_and_swap(&current, next);
             if Arc::ptr_eq(&previous, &current) {
+                crate::causal_perf::record_cas_publications(1);
                 return inserted;
             }
+            crate::causal_perf::record_cas_retries(1);
             backoff.snooze();
         }
     }
 
     pub(crate) fn insert_units_with_value(&self, units: &[U], value: V) -> bool {
+        self.insert_units_with_optional_value(units, Some(value))
+    }
+
+    /// Insert or update a terminal together with its optional mapped value.
+    ///
+    /// This internal form is used by bindings whose wire model distinguishes
+    /// an existing valueless term from an absent term. Keeping valueless
+    /// terminals as `None` also lets the minimal builder intern equivalent
+    /// final suffixes instead of manufacturing a sentinel value.
+    pub(crate) fn insert_units_with_optional_value(&self, units: &[U], value: Option<V>) -> bool {
+        crate::causal_perf::record_term_insert_attempts(1);
+        crate::causal_perf::record_input_units(units.len() as u64);
         let terminal = |node: &Arc<LockFreeDawgNode<U, V>>| Rewrite {
-            node: Self::copy_node(node.edges.clone(), true, Some(Arc::new(value.clone()))),
+            node: Self::copy_node(node.edges.clone(), true, value.clone().map(Arc::new)),
             changed: true,
             inserted: !node.is_final(),
         };
@@ -384,6 +610,7 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
     where
         F: Fn(&Arc<LockFreeDawgNode<U, V>>) -> Rewrite<U, V>,
     {
+        crate::causal_perf::record_path_units_walked(units.len() as u64);
         // Retain the original nodes and their immutable edge lists while walking
         // down the path, then path-copy bottom-up. Keeping this iterative is
         // important because terms supplied through bindings are not necessarily
@@ -421,6 +648,7 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
         is_final: bool,
         value: Option<Arc<V>>,
     ) -> Arc<LockFreeDawgNode<U, V>> {
+        crate::causal_perf::record_nodes_created(1);
         Arc::new(LockFreeDawgNode {
             edges,
             is_final,
@@ -444,6 +672,17 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
         let version = self.version.load_full();
         let terminal = Self::find_node_from(&version.root, units)?;
         terminal.value()
+    }
+
+    /// Read term presence and its optional mapped value from one published
+    /// revision. The outer option is membership; the inner option is value
+    /// presence. Binding APIs use this to preserve `absent | valueless |
+    /// valued` without pairing observations from different roots.
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn get_units_optional_value(&self, units: &[U]) -> Option<Option<V>> {
+        let version = self.version.load_full();
+        let terminal = Self::find_node_from(&version.root, units)?;
+        terminal.is_final.then(|| terminal.value())
     }
 
     #[inline]
@@ -592,81 +831,23 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
         entries
     }
 
-    fn build_minimized_root(entries: &[(Vec<U>, Option<V>)]) -> Arc<LockFreeDawgNode<U, V>> {
-        let max_trie_nodes = 1 + entries.iter().map(|(units, _)| units.len()).sum::<usize>();
-        let mut nodes = Vec::with_capacity(max_trie_nodes);
-        nodes.push(BuildNode::<U, V>::default());
+    fn build_minimized_parts(
+        entries: &[(Vec<U>, Option<V>)],
+    ) -> (Arc<LockFreeDawgNode<U, V>>, usize) {
         let mut sorted_entries = entries.to_vec();
-        sorted_entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
-
+        // Keep duplicate entries in source order so the builder's overwrite
+        // rule remains deterministic: the last serialized/compacted value for
+        // a term wins, matching the public bulk constructors.
+        sorted_entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+        let mut builder = SortedDawgBuilder::new();
         for (units, value) in sorted_entries {
-            let mut node_idx = 0usize;
-            for unit in units {
-                let next = match nodes[node_idx]
-                    .edges
-                    .binary_search_by_key(&unit, |(edge_label, _)| *edge_label)
-                {
-                    Ok(pos) => nodes[node_idx].edges[pos].1,
-                    Err(pos) => {
-                        let new_idx = nodes.len();
-                        nodes.push(BuildNode::default());
-                        nodes[node_idx].edges.insert(pos, (unit, new_idx));
-                        new_idx
-                    }
-                };
-                node_idx = next;
-            }
-            nodes[node_idx].is_final = true;
-            nodes[node_idx].value = value;
+            builder.insert(&units, value);
         }
+        builder.finish()
+    }
 
-        // Child indices are always greater than their parents, so reverse index
-        // order is a non-recursive post-order traversal. This keeps compaction
-        // safe for arbitrarily long terms as well as ordinary branching tries.
-        let mut interned: HashMap<MergeSignature<U>, Arc<LockFreeDawgNode<U, V>>> =
-            HashMap::with_capacity(nodes.len());
-        let mut built: Vec<Option<Arc<LockFreeDawgNode<U, V>>>> = vec![None; nodes.len()];
-        for idx in (0..nodes.len()).rev() {
-            let build = &nodes[idx];
-            let mut edges = SmallVec::<[(U, Arc<LockFreeDawgNode<U, V>>); 4]>::new();
-            let mut signature_edges = Vec::with_capacity(build.edges.len());
-
-            for (label, child_idx) in &build.edges {
-                let child = built[*child_idx]
-                    .as_ref()
-                    .expect("child must be built before its parent")
-                    .clone();
-                signature_edges.push((*label, Arc::as_ptr(&child) as usize));
-                edges.push((*label, child));
-            }
-
-            let node = if idx != 0 && !build.is_final && build.value.is_none() {
-                let signature = MergeSignature {
-                    is_final: false,
-                    edges: signature_edges,
-                };
-                if let Some(existing) = interned.get(&signature) {
-                    existing.clone()
-                } else {
-                    let node = Arc::new(LockFreeDawgNode {
-                        edges: LockFreeEdgeList { edges },
-                        is_final: false,
-                        value: None,
-                    });
-                    interned.insert(signature, node.clone());
-                    node
-                }
-            } else {
-                Arc::new(LockFreeDawgNode {
-                    edges: LockFreeEdgeList { edges },
-                    is_final: build.is_final,
-                    value: build.value.clone().map(Arc::new),
-                })
-            };
-            built[idx] = Some(node);
-        }
-
-        built[0].take().expect("the root is always built")
+    fn build_minimized_root(entries: &[(Vec<U>, Option<V>)]) -> Arc<LockFreeDawgNode<U, V>> {
+        Self::build_minimized_parts(entries).0
     }
 
     fn count_unique_nodes_from(root: &Arc<LockFreeDawgNode<U, V>>) -> usize {
@@ -691,6 +872,90 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sorted_builder_interns_equivalent_final_suffixes() {
+        let dawg = LockFreeDawg::<u8, ()>::from_sorted_terms_by(
+            [b"ab".as_slice(), b"cb".as_slice()],
+            |term, units| units.extend_from_slice(term),
+        );
+
+        assert_eq!(dawg.term_count(), 2);
+        assert_eq!(dawg.node_count(), 3);
+        assert!(dawg.contains_units(b"ab"));
+        assert!(dawg.contains_units(b"cb"));
+        assert!(!dawg.contains_units(b"b"));
+    }
+
+    #[test]
+    fn sorted_builder_collapses_duplicate_terms() {
+        let dawg =
+            LockFreeDawg::<char, ()>::from_sorted_terms_by(["", "same", "same"], |term, units| {
+                units.extend(term.chars())
+            });
+
+        assert_eq!(dawg.term_count(), 2);
+        assert!(dawg.contains_units(&[]));
+        assert!(dawg.contains_units(&['s', 'a', 'm', 'e']));
+    }
+
+    #[test]
+    #[should_panic(expected = "requires lexicographically nondecreasing input")]
+    fn sorted_builder_rejects_decreasing_input() {
+        let _ = LockFreeDawg::<u8, ()>::from_sorted_terms_by(
+            [b"z".as_slice(), b"a".as_slice()],
+            |term, units| units.extend_from_slice(term),
+        );
+    }
+
+    #[test]
+    fn minimized_builder_preserves_distinct_values() {
+        let dawg = LockFreeDawg::<u8, u32>::from_entries([
+            (b"ab".to_vec(), Some(1)),
+            (b"cb".to_vec(), Some(2)),
+        ]);
+
+        assert_eq!(dawg.term_count(), 2);
+        assert_eq!(dawg.get_units_value(b"ab"), Some(1));
+        assert_eq!(dawg.get_units_value(b"cb"), Some(2));
+    }
+
+    #[test]
+    fn minimized_entry_rebuild_preserves_duplicate_precedence() {
+        let dawg = LockFreeDawg::<u8, u32>::from_entries([
+            (b"same".to_vec(), Some(1)),
+            (b"other".to_vec(), Some(9)),
+            (b"same".to_vec(), Some(2)),
+        ]);
+
+        assert_eq!(dawg.term_count(), 2);
+        assert_eq!(dawg.get_units_value(b"same"), Some(2));
+        assert_eq!(dawg.get_units_value(b"other"), Some(9));
+    }
+
+    #[test]
+    fn optional_value_lookup_preserves_all_three_states() {
+        let dawg = LockFreeDawg::<u8, u32>::new();
+        assert_eq!(dawg.get_units_optional_value(b"cat"), None);
+        assert!(dawg.insert_units_with_optional_value(b"cat", None));
+        assert_eq!(dawg.get_units_optional_value(b"cat"), Some(None));
+        assert!(!dawg.insert_units_with_optional_value(b"cat", Some(7)));
+        assert_eq!(dawg.get_units_optional_value(b"cat"), Some(Some(7)));
+        assert!(!dawg.insert_units_with_optional_value(b"cat", None));
+        assert_eq!(dawg.get_units_optional_value(b"cat"), Some(None));
+    }
+
+    #[test]
+    fn sorted_builder_handles_very_long_terms_iteratively() {
+        let term = vec![b'x'; 20_000];
+        let dawg =
+            LockFreeDawg::<u8, ()>::from_sorted_terms_by([term.as_slice()], |term, units| {
+                units.extend_from_slice(term)
+            });
+
+        assert!(dawg.contains_units(&term));
+        assert_eq!(dawg.node_count(), term.len() + 1);
+    }
 
     #[test]
     fn update_or_insert_preserves_values_without_locking() {

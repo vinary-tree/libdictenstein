@@ -163,20 +163,39 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let dawg = Self::new();
-        for term in terms {
-            dawg.insert(term.as_ref());
+        let mut sequences: Vec<Vec<u64>> = terms
+            .into_iter()
+            .map(|term| <u64 as crate::CharUnit>::from_str(term.as_ref()))
+            .collect();
+        crate::causal_perf::record_batch_sort_calls(1);
+        crate::causal_perf::record_batch_sort_terms(sequences.len() as u64);
+        crate::causal_perf::record_batch_sort_units(
+            sequences.iter().map(Vec::len).sum::<usize>() as u64
+        );
+        sequences.sort_unstable();
+        Self {
+            core: LockFreeDawg::from_sorted_terms_by(sequences, |sequence, units| {
+                units.extend_from_slice(sequence);
+            }),
         }
-        dawg
     }
 
     /// Create from sorted terms.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the packed-u64 encodings of the supplied terms are not in
+    /// lexicographically nondecreasing order.
     pub fn from_sorted_terms<I, S>(terms: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        Self::from_terms(terms)
+        Self {
+            core: LockFreeDawg::from_sorted_terms_by(terms, |term, units| {
+                units.extend(<u64 as crate::CharUnit>::from_str(term.as_ref()));
+            }),
+        }
     }
 
     /// Create from an iterator of `(term, value)` pairs.
@@ -185,11 +204,64 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
         I: IntoIterator<Item = (S, V)>,
         S: AsRef<str>,
     {
-        let dawg = Self::new();
-        for (term, value) in entries {
-            dawg.insert_with_value(term.as_ref(), value);
+        let mut sequences: Vec<(Vec<u64>, V)> = entries
+            .into_iter()
+            .map(|(term, value)| (<u64 as crate::CharUnit>::from_str(term.as_ref()), value))
+            .collect();
+        crate::causal_perf::record_batch_sort_calls(1);
+        crate::causal_perf::record_batch_sort_terms(sequences.len() as u64);
+        crate::causal_perf::record_batch_sort_units(
+            sequences
+                .iter()
+                .map(|(sequence, _)| sequence.len())
+                .sum::<usize>() as u64,
+        );
+        // Stable ordering retains the original order among duplicate token
+        // sequences, preserving last-value-wins semantics.
+        sequences.sort_by(|left, right| left.0.cmp(&right.0));
+        Self {
+            core: LockFreeDawg::from_sorted_entries_by(
+                sequences
+                    .into_iter()
+                    .map(|(sequence, value)| (sequence, Some(value))),
+                |sequence, units| units.extend_from_slice(sequence),
+            ),
         }
-        dawg
+    }
+
+    /// Create from token-encoding-ordered `(term, value)` pairs.
+    ///
+    /// This skips sorting and constructs one immutable minimal graph. Duplicate
+    /// terms are allowed and the last value wins.
+    ///
+    /// # Panics
+    ///
+    /// Panics if packed-u64 term encodings are not in lexicographically
+    /// nondecreasing order.
+    pub fn from_sorted_terms_with_values<I, S>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (S, V)>,
+        S: AsRef<str>,
+    {
+        Self {
+            core: LockFreeDawg::from_sorted_entries_by(
+                entries.into_iter().map(|(term, value)| (term, Some(value))),
+                |term, units| units.extend(<u64 as crate::CharUnit>::from_str(term.as_ref())),
+            ),
+        }
+    }
+
+    /// Crate-internal unit-native variant used by binding batch rebuilds.
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn from_sorted_sequence_entries<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (Vec<u64>, Option<V>)>,
+    {
+        Self {
+            core: LockFreeDawg::from_sorted_entries_by(entries, |sequence, units| {
+                units.extend_from_slice(sequence);
+            }),
+        }
     }
 
     /// Insert a term into the DAWG (string-based API).
@@ -336,6 +408,16 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
         self.core.insert_units_with_value(sequence, value)
     }
 
+    /// Insert/update a token sequence while preserving an absent mapped value.
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn insert_sequence_with_optional_value(
+        &self,
+        sequence: &[u64],
+        value: Option<V>,
+    ) -> bool {
+        self.core.insert_units_with_optional_value(sequence, value)
+    }
+
     /// Update or insert a sequence with value.
     pub fn update_or_insert_sequence<F>(
         &self,
@@ -353,6 +435,12 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     /// Get the value for a sequence.
     pub fn get_sequence_value(&self, sequence: &[u64]) -> Option<V> {
         self.core.get_units_value(sequence)
+    }
+
+    /// Read membership and optional value from one immutable graph revision.
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn get_sequence_optional_value(&self, sequence: &[u64]) -> Option<Option<V>> {
+        self.core.get_units_optional_value(sequence)
     }
 
     /// Check if a sequence exists in the DAWG (wait-free).
@@ -552,6 +640,21 @@ impl<V: DictionaryValue> DictionaryNode for DynamicDawgU64Node<V> {
             })
             .collect();
         Box::new(edges_vec.into_iter())
+    }
+
+    #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        F: FnMut(Self::Unit, Self),
+    {
+        for (label, child) in &self.node.edges.edges {
+            visitor(
+                *label,
+                DynamicDawgU64Node {
+                    node: child.clone(),
+                },
+            );
+        }
     }
 
     fn edge_count(&self) -> Option<usize> {
@@ -963,6 +1066,39 @@ mod tests {
         assert!(dawg.contains("banana"));
         assert!(dawg.contains("cherry"));
         assert_eq!(dawg.term_count(), 3);
+    }
+
+    #[test]
+    fn sorted_and_unordered_bulk_builders_share_the_minimal_kernel() {
+        let sorted: DynamicDawgU64<()> = DynamicDawgU64::from_sorted_terms(["ab", "cb"]);
+        let unordered: DynamicDawgU64<()> = DynamicDawgU64::from_terms(["cb", "ab"]);
+
+        for dawg in [&sorted, &unordered] {
+            assert_eq!(dawg.node_count(), 2);
+            assert_eq!(dawg.term_count(), 2);
+            assert!(dawg.contains("ab"));
+            assert!(dawg.contains("cb"));
+        }
+    }
+
+    #[test]
+    fn mapped_bulk_builders_preserve_values_and_duplicate_precedence() {
+        let unordered =
+            DynamicDawgU64::from_terms_with_values([("cb", 3_u32), ("ab", 1), ("ab", 2)]);
+        let sorted =
+            DynamicDawgU64::from_sorted_terms_with_values([("ab", 1_u32), ("ab", 2), ("cb", 3)]);
+
+        for dawg in [&unordered, &sorted] {
+            assert_eq!(dawg.term_count(), 2);
+            assert_eq!(dawg.get_value("ab"), Some(2));
+            assert_eq!(dawg.get_value("cb"), Some(3));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "requires lexicographically nondecreasing input")]
+    fn mapped_sorted_builder_rejects_decreasing_input() {
+        let _ = DynamicDawgU64::from_sorted_terms_with_values([("z", 1_u32), ("a", 2)]);
     }
 
     #[test]

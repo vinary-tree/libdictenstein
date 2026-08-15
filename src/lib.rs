@@ -86,6 +86,12 @@
 //! [PersistentVocabARTrie]: persistent_artrie::vocab::PersistentVocabARTrie
 
 // === Shared infrastructure ===
+mod causal_perf;
+#[cfg(feature = "perf-instrumentation")]
+#[doc(hidden)]
+pub use causal_perf::{
+    causal_construction_stats, reset_causal_construction_stats, CausalConstructionStats,
+};
 pub mod bijective;
 #[cfg(feature = "bindings-core")]
 pub mod bindings;
@@ -298,6 +304,39 @@ pub trait DictionaryNode: Clone + Send + Sync {
     /// Iterate over all outgoing edges as (unit, child_node) pairs
     fn edges(&self) -> Box<dyn Iterator<Item = (Self::Unit, Self)> + '_>;
 
+    /// Visit every outgoing edge without prescribing an iterator representation.
+    ///
+    /// The default preserves compatibility for dictionary implementations that
+    /// expose only [`edges`](Self::edges). Backends with borrowed edge storage
+    /// can override this monomorphized seam to avoid allocating an intermediate
+    /// collection or boxed iterator.
+    #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        Self: Sized,
+        F: FnMut(Self::Unit, Self),
+    {
+        for (label, child) in self.edges() {
+            visitor(label, child);
+        }
+    }
+
+    /// Read finality and visit outgoing edges as one logical node operation.
+    ///
+    /// The compatibility default composes the existing methods. Backends that
+    /// cross a synchronization or foreign-function boundary can override this
+    /// seam to amortize that boundary without changing query algorithms.
+    #[inline]
+    fn visit_edges_and_finality<F>(&self, visitor: F) -> bool
+    where
+        Self: Sized,
+        F: FnMut(Self::Unit, Self),
+    {
+        let is_final = self.is_final();
+        self.for_each_edge(visitor);
+        is_final
+    }
+
     /// Check if a specific edge exists
     fn has_edge(&self, label: Self::Unit) -> bool {
         self.transition(label).is_some()
@@ -307,6 +346,24 @@ pub trait DictionaryNode: Clone + Send + Sync {
     fn edge_count(&self) -> Option<usize> {
         None
     }
+}
+
+/// Collect owned child handles through the monomorphized visitation seam.
+///
+/// Some stack-based serializers and foreign-resource arenas must retain child
+/// nodes after the parent borrow ends. They still require one owned `Vec`, but
+/// this helper avoids layering the compatibility `Box<dyn Iterator>` and any
+/// backend-specific intermediate collection underneath it.
+#[inline]
+#[cfg(any(
+    feature = "bindings-core",
+    feature = "serialization",
+    feature = "persistent-artrie"
+))]
+pub(crate) fn collect_node_edges<N: DictionaryNode>(node: &N) -> Vec<(N::Unit, N)> {
+    let mut edges = Vec::with_capacity(node.edge_count().unwrap_or(0));
+    node.for_each_edge(|label, child| edges.push((label, child)));
+    edges
 }
 
 /// Extension trait for dictionaries that map terms to values.
@@ -353,6 +410,14 @@ pub trait MappedDictionaryNode: DictionaryNode {
     ///
     /// Returns `None` if this is not a final node, or if no value is associated.
     fn value(&self) -> Option<Self::Value>;
+
+    /// Get the value when the caller has already established finality.
+    ///
+    /// The default preserves existing semantics. Boundary-backed nodes can
+    /// override it to avoid repeating an expensive finality callback.
+    fn value_at_final(&self) -> Option<Self::Value> {
+        self.value()
+    }
 }
 
 /// Trait for dictionaries supporting set-like term insertion and removal.

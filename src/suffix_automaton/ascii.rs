@@ -961,6 +961,25 @@ impl<V: DictionaryValue> DictionaryNode for SuffixNodeHandle<V> {
         }))
     }
 
+    #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        F: FnMut(u8, Self),
+    {
+        let Some(node) = self.automaton.nodes.get(self.state_id) else {
+            return;
+        };
+        for &(label, target) in &node.edges {
+            visitor(
+                label,
+                Self {
+                    automaton: Arc::clone(&self.automaton),
+                    state_id: target,
+                },
+            );
+        }
+    }
+
     fn has_edge(&self, label: u8) -> bool {
         self.automaton
             .nodes

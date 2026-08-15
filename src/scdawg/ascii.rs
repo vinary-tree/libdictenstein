@@ -448,6 +448,25 @@ impl<V: DictionaryValue> DictionaryNode for ScdawgNodeHandle<V> {
         Box::new(edges.into_iter())
     }
 
+    #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        F: FnMut(u8, Self),
+    {
+        let Some(node) = self.inner.nodes.get(self.node_idx) else {
+            return;
+        };
+        for &(label, node_idx) in &node.forward_edges {
+            visitor(
+                label,
+                ScdawgNodeHandle {
+                    inner: Arc::clone(&self.inner),
+                    node_idx,
+                },
+            );
+        }
+    }
+
     fn edge_count(&self) -> Option<usize> {
         Some(
             self.inner

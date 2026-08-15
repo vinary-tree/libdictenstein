@@ -1461,6 +1461,28 @@ impl<V: DictionaryValue> DictionaryNode for PersistentScdawgNode<V> {
         Box::new(edges.into_iter())
     }
 
+    #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        F: FnMut(Self::Unit, Self),
+    {
+        let Some(node) = node(&self.graph, self.node_idx) else {
+            return;
+        };
+        for &(label, next) in &node.forward_edges {
+            let mut child_path = self.path.clone();
+            child_path.push(label);
+            visitor(
+                label,
+                Self {
+                    graph: Arc::clone(&self.graph),
+                    node_idx: Some(next),
+                    path: child_path,
+                },
+            );
+        }
+    }
+
     fn edge_count(&self) -> Option<usize> {
         Some(node(&self.graph, self.node_idx)?.forward_edges.len())
     }
@@ -1517,6 +1539,28 @@ impl<V: DictionaryValue> DictionaryNode for PersistentScdawgCharNode<V> {
             })
             .collect();
         Box::new(edges.into_iter())
+    }
+
+    #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        F: FnMut(Self::Unit, Self),
+    {
+        let Some(node) = node(&self.graph, self.node_idx) else {
+            return;
+        };
+        for &(label, next) in &node.forward_edges {
+            let mut child_path = self.path.clone();
+            child_path.push(label);
+            visitor(
+                label,
+                Self {
+                    graph: Arc::clone(&self.graph),
+                    node_idx: Some(next),
+                    path: child_path,
+                },
+            );
+        }
     }
 
     fn edge_count(&self) -> Option<usize> {

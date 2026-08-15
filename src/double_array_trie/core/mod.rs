@@ -26,6 +26,7 @@
 //! └── values:   Arc<Vec<Option<V>>>      (state → optional value)
 //! ```
 
+pub(crate) mod builder;
 pub mod shared;
 
 pub use shared::DATCoreShared;

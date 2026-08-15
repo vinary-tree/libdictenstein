@@ -33,6 +33,7 @@
 //! - Cache-sensitive applications
 //! - Scenarios requiring occasional updates
 
+use super::core::builder::StaticDATBuilder;
 use super::zipper::DoubleArrayTrieZipper;
 use crate::iterator::{DictionaryIterator, DictionaryTermIterator};
 use crate::value::DictionaryValue;
@@ -525,11 +526,23 @@ impl<V: DictionaryValue> DoubleArrayTrie<V> {
             }
         });
 
-        let mut builder = DoubleArrayTrieBuilder::new();
+        let mut builder = StaticDATBuilder::new();
         for (term, value) in term_value_pairs {
-            builder.insert_with_value(&term, Some(value));
+            builder.insert(term.bytes(), Some(value));
         }
-        builder.build()
+        let built = builder.build(1);
+        Self {
+            shared: DATShared {
+                base: Arc::new(built.base),
+                check: Arc::new(built.check),
+                is_final: Arc::new(built.is_final),
+                edges: Arc::new(built.edges),
+                values: Arc::new(built.values),
+            },
+            free_list: Arc::new(Vec::new()),
+            term_count: built.term_count,
+            rebuild_threshold: 0.2,
+        }
     }
 
     /// Get the value associated with a term.
@@ -694,11 +707,23 @@ impl DoubleArrayTrie<()> {
         sorted_terms.sort();
         sorted_terms.dedup();
 
-        let mut builder = DoubleArrayTrieBuilder::new();
+        let mut builder = StaticDATBuilder::new();
         for term in sorted_terms {
-            builder.insert(&term);
+            builder.insert(term.bytes(), None);
         }
-        builder.build()
+        let built = builder.build(1);
+        Self {
+            shared: DATShared {
+                base: Arc::new(built.base),
+                check: Arc::new(built.check),
+                is_final: Arc::new(built.is_final),
+                edges: Arc::new(built.edges),
+                values: Arc::new(built.values),
+            },
+            free_list: Arc::new(Vec::new()),
+            term_count: built.term_count,
+            rebuild_threshold: 0.2,
+        }
     }
 }
 
@@ -708,8 +733,11 @@ pub struct DoubleArrayTrieNode<V: DictionaryValue = ()> {
     /// Current state index
     state: usize,
 
-    /// Shared data (reduces Arc cloning overhead)
-    shared: DATShared<V>,
+    /// One shared handle to all BASE/CHECK arrays.
+    ///
+    /// Keeping the five-array `DATShared` behind one outer `Arc` makes every
+    /// traversed node clone and drop one reference count instead of five.
+    shared: Arc<DATShared<V>>,
 }
 
 impl<V: DictionaryValue> DictionaryNode for DoubleArrayTrieNode<V> {
@@ -772,6 +800,30 @@ impl<V: DictionaryValue> DictionaryNode for DoubleArrayTrieNode<V> {
         Box::new(edges.into_iter())
     }
 
+    #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        F: FnMut(u8, Self),
+    {
+        let state = self.state;
+        if state >= self.shared.edges.len() {
+            return;
+        }
+        let base = self.shared.base[state];
+        if base < 0 {
+            return;
+        }
+        for &byte in &self.shared.edges[state] {
+            visitor(
+                byte,
+                DoubleArrayTrieNode {
+                    state: (base as usize) + usize::from(byte),
+                    shared: self.shared.clone(),
+                },
+            );
+        }
+    }
+
     fn edge_count(&self) -> Option<usize> {
         // Now we can efficiently return edge count
         if self.state < self.shared.edges.len() {
@@ -791,7 +843,7 @@ impl<V: DictionaryValue> Dictionary for DoubleArrayTrie<V> {
     fn root(&self) -> Self::Node {
         DoubleArrayTrieNode {
             state: 1, // Root is state 1
-            shared: self.shared.clone(),
+            shared: Arc::new(self.shared.clone()),
         }
     }
 

@@ -148,13 +148,16 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
         S: AsRef<str>,
     {
         let mut term_vec: Vec<String> = terms.into_iter().map(|s| s.as_ref().to_string()).collect();
+        crate::causal_perf::record_batch_sort_calls(1);
+        crate::causal_perf::record_batch_sort_terms(term_vec.len() as u64);
+        crate::causal_perf::record_batch_sort_units(
+            term_vec
+                .iter()
+                .map(|term| term.chars().count())
+                .sum::<usize>() as u64,
+        );
         term_vec.sort_unstable();
-
-        let dawg = Self::new();
-        for term in term_vec {
-            dawg.insert(&term);
-        }
-        dawg
+        Self::from_sorted_terms(term_vec)
     }
 
     /// Create from sorted terms (assumes pre-sorted input).
@@ -171,16 +174,22 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     /// terms.sort();  // Already sorted
     /// let dawg: DynamicDawgChar<()> = DynamicDawgChar::from_sorted_terms(terms);
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if the supplied terms are not in lexicographically
+    /// nondecreasing Unicode-scalar order.
     pub fn from_sorted_terms<I, S>(terms: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let dawg = Self::new();
-        for term in terms {
-            dawg.insert(term.as_ref());
+        Self {
+            inner: Arc::new(DynamicDawgCharInner::from_sorted_terms_by(
+                terms,
+                |term, units| units.extend(term.as_ref().chars()),
+            )),
         }
-        dawg
     }
 
     /// Create from an iterator of `(term, value)` pairs.
@@ -196,13 +205,54 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
             .into_iter()
             .map(|(s, v)| (s.as_ref().to_string(), v))
             .collect();
+        crate::causal_perf::record_batch_sort_calls(1);
+        crate::causal_perf::record_batch_sort_terms(pairs.len() as u64);
+        crate::causal_perf::record_batch_sort_units(
+            pairs
+                .iter()
+                .map(|(term, _)| term.chars().count())
+                .sum::<usize>() as u64,
+        );
+        // Rust's stable sort retains input order among duplicate terms, which
+        // preserves the documented last-value-wins behavior.
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        Self::from_sorted_terms_with_values(pairs)
+    }
 
-        let dawg = Self::new();
-        for (term, value) in pairs {
-            dawg.insert_with_value(&term, value);
+    /// Create from Unicode-scalar-ordered `(term, value)` pairs.
+    ///
+    /// This skips sorting and constructs one immutable minimal graph. Duplicate
+    /// terms are allowed and the last value wins.
+    ///
+    /// # Panics
+    ///
+    /// Panics if terms are not in lexicographically nondecreasing
+    /// Unicode-scalar order.
+    pub fn from_sorted_terms_with_values<I, S>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (S, V)>,
+        S: AsRef<str>,
+    {
+        Self {
+            inner: Arc::new(DynamicDawgCharInner::from_sorted_entries_by(
+                entries.into_iter().map(|(term, value)| (term, Some(value))),
+                |term, units| units.extend(term.as_ref().chars()),
+            )),
         }
-        dawg
+    }
+
+    /// Crate-internal optional-value variant used by binding batch rebuilds.
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn from_sorted_optional_entries<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (String, Option<V>)>,
+    {
+        Self {
+            inner: Arc::new(DynamicDawgCharInner::from_sorted_entries_by(
+                entries,
+                |term, units| units.extend(term.chars()),
+            )),
+        }
     }
 
     /// Insert a term into the DAWG.
@@ -233,6 +283,13 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     pub fn insert_with_value(&self, term: &str, value: V) -> bool {
         let chars: Vec<char> = term.chars().collect();
         self.inner.insert_units_with_value(&chars, value)
+    }
+
+    /// Insert/update a Unicode term while preserving an absent mapped value.
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn insert_with_optional_value(&self, term: &str, value: Option<V>) -> bool {
+        let chars: Vec<char> = term.chars().collect();
+        self.inner.insert_units_with_optional_value(&chars, value)
     }
 
     /// Update an existing term's value in place, or insert a new term with a default value.
@@ -289,6 +346,13 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     pub fn get_value(&self, term: &str) -> Option<V> {
         let chars: Vec<char> = term.chars().collect();
         self.inner.get_units_value(&chars)
+    }
+
+    /// Read membership and optional value from one immutable graph revision.
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn get_optional_value(&self, term: &str) -> Option<Option<V>> {
+        let chars: Vec<char> = term.chars().collect();
+        self.inner.get_units_optional_value(&chars)
     }
 
     /// Remove a term from the DAWG.
@@ -609,6 +673,21 @@ impl<V: DictionaryValue> DictionaryNode for DynamicDawgCharNode<V> {
                 .into_iter()
                 .map(|(ch, child)| (ch, DynamicDawgCharNode { node: child })),
         )
+    }
+
+    #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        F: FnMut(char, Self),
+    {
+        for (label, child) in &self.node.edges.edges {
+            visitor(
+                *label,
+                DynamicDawgCharNode {
+                    node: child.clone(),
+                },
+            );
+        }
     }
 
     fn edge_count(&self) -> Option<usize> {
@@ -949,6 +1028,39 @@ mod tests {
         assert_eq!(merged, 0);
         assert_eq!(dawg.node_count(), 1); // Just root
         assert_eq!(dawg.term_count(), 0);
+    }
+
+    #[test]
+    fn sorted_and_unordered_bulk_builders_share_the_minimal_kernel() {
+        let sorted: DynamicDawgChar<()> = DynamicDawgChar::from_sorted_terms(["αβ", "γβ"]);
+        let unordered: DynamicDawgChar<()> = DynamicDawgChar::from_terms(["γβ", "αβ"]);
+
+        for dawg in [&sorted, &unordered] {
+            assert_eq!(dawg.node_count(), 3);
+            assert_eq!(dawg.term_count(), 2);
+            assert!(dawg.contains("αβ"));
+            assert!(dawg.contains("γβ"));
+        }
+    }
+
+    #[test]
+    fn mapped_bulk_builders_preserve_values_and_duplicate_precedence() {
+        let unordered =
+            DynamicDawgChar::from_terms_with_values([("γβ", 3_u32), ("αβ", 1), ("αβ", 2)]);
+        let sorted =
+            DynamicDawgChar::from_sorted_terms_with_values([("αβ", 1_u32), ("αβ", 2), ("γβ", 3)]);
+
+        for dawg in [&unordered, &sorted] {
+            assert_eq!(dawg.term_count(), 2);
+            assert_eq!(dawg.get_value("αβ"), Some(2));
+            assert_eq!(dawg.get_value("γβ"), Some(3));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "requires lexicographically nondecreasing input")]
+    fn mapped_sorted_builder_rejects_decreasing_input() {
+        let _ = DynamicDawgChar::from_sorted_terms_with_values([("γ", 1_u32), ("α", 2)]);
     }
 
     #[test]

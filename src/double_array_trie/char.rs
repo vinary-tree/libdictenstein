@@ -24,6 +24,7 @@
 //! - Correctness is more important than maximum performance
 
 use super::char_zipper::DoubleArrayTrieCharZipper;
+use super::core::builder::StaticDATBuilder;
 use crate::iterator::DictionaryIterator;
 use crate::value::DictionaryValue;
 use crate::{Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode};
@@ -138,24 +139,13 @@ impl DoubleArrayTrieChar<()> {
             return Self::empty();
         }
 
-        let mut builder = DATBuilderChar::new();
+        let mut builder = StaticDATBuilder::new();
         for term in &terms {
-            builder.insert(term, None);
+            builder.insert(term.iter().copied(), None);
         }
-
-        let (base, check, is_final, edges, values) = builder.build();
-
-        Self {
-            shared: DATSharedChar {
-                base: Arc::new(base),
-                check: Arc::new(check),
-                is_final: Arc::new(is_final),
-                edges: Arc::new(edges),
-                values: Arc::new(values),
-            },
-            free_list: Arc::new(Vec::new()),
-            num_terms,
-        }
+        let result = Self::from_static_builder(builder);
+        debug_assert_eq!(result.num_terms, num_terms);
+        result
     }
 
     /// Create an empty character-level Double-Array Trie.
@@ -175,6 +165,21 @@ impl DoubleArrayTrieChar<()> {
 }
 
 impl<V: DictionaryValue> DoubleArrayTrieChar<V> {
+    fn from_static_builder(builder: StaticDATBuilder<char, V>) -> Self {
+        let built = builder.build(0);
+        Self {
+            shared: DATSharedChar {
+                base: Arc::new(built.base),
+                check: Arc::new(built.check),
+                is_final: Arc::new(built.is_final),
+                edges: Arc::new(built.edges),
+                values: Arc::new(built.values),
+            },
+            free_list: Arc::new(Vec::new()),
+            num_terms: built.term_count,
+        }
+    }
+
     /// Create a character-level DAT from an iterator of (term, value) pairs.
     ///
     /// # Example
@@ -225,24 +230,13 @@ impl<V: DictionaryValue> DoubleArrayTrieChar<V> {
             };
         }
 
-        let mut builder = DATBuilderChar::new();
+        let mut builder = StaticDATBuilder::new();
         for (term, value) in term_value_pairs {
-            builder.insert(&term, Some(value));
+            builder.insert(term, Some(value));
         }
-
-        let (base, check, is_final, edges, values) = builder.build();
-
-        Self {
-            shared: DATSharedChar {
-                base: Arc::new(base),
-                check: Arc::new(check),
-                is_final: Arc::new(is_final),
-                edges: Arc::new(edges),
-                values: Arc::new(values),
-            },
-            free_list: Arc::new(Vec::new()),
-            num_terms,
-        }
+        let result = Self::from_static_builder(builder);
+        debug_assert_eq!(result.num_terms, num_terms);
+        result
     }
 
     /// Create a character-level DAT from a pre-sorted iterator of (term, value) pairs.
@@ -279,49 +273,13 @@ impl<V: DictionaryValue> DoubleArrayTrieChar<V> {
         I: IntoIterator<Item = (S, V)>,
         S: AsRef<str>,
     {
-        let mut builder = DATBuilderChar::new();
-        let mut num_terms = 0usize;
-        let mut prev_chars: Option<Vec<char>> = None;
+        let mut builder = StaticDATBuilder::new();
 
         for (s, v) in terms {
-            let chars: Vec<char> = s.as_ref().chars().collect();
-            let is_duplicate = prev_chars.as_ref().is_some_and(|prev| prev == &chars);
-
-            builder.insert(&chars, Some(v));
-
-            if !is_duplicate {
-                num_terms += 1;
-            }
-            prev_chars = Some(chars);
+            builder.insert(s.as_ref().chars(), Some(v));
         }
 
-        if num_terms == 0 {
-            return Self {
-                shared: DATSharedChar {
-                    base: Arc::new(vec![0]),
-                    check: Arc::new(vec![0]),
-                    is_final: Arc::new(vec![false]),
-                    edges: Arc::new(vec![vec![]]),
-                    values: Arc::new(vec![None]),
-                },
-                free_list: Arc::new(Vec::new()),
-                num_terms: 0,
-            };
-        }
-
-        let (base, check, is_final, edges, values) = builder.build();
-
-        Self {
-            shared: DATSharedChar {
-                base: Arc::new(base),
-                check: Arc::new(check),
-                is_final: Arc::new(is_final),
-                edges: Arc::new(edges),
-                values: Arc::new(values),
-            },
-            free_list: Arc::new(Vec::new()),
-            num_terms,
-        }
+        Self::from_static_builder(builder)
     }
 
     /// Get the value associated with a term.
@@ -432,7 +390,7 @@ impl<V: DictionaryValue> Dictionary for DoubleArrayTrieChar<V> {
     fn root(&self) -> Self::Node {
         DoubleArrayTrieCharNode {
             state: 0,
-            shared: self.shared.clone(),
+            shared: Arc::new(self.shared.clone()),
         }
     }
 
@@ -447,8 +405,8 @@ pub struct DoubleArrayTrieCharNode<V: DictionaryValue = ()> {
     /// Current state index
     state: usize,
 
-    /// Shared data
-    shared: DATSharedChar<V>,
+    /// One shared handle to all BASE/CHECK arrays.
+    shared: Arc<DATSharedChar<V>>,
 }
 
 impl<V: DictionaryValue> DictionaryNode for DoubleArrayTrieCharNode<V> {
@@ -516,225 +474,39 @@ impl<V: DictionaryValue> DictionaryNode for DoubleArrayTrieCharNode<V> {
         }))
     }
 
+    #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        F: FnMut(char, Self),
+    {
+        let state = self.state;
+        if state >= self.shared.edges.len() {
+            return;
+        }
+        let base = self.shared.base[state];
+        if base < 0 {
+            return;
+        }
+        for &label in &self.shared.edges[state] {
+            let next = (base as u32).wrapping_add(label as u32) as usize;
+            if next < self.shared.check.len() && self.shared.check[next] == state as i32 {
+                visitor(
+                    label,
+                    DoubleArrayTrieCharNode {
+                        state: next,
+                        shared: self.shared.clone(),
+                    },
+                );
+            }
+        }
+    }
+
     fn edge_count(&self) -> Option<usize> {
         if self.state < self.shared.edges.len() {
             Some(self.shared.edges[self.state].len())
         } else {
             Some(0)
         }
-    }
-}
-
-/// Builder for character-level Double-Array Trie.
-struct DATBuilderChar<V: DictionaryValue = ()> {
-    base: Vec<i32>,
-    check: Vec<i32>,
-    is_final: Vec<bool>,
-    edges: Vec<Vec<char>>,
-    values: Vec<Option<V>>,
-    used: Vec<bool>,
-}
-
-/// Type alias for the built Double-Array Trie components.
-type DATCharComponents<V> = (
-    Vec<i32>,       // base
-    Vec<i32>,       // check
-    Vec<bool>,      // is_final
-    Vec<Vec<char>>, // edges
-    Vec<Option<V>>, // values
-);
-
-impl<V: DictionaryValue> DATBuilderChar<V> {
-    fn new() -> Self {
-        Self {
-            base: vec![0],
-            check: vec![0],
-            is_final: vec![false],
-            edges: vec![vec![]],
-            values: vec![None],
-            used: vec![false],
-        }
-    }
-
-    fn insert(&mut self, term: &[char], value: Option<V>) {
-        let mut state = 0;
-
-        for &c in term {
-            state = self.get_or_create_transition(state, c);
-        }
-
-        if state < self.is_final.len() {
-            self.is_final[state] = true;
-        }
-
-        // Store value
-        while state >= self.values.len() {
-            self.values.push(None);
-        }
-        self.values[state] = value;
-    }
-
-    fn get_or_create_transition(&mut self, from_state: usize, label: char) -> usize {
-        // Ensure arrays are large enough
-        while from_state >= self.base.len() {
-            self.base.push(0);
-            self.check.push(0);
-            self.is_final.push(false);
-            self.edges.push(vec![]);
-            self.values.push(None);
-            self.used.push(false);
-        }
-
-        let mut base = self.base[from_state];
-
-        // If base is not set, find a suitable base
-        if base == 0 {
-            base = self.find_base(&[label]);
-            self.base[from_state] = base;
-        }
-
-        let char_code = label as u32;
-        let mut next_state = (base as u32).wrapping_add(char_code) as usize;
-
-        // Ensure next_state exists
-        while next_state >= self.base.len() {
-            self.base.push(0);
-            self.check.push(0);
-            self.is_final.push(false);
-            self.edges.push(vec![]);
-            self.values.push(None);
-            self.used.push(false);
-        }
-
-        // CRITICAL: Check for conflict before overwriting
-        if self.used[next_state] && self.check[next_state] != from_state as i32 {
-            // Conflict! This slot is already used by a different parent.
-            // We need to relocate ALL existing children of from_state to a new base.
-
-            // Collect all existing children
-            let existing_labels = self.edges[from_state].clone();
-            let mut all_labels = existing_labels.clone();
-
-            // Add the new label if not already present
-            if !all_labels.contains(&label) {
-                all_labels.push(label);
-            }
-
-            // Find a new base that works for ALL labels
-            let new_base = self.find_base(&all_labels);
-
-            // Relocate existing transitions
-            for &existing_label in &existing_labels {
-                let old_char_code = existing_label as u32;
-                let old_next = (base as u32).wrapping_add(old_char_code) as usize;
-                let new_next = (new_base as u32).wrapping_add(old_char_code) as usize;
-
-                // Ensure space for new location
-                while new_next >= self.base.len() {
-                    self.base.push(0);
-                    self.check.push(0);
-                    self.is_final.push(false);
-                    self.edges.push(vec![]);
-                    self.values.push(None);
-                    self.used.push(false);
-                }
-
-                // Move the child's data
-                self.base[new_next] = self.base[old_next];
-                self.check[new_next] = from_state as i32;
-                self.is_final[new_next] = self.is_final[old_next];
-                self.edges[new_next] = self.edges[old_next].clone();
-                self.values[new_next] = self.values[old_next].clone();
-                self.used[new_next] = true;
-
-                // Clear old location (only if it belongs to us)
-                if self.check[old_next] == from_state as i32 {
-                    self.check[old_next] = -1;
-                    self.used[old_next] = false;
-                    self.base[old_next] = 0;
-                    self.is_final[old_next] = false;
-                    self.edges[old_next].clear();
-                    self.values[old_next] = None;
-                }
-
-                // Update any children of this relocated node
-                for &child_label in &self.edges[new_next] {
-                    let child_char_code = child_label as u32;
-                    let child_base = self.base[new_next];
-                    if child_base > 0 {
-                        let child_next = (child_base as u32).wrapping_add(child_char_code) as usize;
-                        if child_next < self.check.len() {
-                            self.check[child_next] = new_next as i32;
-                        }
-                    }
-                }
-            }
-
-            // Update the parent's base
-            self.base[from_state] = new_base;
-            base = new_base;
-
-            // Recalculate next_state with new base
-            next_state = (base as u32).wrapping_add(char_code) as usize;
-
-            // Ensure next_state exists
-            while next_state >= self.base.len() {
-                self.base.push(0);
-                self.check.push(0);
-                self.is_final.push(false);
-                self.edges.push(vec![]);
-                self.values.push(None);
-                self.used.push(false);
-            }
-        }
-
-        // Set CHECK and mark as used
-        self.check[next_state] = from_state as i32;
-        self.used[next_state] = true;
-
-        // Add edge to edge list
-        if !self.edges[from_state].contains(&label) {
-            self.edges[from_state].push(label);
-        }
-
-        next_state
-    }
-
-    fn find_base(&mut self, labels: &[char]) -> i32 {
-        // Find a base value such that base + label is unused for all labels
-        let max_label = labels.iter().map(|label| *label as u32).max().unwrap_or(0);
-        let max_base = (i32::MAX as u32).saturating_sub(max_label);
-        'base_search: for base in 1u32..=max_base {
-            for &label in labels {
-                let char_code = label as u32;
-                let next = base
-                    .checked_add(char_code)
-                    .expect("base is bounded by the maximum label")
-                    as usize;
-
-                // Ensure we have space
-                while next >= self.used.len() {
-                    self.used.push(false);
-                }
-
-                if self.used[next] {
-                    continue 'base_search;
-                }
-            }
-            return base as i32;
-        }
-
-        panic!("double-array trie exhausted every representable collision-free base")
-    }
-
-    fn build(self) -> DATCharComponents<V> {
-        (
-            self.base,
-            self.check,
-            self.is_final,
-            self.edges,
-            self.values,
-        )
     }
 }
 
@@ -1102,19 +874,6 @@ mod tests {
         for term in ["apple", "banana", "cherry", "date"] {
             assert_eq!(dict1.get_value(term), dict2.get_value(term));
         }
-    }
-
-    #[test]
-    fn find_base_searches_beyond_the_old_silent_corruption_ceiling() {
-        let mut builder = DATBuilderChar::<()>::new();
-        let label = 'a';
-        let old_ceiling = 100_000usize;
-        builder.used.resize(old_ceiling + label as usize, true);
-
-        let base = builder.find_base(&[label]);
-
-        assert!(base as usize >= old_ceiling);
-        assert!(!builder.used[base as usize + label as usize]);
     }
 }
 

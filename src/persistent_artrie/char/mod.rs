@@ -1062,8 +1062,8 @@ impl<V: DictionaryValue> DictZipper for PersistentARTrieCharZipper<V> {
 
     fn children(&self) -> impl Iterator<Item = (char, Self)> {
         let path = self.path_vec.clone();
-        self.node
-            .edges()
+        crate::collect_node_edges(&self.node)
+            .into_iter()
             .map(move |(c, child)| {
                 let mut new_path = path.clone();
                 new_path.push(c);
@@ -1075,8 +1075,6 @@ impl<V: DictionaryValue> DictZipper for PersistentARTrieCharZipper<V> {
                     },
                 )
             })
-            .collect::<Vec<_>>()
-            .into_iter()
     }
 
     fn path(&self) -> Vec<char> {

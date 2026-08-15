@@ -278,7 +278,7 @@ impl ProtobufSerializer {
             final_node_ids: &mut Vec<u64>,
             edges: &mut Vec<proto::dictionary::Edge>,
         ) {
-            for (label, child) in node.edges() {
+            node.for_each_edge(|label, child| {
                 let child_id = *next_id;
                 *next_id += 1;
 
@@ -297,7 +297,7 @@ impl ProtobufSerializer {
 
                 // Recurse
                 dfs(&child, child_id, next_id, node_ids, final_node_ids, edges);
-            }
+            });
         }
 
         dfs(
@@ -464,7 +464,7 @@ impl OptimizedProtobufSerializer {
             final_node_ids: &mut Vec<u64>,
             edge_data: &mut Vec<u64>,
         ) {
-            for (label, child) in node.edges() {
+            node.for_each_edge(|label, child| {
                 let child_id = *next_id;
                 *next_id += 1;
 
@@ -480,7 +480,7 @@ impl OptimizedProtobufSerializer {
 
                 // Recurse
                 dfs(&child, child_id, next_id, final_node_ids, edge_data);
-            }
+            });
         }
 
         dfs(&root, 0, &mut next_id, &mut final_node_ids, &mut edge_data);

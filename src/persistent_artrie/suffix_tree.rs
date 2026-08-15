@@ -1933,6 +1933,24 @@ impl<V: DictionaryValue> DictionaryNode for PersistentSuffixTreeNode<V> {
         Box::new(edges.into_iter())
     }
 
+    #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        F: FnMut(Self::Unit, Self),
+    {
+        for label in self.graph.next_units_after_path(&self.path) {
+            let mut child_path = self.path.clone();
+            child_path.push(label);
+            visitor(
+                label,
+                Self {
+                    graph: self.graph.clone(),
+                    path: child_path,
+                },
+            );
+        }
+    }
+
     fn edge_count(&self) -> Option<usize> {
         Some(self.graph.next_units_after_path(&self.path).len())
     }
@@ -1984,6 +2002,24 @@ impl<V: DictionaryValue> DictionaryNode for PersistentSuffixTreeCharNode<V> {
             })
             .collect();
         Box::new(edges.into_iter())
+    }
+
+    #[inline]
+    fn for_each_edge<F>(&self, mut visitor: F)
+    where
+        F: FnMut(Self::Unit, Self),
+    {
+        for label in self.graph.next_units_after_path(&self.path) {
+            let mut child_path = self.path.clone();
+            child_path.push(label);
+            visitor(
+                label,
+                Self {
+                    graph: self.graph.clone(),
+                    path: child_path,
+                },
+            );
+        }
     }
 
     fn edge_count(&self) -> Option<usize> {

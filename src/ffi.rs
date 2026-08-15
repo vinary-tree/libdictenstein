@@ -1300,13 +1300,54 @@ pub unsafe extern "C" fn ldict_dictionary_insert_text_batch(
         if out_inserted.is_null() {
             return Err((LdictStatus::NullPointer, "out_inserted is null".into()));
         }
-        let mut inserted = 0usize;
-        for entry in slice(entries, entry_count, "entries")? {
-            let term = slice(entry.data, entry.len, "entry data")?;
-            inserted += usize::from(binding(
-                dictionary.binding.insert_text(term, entry.value.decode()?),
-            )?);
-        }
+        let entries = slice(entries, entry_count, "entries")?;
+        let inserted = if let LdictBinding::Dynamic(dynamic) = &dictionary.binding {
+            if entries.is_empty() {
+                out_inserted.write(0);
+                return Ok(LdictStatus::Ok);
+            }
+            let domain = dynamic.domain();
+            if domain == BindingUnitDomain::U64 {
+                return Err((
+                    LdictStatus::DomainMismatch,
+                    BindingError::DomainMismatch.to_string(),
+                ));
+            }
+            let mut decoded = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let decoded_entry = (|| {
+                    let term = slice(entry.data, entry.len, "entry data")?;
+                    if domain == BindingUnitDomain::UnicodeScalar
+                        && std::str::from_utf8(term).is_err()
+                    {
+                        return Err((
+                            LdictStatus::InvalidUtf8,
+                            BindingError::InvalidUtf8.to_string(),
+                        ));
+                    }
+                    Ok((term, entry.value.decode()?))
+                })();
+                match decoded_entry {
+                    Ok(entry) => decoded.push(entry),
+                    Err(error) => {
+                        if !decoded.is_empty() {
+                            binding(dynamic.insert_text_batch(decoded))?;
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            binding(dynamic.insert_text_batch(decoded))?
+        } else {
+            let mut inserted = 0usize;
+            for entry in entries {
+                let term = slice(entry.data, entry.len, "entry data")?;
+                inserted += usize::from(binding(
+                    dictionary.binding.insert_text(term, entry.value.decode()?),
+                )?);
+            }
+            inserted
+        };
         out_inserted.write(inserted);
         Ok(LdictStatus::Ok)
     })
@@ -1331,13 +1372,47 @@ pub unsafe extern "C" fn ldict_dictionary_insert_u64_batch(
         if out_inserted.is_null() {
             return Err((LdictStatus::NullPointer, "out_inserted is null".into()));
         }
-        let mut inserted = 0usize;
-        for entry in slice(entries, entry_count, "entries")? {
-            let term = slice(entry.data, entry.len, "entry data")?;
-            inserted += usize::from(binding(
-                dictionary.binding.insert_u64(term, entry.value.decode()?),
-            )?);
-        }
+        let entries = slice(entries, entry_count, "entries")?;
+        let inserted = if let LdictBinding::Dynamic(dynamic) = &dictionary.binding {
+            if entries.is_empty() {
+                out_inserted.write(0);
+                return Ok(LdictStatus::Ok);
+            }
+            if dynamic.domain() != BindingUnitDomain::U64 {
+                return Err((
+                    LdictStatus::DomainMismatch,
+                    BindingError::DomainMismatch.to_string(),
+                ));
+            }
+            let mut decoded = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let decoded_entry = (|| {
+                    Ok((
+                        slice(entry.data, entry.len, "entry data")?,
+                        entry.value.decode()?,
+                    ))
+                })();
+                match decoded_entry {
+                    Ok(entry) => decoded.push(entry),
+                    Err(error) => {
+                        if !decoded.is_empty() {
+                            binding(dynamic.insert_u64_batch(decoded))?;
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            binding(dynamic.insert_u64_batch(decoded))?
+        } else {
+            let mut inserted = 0usize;
+            for entry in entries {
+                let term = slice(entry.data, entry.len, "entry data")?;
+                inserted += usize::from(binding(
+                    dictionary.binding.insert_u64(term, entry.value.decode()?),
+                )?);
+            }
+            inserted
+        };
         out_inserted.write(inserted);
         Ok(LdictStatus::Ok)
     })
