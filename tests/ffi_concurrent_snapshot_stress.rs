@@ -27,6 +27,7 @@ mod ffi_common;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Barrier;
 
 use ffi_common::{
     all_edges, capture_snapshot, dictionary_interface, insert_text, remove_text, snapshot_len,
@@ -314,15 +315,22 @@ fn concurrent_captures_are_independent_resources() {
     }
     let resource = dictionary.resource();
     let shared = SharedResource(resource);
+    let captures_live = Barrier::new(4);
 
     let contexts: Vec<usize> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..4)
             .map(|_| {
+                let captures_live = &captures_live;
                 scope.spawn(move || {
                     let shared = shared;
                     let snapshot = capture_snapshot(shared.0);
                     let context = snapshot.resource.context as usize;
                     assert_snapshot_consistent(snapshot.resource);
+                    // Keep every SnapshotGuard alive until all four contexts
+                    // coexist. Otherwise a fast thread can free its context
+                    // before a slow thread allocates, and allocator address
+                    // reuse makes independent resources appear identical.
+                    captures_live.wait();
                     context
                 })
             })

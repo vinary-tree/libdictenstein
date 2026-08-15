@@ -678,7 +678,7 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
     /// revision. The outer option is membership; the inner option is value
     /// presence. Binding APIs use this to preserve `absent | valueless |
     /// valued` without pairing observations from different roots.
-    #[cfg(feature = "bindings-core")]
+    #[cfg(any(test, feature = "bindings-core"))]
     pub(crate) fn get_units_optional_value(&self, units: &[U]) -> Option<Option<V>> {
         let version = self.version.load_full();
         let terminal = Self::find_node_from(&version.root, units)?;
