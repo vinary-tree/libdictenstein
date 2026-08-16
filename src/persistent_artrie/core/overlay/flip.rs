@@ -321,49 +321,38 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
         self.lockfree_root().and_then(|r| r.load())
     }
 
-    /// Term count of the overlay (number of finalized nodes). Resident-finals only
-    /// (the owned `len` is empty/cleared under the overlay regime — hence this
-    /// walk).
+    /// Exact term count from the same atomically-published revision as the root.
+    /// This is O(1) and cannot tear across concurrent mutations.
+    #[inline]
     fn overlay_len(&self) -> usize {
-        match self.overlay_root_node() {
-            Some(root) => Self::overlay_count_finals(&root) as usize,
-            None => 0,
-        }
+        self.lockfree_root().map_or(0, |root| root.term_count())
     }
 
-    /// Recurses by key length (the overlay is un-path-compressed); depth-safe at
-    /// the same bound as the production lock-free point reads.
+    /// Counts final nodes iteratively while installing an already-built root.
+    ///
+    /// This is deliberately not recursive: imported tries may contain a single
+    /// extremely long term, and initializing the O(1) published cardinality must
+    /// not turn that valid input into a construction-time stack overflow.
     fn overlay_count_finals(node: &Arc<OverlayNode<K, V>>) -> u64 {
-        let mut count = u64::from(node.is_final());
-        for (_, child) in node.iter_children() {
-            if let Some(child_arc) = child.as_in_mem() {
-                count += Self::overlay_count_finals(child_arc);
-            }
-        }
-        count
-    }
+        let mut count = 0_u64;
+        let mut pending = vec![Arc::clone(node)];
 
-    /// Cheap emptiness check — an early-out "any final?" walk, NOT `overlay_len()
-    /// == 0` (which would be O(N) on a large overlay).
-    fn overlay_is_empty(&self) -> bool {
-        match self.overlay_root_node() {
-            Some(root) => !Self::overlay_has_final(&root),
-            None => true,
-        }
-    }
-
-    fn overlay_has_final(node: &Arc<OverlayNode<K, V>>) -> bool {
-        if node.is_final() {
-            return true;
-        }
-        for (_, child) in node.iter_children() {
-            if let Some(child_arc) = child.as_in_mem() {
-                if Self::overlay_has_final(child_arc) {
-                    return true;
+        while let Some(current) = pending.pop() {
+            count += u64::from(current.is_final());
+            for (_, child) in current.iter_children() {
+                if let Some(child_arc) = child.as_in_mem() {
+                    pending.push(Arc::clone(child_arc));
                 }
             }
         }
-        false
+
+        count
+    }
+
+    /// Cheap emptiness check over the coherent published cardinality.
+    #[inline]
+    fn overlay_is_empty(&self) -> bool {
+        self.overlay_len() == 0
     }
 
     /// Descend the overlay to the node at `prefix` (a `K::Unit` slice), in-memory
@@ -633,7 +622,12 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
                 return Ok(false);
             }
             let new = transform(&old);
-            match root_ptr.compare_exchange(&old, new) {
+            let term_count_delta = match (old.is_final(), new.is_final()) {
+                (false, true) => 1,
+                (true, false) => -1,
+                _ => 0,
+            };
+            match root_ptr.compare_exchange_counted(&old, new, term_count_delta) {
                 Ok(_) => return Ok(true),
                 Err(_) => {
                     self.note_cas_retry();
@@ -674,7 +668,12 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
                 return Ok(RootPublishOutcome::AlreadyInState);
             }
             let new = transform(&old);
-            match root_ptr.compare_exchange(&old, new) {
+            let term_count_delta = match (old.is_final(), new.is_final()) {
+                (false, true) => 1,
+                (true, false) => -1,
+                _ => 0,
+            };
+            match root_ptr.compare_exchange_counted(&old, new, term_count_delta) {
                 Ok(_) => return Ok(RootPublishOutcome::Published(generation)),
                 Err(_) => {
                     self.note_cas_retry();
@@ -731,7 +730,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
 
     /// **F5 — install a PRE-BUILT overlay root** (the dense-image loader's output) as
     /// the live lock-free overlay, instead of `install_overlay`'s EMPTY root. Sets
-    /// `lockfree_root = Some(AtomicNodePtr::new(root))` + a fresh lookup cache via the
+    /// counted `lockfree_root` revision plus a fresh lookup cache via the
     /// variant seam [`Self::install_prebuilt_overlay_root_seam`], then stamps/verifies
     /// the WAL Overlay regime EXACTLY as [`Self::install_overlay_on_create`] does
     /// (re-using its WAL-regime stamp logic), returning the resulting
@@ -760,7 +759,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     }
 
     /// Variant seam for [`Self::install_prebuilt_overlay_root`]: set the concrete
-    /// `lockfree_root` to `AtomicNodePtr::new(root)` and a fresh empty lookup cache.
+    /// `lockfree_root` to a coherent root/cardinality revision and a fresh empty lookup cache.
     /// Idempotent (only installs if not already enabled). The variant owns the field
     /// types, so the install lives in the variant's `lockfree_cas.rs`.
     fn install_prebuilt_overlay_root_seam(&mut self, root: Arc<OverlayNode<K, V>>);

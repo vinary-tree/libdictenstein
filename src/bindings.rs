@@ -13,16 +13,20 @@ use crate::dynamic_dawg::u64::DynamicDawgU64;
 use crate::dynamic_dawg::DynamicDawg;
 use crate::scdawg::char::ScdawgChar;
 use crate::scdawg::Scdawg;
-use crate::{Dictionary, DictionaryNode, MappedDictionaryNode};
+use crate::{Dictionary, MappedDictionaryNode};
+use arc_swap::ArcSwap;
 use std::ffi::c_void;
 #[cfg(feature = "persistent-artrie")]
 use std::path::Path;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use vinary_tree_interop::{
     dictionary_flags, VtDictionaryEdge, VtDictionaryVTable, VtDictionaryVisitVTable, VtInterfaceId,
-    VtOptionalU64, VtResource, VtResourceVTable, VtStatus, VtUnitDomain, VtValueDomain,
-    VT_ABI_VERSION, VT_DICTIONARY_INTERFACE_ID, VT_DICTIONARY_INTERFACE_VERSION,
-    VT_DICTIONARY_VISIT_INTERFACE_ID, VT_DICTIONARY_VISIT_INTERFACE_VERSION,
+    VtOptionalU64, VtResource, VtResourceVTable, VtSnapshotIdentity, VtSnapshotIdentityVTable,
+    VtStatus, VtUnitDomain, VtValueDomain, VT_ABI_VERSION, VT_DICTIONARY_INTERFACE_ID,
+    VT_DICTIONARY_INTERFACE_VERSION, VT_DICTIONARY_VISIT_INTERFACE_ID,
+    VT_DICTIONARY_VISIT_INTERFACE_VERSION, VT_SNAPSHOT_IDENTITY_INTERFACE_ID,
+    VT_SNAPSHOT_IDENTITY_INTERFACE_VERSION,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -108,6 +112,106 @@ impl std::fmt::Display for BindingError {
 
 impl std::error::Error for BindingError {}
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SnapshotIdentity {
+    producer: u64,
+    revision: u64,
+}
+
+static NEXT_SNAPSHOT_PRODUCER: AtomicU64 = AtomicU64::new(1);
+
+struct CachedSnapshot {
+    revision: u64,
+    snapshot: Arc<dyn SnapshotOps>,
+}
+
+/// One strong warmed snapshot per shared producer revision.
+struct SnapshotMemo {
+    producer: u64,
+    revision: AtomicU64,
+    cached: Mutex<Option<CachedSnapshot>>,
+}
+
+impl SnapshotMemo {
+    fn new() -> Self {
+        let producer = NEXT_SNAPSHOT_PRODUCER
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current.checked_add(1)
+            })
+            .expect("snapshot producer identity space exhausted");
+        Self {
+            producer,
+            revision: AtomicU64::new(0),
+            cached: Mutex::new(None),
+        }
+    }
+
+    fn invalidate(&self) {
+        let mut cached = self
+            .cached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.revision
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current.checked_add(1)
+            })
+            .expect("snapshot revision identity space exhausted");
+        cached.take();
+    }
+
+    fn get_or_create(
+        &self,
+        create: impl FnOnce(SnapshotIdentity) -> Arc<dyn SnapshotOps>,
+    ) -> Arc<dyn SnapshotOps> {
+        let mut cached = self
+            .cached
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Read the revision while holding the same mutex that serializes
+        // invalidation. Reading before the lock permits this race: capture
+        // reads N; mutation publishes and invalidates N+1; capture then builds
+        // the new root but labels it N, colliding with still-live N snapshots.
+        let revision = self.revision.load(Ordering::Acquire);
+        if let Some(hit) = cached
+            .as_ref()
+            .filter(|snapshot| snapshot.revision == revision)
+        {
+            return Arc::clone(&hit.snapshot);
+        }
+        let snapshot = create(SnapshotIdentity {
+            producer: self.producer,
+            revision,
+        });
+        *cached = Some(CachedSnapshot {
+            revision,
+            snapshot: Arc::clone(&snapshot),
+        });
+        snapshot
+    }
+}
+
+struct SnapshotSource<B> {
+    backend: B,
+    snapshots: SnapshotMemo,
+}
+
+impl<B> SnapshotSource<B> {
+    fn new(backend: B) -> Self {
+        Self {
+            backend,
+            snapshots: SnapshotMemo::new(),
+        }
+    }
+}
+
+impl<B> std::ops::Deref for SnapshotSource<B> {
+    type Target = B;
+
+    fn deref(&self) -> &Self::Target {
+        &self.backend
+    }
+}
+
 enum DynamicBackend {
     Byte(DynamicDawg<BindingValue>),
     Unicode(DynamicDawgChar<BindingValue>),
@@ -139,7 +243,7 @@ impl DynamicBackend {
         }
     }
 
-    fn snapshot(&self) -> Arc<dyn SnapshotOps> {
+    fn snapshot(&self, identity: SnapshotIdentity) -> Arc<dyn SnapshotOps> {
         // Root and length MUST come from one published revision: separate
         // `root()` + `len()` calls perform two independent lock-free version
         // loads, and a writer between them produces a torn capture (finding
@@ -152,6 +256,7 @@ impl DynamicBackend {
                     Some(term_count),
                     VtUnitDomain::Byte,
                     false,
+                    identity,
                 ))
             }
             Self::Unicode(dictionary) => {
@@ -161,6 +266,7 @@ impl DynamicBackend {
                     Some(term_count),
                     VtUnitDomain::UnicodeScalar,
                     false,
+                    identity,
                 ))
             }
             Self::U64(dictionary) => {
@@ -170,6 +276,7 @@ impl DynamicBackend {
                     Some(term_count),
                     VtUnitDomain::U64,
                     false,
+                    identity,
                 ))
             }
         }
@@ -178,6 +285,7 @@ impl DynamicBackend {
 
 struct SharedDictionary {
     backend: RwLock<DynamicBackend>,
+    snapshots: SnapshotMemo,
 }
 
 #[cfg(feature = "persistent-artrie")]
@@ -207,45 +315,48 @@ impl PersistentBackend {
         }
     }
 
-    fn snapshot(&self) -> Arc<dyn SnapshotOps> {
-        // Coherence over convenience (finding LDICT-B4, persistent family):
-        // the overlay publishes its root and its term counters in SEPARATE
-        // atomic steps, so any (root, count) pair assembled from two loads
-        // can tear under a concurrent writer (reproduced at ~0.1% of
-        // captures under churn), and a binding-side retry protocol is
-        // provably unsound against post-flip counter updates. The interop
-        // contract has the honest affordance for exactly this situation:
-        // `len` may report out_known = 0. Persistent captures therefore pin
-        // the ROOT ONLY — coherent by construction, still O(1) — and report
-        // the count as not-cheaply-known. Restoring out_known = 1 for this
-        // family requires a coherent (root, count) publication inside the
-        // overlay flip itself (persistent-core design work, tracked in
-        // docs/bindings/FINDINGS_LEDGER.md LDICT-B4).
+    fn snapshot(&self, identity: SnapshotIdentity) -> Arc<dyn SnapshotOps> {
         match self {
-            Self::Byte(dictionary) => Arc::new(TraversalSnapshot::new(
-                dictionary.root(),
-                None,
-                VtUnitDomain::Byte,
-                false,
-            )),
-            Self::Unicode(dictionary) => Arc::new(TraversalSnapshot::new(
-                dictionary.root(),
-                None,
-                VtUnitDomain::UnicodeScalar,
-                false,
-            )),
-            Self::U64(dictionary) => Arc::new(TraversalSnapshot::new(
-                dictionary.root(),
-                None,
-                VtUnitDomain::U64,
-                false,
-            )),
-            Self::Vocab(dictionary) => Arc::new(TraversalSnapshot::new(
-                dictionary.root(),
-                None,
-                VtUnitDomain::UnicodeScalar,
-                false,
-            )),
+            Self::Byte(dictionary) => {
+                let (root, term_count) = dictionary.root_with_term_count();
+                Arc::new(TraversalSnapshot::new(
+                    root,
+                    Some(term_count),
+                    VtUnitDomain::Byte,
+                    false,
+                    identity,
+                ))
+            }
+            Self::Unicode(dictionary) => {
+                let (root, term_count) = dictionary.root_with_term_count();
+                Arc::new(TraversalSnapshot::new(
+                    root,
+                    Some(term_count),
+                    VtUnitDomain::UnicodeScalar,
+                    false,
+                    identity,
+                ))
+            }
+            Self::U64(dictionary) => {
+                let (root, term_count) = dictionary.root_with_term_count();
+                Arc::new(TraversalSnapshot::new(
+                    root,
+                    Some(term_count),
+                    VtUnitDomain::U64,
+                    false,
+                    identity,
+                ))
+            }
+            Self::Vocab(dictionary) => {
+                let (root, term_count) = dictionary.root_with_term_count();
+                Arc::new(TraversalSnapshot::new(
+                    root,
+                    Some(term_count),
+                    VtUnitDomain::UnicodeScalar,
+                    false,
+                    identity,
+                ))
+            }
         }
     }
 }
@@ -254,7 +365,7 @@ impl PersistentBackend {
 #[cfg(feature = "persistent-artrie")]
 #[derive(Clone)]
 pub struct PersistentARTrieBinding {
-    shared: Arc<PersistentBackend>,
+    shared: Arc<SnapshotSource<PersistentBackend>>,
 }
 
 #[cfg(feature = "persistent-artrie")]
@@ -262,17 +373,19 @@ impl PersistentARTrieBinding {
     /// Create a new byte, Unicode-scalar, or native-u64 persistent trie.
     pub fn create(path: impl AsRef<Path>, domain: BindingUnitDomain) -> Result<Self, BindingError> {
         let shared = match domain {
-            BindingUnitDomain::Byte => Arc::new(PersistentBackend::Byte(
+            BindingUnitDomain::Byte => Arc::new(SnapshotSource::new(PersistentBackend::Byte(
                 crate::persistent_artrie::PersistentARTrie::create(path).map_err(io_error)?,
-            )),
-            BindingUnitDomain::UnicodeScalar => Arc::new(PersistentBackend::Unicode(
-                crate::persistent_artrie::char::PersistentARTrieChar::create(path)
-                    .map_err(io_error)?,
-            )),
-            BindingUnitDomain::U64 => Arc::new(PersistentBackend::U64(
+            ))),
+            BindingUnitDomain::UnicodeScalar => {
+                Arc::new(SnapshotSource::new(PersistentBackend::Unicode(
+                    crate::persistent_artrie::char::PersistentARTrieChar::create(path)
+                        .map_err(io_error)?,
+                )))
+            }
+            BindingUnitDomain::U64 => Arc::new(SnapshotSource::new(PersistentBackend::U64(
                 crate::persistent_artrie::u64::PersistentARTrieU64::create(path)
                     .map_err(io_error)?,
-            )),
+            ))),
         };
         Ok(Self { shared })
     }
@@ -280,16 +393,18 @@ impl PersistentARTrieBinding {
     /// Open an existing byte, Unicode-scalar, or native-u64 persistent trie.
     pub fn open(path: impl AsRef<Path>, domain: BindingUnitDomain) -> Result<Self, BindingError> {
         let shared = match domain {
-            BindingUnitDomain::Byte => Arc::new(PersistentBackend::Byte(
+            BindingUnitDomain::Byte => Arc::new(SnapshotSource::new(PersistentBackend::Byte(
                 crate::persistent_artrie::PersistentARTrie::open(path).map_err(io_error)?,
-            )),
-            BindingUnitDomain::UnicodeScalar => Arc::new(PersistentBackend::Unicode(
-                crate::persistent_artrie::char::PersistentARTrieChar::open(path)
-                    .map_err(io_error)?,
-            )),
-            BindingUnitDomain::U64 => Arc::new(PersistentBackend::U64(
+            ))),
+            BindingUnitDomain::UnicodeScalar => {
+                Arc::new(SnapshotSource::new(PersistentBackend::Unicode(
+                    crate::persistent_artrie::char::PersistentARTrieChar::open(path)
+                        .map_err(io_error)?,
+                )))
+            }
+            BindingUnitDomain::U64 => Arc::new(SnapshotSource::new(PersistentBackend::U64(
                 crate::persistent_artrie::u64::PersistentARTrieU64::open(path).map_err(io_error)?,
-            )),
+            ))),
         };
         Ok(Self { shared })
     }
@@ -297,20 +412,20 @@ impl PersistentARTrieBinding {
     /// Create a persistent bidirectional term/index vocabulary.
     pub fn create_vocab(path: impl AsRef<Path>) -> Result<Self, BindingError> {
         Ok(Self {
-            shared: Arc::new(PersistentBackend::Vocab(
+            shared: Arc::new(SnapshotSource::new(PersistentBackend::Vocab(
                 crate::persistent_artrie::vocab::PersistentVocabARTrie::create(path)
                     .map_err(io_error)?,
-            )),
+            ))),
         })
     }
 
     /// Open an existing persistent bidirectional term/index vocabulary.
     pub fn open_vocab(path: impl AsRef<Path>) -> Result<Self, BindingError> {
         Ok(Self {
-            shared: Arc::new(PersistentBackend::Vocab(
+            shared: Arc::new(SnapshotSource::new(PersistentBackend::Vocab(
                 crate::persistent_artrie::vocab::PersistentVocabARTrie::open(path)
                     .map_err(io_error)?,
-            )),
+            ))),
         })
     }
 
@@ -331,12 +446,12 @@ impl PersistentARTrieBinding {
 
     /// Whether this is the bidirectional vocabulary ARTrie variant.
     pub fn is_vocab(&self) -> bool {
-        matches!(self.shared.as_ref(), PersistentBackend::Vocab(_))
+        matches!(&self.shared.backend, PersistentBackend::Vocab(_))
     }
 
     /// Insert/update a byte or Unicode term and optional u64 metadata.
     pub fn insert_text(&self, term: &[u8], value: Option<u64>) -> Result<bool, BindingError> {
-        match self.shared.as_ref() {
+        let result = match &self.shared.backend {
             PersistentBackend::Byte(dictionary) => dictionary
                 .upsert_bytes(term, BindingValue::from_option(value))
                 .map_err(io_error),
@@ -357,12 +472,16 @@ impl PersistentARTrieBinding {
                 }
             }
             PersistentBackend::U64(_) => Err(BindingError::DomainMismatch),
+        };
+        if result.is_ok() {
+            self.shared.snapshots.invalidate();
         }
+        result
     }
 
     /// Remove a byte or Unicode term where the selected variant supports removal.
     pub fn remove_text(&self, term: &[u8]) -> Result<bool, BindingError> {
-        match self.shared.as_ref() {
+        let result = match &self.shared.backend {
             PersistentBackend::Byte(dictionary) => {
                 dictionary.remove_cas_durable(term).map_err(io_error)
             }
@@ -372,12 +491,16 @@ impl PersistentARTrieBinding {
             }
             PersistentBackend::Vocab(_) => Err(BindingError::Unsupported),
             PersistentBackend::U64(_) => Err(BindingError::DomainMismatch),
+        };
+        if matches!(result, Ok(true)) {
+            self.shared.snapshots.invalidate();
         }
+        result
     }
 
     /// Test byte or Unicode exact membership.
     pub fn contains_text(&self, term: &[u8]) -> Result<bool, BindingError> {
-        match self.shared.as_ref() {
+        match &self.shared.backend {
             PersistentBackend::Byte(dictionary) => Ok(dictionary.contains_bytes(term)),
             PersistentBackend::Unicode(dictionary) => {
                 let term = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
@@ -393,7 +516,7 @@ impl PersistentARTrieBinding {
 
     /// Read byte or Unicode metadata, preserving absent versus valueless terms.
     pub fn value_text(&self, term: &[u8]) -> Result<Option<Option<u64>>, BindingError> {
-        match self.shared.as_ref() {
+        match &self.shared.backend {
             PersistentBackend::Byte(dictionary) => Ok(dictionary
                 .get_value_bytes(term)
                 .map(BindingValue::into_option)),
@@ -416,29 +539,37 @@ impl PersistentARTrieBinding {
     /// wrapper (which logs and returns `false`) is deliberately not used
     /// here — the ABI must report `IO_ERROR`, never a silent no-op `OK`.
     pub fn insert_u64(&self, term: &[u64], value: Option<u64>) -> Result<bool, BindingError> {
-        match self.shared.as_ref() {
+        let result = match &self.shared.backend {
             PersistentBackend::U64(dictionary) => dictionary
                 .try_insert_sequence_with_value(term, BindingValue::from_option(value))
                 .map_err(io_error),
             _ => Err(BindingError::DomainMismatch),
+        };
+        if result.is_ok() {
+            self.shared.snapshots.invalidate();
         }
+        result
     }
 
     /// Remove a native-u64 term.
     ///
     /// Engine write failures propagate as I/O errors (see `insert_u64`).
     pub fn remove_u64(&self, term: &[u64]) -> Result<bool, BindingError> {
-        match self.shared.as_ref() {
+        let result = match &self.shared.backend {
             PersistentBackend::U64(dictionary) => {
                 dictionary.try_remove_sequence(term).map_err(io_error)
             }
             _ => Err(BindingError::DomainMismatch),
+        };
+        if matches!(result, Ok(true)) {
+            self.shared.snapshots.invalidate();
         }
+        result
     }
 
     /// Test native-u64 exact membership.
     pub fn contains_u64(&self, term: &[u64]) -> Result<bool, BindingError> {
-        match self.shared.as_ref() {
+        match &self.shared.backend {
             PersistentBackend::U64(dictionary) => Ok(dictionary.contains_sequence(term)),
             _ => Err(BindingError::DomainMismatch),
         }
@@ -446,7 +577,7 @@ impl PersistentARTrieBinding {
 
     /// Read native-u64 metadata, preserving absent versus valueless terms.
     pub fn value_u64(&self, term: &[u64]) -> Result<Option<Option<u64>>, BindingError> {
-        match self.shared.as_ref() {
+        match &self.shared.backend {
             PersistentBackend::U64(dictionary) => Ok(dictionary
                 .get_sequence_value(term)
                 .map(BindingValue::into_option)),
@@ -456,7 +587,7 @@ impl PersistentARTrieBinding {
 
     /// Atomically checkpoint the current revision to disk.
     pub fn checkpoint(&self) -> Result<(), BindingError> {
-        match self.shared.as_ref() {
+        match &self.shared.backend {
             PersistentBackend::Byte(dictionary) => dictionary.checkpoint().map_err(io_error),
             PersistentBackend::Unicode(dictionary) => dictionary.checkpoint().map_err(io_error),
             PersistentBackend::U64(dictionary) => dictionary.checkpoint().map_err(io_error),
@@ -466,7 +597,7 @@ impl PersistentARTrieBinding {
 
     /// Look up a vocabulary term by its stable index.
     pub fn vocab_term(&self, index: u64) -> Result<Option<String>, BindingError> {
-        match self.shared.as_ref() {
+        match &self.shared.backend {
             PersistentBackend::Vocab(dictionary) => Ok(dictionary.get_term(index)),
             _ => Err(BindingError::Unsupported),
         }
@@ -513,7 +644,7 @@ impl SecondaryBackend {
         matches!(self, Self::ScdawgByte(_) | Self::ScdawgUnicode(_))
     }
 
-    fn snapshot(&self) -> Arc<dyn SnapshotOps> {
+    fn snapshot(&self, identity: SnapshotIdentity) -> Arc<dyn SnapshotOps> {
         match self {
             // DoubleArrayTrie backends are immutable after construction, so
             // separate root()/len() reads cannot tear (no writer exists).
@@ -522,12 +653,14 @@ impl SecondaryBackend {
                 dictionary.len(),
                 VtUnitDomain::Byte,
                 false,
+                identity,
             )),
             Self::DoubleArrayUnicode(dictionary) => Arc::new(TraversalSnapshot::new(
                 dictionary.root(),
                 dictionary.len(),
                 VtUnitDomain::UnicodeScalar,
                 false,
+                identity,
             )),
             // SCDAWGs are mutable: pair the root with the count from ONE
             // published revision (finding LDICT-B4).
@@ -538,6 +671,7 @@ impl SecondaryBackend {
                     Some(term_count),
                     VtUnitDomain::Byte,
                     true,
+                    identity,
                 ))
             }
             Self::ScdawgUnicode(dictionary) => {
@@ -547,6 +681,7 @@ impl SecondaryBackend {
                     Some(term_count),
                     VtUnitDomain::UnicodeScalar,
                     true,
+                    identity,
                 ))
             }
         }
@@ -556,7 +691,7 @@ impl SecondaryBackend {
 /// Immutable, cache-local DoubleArrayTrie exposed to foreign-language bindings.
 #[derive(Clone)]
 pub struct DoubleArrayTrieBinding {
-    shared: Arc<SecondaryBackend>,
+    shared: Arc<SnapshotSource<SecondaryBackend>>,
 }
 
 impl DoubleArrayTrieBinding {
@@ -572,7 +707,9 @@ impl DoubleArrayTrieBinding {
                 .map(|(term, value)| (term, BindingValue::from_option(value))),
         );
         Self {
-            shared: Arc::new(SecondaryBackend::DoubleArrayByte(dictionary)),
+            shared: Arc::new(SnapshotSource::new(SecondaryBackend::DoubleArrayByte(
+                dictionary,
+            ))),
         }
     }
 
@@ -588,7 +725,9 @@ impl DoubleArrayTrieBinding {
                 .map(|(term, value)| (term, BindingValue::from_option(value))),
         );
         Self {
-            shared: Arc::new(SecondaryBackend::DoubleArrayUnicode(dictionary)),
+            shared: Arc::new(SnapshotSource::new(SecondaryBackend::DoubleArrayUnicode(
+                dictionary,
+            ))),
         }
     }
 
@@ -609,7 +748,7 @@ impl DoubleArrayTrieBinding {
 
     /// Test exact membership.
     pub fn contains(&self, term: &str) -> bool {
-        match self.shared.as_ref() {
+        match &self.shared.backend {
             SecondaryBackend::DoubleArrayByte(dictionary) => dictionary.contains(term),
             SecondaryBackend::DoubleArrayUnicode(dictionary) => dictionary.contains(term),
             _ => unreachable!("DoubleArrayTrieBinding contains only DAT backends"),
@@ -618,7 +757,7 @@ impl DoubleArrayTrieBinding {
 
     /// Read optional metadata while preserving absent versus valueless terms.
     pub fn value(&self, term: &str) -> Option<Option<u64>> {
-        match self.shared.as_ref() {
+        match &self.shared.backend {
             SecondaryBackend::DoubleArrayByte(dictionary) => {
                 dictionary.get_value(term).map(BindingValue::into_option)
             }
@@ -638,21 +777,25 @@ impl DoubleArrayTrieBinding {
 /// Mutable SCDAWG binding with exact-term and substring operations.
 #[derive(Clone)]
 pub struct ScdawgBinding {
-    shared: Arc<SecondaryBackend>,
+    shared: Arc<SnapshotSource<SecondaryBackend>>,
 }
 
 impl ScdawgBinding {
     /// Construct an empty byte-transition SCDAWG.
     pub fn new_byte() -> Self {
         Self {
-            shared: Arc::new(SecondaryBackend::ScdawgByte(Scdawg::new())),
+            shared: Arc::new(SnapshotSource::new(SecondaryBackend::ScdawgByte(
+                Scdawg::new(),
+            ))),
         }
     }
 
     /// Construct an empty Unicode-scalar SCDAWG.
     pub fn new_unicode() -> Self {
         Self {
-            shared: Arc::new(SecondaryBackend::ScdawgUnicode(ScdawgChar::new())),
+            shared: Arc::new(SnapshotSource::new(SecondaryBackend::ScdawgUnicode(
+                ScdawgChar::new(),
+            ))),
         }
     }
 
@@ -674,18 +817,20 @@ impl ScdawgBinding {
     /// Insert or update a term and optional metadata.
     pub fn insert(&self, term: &str, value: Option<u64>) -> bool {
         let value = BindingValue::from_option(value);
-        match self.shared.as_ref() {
+        let inserted = match &self.shared.backend {
             SecondaryBackend::ScdawgByte(dictionary) => dictionary.insert_with_value(term, value),
             SecondaryBackend::ScdawgUnicode(dictionary) => {
                 dictionary.insert_with_value(term, value)
             }
             _ => unreachable!("ScdawgBinding contains only SCDAWG backends"),
-        }
+        };
+        self.shared.snapshots.invalidate();
+        inserted
     }
 
     /// Test exact-term membership.
     pub fn contains(&self, term: &str) -> bool {
-        match self.shared.as_ref() {
+        match &self.shared.backend {
             SecondaryBackend::ScdawgByte(dictionary) => dictionary.contains(term),
             SecondaryBackend::ScdawgUnicode(dictionary) => dictionary.contains(term),
             _ => unreachable!("ScdawgBinding contains only SCDAWG backends"),
@@ -694,7 +839,7 @@ impl ScdawgBinding {
 
     /// Test whether a pattern occurs as a substring of an indexed term.
     pub fn contains_substring(&self, pattern: &str) -> bool {
-        match self.shared.as_ref() {
+        match &self.shared.backend {
             SecondaryBackend::ScdawgByte(dictionary) => dictionary.contains_substring(pattern),
             SecondaryBackend::ScdawgUnicode(dictionary) => dictionary.contains_substring(pattern),
             _ => unreachable!("ScdawgBinding contains only SCDAWG backends"),
@@ -703,7 +848,7 @@ impl ScdawgBinding {
 
     /// Count occurrences of a substring across indexed terms.
     pub fn frequency(&self, pattern: &str) -> usize {
-        match self.shared.as_ref() {
+        match &self.shared.backend {
             SecondaryBackend::ScdawgByte(dictionary) => dictionary.freq(pattern),
             SecondaryBackend::ScdawgUnicode(dictionary) => dictionary.freq(pattern),
             _ => unreachable!("ScdawgBinding contains only SCDAWG backends"),
@@ -712,7 +857,7 @@ impl ScdawgBinding {
 
     /// Read optional metadata while preserving absent versus valueless terms.
     pub fn value(&self, term: &str) -> Option<Option<u64>> {
-        match self.shared.as_ref() {
+        match &self.shared.backend {
             SecondaryBackend::ScdawgByte(dictionary) => {
                 dictionary.get_value(term).map(BindingValue::into_option)
             }
@@ -755,6 +900,7 @@ impl DynamicDawgBinding {
         Self {
             shared: Arc::new(SharedDictionary {
                 backend: RwLock::new(DynamicBackend::new(domain)),
+                snapshots: SnapshotMemo::new(),
             }),
         }
     }
@@ -789,7 +935,7 @@ impl DynamicDawgBinding {
             .backend
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match &*backend {
+        let result = match &*backend {
             DynamicBackend::Byte(dictionary) => {
                 Ok(dictionary
                     .insert_bytes_with_optional_value(term, value.map(BindingValue::present)))
@@ -799,7 +945,12 @@ impl DynamicDawgBinding {
                 Ok(dictionary.insert_with_optional_value(term, value.map(BindingValue::present)))
             }
             DynamicBackend::U64(_) => Err(BindingError::DomainMismatch),
+        };
+        drop(backend);
+        if result.is_ok() {
+            self.shared.snapshots.invalidate();
         }
+        result
     }
 
     /// Insert/update a complete text batch, selecting the freeze-once builder
@@ -862,7 +1013,10 @@ impl DynamicDawgBinding {
                 DynamicBackend::U64(_) => return Err(BindingError::DomainMismatch),
             };
             *backend = replacement;
-            return Ok(backend.len());
+            let len = backend.len();
+            drop(backend);
+            self.shared.snapshots.invalidate();
+            return Ok(len);
         }
         drop(backend);
 
@@ -880,14 +1034,19 @@ impl DynamicDawgBinding {
             .backend
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match &*backend {
+        let result = match &*backend {
             DynamicBackend::Byte(dictionary) => Ok(dictionary.remove_bytes(term)),
             DynamicBackend::Unicode(dictionary) => {
                 let term = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
                 Ok(dictionary.remove(term))
             }
             DynamicBackend::U64(_) => Err(BindingError::DomainMismatch),
+        };
+        drop(backend);
+        if matches!(result, Ok(true)) {
+            self.shared.snapshots.invalidate();
         }
+        result
     }
 
     /// Test membership for a UTF-8/byte term.
@@ -935,11 +1094,16 @@ impl DynamicDawgBinding {
             .backend
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match &*backend {
+        let result = match &*backend {
             DynamicBackend::U64(dictionary) => Ok(dictionary
                 .insert_sequence_with_optional_value(term, value.map(BindingValue::present))),
             _ => Err(BindingError::DomainMismatch),
+        };
+        drop(backend);
+        if result.is_ok() {
+            self.shared.snapshots.invalidate();
         }
+        result
     }
 
     /// Insert/update a complete u64 batch with the same empty-dictionary
@@ -972,7 +1136,10 @@ impl DynamicDawgBinding {
                 owned.sort_by(|left, right| left.0.cmp(&right.0));
             }
             *backend = DynamicBackend::U64(DynamicDawgU64::from_sorted_sequence_entries(owned));
-            return Ok(backend.len());
+            let len = backend.len();
+            drop(backend);
+            self.shared.snapshots.invalidate();
+            return Ok(len);
         }
         drop(backend);
 
@@ -990,10 +1157,15 @@ impl DynamicDawgBinding {
             .backend
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match &*backend {
+        let result = match &*backend {
             DynamicBackend::U64(dictionary) => Ok(dictionary.remove_sequence(term)),
             _ => Err(BindingError::DomainMismatch),
+        };
+        drop(backend);
+        if matches!(result, Ok(true)) {
+            self.shared.snapshots.invalidate();
         }
+        result
     }
 
     /// Test membership for a u64-token term.
@@ -1032,7 +1204,12 @@ impl DynamicDawgBinding {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let domain = backend.domain();
+        let changed = backend.len() != 0;
         *backend = DynamicBackend::new(domain);
+        drop(backend);
+        if changed {
+            self.shared.snapshots.invalidate();
+        }
     }
 
     /// Restore compact DynamicDAWG structure and return reclaimed nodes.
@@ -1042,11 +1219,16 @@ impl DynamicDawgBinding {
             .backend
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match &*backend {
+        let reclaimed = match &*backend {
             DynamicBackend::Byte(dictionary) => dictionary.compact(),
             DynamicBackend::Unicode(dictionary) => dictionary.compact(),
             DynamicBackend::U64(dictionary) => dictionary.compact(),
+        };
+        drop(backend);
+        if reclaimed != 0 {
+            self.shared.snapshots.invalidate();
         }
+        reclaimed
     }
 
     /// Borrow a two-word resource. The returned resource owns one retain.
@@ -1093,30 +1275,168 @@ impl AbiUnit for u64 {
     }
 }
 
+const TRAVERSAL_CHUNK_SIZE: usize = 256;
+
+struct ArenaNode<N> {
+    node: N,
+    edges: OnceLock<Result<Vec<(u64, u64)>, VtStatus>>,
+}
+
+impl<N> ArenaNode<N> {
+    fn new(node: N) -> Self {
+        Self {
+            node,
+            edges: OnceLock::new(),
+        }
+    }
+}
+
+struct ArenaChunk<N> {
+    slots: [OnceLock<Arc<ArenaNode<N>>>; TRAVERSAL_CHUNK_SIZE],
+}
+
+impl<N> ArenaChunk<N> {
+    fn new() -> Self {
+        Self {
+            slots: std::array::from_fn(|_| OnceLock::new()),
+        }
+    }
+}
+
+/// Append-only, chunked lazy node arena.
+///
+/// Readers load an immutable ArcSwap directory and an initialized slot without
+/// taking a global lock. Only rare directory growth is serialized. Each node's
+/// outgoing edges are enumerated once through its own `OnceLock`.
 struct NodeArena<N> {
-    nodes: Vec<N>,
-    edges: Vec<Option<Vec<(u64, u64)>>>,
+    chunks: ArcSwap<Vec<Arc<ArenaChunk<N>>>>,
+    next_id: AtomicU64,
+    growth_lock: Mutex<()>,
+}
+
+impl<N> NodeArena<N> {
+    fn new(root: N) -> Self {
+        let first = Arc::new(ArenaChunk::new());
+        first.slots[0]
+            .set(Arc::new(ArenaNode::new(root)))
+            .unwrap_or_else(|_| unreachable!("fresh root slot is empty"));
+        Self {
+            chunks: ArcSwap::from_pointee(vec![first]),
+            next_id: AtomicU64::new(1),
+            growth_lock: Mutex::new(()),
+        }
+    }
+
+    fn slot(&self, node: u64) -> Result<Arc<ArenaNode<N>>, VtStatus> {
+        let node = usize::try_from(node).map_err(|_| VtStatus::InvalidArgument)?;
+        let chunks = self.chunks.load();
+        let chunk = chunks
+            .get(node / TRAVERSAL_CHUNK_SIZE)
+            .ok_or(VtStatus::InvalidArgument)?;
+        chunk.slots[node % TRAVERSAL_CHUNK_SIZE]
+            .get()
+            .cloned()
+            .ok_or(VtStatus::InvalidArgument)
+    }
+
+    fn ensure_capacity(&self, last_node: u64) -> Result<(), VtStatus> {
+        let last_node = usize::try_from(last_node).map_err(|_| VtStatus::LimitExceeded)?;
+        let required = last_node
+            .checked_div(TRAVERSAL_CHUNK_SIZE)
+            .and_then(|chunk| chunk.checked_add(1))
+            .ok_or(VtStatus::LimitExceeded)?;
+        if self.chunks.load().len() >= required {
+            return Ok(());
+        }
+
+        crate::causal_perf::record_resource_arena_locks(1);
+        let _growth = self
+            .growth_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let current = self.chunks.load_full();
+        if current.len() >= required {
+            return Ok(());
+        }
+        let mut grown = (*current).clone();
+        grown.reserve(required - grown.len());
+        while grown.len() < required {
+            grown.push(Arc::new(ArenaChunk::new()));
+        }
+        self.chunks.store(Arc::new(grown));
+        Ok(())
+    }
+
+    fn reserve(&self, count: usize) -> Result<u64, VtStatus> {
+        let count = u64::try_from(count).map_err(|_| VtStatus::LimitExceeded)?;
+        let start = self
+            .next_id
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current.checked_add(count)
+            })
+            .map_err(|_| VtStatus::LimitExceeded)?;
+        if count != 0 {
+            self.ensure_capacity(start + count - 1)?;
+        }
+        Ok(start)
+    }
+
+    fn install(&self, node: u64, value: N) -> Result<(), VtStatus> {
+        let node_index = usize::try_from(node).map_err(|_| VtStatus::LimitExceeded)?;
+        let chunks = self.chunks.load();
+        let chunk = chunks
+            .get(node_index / TRAVERSAL_CHUNK_SIZE)
+            .ok_or(VtStatus::LimitExceeded)?;
+        chunk.slots[node_index % TRAVERSAL_CHUNK_SIZE]
+            .set(Arc::new(ArenaNode::new(value)))
+            .map_err(|_| VtStatus::InvalidArgument)
+    }
+}
+
+impl<N> Drop for NodeArena<N> {
+    fn drop(&mut self) {
+        #[cfg(feature = "perf-instrumentation")]
+        let started = std::time::Instant::now();
+        let nodes = self.next_id.load(Ordering::Relaxed);
+        // Reclaim every published chunk on the releasing thread. Swapping an
+        // empty directory makes the destruction point explicit and measurable;
+        // no background reclaimer or unbounded deferred queue is involved.
+        let chunks = self.chunks.swap(Arc::new(Vec::new()));
+        drop(chunks);
+        crate::causal_perf::record_resource_nodes_reclaimed(nodes);
+        #[cfg(feature = "perf-instrumentation")]
+        {
+            let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            crate::causal_perf::record_resource_reclaim_nanos(nanos);
+            crate::causal_perf::record_resource_reclaim_max_nanos(nanos);
+        }
+    }
 }
 
 struct TraversalSnapshot<N> {
-    arena: Mutex<NodeArena<N>>,
+    arena: NodeArena<N>,
     len: Option<usize>,
     domain: VtUnitDomain,
     suffix: bool,
+    identity: SnapshotIdentity,
 }
 
 impl<N> TraversalSnapshot<N> {
-    fn new(root: N, len: Option<usize>, domain: VtUnitDomain, suffix: bool) -> Self {
+    fn new(
+        root: N,
+        len: Option<usize>,
+        domain: VtUnitDomain,
+        suffix: bool,
+        identity: SnapshotIdentity,
+    ) -> Self {
         crate::causal_perf::record_resource_snapshots_created(1);
         crate::causal_perf::record_resource_nodes_materialized(1);
         Self {
-            arena: Mutex::new(NodeArena {
-                nodes: vec![root],
-                edges: vec![None],
-            }),
+            arena: NodeArena::new(root),
             len,
             domain,
             suffix,
+            identity,
         }
     }
 }
@@ -1125,6 +1445,7 @@ trait SnapshotOps: Send + Sync {
     fn domain(&self) -> VtUnitDomain;
     fn suffix(&self) -> bool;
     fn len(&self) -> Option<usize>;
+    fn identity(&self) -> SnapshotIdentity;
     fn is_final(&self, node: u64) -> Result<bool, VtStatus>;
     fn value(&self, node: u64) -> Result<Option<u64>, VtStatus>;
     fn transition(&self, node: u64, label: u64) -> Result<Option<u64>, VtStatus>;
@@ -1152,25 +1473,27 @@ where
     N::Unit: AbiUnit,
     N::Value: AbiValue,
 {
-    fn ensure_edges(arena: &mut NodeArena<N>, node: usize) -> Result<(), VtStatus> {
-        if node >= arena.nodes.len() {
-            return Err(VtStatus::InvalidArgument);
+    fn edges<'a>(&self, slot: &'a ArenaNode<N>) -> Result<&'a [(u64, u64)], VtStatus> {
+        let cached = slot.edges.get_or_init(|| {
+            let children = crate::collect_node_edges(&slot.node);
+            crate::causal_perf::record_resource_native_edges_enumerated(children.len() as u64);
+            let child_count = children.len();
+            let first_child = self.arena.reserve(child_count)?;
+            let mut descriptors = Vec::with_capacity(child_count);
+            for (offset, (label, child)) in children.into_iter().enumerate() {
+                let child_id = first_child
+                    .checked_add(u64::try_from(offset).map_err(|_| VtStatus::LimitExceeded)?)
+                    .ok_or(VtStatus::LimitExceeded)?;
+                self.arena.install(child_id, child)?;
+                descriptors.push((label.to_abi(), child_id));
+            }
+            crate::causal_perf::record_resource_nodes_materialized(child_count as u64);
+            Ok(descriptors)
+        });
+        match cached {
+            Ok(edges) => Ok(edges),
+            Err(status) => Err(*status),
         }
-        if arena.edges[node].is_some() {
-            return Ok(());
-        }
-        let children = crate::collect_node_edges(&arena.nodes[node]);
-        crate::causal_perf::record_resource_native_edges_enumerated(children.len() as u64);
-        crate::causal_perf::record_resource_nodes_materialized(children.len() as u64);
-        let mut descriptors = Vec::with_capacity(children.len());
-        for (label, child) in children {
-            let child_id = u64::try_from(arena.nodes.len()).map_err(|_| VtStatus::LimitExceeded)?;
-            arena.nodes.push(child);
-            arena.edges.push(None);
-            descriptors.push((label.to_abi(), child_id));
-        }
-        arena.edges[node] = Some(descriptors);
-        Ok(())
     }
 }
 
@@ -1192,56 +1515,32 @@ where
         self.len
     }
 
+    fn identity(&self) -> SnapshotIdentity {
+        self.identity
+    }
+
     fn is_final(&self, node: u64) -> Result<bool, VtStatus> {
-        let node = usize::try_from(node).map_err(|_| VtStatus::InvalidArgument)?;
         crate::causal_perf::record_resource_is_final_calls(1);
-        crate::causal_perf::record_resource_arena_locks(1);
-        let arena = self
-            .arena
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        arena
-            .nodes
-            .get(node)
-            .map(DictionaryNode::is_final)
-            .ok_or(VtStatus::InvalidArgument)
+        let slot = self.arena.slot(node)?;
+        Ok(slot.node.is_final())
     }
 
     fn value(&self, node: u64) -> Result<Option<u64>, VtStatus> {
-        let node = usize::try_from(node).map_err(|_| VtStatus::InvalidArgument)?;
         crate::causal_perf::record_resource_value_calls(1);
-        crate::causal_perf::record_resource_arena_locks(1);
-        let arena = self
-            .arena
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        arena
-            .nodes
-            .get(node)
-            .map(|value| value.value().and_then(AbiValue::into_abi_value))
-            .ok_or(VtStatus::InvalidArgument)
+        let slot = self.arena.slot(node)?;
+        Ok(slot.node.value().and_then(AbiValue::into_abi_value))
     }
 
     fn transition(&self, node: u64, label: u64) -> Result<Option<u64>, VtStatus> {
-        let node = usize::try_from(node).map_err(|_| VtStatus::InvalidArgument)?;
-        crate::causal_perf::record_resource_arena_locks(1);
-        let mut arena = self
-            .arena
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let cache_miss = arena
-            .edges
-            .get(node)
-            .is_some_and(|descriptors| descriptors.is_none());
-        Self::ensure_edges(&mut arena, node)?;
+        let slot = self.arena.slot(node)?;
+        let cache_miss = slot.edges.get().is_none();
+        let edges = self.edges(&slot)?;
         if cache_miss {
             crate::causal_perf::record_resource_edge_cache_misses(1);
         }
-        Ok(arena.edges[node].as_ref().and_then(|edges| {
-            edges
-                .iter()
-                .find_map(|edge| (edge.0 == label).then_some(edge.1))
-        }))
+        Ok(edges
+            .iter()
+            .find_map(|edge| (edge.0 == label).then_some(edge.1)))
     }
 
     fn copy_edges(
@@ -1250,22 +1549,13 @@ where
         start: usize,
         output: &mut [VtDictionaryEdge],
     ) -> Result<(usize, usize), VtStatus> {
-        let node = usize::try_from(node).map_err(|_| VtStatus::InvalidArgument)?;
         crate::causal_perf::record_resource_edges_calls(1);
-        crate::causal_perf::record_resource_arena_locks(1);
-        let mut arena = self
-            .arena
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let cache_miss = arena
-            .edges
-            .get(node)
-            .is_some_and(|descriptors| descriptors.is_none());
-        Self::ensure_edges(&mut arena, node)?;
+        let slot = self.arena.slot(node)?;
+        let cache_miss = slot.edges.get().is_none();
+        let descriptors = self.edges(&slot)?;
         if cache_miss {
             crate::causal_perf::record_resource_edge_cache_misses(1);
         }
-        let descriptors = arena.edges[node].as_deref().unwrap_or_default();
         let total = descriptors.len();
         let page = descriptors.iter().skip(start).zip(output.iter_mut());
         let mut written = 0usize;
@@ -1285,28 +1575,15 @@ where
         start: usize,
         output: &mut [VtDictionaryEdge],
     ) -> Result<(bool, usize, usize), VtStatus> {
-        let node = usize::try_from(node).map_err(|_| VtStatus::InvalidArgument)?;
         crate::causal_perf::record_resource_is_final_calls(1);
         crate::causal_perf::record_resource_edges_calls(1);
-        crate::causal_perf::record_resource_arena_locks(1);
-        let mut arena = self
-            .arena
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let cache_miss = arena
-            .edges
-            .get(node)
-            .is_some_and(|descriptors| descriptors.is_none());
-        let is_final = arena
-            .nodes
-            .get(node)
-            .map(DictionaryNode::is_final)
-            .ok_or(VtStatus::InvalidArgument)?;
-        Self::ensure_edges(&mut arena, node)?;
+        let slot = self.arena.slot(node)?;
+        let cache_miss = slot.edges.get().is_none();
+        let is_final = slot.node.is_final();
+        let descriptors = self.edges(&slot)?;
         if cache_miss {
             crate::causal_perf::record_resource_edge_cache_misses(1);
         }
-        let descriptors = arena.edges[node].as_deref().unwrap_or_default();
         let total = descriptors.len();
         let page = descriptors.iter().skip(start).zip(output.iter_mut());
         let mut written = 0usize;
@@ -1323,9 +1600,9 @@ where
 
 enum ResourcePayload {
     Live(Arc<SharedDictionary>),
-    Secondary(Arc<SecondaryBackend>),
+    Secondary(Arc<SnapshotSource<SecondaryBackend>>),
     #[cfg(feature = "persistent-artrie")]
-    Persistent(Arc<PersistentBackend>),
+    Persistent(Arc<SnapshotSource<PersistentBackend>>),
     Snapshot(Arc<dyn SnapshotOps>),
 }
 
@@ -1342,9 +1619,9 @@ impl ResourceContext {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .domain()
                 .into(),
-            ResourcePayload::Secondary(dictionary) => dictionary.domain().into(),
+            ResourcePayload::Secondary(dictionary) => dictionary.backend.domain().into(),
             #[cfg(feature = "persistent-artrie")]
-            ResourcePayload::Persistent(dictionary) => dictionary.domain().into(),
+            ResourcePayload::Persistent(dictionary) => dictionary.backend.domain().into(),
             ResourcePayload::Snapshot(snapshot) => snapshot.domain(),
         }
     }
@@ -1354,7 +1631,7 @@ impl ResourceContext {
             | match &self.payload {
                 ResourcePayload::Live(_) => 0,
                 ResourcePayload::Secondary(dictionary) => {
-                    if dictionary.suffix() {
+                    if dictionary.backend.suffix() {
                         dictionary_flags::SUFFIX_BASED
                     } else {
                         0
@@ -1375,14 +1652,20 @@ impl ResourceContext {
 
     fn snapshot(&self) -> Arc<dyn SnapshotOps> {
         match &self.payload {
-            ResourcePayload::Live(dictionary) => dictionary
-                .backend
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .snapshot(),
-            ResourcePayload::Secondary(dictionary) => dictionary.snapshot(),
+            ResourcePayload::Live(dictionary) => dictionary.snapshots.get_or_create(|identity| {
+                dictionary
+                    .backend
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .snapshot(identity)
+            }),
+            ResourcePayload::Secondary(dictionary) => dictionary
+                .snapshots
+                .get_or_create(|identity| dictionary.backend.snapshot(identity)),
             #[cfg(feature = "persistent-artrie")]
-            ResourcePayload::Persistent(dictionary) => dictionary.snapshot(),
+            ResourcePayload::Persistent(dictionary) => dictionary
+                .snapshots
+                .get_or_create(|identity| dictionary.backend.snapshot(identity)),
             ResourcePayload::Snapshot(snapshot) => Arc::clone(snapshot),
         }
     }
@@ -1468,6 +1751,12 @@ unsafe fn query_interface_status(
     {
         out_vtable.write((&DICTIONARY_VISIT_VTABLE as *const VtDictionaryVisitVTable).cast());
         VtStatus::Ok
+    } else if (*interface_id).bytes == VT_SNAPSHOT_IDENTITY_INTERFACE_ID.bytes
+        && minimum_version <= VT_SNAPSHOT_IDENTITY_INTERFACE_VERSION
+        && matches!(context.payload, ResourcePayload::Snapshot(_))
+    {
+        out_vtable.write((&SNAPSHOT_IDENTITY_VTABLE as *const VtSnapshotIdentityVTable).cast());
+        VtStatus::Ok
     } else {
         VtStatus::Unsupported
     }
@@ -1478,6 +1767,25 @@ unsafe extern "C" fn dictionary_snapshot(
     out_snapshot: *mut VtResource,
 ) -> u32 {
     dictionary_snapshot_status(context, out_snapshot).to_raw()
+}
+
+unsafe extern "C" fn dictionary_snapshot_identity(
+    context: *mut c_void,
+    out_identity: *mut VtSnapshotIdentity,
+) -> u32 {
+    if context.is_null() || out_identity.is_null() {
+        return VtStatus::NullPointer.to_raw();
+    }
+    let context = &*context.cast::<ResourceContext>();
+    let Ok(snapshot) = context.immutable() else {
+        return VtStatus::InvalidArgument.to_raw();
+    };
+    let identity = snapshot.identity();
+    out_identity.write(VtSnapshotIdentity {
+        producer: identity.producer,
+        revision: identity.revision,
+    });
+    VtStatus::Ok.to_raw()
 }
 
 unsafe fn dictionary_snapshot_status(
@@ -1780,6 +2088,13 @@ static DICTIONARY_VISIT_VTABLE: VtDictionaryVisitVTable = VtDictionaryVisitVTabl
     interface_version: VT_DICTIONARY_VISIT_INTERFACE_VERSION,
     reserved: 0,
     node_visit: Some(dictionary_visit),
+};
+
+static SNAPSHOT_IDENTITY_VTABLE: VtSnapshotIdentityVTable = VtSnapshotIdentityVTable {
+    struct_size: std::mem::size_of::<VtSnapshotIdentityVTable>(),
+    interface_version: VT_SNAPSHOT_IDENTITY_INTERFACE_VERSION,
+    reserved: 0,
+    identity: Some(dictionary_snapshot_identity),
 };
 
 macro_rules! dictionary_vtable {
@@ -2231,6 +2546,89 @@ mod tests {
         assert_eq!(
             snapshot_edges(&*first_snapshot, 10_000),
             Err(VtStatus::InvalidArgument)
+        );
+    }
+
+    /// INVARIANT-HOOK: LDICT-ARENA-1..6 — ids and memoized edges remain
+    /// stable when one expansion crosses multiple 256-slot chunks, including
+    /// parallel readers of the lock-free directory and write-once slots.
+    #[test]
+    fn chunked_arena_is_stable_across_directory_boundaries_under_concurrency() {
+        let dictionary = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
+        for offset in 0..600_u32 {
+            let first = char::from_u32(0x1_000 + offset).expect("test scalar");
+            dictionary
+                .insert_text(first.to_string().as_bytes(), Some(u64::from(offset)))
+                .expect("insert must succeed");
+        }
+        let resource = dictionary.resource();
+        let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };
+        let snapshot = live.snapshot();
+        let expected = snapshot_edges(&*snapshot, 0).expect("root edges");
+        assert_eq!(expected.len(), 600);
+        assert!(expected.iter().any(|edge| edge.1 < 256));
+        assert!(expected.iter().any(|edge| edge.1 >= 512));
+
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let snapshot = Arc::clone(&snapshot);
+                let expected = expected.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..32 {
+                        assert_eq!(snapshot_edges(&*snapshot, 0).expect("root edges"), expected);
+                        for (_, child) in &expected {
+                            assert!(snapshot.is_final(*child).expect("child finality"));
+                        }
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().expect("arena reader must not panic");
+        }
+    }
+
+    /// INVARIANT-HOOK: LDICT-ARENA-4 — invalidating the producer memo drops its
+    /// strong retain of the old revision, and releasing the last snapshot
+    /// synchronously reclaims every materialized arena node on that thread.
+    #[cfg(feature = "perf-instrumentation")]
+    #[test]
+    fn releasing_the_last_snapshot_synchronously_reclaims_its_arena() {
+        let dictionary = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
+        dictionary
+            .insert_text(b"cat", Some(1))
+            .expect("insert must succeed");
+        dictionary
+            .insert_text(b"cot", Some(2))
+            .expect("insert must succeed");
+        let resource = dictionary.resource();
+        let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };
+        let snapshot = live.snapshot();
+        let root_edges = snapshot_edges(&*snapshot, 0).expect("root edges");
+        for (_, child) in root_edges {
+            let _ = snapshot_edges(&*snapshot, child).expect("child edges");
+        }
+
+        // Mutation invalidates the memo's strong retain of this revision. The
+        // local `snapshot` is consequently the arena's last owner.
+        dictionary
+            .insert_text(b"cut", Some(3))
+            .expect("insert must succeed");
+        let before = crate::causal_perf::causal_construction_stats();
+        drop(snapshot);
+        let after = crate::causal_perf::causal_construction_stats();
+
+        assert!(
+            after.resource_nodes_reclaimed > before.resource_nodes_reclaimed,
+            "dropping the final snapshot owner must reclaim materialized nodes"
+        );
+        assert!(
+            after.resource_reclaim_nanos >= before.resource_reclaim_nanos,
+            "reclamation time is a monotonic cumulative counter"
+        );
+        assert!(
+            after.resource_reclaim_max_nanos >= before.resource_reclaim_max_nanos,
+            "maximum reclamation latency is monotonic"
         );
     }
 

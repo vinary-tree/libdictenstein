@@ -2,27 +2,29 @@
 
     Family FV obligation #11 (wave W2). Models the traversal-snapshot arena in
     src/bindings.rs: a captured vt.dictionary.v1 snapshot assigns ABI-local
-    node identifiers lazily — the first time a provider node is exposed across
-    the ABI it is appended to a mutex-guarded arena, and its arena index IS
-    the identifier handed to consumers; expanded edge lists are memoized once
-    per entry. The mutex serializes all arena access, so the model is a
-    sequential state machine and every law is proved for all traces by
-    structural induction (no interleaving content — the concurrency argument
-    is exactly the mutex, recorded in UNSAFE_CONTRACTS.tsv).
+    node identifiers lazily. The implementation reserves monotonically
+    increasing ranges, maps each id to one immutable directory chunk and one
+    write-once slot, and memoizes each expanded edge list in the owning node's
+    [OnceLock]. This file models that concurrent representation by its logical
+    append-only sequence: atomic range reservation linearizes assignment and
+    write-once slots make every observable history refine this state machine.
 
     Laws proved (registry: formal-verification/ABI_INVARIANTS.tsv):
 
-    - [LDICT-ARENA-1] assignment is stable: an already-assigned provider node
+    - [LDICT-ARENA-1] assignment is stable: an already-assigned logical node
       keeps its index and the arena is unchanged;
     - [LDICT-ARENA-2] assignment is append-only: existing entries are never
       edited or moved by later assignments;
     - [LDICT-ARENA-3] identifiers are unambiguous: two assigned indices map
-      to the same provider node only if they are equal (injectivity), and
+      to the same unfolded node occurrence only if they are equal
+      (injectivity), and
       lookup is a function of the node;
     - [LDICT-ARENA-4] memoized edge lists are write-once: once filled they
       survive every later assignment or memoization attempt unchanged;
     - [LDICT-ARENA-5] well-formedness is preserved: no duplicate provider
-      nodes, and every memoized edge child references an in-bounds index.
+      occurrences, and every memoized edge child references an in-bounds index.
+    - [LDICT-ARENA-6] chunk addressing is total and unambiguous: quotient and
+      remainder reconstruct every id and the slot is always in bounds.
 
     The consumer-visible revision-immutability half lives in
     formal-verification/tla+/AbiProducerSnapshot.tla (obligation #10); the
@@ -38,7 +40,9 @@ Import ListNotations.
 
 (** ** Arena model *)
 
-(** Provider-side node identity (opaque to consumers). *)
+(** Logical unfolded-node occurrence (opaque to consumers). A shared engine
+    node reached through distinct incoming edges is represented by distinct
+    occurrences, matching the producer's per-edge ABI-id assignment. *)
 Definition RustNode := nat.
 
 (** One memoized edge: a label and the child's ABI-local index. *)
@@ -56,6 +60,35 @@ Record ArenaEntry := mkArenaEntry {
 
 (** The arena: entries in assignment order; the index is the ABI-local id. *)
 Definition Arena := list ArenaEntry.
+
+(** The concrete arena uses 256-slot chunks. These functions are the exact
+    arithmetic performed by [NodeArena::slot] and [NodeArena::install]. *)
+Definition chunk_size : nat := 256.
+Definition chunk_of (identifier : nat) : nat := identifier / chunk_size.
+Definition slot_of (identifier : nat) : nat := identifier mod chunk_size.
+
+(** ** LDICT-ARENA-6: chunk addressing *)
+
+Theorem chunk_slot_reconstruct :
+  forall identifier,
+    chunk_of identifier * chunk_size + slot_of identifier = identifier.
+Proof.
+  intros identifier.
+  unfold chunk_of, slot_of, chunk_size.
+  rewrite Nat.mul_comm.
+  symmetry.
+  apply Nat.div_mod.
+  lia.
+Qed.
+
+Theorem slot_of_bounded :
+  forall identifier, slot_of identifier < chunk_size.
+Proof.
+  intros identifier.
+  unfold slot_of, chunk_size.
+  apply Nat.mod_upper_bound.
+  lia.
+Qed.
 
 (** Find the index already assigned to a provider node, if any. *)
 Fixpoint find_index (arena : Arena) (node : RustNode) : option nat :=
@@ -267,7 +300,7 @@ Proof.
   intros. unfold nodes_of. apply map_app.
 Qed.
 
-(** Under NoDup, the same provider node never lives at two indices. *)
+(** Under NoDup, the same unfolded occurrence never lives at two indices. *)
 Theorem arena_ids_unambiguous :
   forall arena i j entry_i entry_j,
     NoDup (nodes_of arena) ->

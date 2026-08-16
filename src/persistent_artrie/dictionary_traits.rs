@@ -17,6 +17,28 @@ use super::block_storage::BlockStorage;
 use super::dict_impl::PersistentARTrie;
 use super::node_impl::PersistentARTrieNode;
 
+impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
+    /// Capture a traversal root and exact cardinality from one atomic revision.
+    pub(crate) fn root_with_term_count(&self) -> (PersistentARTrieNode<V>, usize) {
+        use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
+        let (root, term_count) = <Self as LockFreeOverlay<ByteKey, V, S>>::lockfree_root(self)
+            .and_then(|slot| slot.load_with_term_count())
+            .unwrap_or_else(|| {
+                (
+                    std::sync::Arc::new(crate::persistent_artrie::core::overlay::OverlayNode::<
+                        ByteKey,
+                        V,
+                    >::new()),
+                    0,
+                )
+            });
+        (
+            PersistentARTrieNode::from_overlay_root(root, None),
+            term_count,
+        )
+    }
+}
+
 impl<V: DictionaryValue, S: BlockStorage> Dictionary for PersistentARTrie<V, S> {
     type Node = PersistentARTrieNode<V>;
 
@@ -26,18 +48,7 @@ impl<V: DictionaryValue, S: BlockStorage> Dictionary for PersistentARTrie<V, S> 
         // fuzzy traversal works. `overlay_root_node()` is the hazard-protected immutable
         // root snapshot; an empty/absent overlay yields a fresh empty node (a childless,
         // non-final root — the correct empty-dictionary view).
-        use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
-        let root = <Self as LockFreeOverlay<ByteKey, V, S>>::overlay_root_node(self)
-            .unwrap_or_else(|| {
-                std::sync::Arc::new(crate::persistent_artrie::core::overlay::OverlayNode::<
-                    ByteKey,
-                    V,
-                >::new())
-            });
-        // Faulter is `None` on the inherent `&self` root path: eviction (the only source
-        // of an `OnDisk` overlay child) is impossible on a non-`Shared` owned trie, so
-        // the overlay handed out here is fully `Child::InMem`.
-        PersistentARTrieNode::from_overlay_root(root, None)
+        self.root_with_term_count().0
     }
 
     fn contains(&self, term: &str) -> bool {

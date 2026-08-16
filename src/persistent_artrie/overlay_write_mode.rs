@@ -140,16 +140,20 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
                     continue;
                 }
             };
+            let term_count_delta = isize::from(self.find_leaf_recursive(&root, units, 0).is_none());
             match self.build_value_path_recursive(&root, units, 0, value.clone()) {
-                Some(new_root) => match lockfree_root.compare_exchange(&root, new_root) {
-                    Ok(_) => {
-                        if let Some(ref cache) = self.lockfree_cache {
-                            cache.insert(units.to_vec(), true);
+                Some(new_root) => {
+                    match lockfree_root.compare_exchange_counted(&root, new_root, term_count_delta)
+                    {
+                        Ok(_) => {
+                            if let Some(ref cache) = self.lockfree_cache {
+                                cache.insert(units.to_vec(), true);
+                            }
+                            return;
                         }
-                        return;
+                        Err(_) => continue,
                     }
-                    Err(_) => continue,
-                },
+                }
                 None => return,
             }
         }
@@ -347,9 +351,10 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
                 }
             };
             // Mode pre-check on the FRESHLY-loaded root.
+            let was_present = self.find_leaf_recursive(&root, key_bytes, 0).is_some();
             match &mode {
                 ValueWriteMode::InsertOnce => {
-                    if self.find_leaf_recursive(&root, key_bytes, 0).is_some() {
+                    if was_present {
                         return Ok(ValuePublishOutcome::NotApplied);
                     }
                 }
@@ -385,7 +390,8 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
                     ));
                 }
             };
-            match lockfree_root.compare_exchange(&root, new_root) {
+            match lockfree_root.compare_exchange_counted(&root, new_root, isize::from(!was_present))
+            {
                 Ok(_) => {
                     if let Some(ref cache) = self.lockfree_cache {
                         cache.insert(key_bytes.to_vec(), true);

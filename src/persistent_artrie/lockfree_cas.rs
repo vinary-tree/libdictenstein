@@ -36,12 +36,6 @@
 
 #![cfg(feature = "persistent-artrie")]
 
-/// The `(new root, new node)` pair produced by a copy-on-write republish.
-type PublishedPair<V> = (
-    Arc<super::nodes::PersistentNode<V>>,
-    Arc<super::nodes::PersistentNode<V>>,
-);
-
 use std::sync::Arc;
 
 use super::block_storage::BlockStorage;
@@ -123,36 +117,6 @@ enum DurableBuildError {
     Conflict,
 }
 
-/// Result of a lock-free insert attempt.
-///
-/// Used by `insert_cas()` to communicate the outcome of a CAS operation.
-///
-/// G4: generic over `V` so the `Inserted` node matches the trie's
-/// `lockfree_root: AtomicNodePtr<V>`. A membership trie (`V=()`) is unchanged; a
-/// counter trie (`V=u64`) carries the valued leaf back to the caller.
-enum LockfreeInsertResult<V = ()> {
-    /// Term was newly inserted - contains the node to finalize
-    Inserted(Arc<super::nodes::PersistentNode<V>>),
-    /// Term already exists in the trie
-    AlreadyExists,
-    /// CAS conflict - another thread modified the tree, retry needed
-    Conflict,
-}
-
-// Manual `Debug` so `V` need not be `Debug` (the `DictionaryValue` bound omits
-// it). `V: Clone` so the node's own manual `Debug` (on `impl<V: Clone>`) applies.
-impl<V: Clone> std::fmt::Debug for LockfreeInsertResult<V> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LockfreeInsertResult::Inserted(_) => f.write_str("LockfreeInsertResult::Inserted(..)"),
-            LockfreeInsertResult::AlreadyExists => {
-                f.write_str("LockfreeInsertResult::AlreadyExists")
-            }
-            LockfreeInsertResult::Conflict => f.write_str("LockfreeInsertResult::Conflict"),
-        }
-    }
-}
-
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// Enable lock-free mode for concurrent inserts.
     ///
@@ -212,7 +176,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// **F5 — install a PRE-BUILT overlay root** (the dense→overlay walk-converter's
     /// output) as the live lock-free overlay, instead of [`Self::install_overlay`]'s
     /// EMPTY root (the byte twin of char's `install_prebuilt_overlay_root_inherent`).
-    /// Sets `lockfree_root = Some(AtomicNodePtr::new(root))` + a fresh empty lookup
+    /// Sets a counted `lockfree_root` containing `root` + a fresh empty lookup
     /// cache. Idempotent (only installs if NOT already enabled). Does NOT stamp the WAL
     /// regime (the generic [`LockFreeOverlay::install_prebuilt_overlay_root`] does that
     /// AFTER this seam) and does NOT touch the owned tree (F5 adds ALONGSIDE). NO new
@@ -226,7 +190,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         if self.lockfree_root.is_some() {
             return; // Already enabled — never clobber a live overlay.
         }
-        self.lockfree_root = Some(AtomicNodePtr::new(root));
+        let term_count = <Self as crate::persistent_artrie::core::overlay::flip::LockFreeOverlay<
+            crate::persistent_artrie::core::key_encoding::ByteKey,
+            V,
+            S,
+        >>::overlay_count_finals(&root) as usize;
+        self.lockfree_root = Some(AtomicNodePtr::new_with_term_count(root, term_count));
         self.lockfree_cache = Some(DashMap::new());
     }
 
@@ -313,154 +282,24 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
         // CAS retry loop
         loop {
-            match self.try_insert_lockfree_path(lockfree_root, term) {
-                LockfreeInsertResult::Inserted(node) => {
-                    // We inserted a new path - try to claim it as final
-                    if node.try_set_final() {
-                        // We won the race to finalize this node
-                        lockfree_cache.insert(term.to_vec(), true);
-                        return true;
-                    } else {
-                        // Another thread finalized it - the term already exists
-                        return false;
-                    }
+            match self.try_insert_lockfree_path_durable(lockfree_root, term) {
+                LockfreeDurableInsertResult::Inserted(_) => {
+                    // Finality and cardinality were published together by the
+                    // winning immutable-root CAS.
+                    lockfree_cache.insert(term.to_vec(), true);
+                    return true;
                 }
-                LockfreeInsertResult::AlreadyExists => {
+                LockfreeDurableInsertResult::AlreadyExists => {
                     // Term already exists in the trie
                     lockfree_cache.insert(term.to_vec(), true);
                     return false;
                 }
-                LockfreeInsertResult::Conflict => {
+                LockfreeDurableInsertResult::Conflict => {
                     // CAS failed due to concurrent modification - retry
                     self.cas_retries.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
             }
-        }
-    }
-
-    /// Attempt to insert a path in the lock-free trie.
-    fn try_insert_lockfree_path(
-        &self,
-        root: &super::nodes::AtomicNodePtr<V>,
-        term: &[u8],
-    ) -> LockfreeInsertResult<V> {
-        use super::nodes::PersistentNode;
-
-        let current_root = match root.load() {
-            Some(node) => node,
-            None => {
-                let new_root = Arc::new(PersistentNode::<V>::new());
-                match root.try_init(new_root) {
-                    Ok(()) => return self.try_insert_lockfree_path(root, term),
-                    Err(actual) => actual,
-                }
-            }
-        };
-
-        self.insert_lockfree_recursive(root, &current_root, term, 0)
-    }
-
-    /// Recursively build a new tree with the path inserted.
-    ///
-    /// Builds the path from leaf to root: recurses down to the target depth,
-    /// creates the leaf node, then on the way back up creates new versions
-    /// of each parent with updated child pointers.
-    fn build_path_recursive(
-        &self,
-        node: &Arc<super::nodes::PersistentNode<V>>,
-        term: &[u8],
-        depth: usize,
-    ) -> std::result::Result<PublishedPair<V>, ()> {
-        use super::nodes::persistent_node::Child;
-
-        if depth == term.len() {
-            if node.is_final() {
-                return Err(()); // Already a complete term
-            }
-            // Return the EXISTING node (shared Arc) as the leaf to finalize so
-            // `insert_cas`'s `try_set_final` is the SINGLE atomic arbiter across
-            // racing inserters. Do NOT pre-finalize (the old `node.as_final()`):
-            // that made `try_set_final` see an already-final node and wrongly
-            // report a *new* prefix term (e.g. "a" after "ab") as a duplicate,
-            // returning `false` AND skipping the lock-free cache so
-            // `merge_lockfree_to_persistent` (cache-only) silently dropped it.
-            // (Mirror of the char-overlay fix.)
-            return Ok((Arc::clone(node), Arc::clone(node)));
-        }
-
-        let key = term[depth];
-
-        // **G5.3' P1 (FIX 2):** resolve this spine edge through the shared
-        // [`cas_walk::resolve_or_fault`] in [`FaultMode::Fault`], then map the RICH
-        // [`ChildResolution`] to byte NON-DURABLE-INSERT's per-cell behavior (see the
-        // mapping table in `cas_walk::resolve_or_fault`):
-        //   InMem / Faulted → DESCEND (path-copy; a faulted OnDisk prefix splices
-        //     `Child::InMem` so the single root CAS stays the SOLE arbiter — no new
-        //     commit point);
-        //   FaultFailed / Null → `Err(())` ⇒ `LockfreeInsertResult::AlreadyExists`,
-        //     which `insert_cas` treats as TERMINAL (caches, returns false) — NOT a
-        //     retry. This is the PRESERVED byte non-durable-insert mapping (turning it
-        //     into a retry would LIVELOCK on a permanently-failing fault);
-        //   Absent → build the remaining spine bottom-up (`create_lockfree_path`).
-        use crate::persistent_artrie::core::overlay::cas_walk::{
-            resolve_or_fault, ChildResolution, FaultMode,
-        };
-        match resolve_or_fault::<ByteKey, V, _>(node, key, FaultMode::Fault, |p| {
-            self.load_overlay_node_from_disk(p)
-        }) {
-            ChildResolution::InMem(child_arc) | ChildResolution::Faulted(child_arc) => {
-                let (new_child, leaf) = self.build_path_recursive(&child_arc, term, depth + 1)?;
-                let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
-                Ok((new_node, leaf))
-            }
-            // TERMINAL `AlreadyExists` (PRESERVED — not a retry; else livelock).
-            ChildResolution::FaultFailed(_) | ChildResolution::Null => Err(()),
-            ChildResolution::Absent => {
-                let (new_subtree, leaf) = self.create_lockfree_path(&term[depth + 1..]);
-                let new_node = Arc::new(node.with_child(key, Child::InMem(new_subtree)));
-                Ok((new_node, leaf))
-            }
-        }
-    }
-
-    /// Create a new path for the remaining bytes.
-    ///
-    /// Builds the path bottom-up: creates the final leaf node first, then
-    /// wraps each byte as a parent going up to the start.
-    ///
-    /// **G5.3' P1:** a thin shim over the shared generic [`cas_walk::create_spine`]
-    /// (SAME reverse-iteration bottom-up build order — format-preserving) with a
-    /// NON-final leaf-maker (the non-durable path: the caller's `try_set_final`
-    /// arbitrates). `&self` is no longer read (spine building needs no trie state).
-    fn create_lockfree_path(
-        &self,
-        term: &[u8],
-    ) -> (
-        Arc<super::nodes::PersistentNode<V>>,
-        Arc<super::nodes::PersistentNode<V>>,
-    ) {
-        use super::nodes::persistent_node::PersistentNode;
-        crate::persistent_artrie::core::overlay::cas_walk::create_spine::<ByteKey, V, _>(
-            term,
-            || Arc::new(PersistentNode::<V>::new()),
-        )
-    }
-
-    /// Attempt to insert a path using CAS. Called from `insert_cas` retry loop.
-    fn insert_lockfree_recursive(
-        &self,
-        root: &super::nodes::AtomicNodePtr<V>,
-        current: &Arc<super::nodes::PersistentNode<V>>,
-        term: &[u8],
-        _depth: usize,
-    ) -> LockfreeInsertResult<V> {
-        match self.build_path_recursive(current, term, 0) {
-            Ok((new_root, leaf)) => match root.compare_exchange(current, new_root) {
-                Ok(_) => LockfreeInsertResult::Inserted(leaf),
-                Err(_actual) => LockfreeInsertResult::Conflict,
-            },
-            Err(()) => LockfreeInsertResult::AlreadyExists,
         }
     }
 
@@ -821,7 +660,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         match self.build_final_path_recursive(&current_root, term, 0) {
             Ok(new_root) => {
                 let root_generation = new_root.version();
-                match root.compare_exchange(&current_root, new_root) {
+                match root.compare_exchange_counted(&current_root, new_root, 1) {
                     Ok(_) => LockfreeDurableInsertResult::Inserted(root_generation),
                     Err(_actual) => LockfreeDurableInsertResult::Conflict,
                 }
@@ -923,7 +762,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         };
 
         match self.build_remove_path_recursive(&current_root, term, 0) {
-            Ok(new_root) => match root.compare_exchange(&current_root, new_root) {
+            Ok(new_root) => match root.compare_exchange_counted(&current_root, new_root, -1) {
                 Ok(_) => LockfreeRemoveResult::Removed,
                 Err(_actual) => LockfreeRemoveResult::Conflict,
             },
@@ -1236,6 +1075,7 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
                     continue;
                 }
             };
+            let was_present = self.find_leaf_recursive(&root, key, 0).is_some();
 
             // (2) Read the current count at `key`. COUNTER BOTH-HALVES, READ HALF
             // (design §3.3, byte twin of char's `try_increment_cas_inner` step-2):
@@ -1294,7 +1134,8 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
             // `Ok` arm so a losing iteration never leaks a stale rank; the durable
             // wrapper ranks it.
             let generation = commit_seq;
-            match lockfree_root.compare_exchange(&root, new_root) {
+            match lockfree_root.compare_exchange_counted(&root, new_root, isize::from(!was_present))
+            {
                 Ok(_) => return Ok((new_val, generation)),
                 Err(_actual) => {
                     self.cas_retries.fetch_add(1, Ordering::Relaxed);
@@ -1606,6 +1447,11 @@ mod durable_write_tests {
                     String::from_utf8_lossy(key)
                 );
             }
+            assert_eq!(
+                Dictionary::len(&trie),
+                Some(plan.len()),
+                "counter creation must publish exact root cardinality"
+            );
             // DROP WITHOUT CHECKPOINT — durability rests entirely on the WAL.
         }
 
@@ -1624,6 +1470,7 @@ mod durable_write_tests {
             MappedDictionary::get_value(&trie, "never-incremented"),
             None
         );
+        assert_eq!(Dictionary::len(&trie), Some(plan.len()));
     }
 
     /// **THE #41 BYTE WITNESS (valued insert + upsert).** `insert_cas_with_value_durable`

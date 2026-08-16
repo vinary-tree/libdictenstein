@@ -102,7 +102,7 @@ A consumer may present any `u64` — stale, cross-snapshot, fabricated:
 | Forged id | Producer behavior |
 |---|---|
 | ≥ arena length (including ids from a *larger* sibling snapshot) | Bounds check fails → `VT_STATUS_INVALID_ARGUMENT`. No access occurs. |
-| < arena length but from another snapshot | Names a **different, valid node of this snapshot** — a consumer-side correctness bug. The walk stays memory-safe: every access is a checked `Vec` index behind the mutex. |
+| < arena length but from another revision | Names a **different, valid node of this revision** — a consumer-side correctness bug. The walk stays memory-safe: every access is a checked chunk/slot lookup. Distinct resources with the same negotiated snapshot identity deliberately share one id namespace. |
 | Any id after the snapshot's last release | Use-after-free of the *context* — the retain/release UB class above, not an id-validation issue. |
 | Exceeding `usize` on narrow targets | Checked `usize::try_from` → `InvalidArgument`. |
 
@@ -139,7 +139,7 @@ amplifier:
 
 | Vector | Growth law | Bound |
 |---|---|---|
-| Snapshot flooding (`snapshot` in a loop) | One `TraversalSnapshot` + one-slot arena per call, plus the pinned revision (shared, not copied). | Linear in call count; each pin is $`\Theta(1)`$ memory beyond the shared revision. Host bounds call rates as it would any allocation API. |
+| Snapshot flooding (`snapshot` in a loop) | One small `ResourceContext` per retained call; all captures of the same source revision share one memoized `TraversalSnapshot`, pinned revision, and warmed chunked arena. | Linear only in retained handle contexts; graph and traversal-cache memory are constant per source revision. Host still bounds retained-handle counts as it would any allocation API. |
 | Arena growth (exhaustive walking) | Expanding node $`v`$ appends $`\deg(v)`$ entries — so after expanding the set $`E`$: $`\lvert \mathrm{arena} \rvert = 1 + \sum_{v \in E} \deg(v)`$, one entry per **edge the consumer traversed**, at ≥ 1 ABI call per expansion. Note the arena unfolds the DAG into its trie view, so full walks of suffix-sharing dictionaries cost the *unfolded* size — the walker pays it call by call. | Proportional to consumer work; `LimitExceeded` guards the id space itself. |
 | Diagnostic strings | One thread-local `CString`, overwritten per failure. | $`\Theta(1)`$ per thread. |
 

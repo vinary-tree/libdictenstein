@@ -229,7 +229,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
     /// **F5 — install a PRE-BUILT overlay root** (the dense-image loader's output) as
     /// the live lock-free overlay, instead of [`Self::install_overlay`]'s EMPTY root.
-    /// Sets `lockfree_root = Some(AtomicNodePtr::new(root))` + a fresh empty lookup
+    /// Sets a counted `lockfree_root` containing `root` + a fresh empty lookup
     /// cache. Idempotent (only installs if the overlay is NOT already installed — a
     /// fresh reopen trie never has it set). Does NOT stamp the WAL regime (the generic
     /// [`LockFreeOverlay::install_prebuilt_overlay_root`] does that, the SAME way
@@ -244,7 +244,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         if self.lockfree_root.is_some() {
             return; // Already enabled — never clobber a live overlay.
         }
-        self.lockfree_root = Some(AtomicNodePtr::new(root));
+        let term_count = <Self as crate::persistent_artrie::core::overlay::flip::LockFreeOverlay<
+            crate::persistent_artrie::core::key_encoding::CharKey,
+            V,
+            S,
+        >>::overlay_count_finals(&root) as usize;
+        self.lockfree_root = Some(AtomicNodePtr::new_with_term_count(root, term_count));
         self.lockfree_cache = Some(DashMap::new());
     }
 
@@ -358,20 +363,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         // CAS retry loop
         loop {
-            // Non-durable: `finalize = false` ⇒ the shared non-final leaf +
-            // `try_set_final` arbiter below (UNCHANGED behavior).
-            match self.try_insert_lockfree_path(lockfree_root, &chars, false) {
+            // Finality and cardinality are part of the same immutable-root CAS
+            // even for the no-WAL path; the `finalize` flag selects that path.
+            match self.try_insert_lockfree_path(lockfree_root, &chars, true) {
                 // The non-durable path does not record a commit generation.
-                LockfreeInsertResult::Inserted(node, _gen) => {
-                    // We inserted a new path - try to claim it as final
-                    if node.try_set_final() {
-                        // We won the race to finalize this node
-                        lockfree_cache.insert(term.to_string(), true);
-                        return true;
-                    } else {
-                        // Another thread finalized it - the term already exists
-                        return false;
-                    }
+                LockfreeInsertResult::Inserted(_node, _gen) => {
+                    lockfree_cache.insert(term.to_string(), true);
+                    return true;
                 }
                 LockfreeInsertResult::AlreadyExists(_observed_gen) => {
                     // Term already exists in the trie. Non-durable path: no WAL, no
@@ -731,7 +729,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         match self.build_remove_path_recursive(&current_root, chars, 0) {
             Ok((new_root, _cleared_leaf)) => {
                 let root_generation = new_root.version();
-                match root.compare_exchange(&current_root, new_root) {
+                match root.compare_exchange_counted(&current_root, new_root, -1) {
                     Ok(_) => LockfreeRemoveResult::Removed(root_generation),
                     Err(_actual) => LockfreeRemoveResult::Conflict,
                 }
@@ -997,7 +995,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 // BEFORE the CAS consumes `new_root`.
                 let root_generation = new_root.version();
                 // Try to CAS the root to the new version
-                match root.compare_exchange(current, new_root) {
+                match root.compare_exchange_counted(current, new_root, 1) {
                     Ok(_) => {
                         // Successfully updated the tree
                         LockfreeInsertResult::Inserted(leaf, root_generation)
@@ -1412,6 +1410,7 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
                     continue;
                 }
             };
+            let was_present = self.find_leaf_recursive(&root, &chars, 0).is_some();
 
             // (2) Read the current count at `key`. READ-PATH FAULT-IN (design §3):
             // when compiled in, fault an evicted (OnDisk) prefix back in FIRST so
@@ -1474,7 +1473,8 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
             // (NOT `new_root.version()`). Returned ONLY from the winning `Ok` arm so a
             // losing iteration never leaks a stale rank; the durable wrapper ranks it.
             let generation = commit_seq;
-            match lockfree_root.compare_exchange(&root, new_root) {
+            match lockfree_root.compare_exchange_counted(&root, new_root, isize::from(!was_present))
+            {
                 Ok(_) => return Ok((new_val, generation)),
                 Err(_actual) => {
                     self.cas_retries.fetch_add(1, Ordering::Relaxed);
@@ -2090,6 +2090,11 @@ mod durable_write_tests {
                 }
                 assert_eq!(last, steps * delta, "live overlay count for {key:?}");
             }
+            assert_eq!(
+                Dictionary::len(&trie),
+                Some(plan.len()),
+                "counter creation must publish exact root cardinality"
+            );
             // DROP WITHOUT CHECKPOINT — durability rests entirely on the WAL.
         }
 
@@ -2103,6 +2108,7 @@ mod durable_write_tests {
             );
         }
         assert_eq!(trie.get_value("never-incremented"), None);
+        assert_eq!(Dictionary::len(&trie), Some(plan.len()));
     }
 
     /// **F0 (G5) — the GENERIC durable value-write path works for an ARBITRARY `V`

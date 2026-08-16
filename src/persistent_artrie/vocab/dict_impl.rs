@@ -301,7 +301,10 @@ impl<S: BlockStorage> Clone for PersistentVocabARTrie<S> {
     /// independent, *writable*, separately-persistable copy, use [`Self::fork_to`].
     fn clone(&self) -> Self {
         // The frozen root — an immutable Arc; the snapshot's own slot holds a fresh pointer to it.
-        let frozen_root = self.lockfree_root.as_ref().and_then(|r| r.load());
+        let frozen_revision = self
+            .lockfree_root
+            .as_ref()
+            .and_then(|root| root.load_with_term_count());
 
         let snapshot = Self {
             path: self.path.clone(),
@@ -317,8 +320,10 @@ impl<S: BlockStorage> Clone for PersistentVocabARTrie<S> {
             arena_manager: None,  // detached from the backing file
             buffer_manager: None, // ⇒ checkpoint/Drop is a clean no-op (B2 guard)
             eviction_coordinator: std::sync::Mutex::new(None),
-            lockfree_root: Some(match &frozen_root {
-                Some(root) => AtomicNodePtr::new(Arc::clone(root)),
+            lockfree_root: Some(match &frozen_revision {
+                Some((root, term_count)) => {
+                    AtomicNodePtr::new_with_term_count(Arc::clone(root), *term_count)
+                }
                 None => AtomicNodePtr::null(),
             }),
             lockfree_cache: Some(DashMap::new()),
@@ -337,7 +342,7 @@ impl<S: BlockStorage> Clone for PersistentVocabARTrie<S> {
         // future change enables overlay eviction, share-root + detach-storage would silently drop
         // OnDisk paths — fail loudly here instead of returning a lossy snapshot.
         #[cfg(debug_assertions)]
-        if let Some(root) = &frozen_root {
+        if let Some((root, _)) = &frozen_revision {
             assert!(
                 overlay_subtree_all_in_mem(root),
                 "vocab snapshot Clone: overlay root has an OnDisk child — the never-evict \

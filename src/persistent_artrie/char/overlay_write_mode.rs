@@ -139,16 +139,20 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
                     continue;
                 }
             };
+            let term_count_delta = isize::from(self.find_leaf_recursive(&root, units, 0).is_none());
             match self.build_value_path_recursive(&root, units, 0, value.clone()) {
-                Some(new_root) => match lockfree_root.compare_exchange(&root, new_root) {
-                    Ok(_) => {
-                        if let Some(ref cache) = self.lockfree_cache {
-                            cache.insert(CharKey::units_to_term(units), true);
+                Some(new_root) => {
+                    match lockfree_root.compare_exchange_counted(&root, new_root, term_count_delta)
+                    {
+                        Ok(_) => {
+                            if let Some(ref cache) = self.lockfree_cache {
+                                cache.insert(CharKey::units_to_term(units), true);
+                            }
+                            return;
                         }
-                        return;
+                        Err(_) => continue,
                     }
-                    Err(_) => continue,
-                },
+                }
                 // OnDisk-blocked: impossible on a fresh reestablish overlay; bail.
                 None => return,
             }
@@ -384,11 +388,12 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
             };
             // Mode pre-check on the FRESHLY-loaded root (so a concurrent change
             // between the caller's initial read and this CAS is observed).
+            let was_present = self.find_leaf_recursive(&root, &chars, 0).is_some();
             match &mode {
                 ValueWriteMode::InsertOnce => {
                     // Already final ⇒ a concurrent insert won (the caller's hoist
                     // missed it / it raced); do NOT overwrite — insert-once.
-                    if self.find_leaf_recursive(&root, &chars, 0).is_some() {
+                    if was_present {
                         return Ok(ValuePublishOutcome::NotApplied);
                     }
                 }
@@ -429,7 +434,8 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
                     ));
                 }
             };
-            match lockfree_root.compare_exchange(&root, new_root) {
+            match lockfree_root.compare_exchange_counted(&root, new_root, isize::from(!was_present))
+            {
                 Ok(_) => {
                     if let Some(ref cache) = self.lockfree_cache {
                         cache.insert(term.to_string(), true);

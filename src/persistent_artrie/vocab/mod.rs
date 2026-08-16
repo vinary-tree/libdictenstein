@@ -129,6 +129,7 @@ pub use crate::persistent_artrie::eviction::{
 // ============================================================================
 
 use crate::bijective::BijectiveDictionary;
+use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::core::key_encoding::CharKey;
 use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
 use crate::persistent_artrie::core::overlay::{OverlayDictionaryNode, OverlayNode};
@@ -160,6 +161,18 @@ impl Dictionary for PersistentVocabARTrie {
 
     fn len(&self) -> Option<usize> {
         Some(PersistentVocabARTrie::len(self))
+    }
+}
+
+impl<S: BlockStorage> PersistentVocabARTrie<S> {
+    /// Capture a traversal root and exact cardinality from one atomic revision.
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn root_with_term_count(&self) -> (VocabTrieNodeRef, usize) {
+        let (root, term_count) = self
+            .lockfree_root()
+            .and_then(|slot| slot.load_with_term_count())
+            .unwrap_or_else(|| (Arc::new(OverlayNode::<CharKey, u64>::new()), 0));
+        (VocabTrieNodeRef::from_overlay_root(root, None), term_count)
     }
 }
 

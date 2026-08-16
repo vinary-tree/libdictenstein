@@ -559,24 +559,6 @@ fn append_and_sync(wal_writer: &WalWriter, record: WalRecord) -> Result<Lsn> {
     Ok(lsn)
 }
 
-fn count_overlay_finals<V: DictionaryValue, const PREFIX: usize>(
-    root: &Arc<U64Node<V, PREFIX>>,
-) -> usize {
-    let mut count = 0usize;
-    let mut stack = vec![Arc::clone(root)];
-    while let Some(node) = stack.pop() {
-        if node.is_final() {
-            count += 1;
-        }
-        for (_, child) in node.iter_children() {
-            if let Some(child) = child.as_in_mem() {
-                stack.push(Arc::clone(child));
-            }
-        }
-    }
-    count
-}
-
 fn collect_sequences<V: DictionaryValue, const PREFIX: usize>(
     root: Arc<U64Node<V, PREFIX>>,
 ) -> Vec<(Vec<u64>, Option<V>)> {
@@ -671,7 +653,7 @@ impl<V: DictionaryValue, const PREFIX: usize> PersistentARTrieU64<V, MmapDiskMan
         let root = Arc::new(U64Node::<V, PREFIX>::new());
         write_snapshot_file::<V, PREFIX>(&path, &root, 0)?;
         Ok(Self {
-            root: AtomicNodePtr::new(root),
+            root: AtomicNodePtr::new_with_term_count(root, 0),
             term_count: AtomicUsize::new(0),
             path: Some(path),
             wal_writer: Some(wal_writer),
@@ -715,7 +697,7 @@ impl<V: DictionaryValue, const PREFIX: usize> PersistentARTrieU64<V, MmapDiskMan
         let wal_writer = open_wal(path)?;
         let replay_plan = read_replay_plan(&wal_writer, path)?;
         let trie = Self {
-            root: AtomicNodePtr::new(root),
+            root: AtomicNodePtr::new_with_term_count(root, term_count),
             term_count: AtomicUsize::new(term_count),
             path: Some(path.to_path_buf()),
             wal_writer: Some(wal_writer),
@@ -802,6 +784,19 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
             .unwrap_or_else(|| Arc::new(U64Node::<V, PREFIX>::new()))
     }
 
+    /// Capture a traversal root and exact cardinality from one atomic revision.
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn root_with_term_count(&self) -> (PersistentARTrieU64Node<V, PREFIX>, usize) {
+        let (root, term_count) = self
+            .root
+            .load_with_term_count()
+            .unwrap_or_else(|| (Arc::new(U64Node::<V, PREFIX>::new()), 0));
+        (
+            PersistentARTrieU64Node::from_overlay_root(root, None),
+            term_count,
+        )
+    }
+
     fn find_node(&self, sequence: &[u64]) -> Option<Arc<U64Node<V, PREFIX>>> {
         let mut current = self.root.load()?;
         for &label in sequence {
@@ -860,7 +855,10 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
             else {
                 return false;
             };
-            match self.root.compare_exchange(&root, new_root) {
+            match self
+                .root
+                .compare_exchange_counted(&root, new_root, isize::from(inserted))
+            {
                 Ok(_) => {
                     if inserted {
                         self.term_count.fetch_add(1, Ordering::AcqRel);
@@ -881,7 +879,10 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
             else {
                 return U64CasOutcome::Idempotent;
             };
-            match self.root.compare_exchange(&root, new_root) {
+            match self
+                .root
+                .compare_exchange_counted(&root, new_root, isize::from(inserted))
+            {
                 Ok(_) => {
                     if inserted {
                         self.term_count.fetch_add(1, Ordering::AcqRel);
@@ -926,7 +927,10 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
             let Some((new_root, removed)) = Self::build_remove_path(&root, sequence, 0) else {
                 return false;
             };
-            match self.root.compare_exchange(&root, new_root) {
+            match self
+                .root
+                .compare_exchange_counted(&root, new_root, -isize::from(removed))
+            {
                 Ok(_) => {
                     if removed {
                         self.term_count.fetch_sub(1, Ordering::AcqRel);
@@ -945,7 +949,10 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
             let Some((new_root, removed)) = Self::build_remove_path(&root, sequence, 0) else {
                 return U64CasOutcome::Idempotent;
             };
-            match self.root.compare_exchange(&root, new_root) {
+            match self
+                .root
+                .compare_exchange_counted(&root, new_root, -isize::from(removed))
+            {
                 Ok(_) => {
                     if removed {
                         self.term_count.fetch_sub(1, Ordering::AcqRel);
@@ -1112,7 +1119,7 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
     }
 
     pub fn term_count(&self) -> usize {
-        self.term_count.load(Ordering::Acquire)
+        self.root.term_count()
     }
 
     pub fn iter_sequences(&self) -> impl Iterator<Item = Vec<u64>> + '_ {
@@ -1214,8 +1221,10 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
              {synced_frontier}"
         );
         let commit_seq_at_capture = self.commit_seq.load(Ordering::Acquire);
-        let root = self.root_arc();
-        let term_count = count_overlay_finals(&root);
+        let (root, term_count) = self
+            .root
+            .load_with_term_count()
+            .expect("persistent u64 root is always initialized");
         write_snapshot_file::<V, PREFIX>(path, &root, term_count)?;
         if let Some(wal_writer) = &self.wal_writer {
             let checkpoint_record_lsn = wal_writer

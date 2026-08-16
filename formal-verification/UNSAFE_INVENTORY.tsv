@@ -43,7 +43,7 @@ src/scdawg/char.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Sync for ScdawgCh
 src/substring.rs	unsafe_impl	unsafe impl Send for MockNode {}	1	substring-test-mock-thread-contract
 src/substring.rs	unsafe_impl	unsafe impl Sync for MockNode {}	1	substring-test-mock-thread-contract
 src/bindings.rs	unsafe_block	unsafe { resource_release(self.raw.context) };	1	abi-owned-resource-release-once
-src/bindings.rs	unsafe_block	let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };	2	abi-test-context-probe
+src/bindings.rs	unsafe_block	let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };	5	abi-test-context-probe
 src/bindings.rs	unsafe_block	let live = unsafe { &*dynamic_resource.raw.context.cast::<ResourceContext>() };	1	abi-test-context-probe
 src/bindings.rs	unsafe_block	let vtable = unsafe { &*dictionary_vtable(domain, flags) };	1	abi-test-context-probe
 src/ffi.rs	unsafe_fn	unsafe fn slice<'a, T>(	1	ffi-caller-pointer-contracts
@@ -81,3 +81,4 @@ src/bindings.rs	unsafe_fn	unsafe fn dictionary_is_final_status(	1	abi-producer-c
 src/bindings.rs	unsafe_fn	unsafe fn dictionary_value_status(	1	abi-producer-callback-body
 src/bindings.rs	unsafe_fn	unsafe fn dictionary_transition_status(	1	abi-producer-callback-body
 src/bindings.rs	unsafe_fn	unsafe fn dictionary_edges_status(	1	abi-producer-callback-body
+src/bindings.rs	unsafe_fn	unsafe fn dictionary_visit_status(	1	abi-producer-callback-body

@@ -18,8 +18,9 @@ use libdictenstein::ffi::{
     LdictDictionary, LdictOptionalU64, LdictStatus, LdictTextEntry, LdictU64Entry,
 };
 use vinary_tree_interop::{
-    VtDictionaryEdge, VtDictionaryVTable, VtResource, VtStatus, VT_DICTIONARY_INTERFACE_ID,
-    VT_DICTIONARY_INTERFACE_VERSION,
+    VtDictionaryEdge, VtDictionaryVTable, VtResource, VtSnapshotIdentity, VtSnapshotIdentityVTable,
+    VtStatus, VT_DICTIONARY_INTERFACE_ID, VT_DICTIONARY_INTERFACE_VERSION,
+    VT_SNAPSHOT_IDENTITY_INTERFACE_ID, VT_SNAPSHOT_IDENTITY_INTERFACE_VERSION,
 };
 
 /// `BindingUnitDomain::Byte` as it crosses the C ABI.
@@ -338,6 +339,32 @@ pub fn capture_snapshot(resource: VtResource) -> SnapshotGuard {
     assert_eq!(status, VtStatus::Ok, "snapshot capture failed");
     assert!(!captured.is_null(), "captured snapshot is null");
     SnapshotGuard { resource: captured }
+}
+
+/// Read the optional process-local producer/revision identity of a snapshot.
+pub fn snapshot_identity(snapshot: VtResource) -> VtSnapshotIdentity {
+    let mut vtable: *const c_void = std::ptr::null();
+    let base = unsafe { &*snapshot.vtable };
+    let status = vt_status(unsafe {
+        (base
+            .query_interface
+            .expect("producer publishes query_interface"))(
+            snapshot.context,
+            &VT_SNAPSHOT_IDENTITY_INTERFACE_ID,
+            VT_SNAPSHOT_IDENTITY_INTERFACE_VERSION,
+            &mut vtable,
+        )
+    });
+    assert_eq!(status, VtStatus::Ok, "snapshot identity unavailable");
+    let vtable = unsafe { &*vtable.cast::<VtSnapshotIdentityVTable>() };
+    let mut identity = VtSnapshotIdentity::default();
+    let status = vt_status(unsafe {
+        (vtable
+            .identity
+            .expect("producer publishes snapshot identity"))(snapshot.context, &mut identity)
+    });
+    assert_eq!(status, VtStatus::Ok, "snapshot identity read failed");
+    identity
 }
 
 /// Read the root node of an immutable snapshot resource.

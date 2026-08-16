@@ -28,8 +28,8 @@ use std::collections::BTreeMap;
 
 use ffi_common::{
     byte_labels, capture_snapshot, contains_text, contains_u64, get_text, get_u64, insert_text,
-    insert_u64, last_error, remove_text, remove_u64, unicode_labels, walk_terms, DictGuard,
-    DOMAIN_BYTE, DOMAIN_U64, DOMAIN_UNICODE,
+    insert_u64, last_error, remove_text, remove_u64, snapshot_len, unicode_labels, walk_terms,
+    DictGuard, DOMAIN_BYTE, DOMAIN_U64, DOMAIN_UNICODE,
 };
 use libdictenstein::ffi::{
     ldict_dictionary_checkpoint, ldict_dictionary_len, ldict_persistent_artrie_create,
@@ -80,6 +80,8 @@ fn dictionary_len(dictionary: &DictGuard) -> usize {
 }
 
 /// LDICT-SNAP-4 in the byte domain, raw bytes included.
+/// INVARIANT-HOOK: LDICT-SNAP-7 — captured root membership and exact length
+/// stay coherent through checkpoint and reopen.
 #[test]
 fn byte_artrie_checkpoint_reopen_preserves_the_oracle() {
     let directory = tempfile::tempdir().expect("tempdir");
@@ -123,6 +125,7 @@ fn byte_artrie_checkpoint_reopen_preserves_the_oracle() {
     );
     // The reopened revision also walks correctly through the resource ABI.
     let snapshot = capture_snapshot(reopened.resource());
+    assert_eq!(snapshot_len(snapshot.resource), (model.len(), true));
     let expected: BTreeMap<Vec<u64>, Option<u64>> = model
         .iter()
         .map(|(term, value)| (byte_labels(term), *value))
@@ -163,6 +166,7 @@ fn unicode_artrie_checkpoint_reopen_preserves_the_oracle() {
         );
     }
     let snapshot = capture_snapshot(reopened.resource());
+    assert_eq!(snapshot_len(snapshot.resource), (model.len(), true));
     let expected: BTreeMap<Vec<u64>, Option<u64>> = model
         .iter()
         .map(|(term, value)| (unicode_labels(term), *value))
@@ -208,6 +212,8 @@ fn u64_artrie_checkpoint_reopen_preserves_the_oracle() {
         contains_u64(reopened.ptr(), &[9, 9]),
         (LdictStatus::Ok, false)
     );
+    let snapshot = capture_snapshot(reopened.resource());
+    assert_eq!(snapshot_len(snapshot.resource), (model.len(), true));
 }
 
 /// LDICT-SNAP-5: the vocabulary's bidirectional index survives reopen.
@@ -270,6 +276,8 @@ fn vocab_checkpoint_reopen_round_trips_terms_and_indices() {
         DictGuard(handle)
     };
     assert_eq!(dictionary_len(&reopened), model.len());
+    let snapshot = capture_snapshot(reopened.resource());
+    assert_eq!(snapshot_len(snapshot.resource), (model.len(), true));
     for (term, index) in &model {
         // term -> index.
         assert_eq!(

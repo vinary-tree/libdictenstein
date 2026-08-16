@@ -179,7 +179,7 @@ impl<S: BlockStorage> LockFreeOverlay<CharKey, u64, S> for PersistentVocabARTrie
                 }
             };
             match self.try_insert_lockfree_path(&root, units, value) {
-                Ok(new_root) => match lockfree_root.compare_exchange(&root, new_root) {
+                Ok(new_root) => match lockfree_root.compare_exchange_counted(&root, new_root, 1) {
                     Ok(_) => {
                         if let Some(ref cache) = self.lockfree_cache {
                             cache.insert(CharKey::units_to_term(units), value);
@@ -338,7 +338,7 @@ impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabAR
             // Build the valued spine (value = id). `try_insert_lockfree_path` is
             // ALSO insert-once (Err if a racer made it final) — the second guard.
             match self.try_insert_lockfree_path(&root, &chars, value) {
-                Ok(new_root) => match lockfree_root.compare_exchange(&root, new_root) {
+                Ok(new_root) => match lockfree_root.compare_exchange_counted(&root, new_root, 1) {
                     Ok(_) => {
                         if let Some(ref cache) = self.lockfree_cache {
                             cache.insert(term.to_string(), value);
@@ -403,7 +403,9 @@ impl<S: BlockStorage> PersistentVocabARTrie<S> {
     /// Install a prebuilt overlay root (F5 reestablish / reopen): replace the lock-free
     /// root slot with one holding `root`, ensuring the cache exists.
     pub(super) fn install_prebuilt_overlay_root_inherent(&mut self, root: Arc<VocabOverlayNode>) {
-        self.lockfree_root = Some(AtomicNodePtr::new(root));
+        let term_count =
+            <Self as LockFreeOverlay<CharKey, u64, S>>::overlay_count_finals(&root) as usize;
+        self.lockfree_root = Some(AtomicNodePtr::new_with_term_count(root, term_count));
         if self.lockfree_cache.is_none() {
             self.lockfree_cache = Some(DashMap::new());
         }

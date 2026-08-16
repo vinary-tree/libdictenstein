@@ -27,8 +27,9 @@ ABI-local identifiers only when a consumer traverses their incoming edge.
 | binding | A cheaply clonable `Arc`-shared wrapper (`DynamicDawgBinding`, `DoubleArrayTrieBinding`, `ScdawgBinding`, `PersistentARTrieBinding`) exposing one engine's CRUD to `src/ffi.rs` and producing resources. |
 | payload | The `ResourcePayload` variant a resource context carries: `Live` (mutable DynamicDAWG), `Secondary` (DAT or SCDAWG), `Persistent` (ARTrie family), or `Snapshot` (a captured revision). |
 | revision | One immutable logical value of a dictionary. Mutable backends *publish* successor revisions; they never edit a published one in place. |
-| capture | Producing a `Snapshot` payload from any other payload: clone the current revision's root handle, allocate a one-slot arena — no traversal, no copy. |
-| arena | The `TraversalSnapshot`'s append-only table mapping ABI-local node ids to engine node handles (plus each node's materialized edge list). |
+| capture | Producing a `Snapshot` payload from any other payload: reuse the source revision's memoized snapshot or clone its current root handle and allocate a one-slot arena — no traversal, no dictionary copy. |
+| identity | The optional `(producer, revision)` token exposed only by immutable snapshots. Equal tokens mean equal pinned revisions and permit consumers to share derived caches. |
+| arena | The `TraversalSnapshot`'s append-only, 256-slot-chunked table mapping ABI-local node ids to engine node handles (plus each node's write-once materialized edge list). |
 | ABI-local node id | A `u64` index into one snapshot's arena. Meaningful only for that snapshot, only while it is retained. |
 | retain ledger | The `Arc<ResourceContext>` strong count: one owned retain per stored copy of the two words (Collins [[1]](#references)). |
 
@@ -53,8 +54,9 @@ Five layers, from the metal up:
 3. **Bindings** — the four public structs `src/ffi.rs` dispatches into; each
    is `Clone` (an `Arc` bump) and each has `resource() → OwnedDictionaryResource`.
 4. **Resource machinery** — `ResourceContext` (payload + domain + flags),
-   `TraversalSnapshot` (the arena), `OwnedDictionaryResource` (the retain
-   guard), and eleven `'static` vtables.
+   `SnapshotMemo` (one warmed snapshot per source revision),
+   `TraversalSnapshot` (the chunked arena), `OwnedDictionaryResource` (the
+   retain guard), and the `'static` base/dictionary/identity vtables.
 5. **The exported words** — a `VtResource { context, vtable }` whose vtable
    pointers live in the producer's read-only data for the process lifetime.
 
@@ -83,13 +85,16 @@ violates the interface contract.* Capture in this crate is one code path —
 
 ```math
 \text{capture}(\mathit{payload}) \;=\;
+\operatorname{memoize}_{\text{revision}}\!\left(
 \text{TraversalSnapshot::new}\bigl(\text{root}(\mathit{payload}),\
-\text{len},\ \text{domain},\ \text{suffix}\bigr)
+\text{len},\ \text{domain},\ \text{suffix}\bigr)\right)
 ```
 
-— allocating an arena of exactly one entry
-(`nodes = [root]`, `edges = [None]`), so its cost is the cost of `root()`
-plus one small allocation:
+On a cold revision this allocates an arena with exactly one initialized root
+slot. Repeated captures of the same revision clone the memoized snapshot
+`Arc`, preserving its warmed arena; every returned `VtResource` still owns a
+fresh `ResourceContext` and therefore has an independent retain ledger. The
+cost is the root load plus constant-size synchronization/allocation:
 
 ```math
 T_{\text{capture}} \;=\; T_{\text{root}} + \Theta(1),
@@ -116,6 +121,10 @@ Two consequences worth internalizing:
 - **`ldict_dictionary_free` does not end a snapshot.** The arena's handles own
   the revision; the handle's death merely releases the handle's own retain
   (see [§ 7](#7-the-retain-ledger--owneddictionaryresource)).
+- **Successful mutations advance the source revision and evict its memo.**
+  Mutation invalidation and memo lookup use the same short-lived mutex, so a
+  concurrent capture linearizes wholly before or after the revision change;
+  a new root can never be mislabeled with an old identity.
 
 The empirical counterpart: the run-verified example in the
 [C ABI reference § 15](c-abi-reference.md#15-a-complete-verified-c-example)
@@ -133,38 +142,46 @@ memory-unsafe. The producer therefore *names* nodes on demand:
 
 ```text
 TraversalSnapshot<N> {
-    arena: Mutex<NodeArena<N>>,   # nodes: Vec<N>, edges: Vec<Option<Vec<(label, id)>>>
-    len, domain, suffix,
+    arena: NodeArena<N> {
+        chunks: ArcSwap<Vec<Arc<Chunk<256>>>>,
+        next_id: AtomicU64,
+        growth_lock: Mutex<()>,
+    },
+    len, domain, suffix, identity,
 }
 
 id 0 ↦ root                                   # assigned at capture
 
 ensure_edges(node):                            # on first expansion of `node`
-    if node ≥ |nodes|: return InvalidArgument  # bounds check — forged ids die here
-    if edges[node] is Some: return             # already materialized — idempotent
-    for (label, child) in nodes[node].edges():
-        id ← |nodes|                           # append-only: ids never reused
-        push nodes, child;  push edges, None
-        record (label.to_abi(), id)
-    edges[node] ← Some(recorded)
+    slot ← chunks[node / 256][node mod 256]     # lock-free directory read
+    if slot is absent: return InvalidArgument  # forged ids die here
+    slot.edges.get_or_init(||:                  # exactly one enumerator
+        children ← slot.node.edges()
+        ids ← next_id.fetch_add(|children|)     # one disjoint contiguous range
+        grow directory if needed               # only this rare path locks
+        install children in write-once slots
+        return zip(labels, ids))
 ```
 
 `node_transition` and `node_edges` both funnel through `ensure_edges`;
-`node_is_final` and `node_value_u64` only index the arena. Every operation
-takes the arena mutex for the duration of one call — and **no consumer code
-ever runs under that mutex** (the vtable makes no callbacks), so the lock
-cannot participate in a cross-binary deadlock.
+`node_is_final` and `node_value_u64` only load a directory and slot. Steady
+reads and already-materialized expansions take no global mutex; only adding
+directory chunks takes `growth_lock`. No vtable operation calls consumer code,
+so even the growth critical section cannot participate in a cross-binary
+deadlock.
 
 Properties, each load-bearing:
 
-- **Ids are snapshot-scoped.** An id indexes *this* snapshot's `Vec`. Another
-  snapshot — even of the same dictionary at the same instant — has its own
-  arena and its own numbering. Using an id against the wrong snapshot is
+- **Ids are revision-snapshot-scoped.** An id indexes *this* snapshot arena.
+  Resources captured from the same source revision intentionally share that
+  arena and numbering; a different revision has its own arena. Using an id
+  against a different revision is
   either out of range (`InvalidArgument`) or silently names a different node:
   a correctness bug on the consumer's side of the trust boundary, never a
   memory-safety event on the producer's (see
   [ffi-boundary.md](../security/ffi-boundary.md#node-id-forgery)).
-- **Ids are append-only and stable.** Once assigned, an id never moves or
+- **Ids are append-only and stable.** Atomic range reservation gives each
+  expansion a disjoint interval. Once installed, an id never moves or
   gets reused for the snapshot's lifetime — consumers may cache them freely
   while the snapshot is retained.
 - **Assignment is per traversed edge, not per engine node.** A DAWG shares
@@ -172,7 +189,7 @@ Properties, each load-bearing:
   the ABI view is the trie *unfolding* of the DAG. Consumers walk a tree;
   producers store a DAG. (A consumer that wants DAG-sharing back can hash on
   its side; the ABI deliberately does not promise node identity.)
-- **Memory grows only with consumer work.** After capture the arena holds one
+- **Memory grows only with consumer work.** A cold revision begins with one
   entry; each first-time expansion of a node $`v`$ appends exactly
   $`\deg(v)`$ entries. After expanding the set $`E`$ of nodes:
 
@@ -184,6 +201,11 @@ Properties, each load-bearing:
   the consumer's own calls. The producer never pre-materializes anything.
   (Exhaustion economics: the consumer pays at least one ABI call per
   expansion; see the [boundary analysis](../security/ffi-boundary.md#resource-exhaustion).)
+- **Reclamation is synchronous and bounded by the warmed revision.** When the
+  source advances and the last retained old snapshot drops, its chunk
+  directory and nodes are released on that releasing thread. There is no
+  background reclaimer or unbounded deferred queue; instrumentation reports
+  reclaimed nodes and release latency explicitly.
 - **The id space cannot overflow silently.** Ids are minted with a checked
   `u64::try_from(nodes.len())`; the failure arm answers `LimitExceeded`
   (unreachable on 64-bit hosts, where `usize` fits in `u64` — the check is
@@ -202,7 +224,7 @@ enforceable at the type level of the protocol — there is no API through which
 a consumer can accidentally walk a moving revision. The `IMMUTABLE` flag
 ([§ 6](#6-the-flag-truth-table)) is the discoverable marker of walkability.
 
-### 4.2 Count coherence: what `len` promises per family
+### 4.2 Count coherence: `len` is exact for every family
 
 A captured snapshot answers `len` only when the pair `(root, count)` is
 coherent — both drawn from one published revision:
@@ -211,16 +233,13 @@ coherent — both drawn from one published revision:
   fields through single-revision accessors (`root_with_term_count`, one
   `version.load()`/`inner.load()`), so their snapshots answer
   `out_known = 1` with the count of exactly the captured revision.
-- **The persistent family** publishes its root and its term counters in
-  separate atomic steps, and a two-load capture provably tears under a
-  concurrent writer (ledger finding
-  [LDICT-B4](FINDINGS_LEDGER.md#finding-ldict-b4--torn-snapshot-capture-root-and-len-read-from-different-revisions)).
-  Persistent snapshots therefore pin the **root only** — coherent by
-  construction, still `$`\Theta(1)`$` — and answer `out_known = 0`; the
-  interop contract defines that answer as "not cheaply available", and
-  consumers walk when they need an exact count. Restoring `out_known = 1`
-  here requires a coherent `(root, count)` publication inside the overlay
-  flip itself (persistent-core design work tracked in the same finding).
+- **The persistent family** now publishes an immutable
+  `{ root: Arc<OverlayNode>, term_count }` record through the same `ArcSwap`
+  compare-and-swap. Insert/remove finality changes carry `+1`/`-1`; structural
+  maintenance preserves the count; imported roots seed it with one iterative
+  final-node walk. Snapshot capture loads the pair once, so byte, Unicode,
+  u64, and vocabulary snapshots all answer `out_known = 1` exactly. This
+  closes [LDICT-B4](FINDINGS_LEDGER.md#finding-ldict-b4--torn-snapshot-capture-root-and-len-read-from-different-revisions).
 
 ---
 

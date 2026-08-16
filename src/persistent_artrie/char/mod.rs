@@ -696,15 +696,27 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// trie, so the overlay handed out here is fully `Child::InMem`. The
     /// eviction-capable `SharedCharARTrie::root` attaches a faulter.
     pub fn root(&self) -> PersistentARTrieCharNode<V> {
+        self.root_with_term_count().0
+    }
+
+    /// Capture a traversal root and exact cardinality from one atomic revision.
+    pub(crate) fn root_with_term_count(&self) -> (PersistentARTrieCharNode<V>, usize) {
         use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
-        let root = <Self as LockFreeOverlay<CharKey, V, S>>::overlay_root_node(self)
+        let (root, term_count) = <Self as LockFreeOverlay<CharKey, V, S>>::lockfree_root(self)
+            .and_then(|slot| slot.load_with_term_count())
             .unwrap_or_else(|| {
-                Arc::new(crate::persistent_artrie::core::overlay::OverlayNode::<
-                    CharKey,
-                    V,
-                >::new())
+                (
+                    Arc::new(crate::persistent_artrie::core::overlay::OverlayNode::<
+                        CharKey,
+                        V,
+                    >::new()),
+                    0,
+                )
             });
-        PersistentARTrieCharNode::from_overlay_root(root, None)
+        (
+            PersistentARTrieCharNode::from_overlay_root(root, None),
+            term_count,
+        )
     }
 
     /// Iterate over all terms in the dictionary.

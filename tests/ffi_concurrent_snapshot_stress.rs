@@ -256,6 +256,8 @@ fn retained_resources_survive_handle_free_across_threads() {
 /// `DynamicBackend::snapshot` tore ~2% of captures under this exact churn
 /// (2163/100000 torn, 0/10000 quiescent, release mode, 2026-08-08); after
 /// the fix the count is 0. INVARIANT-HOOK: LDICT-SNAP-1.
+/// INVARIANT-HOOK: LDICT-SNAP-6 — the same atomic publication carries the
+/// exact persistent-overlay root cardinality.
 #[test]
 fn snapshot_len_is_never_torn_from_its_root_under_write_churn() {
     use std::sync::atomic::AtomicBool;

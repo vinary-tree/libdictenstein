@@ -12,8 +12,11 @@
 //!
 //! # Design
 //!
-//! The pointer stores an `Arc<OverlayNode<K, V>>` in an `arc_swap::ArcSwapOption`
-//! — a genuinely-atomic, lock-free `Arc` cell. An earlier iteration stored raw
+//! The pointer stores an immutable `{ node, term_count }` revision in an
+//! `arc_swap::ArcSwapOption` — a genuinely-atomic, lock-free `Arc` cell. Keeping
+//! cardinality in the same published revision as the root prevents snapshots
+//! from observing a root from one mutation and a count from another. An earlier
+//! iteration stored raw
 //! `Arc` pointers in an `AtomicU64`, which is unsound without an
 //! epoch/hazard-pointer scheme because `load()` can race with replacement and
 //! attempt to increment a freed allocation; a stopgap then retreated to a
@@ -42,6 +45,15 @@ use crate::persistent_artrie::core::key_encoding::KeyEncoding;
 /// Null pointer sentinel value used by `as_raw` for diagnostics/tests.
 const NULL_PTR: u64 = 0;
 
+/// One immutable, atomically-published dictionary revision.
+///
+/// This is deliberately private: callers manipulate roots through
+/// `AtomicNodePtr`, so the root and its exact cardinality cannot be separated.
+struct PublishedRoot<K: KeyEncoding, V> {
+    node: Arc<OverlayNode<K, V>>,
+    term_count: usize,
+}
+
 /// A CAS-style pointer to an [`OverlayNode`].
 ///
 /// Generic over the key encoding `K` and value `V` (default `()`). This wrapper
@@ -56,11 +68,11 @@ const NULL_PTR: u64 = 0;
 pub struct AtomicNodePtr<K: KeyEncoding, V = ()> {
     /// The current node slot — a genuinely-atomic, lock-free `Arc` cell.
     #[cfg(not(target_os = "wasi"))]
-    ptr: ArcSwapOption<OverlayNode<K, V>>,
+    ptr: ArcSwapOption<PublishedRoot<K, V>>,
     /// WASI Preview 1 has no threads; its ArcSwap pointer publication is not
     /// portable, so use a target-local serialized cell with identical semantics.
     #[cfg(target_os = "wasi")]
-    ptr: Mutex<Option<Arc<OverlayNode<K, V>>>>,
+    ptr: Mutex<Option<Arc<PublishedRoot<K, V>>>>,
 }
 
 // Manual `Debug` so neither `K::Unit` nor `V` need `Debug`.
@@ -85,11 +97,17 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
     ///
     /// The Arc's reference count is NOT incremented - ownership is transferred.
     pub fn new(node: Arc<OverlayNode<K, V>>) -> Self {
+        Self::new_with_term_count(node, 0)
+    }
+
+    /// Create a new atomic revision with an exact cardinality.
+    pub fn new_with_term_count(node: Arc<OverlayNode<K, V>>, term_count: usize) -> Self {
+        let revision = Arc::new(PublishedRoot { node, term_count });
         Self {
             #[cfg(not(target_os = "wasi"))]
-            ptr: ArcSwapOption::new(Some(node)),
+            ptr: ArcSwapOption::new(Some(revision)),
             #[cfg(target_os = "wasi")]
-            ptr: Mutex::new(Some(node)),
+            ptr: Mutex::new(Some(revision)),
         }
     }
 
@@ -114,17 +132,32 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
     /// This increments the Arc's reference count before returning,
     /// so the caller receives a valid Arc that they own.
     pub fn load(&self) -> Option<Arc<OverlayNode<K, V>>> {
+        self.load_with_term_count().map(|(node, _)| node)
+    }
+
+    /// Load a coherent root and cardinality from one published revision.
+    pub fn load_with_term_count(&self) -> Option<(Arc<OverlayNode<K, V>>, usize)> {
         #[cfg(not(target_os = "wasi"))]
         {
-            self.ptr.load_full()
+            self.ptr
+                .load_full()
+                .map(|revision| (Arc::clone(&revision.node), revision.term_count))
         }
         #[cfg(target_os = "wasi")]
         {
             self.ptr
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone()
+                .as_ref()
+                .map(|revision| (Arc::clone(&revision.node), revision.term_count))
         }
+    }
+
+    /// Return the cardinality associated with the currently-published root.
+    #[inline]
+    pub fn term_count(&self) -> usize {
+        self.load_with_term_count()
+            .map_or(0, |(_, term_count)| term_count)
     }
 
     /// Load the current node, panicking if null.
@@ -143,14 +176,21 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
     /// This atomically replaces the current pointer with the new one.
     /// The old pointer's Arc is decremented.
     pub fn store(&self, node: Arc<OverlayNode<K, V>>) {
+        let term_count = self.term_count();
+        self.store_with_term_count(node, term_count);
+    }
+
+    /// Atomically replace both the root and its exact cardinality.
+    pub fn store_with_term_count(&self, node: Arc<OverlayNode<K, V>>, term_count: usize) {
+        let revision = Arc::new(PublishedRoot { node, term_count });
         #[cfg(not(target_os = "wasi"))]
-        self.ptr.store(Some(node));
+        self.ptr.store(Some(revision));
         #[cfg(target_os = "wasi")]
         {
             *self
                 .ptr
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(node);
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(revision);
         }
     }
 
@@ -158,7 +198,9 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
     pub fn take(&self) -> Option<Arc<OverlayNode<K, V>>> {
         #[cfg(not(target_os = "wasi"))]
         {
-            self.ptr.swap(None)
+            self.ptr
+                .swap(None)
+                .map(|revision| Arc::clone(&revision.node))
         }
         #[cfg(target_os = "wasi")]
         {
@@ -166,6 +208,7 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .take()
+                .map(|revision| Arc::clone(&revision.node))
         }
     }
 
@@ -183,6 +226,20 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
         expected: &Arc<OverlayNode<K, V>>,
         new: Arc<OverlayNode<K, V>>,
     ) -> super::OverlayCasResult<K, V> {
+        self.compare_exchange_counted(expected, new, 0)
+    }
+
+    /// Atomically replace a root and adjust its cardinality in the same
+    /// publication operation.
+    ///
+    /// `term_count_delta` must be `1` for a newly inserted terminal, `-1` for
+    /// a removed terminal, and `0` for structural/value-only rewrites.
+    pub fn compare_exchange_counted(
+        &self,
+        expected: &Arc<OverlayNode<K, V>>,
+        new: Arc<OverlayNode<K, V>>,
+        term_count_delta: isize,
+    ) -> super::OverlayCasResult<K, V> {
         // Genuinely-atomic CAS: swap `new` in iff the stored Arc is pointer-equal
         // to `expected`. `&Arc<_>` implements `AsRaw`, so we compare by the node's
         // raw pointer with no extra refcount bump. `compare_and_swap` returns the
@@ -190,10 +247,24 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
         // `expected`.
         #[cfg(not(target_os = "wasi"))]
         {
-            let prev = self.ptr.compare_and_swap(expected, Some(new));
+            let Some(current) = self.ptr.load_full() else {
+                return Err(Arc::new(OverlayNode::new()));
+            };
+            if !Arc::ptr_eq(&current.node, expected) {
+                return Err(Arc::clone(&current.node));
+            }
+            let term_count = current
+                .term_count
+                .checked_add_signed(term_count_delta)
+                .expect("published ARTrie term count overflow/underflow");
+            let next = Arc::new(PublishedRoot {
+                node: new,
+                term_count,
+            });
+            let prev = self.ptr.compare_and_swap(&current, Some(next));
             match &*prev {
-                Some(p) if Arc::ptr_eq(p, expected) => Ok(Arc::clone(p)),
-                Some(p) => Err(Arc::clone(p)),
+                Some(p) if Arc::ptr_eq(p, &current) => Ok(Arc::clone(&p.node)),
+                Some(p) => Err(Arc::clone(&p.node)),
                 None => Err(Arc::new(OverlayNode::new())),
             }
         }
@@ -204,12 +275,19 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             match slot.as_ref() {
-                Some(actual) if Arc::ptr_eq(actual, expected) => {
-                    let previous = Arc::clone(actual);
-                    *slot = Some(new);
+                Some(actual) if Arc::ptr_eq(&actual.node, expected) => {
+                    let previous = Arc::clone(&actual.node);
+                    let term_count = actual
+                        .term_count
+                        .checked_add_signed(term_count_delta)
+                        .expect("published ARTrie term count overflow/underflow");
+                    *slot = Some(Arc::new(PublishedRoot {
+                        node: new,
+                        term_count,
+                    }));
                     Ok(previous)
                 }
-                Some(actual) => Err(Arc::clone(actual)),
+                Some(actual) => Err(Arc::clone(&actual.node)),
                 None => Err(Arc::new(OverlayNode::new())),
             }
         }
@@ -231,15 +309,28 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
     /// - `Ok(())` if the pointer was null and is now set to `new`
     /// - `Err(actual)` if the pointer was not null
     pub fn try_init(&self, new: Arc<OverlayNode<K, V>>) -> Result<(), Arc<OverlayNode<K, V>>> {
+        self.try_init_with_term_count(new, 0)
+    }
+
+    /// Try to initialize a null pointer with a coherent root/count revision.
+    pub fn try_init_with_term_count(
+        &self,
+        new: Arc<OverlayNode<K, V>>,
+        term_count: usize,
+    ) -> Result<(), Arc<OverlayNode<K, V>>> {
+        let revision = Arc::new(PublishedRoot {
+            node: new,
+            term_count,
+        });
         // CAS None -> Some(new), atomically.
         #[cfg(not(target_os = "wasi"))]
         {
             let prev = self
                 .ptr
-                .compare_and_swap(&None::<Arc<OverlayNode<K, V>>>, Some(new));
+                .compare_and_swap(&None::<Arc<PublishedRoot<K, V>>>, Some(revision));
             match &*prev {
                 None => Ok(()),
-                Some(p) => Err(Arc::clone(p)),
+                Some(p) => Err(Arc::clone(&p.node)),
             }
         }
         #[cfg(target_os = "wasi")]
@@ -250,10 +341,10 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             match slot.as_ref() {
                 None => {
-                    *slot = Some(new);
+                    *slot = Some(revision);
                     Ok(())
                 }
-                Some(actual) => Err(Arc::clone(actual)),
+                Some(actual) => Err(Arc::clone(&actual.node)),
             }
         }
     }
@@ -273,8 +364,8 @@ impl<K: KeyEncoding, V: Clone> AtomicNodePtr<K, V> {
 // removes the char/byte inconsistency — both just call `Self::new`/`null`).
 impl<K: KeyEncoding, V: Clone> Clone for AtomicNodePtr<K, V> {
     fn clone(&self) -> Self {
-        match self.load() {
-            Some(arc) => Self::new(arc),
+        match self.load_with_term_count() {
+            Some((arc, term_count)) => Self::new_with_term_count(arc, term_count),
             None => Self::null(),
         }
     }
@@ -358,6 +449,35 @@ mod tests {
         let result = ptr.compare_exchange(&node1, node3);
         assert!(result.is_err());
         assert_eq!(ptr.load().expect("should load").num_children(), 1);
+    }
+
+    #[test]
+    fn counted_cas_publishes_root_and_cardinality_together() {
+        let node0 = Arc::new(ByteNode::new());
+        let node1 = Arc::new(node0.as_final());
+        let node2 = Arc::new(node1.as_non_final());
+        let ptr = ByteAtomicNodePtr::new_with_term_count(Arc::clone(&node0), 0);
+
+        assert!(ptr
+            .compare_exchange_counted(&node0, Arc::clone(&node1), 1)
+            .is_ok());
+        let (published, count) = ptr.load_with_term_count().expect("revision");
+        assert!(Arc::ptr_eq(&published, &node1));
+        assert_eq!(count, 1);
+
+        assert!(ptr
+            .compare_exchange_counted(&node0, Arc::clone(&node2), -1)
+            .is_err());
+        let (published, count) = ptr.load_with_term_count().expect("revision");
+        assert!(Arc::ptr_eq(&published, &node1));
+        assert_eq!(count, 1, "a losing CAS cannot adjust cardinality");
+
+        assert!(ptr
+            .compare_exchange_counted(&node1, Arc::clone(&node2), -1)
+            .is_ok());
+        let (published, count) = ptr.load_with_term_count().expect("revision");
+        assert!(Arc::ptr_eq(&published, &node2));
+        assert_eq!(count, 0);
     }
 
     #[test]

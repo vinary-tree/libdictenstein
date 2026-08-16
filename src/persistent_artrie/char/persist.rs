@@ -247,10 +247,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // REORDER past the root load below.
         let commit_seq_at_capture = self.commit_seq.load(AtomicOrdering::Acquire);
 
-        let overlay_root = self.lockfree_root.as_ref().and_then(|root| root.load());
-        let (root_type, root_ptr, is_final, entry_count) = match overlay_root {
+        let overlay_revision = self
+            .lockfree_root
+            .as_ref()
+            .and_then(|root| root.load_with_term_count());
+        let (root_type, root_ptr, is_final, entry_count) = match overlay_revision {
             None => (ROOT_TYPE_EMPTY, 0u64, false, 0u64),
-            Some(root) => {
+            Some((root, term_count)) => {
                 // F6 flag-1b: serialize the overlay DIRECTLY with an ITERATIVE
                 // post-order walk (no deep intermediate `CharTrieNodeInner` tree,
                 // no recursive serialize, no recursive `Drop`), so a ~500-char term
@@ -269,8 +272,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 // reopen stays byte-faithful (uncompressed prefix_len=0 images still load).
                 let ptr =
                     self.serialize_overlay_snapshot_compressed(&root, eviction_registry.as_mut())?;
-                let entry_count = count_overlay_finals(&root);
-                (ROOT_TYPE_NODE, ptr.to_raw(), root.is_final(), entry_count)
+                (
+                    ROOT_TYPE_NODE,
+                    ptr.to_raw(),
+                    root.is_final(),
+                    term_count as u64,
+                )
             }
         };
 
@@ -1507,30 +1514,6 @@ where
         );
     }
     cur
-}
-
-/// Count the finalized (terminal) nodes in the overlay subtree — the term count of
-/// the immutable representation (`self.len` tracks the owned tree, not the overlay).
-///
-/// S5-9: un-gated to production (backs the now-production `capture_snapshot_immutable`).
-/// **ITERATIVE** (explicit work-stack over `Child::InMem`) so it does not recurse
-/// with key length — the un-path-compressed overlay spine is ~key-length deep, so the
-/// prior recursion overflowed the stack on large terms (F6 flag-1b).
-fn count_overlay_finals<V: DictionaryValue>(node: &super::nodes::PersistentCharNode<V>) -> u64 {
-    let mut count = 0u64;
-    let mut stack: Vec<&super::nodes::PersistentCharNode<V>> = Vec::new();
-    stack.push(node);
-    while let Some(current) = stack.pop() {
-        if current.is_final() {
-            count += 1;
-        }
-        for (_, child) in current.iter_children() {
-            if let Some(child_arc) = child.as_in_mem() {
-                stack.push(child_arc.as_ref());
-            }
-        }
-    }
-    count
 }
 
 #[cfg(test)]

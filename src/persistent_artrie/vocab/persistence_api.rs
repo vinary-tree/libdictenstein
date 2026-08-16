@@ -64,11 +64,19 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
             .max(self.committed_watermark.take_recovery_image_coverage());
         let commit_seq_floor = self.commit_seq.load(Ordering::Acquire);
 
+        let overlay_revision = self
+            .lockfree_root
+            .as_ref()
+            .and_then(|root| root.load_with_term_count());
+        let entry_count = overlay_revision
+            .as_ref()
+            .map_or(0, |(_, term_count)| *term_count);
+
         // (1) Serialize the immutable overlay root (empty -> root_ptr 0). CX-universal: the
         // PATH-COMPRESSED serializer (proven no-truncation; the loader expands prefixes on reopen,
         // which vocab inherits from the char loader). Uncompressed prefix_len=0 images still load.
-        let root_ptr_raw: u64 = match self.lockfree_root.as_ref().and_then(|r| r.load()) {
-            Some(root) if entry_count > 0 => {
+        let root_ptr_raw: u64 = match overlay_revision {
+            Some((root, _)) if entry_count > 0 => {
                 self.serialize_overlay_snapshot_compressed(&root)?.to_raw()
             }
             _ => 0,

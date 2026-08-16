@@ -38,7 +38,7 @@ pub struct CausalConstructionStats {
     pub batch_sort_units: u64,
     /// Immutable traversal snapshots created.
     pub resource_snapshots_created: u64,
-    /// Snapshot-arena mutex acquisitions.
+    /// Snapshot-arena directory-growth mutex acquisitions.
     pub resource_arena_locks: u64,
     /// Snapshot finality operations.
     pub resource_is_final_calls: u64,
@@ -54,6 +54,12 @@ pub struct CausalConstructionStats {
     pub resource_nodes_materialized: u64,
     /// Cached edge descriptors cloned for provider callbacks.
     pub resource_descriptors_cloned: u64,
+    /// Snapshot nodes synchronously reclaimed with their final arena owner.
+    pub resource_nodes_reclaimed: u64,
+    /// Total nanoseconds spent synchronously reclaiming snapshot arenas.
+    pub resource_reclaim_nanos: u64,
+    /// Longest observed synchronous snapshot-arena reclamation in nanoseconds.
+    pub resource_reclaim_max_nanos: u64,
 }
 
 #[cfg(feature = "perf-instrumentation")]
@@ -109,6 +115,12 @@ counter!(RESOURCE_NATIVE_EDGES_ENUMERATED);
 counter!(RESOURCE_NODES_MATERIALIZED);
 #[cfg(feature = "perf-instrumentation")]
 counter!(RESOURCE_DESCRIPTORS_CLONED);
+#[cfg(feature = "perf-instrumentation")]
+counter!(RESOURCE_NODES_RECLAIMED);
+#[cfg(feature = "perf-instrumentation")]
+counter!(RESOURCE_RECLAIM_NANOS);
+#[cfg(feature = "perf-instrumentation")]
+counter!(RESOURCE_RECLAIM_MAX_NANOS);
 
 #[inline(always)]
 fn add(counter: Counter, value: u64) {
@@ -173,6 +185,16 @@ recorder!(
     record_resource_descriptors_cloned,
     RESOURCE_DESCRIPTORS_CLONED
 );
+recorder!(record_resource_nodes_reclaimed, RESOURCE_NODES_RECLAIMED);
+recorder!(record_resource_reclaim_nanos, RESOURCE_RECLAIM_NANOS);
+
+#[inline(always)]
+pub(crate) fn record_resource_reclaim_max_nanos(value: u64) {
+    #[cfg(feature = "perf-instrumentation")]
+    RESOURCE_RECLAIM_MAX_NANOS.fetch_max(value, Ordering::Relaxed);
+    #[cfg(not(feature = "perf-instrumentation"))]
+    let _ = value;
+}
 
 /// Reset all construction counters to zero.
 #[cfg(feature = "perf-instrumentation")]
@@ -210,11 +232,14 @@ pub fn causal_construction_stats() -> CausalConstructionStats {
         resource_native_edges_enumerated: load(&RESOURCE_NATIVE_EDGES_ENUMERATED),
         resource_nodes_materialized: load(&RESOURCE_NODES_MATERIALIZED),
         resource_descriptors_cloned: load(&RESOURCE_DESCRIPTORS_CLONED),
+        resource_nodes_reclaimed: load(&RESOURCE_NODES_RECLAIMED),
+        resource_reclaim_nanos: load(&RESOURCE_RECLAIM_NANOS),
+        resource_reclaim_max_nanos: load(&RESOURCE_RECLAIM_MAX_NANOS),
     }
 }
 
 #[cfg(feature = "perf-instrumentation")]
-fn counters() -> [&'static AtomicU64; 23] {
+fn counters() -> [&'static AtomicU64; 26] {
     [
         &TERM_INSERT_ATTEMPTS,
         &INPUT_UNITS,
@@ -239,5 +264,8 @@ fn counters() -> [&'static AtomicU64; 23] {
         &RESOURCE_NATIVE_EDGES_ENUMERATED,
         &RESOURCE_NODES_MATERIALIZED,
         &RESOURCE_DESCRIPTORS_CLONED,
+        &RESOURCE_NODES_RECLAIMED,
+        &RESOURCE_RECLAIM_NANOS,
+        &RESOURCE_RECLAIM_MAX_NANOS,
     ]
 }

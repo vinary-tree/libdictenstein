@@ -37,8 +37,8 @@ use std::collections::BTreeMap;
 
 use ffi_common::{
     all_edges, capture_snapshot, dictionary_interface, insert_text, node_is_final, node_value,
-    remove_text, snapshot_len, snapshot_root, unicode_labels, walk_terms, DictGuard, DOMAIN_BYTE,
-    DOMAIN_U64, DOMAIN_UNICODE,
+    remove_text, snapshot_identity, snapshot_len, snapshot_root, unicode_labels, walk_terms,
+    DictGuard, DOMAIN_BYTE, DOMAIN_U64, DOMAIN_UNICODE,
 };
 use libdictenstein::ffi::{ldict_dictionary_clear, LdictStatus};
 use proptest::prelude::*;
@@ -66,6 +66,34 @@ fn walk_structure(snapshot: VtResource, capacity: usize) -> Structure {
         rows.push((node, is_final, value, pairs));
     }
     rows
+}
+
+#[test]
+fn snapshot_identity_reuses_a_revision_and_advances_after_mutation() {
+    let dictionary = DictGuard::dynamic(DOMAIN_UNICODE);
+    assert_eq!(
+        insert_text(dictionary.ptr(), b"alpha", Some(1)).0,
+        LdictStatus::Ok
+    );
+
+    let first = capture_snapshot(dictionary.resource());
+    let second = capture_snapshot(dictionary.resource());
+    let first_identity = snapshot_identity(first.resource);
+    assert_eq!(snapshot_identity(second.resource), first_identity);
+    assert_ne!(first.resource.context, second.resource.context);
+
+    let child = capture_snapshot(first.resource);
+    assert_eq!(snapshot_identity(child.resource), first_identity);
+
+    assert_eq!(
+        insert_text(dictionary.ptr(), b"beta", Some(2)).0,
+        LdictStatus::Ok
+    );
+    let next = capture_snapshot(dictionary.resource());
+    let next_identity = snapshot_identity(next.resource);
+    assert_eq!(next_identity.producer, first_identity.producer);
+    assert!(next_identity.revision > first_identity.revision);
+    assert_eq!(snapshot_identity(first.resource), first_identity);
 }
 
 /// One mutation in the post-capture batch. `Compact` is the

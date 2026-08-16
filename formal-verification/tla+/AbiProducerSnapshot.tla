@@ -4,7 +4,8 @@
 (* obligation #10; wave W2).                                               *)
 (*                                                                         *)
 (* Models src/bindings.rs: a mutable store holds an atomically published   *)
-(* current revision; writers publish path-copied successors (insert /      *)
+(* current revision and its exact cardinality as one atomic pair; writers *)
+(* publish path-copied successors (insert /                               *)
 (* remove / clear), and compact / checkpoint publish content-preserving    *)
 (* successors; `snapshot()` captures the revision visible at call time in  *)
 (* O(1) by pinning it, and every read through a captured resource is       *)
@@ -24,6 +25,10 @@
 (*                 the currently published contents.                        *)
 (*   LDICT-SNAP-3  ContentPreservingPublishes — compact / checkpoint       *)
 (*                 never change the published term set (action property).  *)
+(*   LDICT-SNAP-6  PublishedCountCoherent — the live root and exact count  *)
+(*                 always describe the same revision.                     *)
+(*   LDICT-SNAP-7  CapturedCountCoherent — a snapshot pins both the root   *)
+(*                 and count from one publication.                        *)
 (*   PublishesMonotone — the published version strictly increases          *)
 (*                 (action property; supports the atomic-publication       *)
 (*                 reading of the Rust Arc swap).                          *)
@@ -53,21 +58,30 @@ ASSUME USE_IMMUTABLE_CAPTURE \in BOOLEAN
 VARIABLES
   version,      \* currently published revision number
   head,         \* currently published contents: the set of stored terms
+  headCount,    \* exact count atomically published with head
   history,      \* function: published version -> its contents
+  historyCounts,\* function: published version -> its exact count
   captures,     \* function: capture id -> the version it pinned
   expected,     \* function: capture id -> contents at capture time (oracle)
+  capturedCounts, \* function: capture id -> count read from pinned revision
+  expectedCounts, \* function: capture id -> cardinality oracle at capture
   publishesLeft \* remaining publish budget
 
-vars == <<version, head, history, captures, expected, publishesLeft>>
+vars == <<version, head, headCount, history, historyCounts, captures,
+          expected, capturedCounts, expectedCounts, publishesLeft>>
 
 CaptureIds == DOMAIN captures
 
 Init ==
   /\ version = 0
   /\ head = {}
+  /\ headCount = 0
   /\ history = (0 :> {})
+  /\ historyCounts = (0 :> 0)
   /\ captures = <<>>
   /\ expected = <<>>
+  /\ capturedCounts = <<>>
+  /\ expectedCounts = <<>>
   /\ publishesLeft = MaxPublishes
 
 (***************************************************************************)
@@ -78,9 +92,12 @@ Publish(newContents) ==
   /\ publishesLeft > 0
   /\ version' = version + 1
   /\ head' = newContents
+  /\ headCount' = Cardinality(newContents)
   /\ history' = history @@ (version + 1 :> newContents)
+  /\ historyCounts' = historyCounts @@
+                         (version + 1 :> Cardinality(newContents))
   /\ publishesLeft' = publishesLeft - 1
-  /\ UNCHANGED <<captures, expected>>
+  /\ UNCHANGED <<captures, expected, capturedCounts, expectedCounts>>
 
 Insert(term) ==
   /\ term \notin head
@@ -112,11 +129,18 @@ Capture ==
   /\ Len(captures) < MaxCaptures
   /\ captures' = Append(captures, IF USE_IMMUTABLE_CAPTURE THEN version ELSE LiveAlias)
   /\ expected' = Append(expected, head)
-  /\ UNCHANGED <<version, head, history, publishesLeft>>
+  /\ capturedCounts' = Append(capturedCounts,
+       IF USE_IMMUTABLE_CAPTURE THEN historyCounts[version] ELSE headCount)
+  /\ expectedCounts' = Append(expectedCounts, Cardinality(head))
+  /\ UNCHANGED <<version, head, headCount, history, historyCounts,
+                  publishesLeft>>
 
 \* What a read through capture i returns under the current state.
 ReadBack(i) ==
   IF captures[i] = LiveAlias THEN head ELSE history[captures[i]]
+
+ReadCount(i) ==
+  IF captures[i] = LiveAlias THEN headCount ELSE capturedCounts[i]
 
 Next ==
   \/ \E term \in Terms : Insert(term)
@@ -134,9 +158,14 @@ Spec == Init /\ [][Next]_vars
 TypeOK ==
   /\ version \in 0..MaxPublishes
   /\ head \subseteq Terms
+  /\ headCount \in 0..Cardinality(Terms)
   /\ DOMAIN history = 0..version
+  /\ DOMAIN historyCounts = 0..version
   /\ \A v \in DOMAIN history : history[v] \subseteq Terms
+  /\ \A v \in DOMAIN historyCounts : historyCounts[v] \in 0..Cardinality(Terms)
   /\ Len(captures) = Len(expected)
+  /\ Len(captures) = Len(capturedCounts)
+  /\ Len(captures) = Len(expectedCounts)
   /\ Len(captures) <= MaxCaptures
   /\ \A i \in 1..Len(captures) : captures[i] \in (0..version) \cup {LiveAlias}
   /\ publishesLeft \in 0..MaxPublishes
@@ -150,6 +179,18 @@ CapturedRevisionImmutable ==
 \* stated over all captures whose pinned version IS the current version.
 FreshCaptureSeesHead ==
   \A i \in 1..Len(captures) : captures[i] = version => ReadBack(i) = head
+
+\* LDICT-SNAP-6: root and count are one atomic published value.
+PublishedCountCoherent ==
+  /\ headCount = Cardinality(head)
+  /\ \A v \in DOMAIN history : historyCounts[v] = Cardinality(history[v])
+
+\* LDICT-SNAP-7: the count captured beside a root is exact for that root and
+\* remains exact after any later publication.
+CapturedCountCoherent ==
+  \A i \in 1..Len(captures) :
+    /\ ReadCount(i) = expectedCounts[i]
+    /\ ReadCount(i) = Cardinality(ReadBack(i))
 
 \* LDICT-SNAP-3 (action property): compact and checkpoint preserve contents.
 ContentPreservingPublishes ==

@@ -142,10 +142,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             .unwrap_or(0);
         let commit_seq_at_capture = self.commit_seq.load(AtomicOrdering::Acquire);
 
-        let overlay_root = self.lockfree_root.as_ref().and_then(|root| root.load());
-        let (root_type, root_ptr, is_final, term_count) = match overlay_root {
+        let overlay_revision = self
+            .lockfree_root
+            .as_ref()
+            .and_then(|root| root.load_with_term_count());
+        let (root_type, root_ptr, is_final, term_count) = match overlay_revision {
             None => (ROOT_TYPE_EMPTY, 0u64, false, 0u64),
-            Some(root) => {
+            Some((root, term_count)) => {
                 // CX-universal: the regular checkpoint capture now serializes via the PATH-COMPRESSED
                 // serializer (was the uncompressed `serialize_overlay_root_iterative`), passing the
                 // eviction registry so an eviction-ON checkpoint compresses AND #6-stamps each chunk
@@ -162,7 +165,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 // record serialized + registered at `path=[]`), so the `else` arm is correct; the
                 // bucket override fires only for the childless NON-final (0-term) root, whose discarded
                 // compressed record is harmless (empty registry — eviction never acts on it).
-                let entry_count = count_overlay_finals::<V>(&root);
                 let root_ptr =
                     self.serialize_overlay_snapshot_compressed(&root, eviction_registry.as_mut())?;
                 let is_final = root.is_final();
@@ -172,7 +174,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 } else {
                     (ROOT_TYPE_ART_NODE, root_ptr.to_raw())
                 };
-                (rt, rp, is_final, entry_count)
+                (rt, rp, is_final, term_count as u64)
             }
         };
 
@@ -1240,28 +1242,6 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCompressedSerialize<ByteKey, V>
         );
         Ok(())
     }
-}
-
-/// Count the final (terminal) overlay nodes reachable from `root` — the overlay
-/// term count. The byte twin of char's `count_overlay_finals`. **ITERATIVE**
-/// (explicit work-stack over `Child::InMem`) so it does not recurse with key
-/// length — the un-path-compressed overlay spine is ~key-length deep, so the prior
-/// recursion overflowed the stack on large terms (F6 flag-1b).
-fn count_overlay_finals<V: DictionaryValue>(root: &OverlayNode<ByteKey, V>) -> u64 {
-    let mut count = 0u64;
-    let mut stack: Vec<&OverlayNode<ByteKey, V>> = Vec::new();
-    stack.push(root);
-    while let Some(node) = stack.pop() {
-        if node.is_final() {
-            count += 1;
-        }
-        for (_edge, child) in node.iter_children() {
-            if let Some(child_arc) = child.as_in_mem() {
-                stack.push(child_arc.as_ref());
-            }
-        }
-    }
-    count
 }
 
 // ============================================================================

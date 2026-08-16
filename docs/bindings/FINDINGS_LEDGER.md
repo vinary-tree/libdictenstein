@@ -192,7 +192,7 @@ non-empty `last_error_message()` after an INVALID_UTF8 insert).
 | component | `src/bindings.rs` snapshot capture (`DynamicBackend::snapshot`, `SecondaryBackend::snapshot`, `PersistentBackend::snapshot`) |
 | class | concurrency / snapshot-coherence |
 | severity | medium |
-| status | **FIXED** for the in-memory families (coherent single-revision accessors); **RESOLVED AT THE ABI** for the persistent family (root-only capture, `out_known = 0` — the torn observable is unrepresentable); coherent `(root, count)` publication in the overlay flip remains an OPEN persistent-core enhancement to restore `out_known = 1` |
+| status | **FIXED for every family** — persistent overlays atomically publish `(root, term_count)` and persistent snapshots again report exact known lengths (`out_known = 1`) |
 
 **Evidence.** Every `snapshot()` arm captured the traversal root and the
 advertised term count with two independent atomic loads
@@ -263,6 +263,19 @@ overlay-flip publication that would restore `out_known = 1` for the
 persistent family remains open persistent-core work (binding-side retries
 were shown unsound above). Full `--features ffi` suite green after the
 change.
+
+**Resolution addendum (2026-08-15).** The open persistent-core enhancement is
+now implemented generically in `AtomicNodePtr`: its `ArcSwapOption` publishes
+one immutable record containing both the overlay root and exact term count.
+Every membership-changing CAS supplies a checked `+1` or `-1`; value-only and
+structural-maintenance CASes preserve the count. Prebuilt byte, Unicode, u64,
+and vocabulary roots seed the record with one iterative final-node walk, after
+which `len()` and snapshot capture are constant-time single-publication reads.
+The producer's four persistent snapshot arms now return `out_known = 1`.
+`AbiProducerSnapshot.tla` pins live and captured cardinality coherence as
+LDICT-SNAP-6/7; the persistent checkpoint/reopen suite asserts exact known
+lengths for all four families, and the concurrent churn test remains the
+executable no-tear oracle.
 
 
 ## Finding LDICT-B5 — persistent u64 writes swallowed engine errors into `OK`

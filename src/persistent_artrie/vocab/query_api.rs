@@ -41,7 +41,10 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// Get the number of vocabulary entries.
     #[inline]
     pub fn len(&self) -> usize {
-        self.entry_count.load(Ordering::Acquire)
+        self.lockfree_root.as_ref().map_or_else(
+            || self.entry_count.load(Ordering::Acquire),
+            |root| root.term_count(),
+        )
     }
 
     /// Check if the vocabulary is empty.
