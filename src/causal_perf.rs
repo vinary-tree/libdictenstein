@@ -204,6 +204,10 @@ pub fn reset_causal_construction_stats() {
     }
 }
 
+/// No-op reset for timing/profile builds where counters are compiled out.
+#[cfg(not(feature = "perf-instrumentation"))]
+pub fn reset_causal_construction_stats() {}
+
 /// Snapshot all construction counters.
 #[cfg(feature = "perf-instrumentation")]
 pub fn causal_construction_stats() -> CausalConstructionStats {
@@ -236,6 +240,12 @@ pub fn causal_construction_stats() -> CausalConstructionStats {
         resource_reclaim_nanos: load(&RESOURCE_RECLAIM_NANOS),
         resource_reclaim_max_nanos: load(&RESOURCE_RECLAIM_MAX_NANOS),
     }
+}
+
+/// Return an all-zero snapshot when instrumentation is compiled out.
+#[cfg(not(feature = "perf-instrumentation"))]
+pub fn causal_construction_stats() -> CausalConstructionStats {
+    CausalConstructionStats::default()
 }
 
 #[cfg(feature = "perf-instrumentation")]

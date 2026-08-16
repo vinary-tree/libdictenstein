@@ -1667,6 +1667,32 @@ impl<V: DictionaryValue> DictionaryNode for PersistentSuffixAutomatonNode<V> {
         }
     }
 
+    #[inline]
+    fn filter_map_edges<T, P, F>(&self, mut project: P, mut visitor: F)
+    where
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self, T),
+    {
+        let Some(state) = self.state_id else {
+            return;
+        };
+        let Some(node) = self.graph.nodes.get(state) else {
+            return;
+        };
+        for &(unit, target) in &node.edges {
+            if let Some(projected) = project(unit) {
+                visitor(
+                    unit,
+                    Self {
+                        graph: self.graph.clone(),
+                        state_id: Some(target),
+                    },
+                    projected,
+                );
+            }
+        }
+    }
+
     fn edge_count(&self) -> Option<usize> {
         self.state_id
             .and_then(|state| self.graph.nodes.get(state))
@@ -1745,6 +1771,32 @@ impl<V: DictionaryValue> DictionaryNode for PersistentSuffixAutomatonCharNode<V>
                     state_id: Some(target),
                 },
             );
+        }
+    }
+
+    #[inline]
+    fn filter_map_edges<T, P, F>(&self, mut project: P, mut visitor: F)
+    where
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self, T),
+    {
+        let Some(state) = self.state_id else {
+            return;
+        };
+        let Some(node) = self.graph.nodes.get(state) else {
+            return;
+        };
+        for &(unit, target) in &node.edges {
+            if let Some(projected) = project(unit) {
+                visitor(
+                    unit,
+                    Self {
+                        graph: self.graph.clone(),
+                        state_id: Some(target),
+                    },
+                    projected,
+                );
+            }
         }
     }
 

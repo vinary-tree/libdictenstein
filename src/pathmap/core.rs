@@ -298,6 +298,19 @@ impl<V: DictionaryValue, R: TrieRefLike<V>> DictionaryNode for TrieRefNode<V, R>
     }
 
     #[inline]
+    fn filter_map_edges<T, P, F>(&self, mut project: P, mut visitor: F)
+    where
+        P: FnMut(u8) -> Option<T>,
+        F: FnMut(u8, Self, T),
+    {
+        for label in self.r.child_mask().iter() {
+            if let Some(projected) = project(label) {
+                visitor(label, Self::new(self.r.descend_bytes(&[label])), projected);
+            }
+        }
+    }
+
+    #[inline]
     fn edge_count(&self) -> Option<usize> {
         Some(self.r.child_count())
     }
@@ -437,6 +450,19 @@ impl<V: DictionaryValue, R: TrieRefLike<V>> DictionaryNode for TrieRefNodeChar<V
     {
         for (label, child) in self.collect_char_edges() {
             visitor(label, Self::new(child));
+        }
+    }
+
+    #[inline]
+    fn filter_map_edges<T, P, F>(&self, mut project: P, mut visitor: F)
+    where
+        P: FnMut(char) -> Option<T>,
+        F: FnMut(char, Self, T),
+    {
+        for (label, child) in self.collect_char_edges() {
+            if let Some(projected) = project(label) {
+                visitor(label, Self::new(child), projected);
+            }
         }
     }
 

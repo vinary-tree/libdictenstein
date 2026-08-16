@@ -771,6 +771,25 @@ impl<V: DictionaryValue> DictionaryNode for DynamicDawgNode<V> {
         }
     }
 
+    #[inline]
+    fn filter_map_edges<T, P, F>(&self, mut project: P, mut visitor: F)
+    where
+        P: FnMut(u8) -> Option<T>,
+        F: FnMut(u8, Self, T),
+    {
+        for (label, child) in &self.node.edges.edges {
+            if let Some(projected) = project(*label) {
+                visitor(
+                    *label,
+                    DynamicDawgNode {
+                        node: Arc::clone(child),
+                    },
+                    projected,
+                );
+            }
+        }
+    }
+
     fn edge_count(&self) -> Option<usize> {
         Some(self.node.edges.edges.len())
     }

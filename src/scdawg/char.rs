@@ -536,6 +536,29 @@ impl<V: DictionaryValue> DictionaryNode for ScdawgCharNodeHandle<V> {
         }
     }
 
+    #[inline]
+    fn filter_map_edges<T, P, F>(&self, mut project: P, mut visitor: F)
+    where
+        P: FnMut(char) -> Option<T>,
+        F: FnMut(char, Self, T),
+    {
+        let Some(node) = self.inner.nodes.get(self.node_idx) else {
+            return;
+        };
+        for &(label, node_idx) in &node.forward_edges {
+            if let Some(projected) = project(label) {
+                visitor(
+                    label,
+                    ScdawgCharNodeHandle {
+                        inner: Arc::clone(&self.inner),
+                        node_idx,
+                    },
+                    projected,
+                );
+            }
+        }
+    }
+
     fn edge_count(&self) -> Option<usize> {
         Some(
             self.inner

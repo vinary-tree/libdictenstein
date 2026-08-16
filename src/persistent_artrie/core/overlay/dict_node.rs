@@ -191,6 +191,30 @@ impl<K: KeyEncoding, V: DictionaryValue> DictionaryNode for OverlayDictionaryNod
         }
     }
 
+    #[inline]
+    fn filter_map_edges<T, P, F>(&self, mut project: P, mut visitor: F)
+    where
+        P: FnMut(K::Token) -> Option<T>,
+        F: FnMut(K::Token, Self, T),
+    {
+        let Some(node) = &self.overlay else {
+            return;
+        };
+        for (&unit, child) in node.iter_children() {
+            let Some(token) = K::unit_to_token(unit) else {
+                continue;
+            };
+            let Some(projected) = project(token) else {
+                continue;
+            };
+            // Resolve or fault an on-disk child only after the query automaton
+            // accepts its label.
+            if let Some(child_node) = Self::overlay_child_node(child, &self.overlay_faulter) {
+                visitor(token, child_node, projected);
+            }
+        }
+    }
+
     fn edge_count(&self) -> Option<usize> {
         // overlay-only: the overlay node's child count is exact and O(1).
         self.overlay.as_ref().map(|node| node.num_children())

@@ -6,6 +6,7 @@
 //! revision clones an immutable root in O(1); nodes are assigned ABI-local
 //! identifiers only when a consumer traverses their incoming edge.
 
+use crate::concurrent_slots::{ArcSlotDirectory, DenseArcSlots};
 use crate::double_array_trie::char::DoubleArrayTrieChar;
 use crate::double_array_trie::DoubleArrayTrie;
 use crate::dynamic_dawg::char::DynamicDawgChar;
@@ -14,7 +15,6 @@ use crate::dynamic_dawg::DynamicDawg;
 use crate::scdawg::char::ScdawgChar;
 use crate::scdawg::Scdawg;
 use crate::{Dictionary, MappedDictionaryNode};
-use arc_swap::ArcSwap;
 use std::ffi::c_void;
 #[cfg(feature = "persistent-artrie")]
 use std::path::Path;
@@ -1291,105 +1291,66 @@ impl<N> ArenaNode<N> {
     }
 }
 
-struct ArenaChunk<N> {
-    slots: [OnceLock<Arc<ArenaNode<N>>>; TRAVERSAL_CHUNK_SIZE],
-}
-
-impl<N> ArenaChunk<N> {
-    fn new() -> Self {
-        Self {
-            slots: std::array::from_fn(|_| OnceLock::new()),
-        }
-    }
-}
-
 /// Append-only, chunked lazy node arena.
 ///
-/// Readers load an immutable ArcSwap directory and an initialized slot without
-/// taking a global lock. Only rare directory growth is serialized. Each node's
-/// outgoing edges are enumerated once through its own `OnceLock`.
+/// Readers load an immutable ArcSwap directory and an atomic slot without a
+/// lock. Writers geometrically grow and CAS-publish the directory. Each node's
+/// outgoing edges are expanded exactly once by its local `OnceLock`.
 struct NodeArena<N> {
-    chunks: ArcSwap<Vec<Arc<ArenaChunk<N>>>>,
+    slots: DenseArcSlots<ArenaNode<N>, TRAVERSAL_CHUNK_SIZE>,
     next_id: AtomicU64,
-    growth_lock: Mutex<()>,
 }
 
 impl<N> NodeArena<N> {
     fn new(root: N) -> Self {
-        let first = Arc::new(ArenaChunk::new());
-        first.slots[0]
-            .set(Arc::new(ArenaNode::new(root)))
-            .unwrap_or_else(|_| unreachable!("fresh root slot is empty"));
+        let slots = DenseArcSlots::new();
+        let root = Arc::new(ArenaNode::new(root));
+        let installed = slots.install_if_absent(0, Arc::clone(&root));
+        debug_assert!(Arc::ptr_eq(&root, &installed));
         Self {
-            chunks: ArcSwap::from_pointee(vec![first]),
+            slots,
             next_id: AtomicU64::new(1),
-            growth_lock: Mutex::new(()),
         }
     }
 
     fn slot(&self, node: u64) -> Result<Arc<ArenaNode<N>>, VtStatus> {
-        let node = usize::try_from(node).map_err(|_| VtStatus::InvalidArgument)?;
-        let chunks = self.chunks.load();
-        let chunk = chunks
-            .get(node / TRAVERSAL_CHUNK_SIZE)
-            .ok_or(VtStatus::InvalidArgument)?;
-        chunk.slots[node % TRAVERSAL_CHUNK_SIZE]
-            .get()
-            .cloned()
-            .ok_or(VtStatus::InvalidArgument)
-    }
-
-    fn ensure_capacity(&self, last_node: u64) -> Result<(), VtStatus> {
-        let last_node = usize::try_from(last_node).map_err(|_| VtStatus::LimitExceeded)?;
-        let required = last_node
-            .checked_div(TRAVERSAL_CHUNK_SIZE)
-            .and_then(|chunk| chunk.checked_add(1))
-            .ok_or(VtStatus::LimitExceeded)?;
-        if self.chunks.load().len() >= required {
-            return Ok(());
-        }
-
-        crate::causal_perf::record_resource_arena_locks(1);
-        let _growth = self
-            .growth_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let current = self.chunks.load_full();
-        if current.len() >= required {
-            return Ok(());
-        }
-        let mut grown = (*current).clone();
-        grown.reserve(required - grown.len());
-        while grown.len() < required {
-            grown.push(Arc::new(ArenaChunk::new()));
-        }
-        self.chunks.store(Arc::new(grown));
-        Ok(())
+        self.slots.get(node).ok_or(VtStatus::InvalidArgument)
     }
 
     fn reserve(&self, count: usize) -> Result<u64, VtStatus> {
         let count = u64::try_from(count).map_err(|_| VtStatus::LimitExceeded)?;
-        let start = self
-            .next_id
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                current.checked_add(count)
-            })
-            .map_err(|_| VtStatus::LimitExceeded)?;
-        if count != 0 {
-            self.ensure_capacity(start + count - 1)?;
+        if count == 0 {
+            return Ok(self.next_id.load(Ordering::Acquire));
         }
-        Ok(start)
+        let mut start = self.next_id.load(Ordering::Acquire);
+        loop {
+            let end = start.checked_add(count).ok_or(VtStatus::LimitExceeded)?;
+            self.slots
+                .ensure(end - 1)
+                .map_err(|_| VtStatus::LimitExceeded)?;
+            match self.next_id.compare_exchange_weak(
+                start,
+                end,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(start),
+                Err(observed) => start = observed,
+            }
+        }
     }
 
     fn install(&self, node: u64, value: N) -> Result<(), VtStatus> {
-        let node_index = usize::try_from(node).map_err(|_| VtStatus::LimitExceeded)?;
-        let chunks = self.chunks.load();
-        let chunk = chunks
-            .get(node_index / TRAVERSAL_CHUNK_SIZE)
-            .ok_or(VtStatus::LimitExceeded)?;
-        chunk.slots[node_index % TRAVERSAL_CHUNK_SIZE]
-            .set(Arc::new(ArenaNode::new(value)))
-            .map_err(|_| VtStatus::InvalidArgument)
+        if node >= self.next_id.load(Ordering::Acquire) {
+            return Err(VtStatus::LimitExceeded);
+        }
+        let value = Arc::new(ArenaNode::new(value));
+        let installed = self.slots.install_if_absent(node, Arc::clone(&value));
+        if Arc::ptr_eq(&value, &installed) {
+            Ok(())
+        } else {
+            Err(VtStatus::InvalidArgument)
+        }
     }
 }
 
@@ -1401,8 +1362,7 @@ impl<N> Drop for NodeArena<N> {
         // Reclaim every published chunk on the releasing thread. Swapping an
         // empty directory makes the destruction point explicit and measurable;
         // no background reclaimer or unbounded deferred queue is involved.
-        let chunks = self.chunks.swap(Arc::new(Vec::new()));
-        drop(chunks);
+        self.slots.clear();
         crate::causal_perf::record_resource_nodes_reclaimed(nodes);
         #[cfg(feature = "perf-instrumentation")]
         {
@@ -2586,6 +2546,27 @@ mod tests {
         for thread in threads {
             thread.join().expect("arena reader must not panic");
         }
+    }
+
+    #[test]
+    fn failed_arena_reservation_does_not_consume_identifiers_or_create_holes() {
+        let arena = NodeArena::new(0_u8);
+        assert_eq!(arena.next_id.load(Ordering::Acquire), 1);
+        assert_eq!(
+            arena.reserve(usize::MAX),
+            Err(VtStatus::LimitExceeded),
+            "overflow must fail before directory growth or ID publication"
+        );
+        assert_eq!(
+            arena.next_id.load(Ordering::Acquire),
+            1,
+            "a failed reservation must leave the committed ID frontier unchanged"
+        );
+        assert!(arena.slot(0).is_ok());
+        assert!(matches!(arena.slot(1), Err(VtStatus::InvalidArgument)));
+        assert_eq!(arena.reserve(1), Ok(1));
+        arena.install(1, 1_u8).expect("first post-failure slot");
+        assert_eq!(arena.slot(1).expect("installed slot").node, 1);
     }
 
     /// INVARIANT-HOOK: LDICT-ARENA-4 — invalidating the producer memo drops its

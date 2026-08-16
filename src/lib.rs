@@ -87,7 +87,8 @@
 
 // === Shared infrastructure ===
 mod causal_perf;
-#[cfg(feature = "perf-instrumentation")]
+#[doc(hidden)]
+pub mod concurrent_slots;
 #[doc(hidden)]
 pub use causal_perf::{
     causal_construction_stats, reset_causal_construction_stats, CausalConstructionStats,
@@ -334,6 +335,46 @@ pub trait DictionaryNode: Clone + Send + Sync {
     {
         let is_final = self.is_final();
         self.for_each_edge(visitor);
+        is_final
+    }
+
+    /// Project edge labels before constructing owned child handles.
+    ///
+    /// `project` is called exactly once for every label. `visitor` is called
+    /// exactly once for each label whose projection returns `Some`, and only
+    /// those accepted edges need an owned child node. The default preserves
+    /// compatibility through [`visit_edges_and_finality`](Self::visit_edges_and_finality).
+    /// Backends with borrowed edge storage should override this method so a
+    /// rejected edge never clones, allocates, faults, or reference-counts its
+    /// child handle.
+    #[inline]
+    fn filter_map_edges<T, P, F>(&self, mut project: P, mut visitor: F)
+    where
+        Self: Sized,
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self, T),
+    {
+        self.for_each_edge(|label, child| {
+            if let Some(projected) = project(label) {
+                visitor(label, child, projected);
+            }
+        });
+    }
+
+    /// Read finality and project labels before constructing accepted children.
+    ///
+    /// Backends that can observe finality and borrowed edges in one operation
+    /// may override this fused form. The compatibility default composes
+    /// [`is_final`](Self::is_final) and [`filter_map_edges`](Self::filter_map_edges).
+    #[inline]
+    fn filter_map_edges_and_finality<T, P, F>(&self, project: P, visitor: F) -> bool
+    where
+        Self: Sized,
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self, T),
+    {
+        let is_final = self.is_final();
+        self.filter_map_edges(project, visitor);
         is_final
     }
 

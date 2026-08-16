@@ -1951,6 +1951,29 @@ impl<V: DictionaryValue> DictionaryNode for PersistentSuffixTreeNode<V> {
         }
     }
 
+    #[inline]
+    fn filter_map_edges<T, P, F>(&self, mut project: P, mut visitor: F)
+    where
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self, T),
+    {
+        for label in self.graph.next_units_after_path(&self.path) {
+            let Some(projected) = project(label) else {
+                continue;
+            };
+            let mut child_path = self.path.clone();
+            child_path.push(label);
+            visitor(
+                label,
+                Self {
+                    graph: self.graph.clone(),
+                    path: child_path,
+                },
+                projected,
+            );
+        }
+    }
+
     fn edge_count(&self) -> Option<usize> {
         Some(self.graph.next_units_after_path(&self.path).len())
     }
@@ -2018,6 +2041,29 @@ impl<V: DictionaryValue> DictionaryNode for PersistentSuffixTreeCharNode<V> {
                     graph: self.graph.clone(),
                     path: child_path,
                 },
+            );
+        }
+    }
+
+    #[inline]
+    fn filter_map_edges<T, P, F>(&self, mut project: P, mut visitor: F)
+    where
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self, T),
+    {
+        for label in self.graph.next_units_after_path(&self.path) {
+            let Some(projected) = project(label) else {
+                continue;
+            };
+            let mut child_path = self.path.clone();
+            child_path.push(label);
+            visitor(
+                label,
+                Self {
+                    graph: self.graph.clone(),
+                    path: child_path,
+                },
+                projected,
             );
         }
     }

@@ -824,6 +824,34 @@ impl<V: DictionaryValue> DictionaryNode for DoubleArrayTrieNode<V> {
         }
     }
 
+    #[inline]
+    fn filter_map_edges<T, P, F>(&self, mut project: P, mut visitor: F)
+    where
+        P: FnMut(u8) -> Option<T>,
+        F: FnMut(u8, Self, T),
+    {
+        let state = self.state;
+        if state >= self.shared.edges.len() {
+            return;
+        }
+        let base = self.shared.base[state];
+        if base < 0 {
+            return;
+        }
+        for &label in &self.shared.edges[state] {
+            if let Some(projected) = project(label) {
+                visitor(
+                    label,
+                    DoubleArrayTrieNode {
+                        state: (base as usize) + usize::from(label),
+                        shared: Arc::clone(&self.shared),
+                    },
+                    projected,
+                );
+            }
+        }
+    }
+
     fn edge_count(&self) -> Option<usize> {
         // Now we can efficiently return edge count
         if self.state < self.shared.edges.len() {

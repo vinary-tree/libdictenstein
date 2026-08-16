@@ -205,6 +205,9 @@ if [ "${RUN_MIRI:-0}" = "1" ]; then
     --features persistent-artrie \
     --lib \
     persistent_artrie::core::buffer_manager::tests::fixed_buffer_registration_covers_write_guard_mutation_and_flush
+  run_miri_filtered \
+    --lib \
+    concurrent_slots::tests::raw_box_ownership_paths_reclaim_exactly_once
 else
   echo "Skipping Miri unsafe-boundary checks; set RUN_MIRI=1 to enable them"
 fi

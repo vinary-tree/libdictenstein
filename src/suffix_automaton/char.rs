@@ -1017,6 +1017,29 @@ impl<V: DictionaryValue> DictionaryNode for SuffixNodeCharHandle<V> {
         }
     }
 
+    #[inline]
+    fn filter_map_edges<T, P, F>(&self, mut project: P, mut visitor: F)
+    where
+        P: FnMut(char) -> Option<T>,
+        F: FnMut(char, Self, T),
+    {
+        let Some(node) = self.automaton.nodes.get(self.state_id) else {
+            return;
+        };
+        for &(label, target) in &node.edges {
+            if let Some(projected) = project(label) {
+                visitor(
+                    label,
+                    Self {
+                        automaton: Arc::clone(&self.automaton),
+                        state_id: target,
+                    },
+                    projected,
+                );
+            }
+        }
+    }
+
     fn has_edge(&self, label: char) -> bool {
         self.automaton
             .nodes

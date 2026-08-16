@@ -1,4 +1,15 @@
 # path	kind	pattern	count	contract
+src/concurrent_slots.rs	unsafe_block	return Some(*unsafe { Box::from_raw(pointer) });	1	concurrent-slots-raw-box-ownership
+src/concurrent_slots.rs	unsafe_block	current = unsafe { (*current).next.load(Ordering::Relaxed) };	1	concurrent-slots-raw-box-ownership
+src/concurrent_slots.rs	unsafe_block	let chunk = unsafe { &*current };	2	concurrent-slots-raw-box-ownership
+src/concurrent_slots.rs	unsafe_block	let mut chunk = unsafe { Box::from_raw(current) };	1	concurrent-slots-raw-box-ownership
+src/concurrent_slots.rs	unsafe_block	unsafe { &*canonical }	1	concurrent-slots-raw-box-ownership
+src/concurrent_slots.rs	unsafe_block	unsafe { (*candidate).next.store(head, Ordering::Relaxed) };	1	concurrent-slots-raw-box-ownership
+src/concurrent_slots.rs	unsafe_block	unsafe { (*chunk).slots[offset].get() }	1	concurrent-slots-raw-box-ownership
+src/concurrent_slots.rs	unsafe_block	unsafe { (*chunk).slots[offset].publish_if_absent(value) }	1	concurrent-slots-raw-box-ownership
+src/concurrent_slots.rs	unsafe_block	unsafe { drop(Box::from_raw(candidate)) };	3	concurrent-slots-raw-box-ownership
+src/concurrent_slots.rs	unsafe_block	unsafe { drop(Box::from_raw(pointer)) };	2	concurrent-slots-raw-box-ownership
+src/concurrent_slots.rs	unsafe_block	unsafe { self.pointer.load(Ordering::Acquire).as_ref() }	1	concurrent-slots-raw-box-ownership
 src/persistent_artrie/dict_impl.rs	unsafe_block	unsafe {	1	persistent-artrie-mmap-open
 src/persistent_artrie/nodes/node16.rs	unsafe_block	unsafe {	1	byte-node16-prefix-copy
 src/persistent_artrie/char/nodes/node16_char.rs	unsafe_block	unsafe {	1	char-node16-prefix-copy

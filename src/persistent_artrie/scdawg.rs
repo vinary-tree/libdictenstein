@@ -1483,6 +1483,33 @@ impl<V: DictionaryValue> DictionaryNode for PersistentScdawgNode<V> {
         }
     }
 
+    #[inline]
+    fn filter_map_edges<T, P, F>(&self, mut project: P, mut visitor: F)
+    where
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self, T),
+    {
+        let Some(node) = node(&self.graph, self.node_idx) else {
+            return;
+        };
+        for &(label, next) in &node.forward_edges {
+            let Some(projected) = project(label) else {
+                continue;
+            };
+            let mut child_path = self.path.clone();
+            child_path.push(label);
+            visitor(
+                label,
+                Self {
+                    graph: Arc::clone(&self.graph),
+                    node_idx: Some(next),
+                    path: child_path,
+                },
+                projected,
+            );
+        }
+    }
+
     fn edge_count(&self) -> Option<usize> {
         Some(node(&self.graph, self.node_idx)?.forward_edges.len())
     }
@@ -1559,6 +1586,33 @@ impl<V: DictionaryValue> DictionaryNode for PersistentScdawgCharNode<V> {
                     node_idx: Some(next),
                     path: child_path,
                 },
+            );
+        }
+    }
+
+    #[inline]
+    fn filter_map_edges<T, P, F>(&self, mut project: P, mut visitor: F)
+    where
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self, T),
+    {
+        let Some(node) = node(&self.graph, self.node_idx) else {
+            return;
+        };
+        for &(label, next) in &node.forward_edges {
+            let Some(projected) = project(label) else {
+                continue;
+            };
+            let mut child_path = self.path.clone();
+            child_path.push(label);
+            visitor(
+                label,
+                Self {
+                    graph: Arc::clone(&self.graph),
+                    node_idx: Some(next),
+                    path: child_path,
+                },
+                projected,
             );
         }
     }
