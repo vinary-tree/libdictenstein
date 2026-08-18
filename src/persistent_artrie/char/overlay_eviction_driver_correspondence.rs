@@ -228,6 +228,11 @@ fn reader_concurrent_with_overlay_eviction_sees_consistent_snapshot() {
     let stop = Arc::new(AtomicBool::new(false));
     let total_reads = Arc::new(AtomicU64::new(0));
     let barrier = Arc::new(Barrier::new(3)); // 1 reader + 1 evictor + main
+                                             // A start barrier makes both threads runnable but cannot force the OS to
+                                             // schedule the reader before a very fast evictor finishes. Prime one full
+                                             // traversal before admitting the evictor so the test cannot report a
+                                             // scheduler-starvation false negative under a heavily loaded test host.
+    let reader_primed = Arc::new(Barrier::new(2));
 
     // Reader: spin contains_lockfree on LIVE terms; each must stay present
     // (monotone) the WHOLE time the evictor reclaims COLD subtrees. A UAF would
@@ -238,9 +243,18 @@ fn reader_concurrent_with_overlay_eviction_sees_consistent_snapshot() {
         let total_reads = Arc::clone(&total_reads);
         let live = live_terms.clone();
         let barrier = Arc::clone(&barrier);
+        let reader_primed = Arc::clone(&reader_primed);
         thread::spawn(move || {
             barrier.wait();
             let mut n = 0u64;
+            for t in &live {
+                assert!(
+                    trie.contains_lockfree(t),
+                    "LIVE term {t:?} disappeared before concurrent eviction"
+                );
+                n += 1;
+            }
+            reader_primed.wait();
             while !stop.load(Ordering::Relaxed) {
                 for t in &live {
                     assert!(
@@ -258,8 +272,10 @@ fn reader_concurrent_with_overlay_eviction_sees_consistent_snapshot() {
     let evictor = {
         let trie = Arc::clone(&trie);
         let barrier = Arc::clone(&barrier);
+        let reader_primed = Arc::clone(&reader_primed);
         thread::spawn(move || {
             barrier.wait();
+            reader_primed.wait();
             let mut evicted = 0usize;
             for _ in 0..50 {
                 evicted += evict_cold_overlay(&*trie, 1 << 20);

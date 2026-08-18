@@ -1419,6 +1419,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentScdawgChar<V, S> {
 impl<V: DictionaryValue> DictionaryNode for PersistentScdawgNode<V> {
     type Unit = u8;
 
+    #[inline]
+    fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {
+        self.node_idx
+            .and_then(crate::SnapshotNodeIdentity::from_index)
+    }
+
     fn is_final(&self) -> bool {
         node(&self.graph, self.node_idx)
             .map(|node| node.is_final)
@@ -1525,6 +1531,12 @@ impl<V: DictionaryValue> MappedDictionaryNode for PersistentScdawgNode<V> {
 
 impl<V: DictionaryValue> DictionaryNode for PersistentScdawgCharNode<V> {
     type Unit = char;
+
+    #[inline]
+    fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {
+        self.node_idx
+            .and_then(crate::SnapshotNodeIdentity::from_index)
+    }
 
     fn is_final(&self) -> bool {
         node(&self.graph, self.node_idx)

@@ -1,6 +1,6 @@
 @startuml snapshot-capture-sequence
 ' ============================================================================
-' Consumer-driven snapshot capture and node walk over vt.dictionary.v1.
+' Consumer-driven snapshot capture and graph/callback walk.
 ' Source of truth: src/bindings.rs (dictionary_snapshot, TraversalSnapshot,
 ' dictionary_edges) + src/ffi.rs (ldict_dictionary_resource); verified live by
 ' the compile-and-run example in docs/bindings/c-abi-reference.md.
@@ -8,7 +8,7 @@
 '   #FADBD8 foreign consumer (e.g. liblevenshtein)
 '   #D5F5E3 libdictenstein producer surfaces
 '   #DCEDC8 VtResource handle / ResourceContext
-'   #FFECB3 leased node-id arena (TraversalSnapshot)
+'   #FFECB3 immutable graph or leased fallback arena (TraversalSnapshot)
 '   #FFCDD2 + #B71C1C trust boundary between the two binaries
 ' ============================================================================
 skinparam backgroundColor #FFFFFF
@@ -26,13 +26,13 @@ skinparam participantBorderColor #37474F
 skinparam sequenceDividerBackgroundColor #FFCDD2
 skinparam sequenceDividerBorderColor #B71C1C
 
-title Snapshot capture and walk — retain → query_interface → snapshot →\n<latex>\mathcal{O}(1)</latex> revision capture → lazy node-id walk → release chain
+title Snapshot capture and walk — retain → query_interface → snapshot →\n<latex>\mathcal{O}(1)</latex> revision capture → graph fast path or lazy fallback → release chain
 
 participant "Consumer\n(foreign binary,\ne.g. liblevenshtein)" as C #FADBD8
 participant "ldict_* C ABI\n(src/ffi.rs)" as F #D5F5E3
 participant "ResourceContext\n(payload: Live)" as R #DCEDC8
 participant "Backend revision\n(e.g. DynamicDAWG)" as B #D5F5E3
-participant "TraversalSnapshot\n(Mutex arena)" as S #FFECB3
+participant "TraversalSnapshot\n(graph once-cells +\nchunked fallback arena)" as S #FFECB3
 
 == every call below crosses the trust boundary: two independently compiled binaries ==
 
@@ -60,8 +60,8 @@ deactivate B
 note right of R #FFECB3
   <latex>\mathcal{O}(1)</latex> capture: the revision is immutable and
   structurally shared — no traversal, no copy
-  (Driscoll et al. 1989). The arena starts as
-  the single entry id 0 ↦ root.
+  (Driscoll et al. 1989). Graph projection is
+  deferred; the fallback arena starts at root.
 end note
 R -> S : TraversalSnapshot::new(root)
 R --> C : snap — **born with one retain**\n(mem::forget transfers it to the consumer)
@@ -71,26 +71,38 @@ C -> F : ldict_dictionary_remove_text(dict, "cot")
 F -> B : publish successor revision
 note right of B : Mutations after capture are\ninvisible to the pinned revision.
 
-== node walk — ABI-local ids, valid only while snap stays retained ==
+== immutable traversal — negotiate the compact graph first ==
 
-C -> S : snap query_interface → flags now\ninclude IMMUTABLE; root() → id 0
-loop until start ≥ out_total
-  C -> S : node_edges(node, start, out_edges,\ncapacity, &written, &total)
+C -> S : query_interface("vt.dict.graph.v1", 1, &graph_vt)
+alt DynamicDAWG snapshot supports compact graph
+  S --> C : graph_vt = 'static VtDictionaryGraphVTable
+  C -> S : graph_vt->graph(&view)
   activate S
-  S -> S : ensure_edges(node): first visit\nmaterializes children, assigns\nappend-only ids under the mutex
-  S --> C : one page: written ≤ capacity,\ntotal stable across pages
+  S -> S : first call: project retained root and\npublish native + ABI flat arrays\noutside backend/memo locks
+  S --> C : stable nodes, edges, root, counts
   deactivate S
+  C -> S : graph_vt->node_value_u64(checked dense cursor)
+else backend has no compact projection
+  S --> C : Unsupported
+  C -> S : vt.dictionary root() → leased root id
+  loop until start ≥ out_total
+    C -> S : node_edges(node, start, out_edges,\ncapacity, &written, &total)
+    activate S
+    S -> S : ensure_edges(node): enumerate once,\nreserve atomic id range, publish\nwrite-once slots; lock only if a\nnew directory chunk is required
+    S --> C : one page: written ≤ capacity,\ntotal stable across pages
+    deactivate S
+  end
 end
 note right of C
   Paging law: pages concatenate losslessly;
   <latex>\mathrm{written} = \min(\mathrm{capacity},\ \mathrm{total} - \mathrm{start})</latex>
 end note
-C -> S : node_is_final(id) · node_value_u64(id) ·\nnode_transition(id, label)
+C -> S : fallback only: node_is_final(id) ·\nnode_value_u64(id) · node_transition(id, label)
 
 == teardown — one release per owned retain; any order ==
 
 C -> S : snap.vtable->release(snap.context)
-note right of S : strong count 1 → 0:\narena and pinned revision freed
+note right of S : strong count 1 → 0:\ngraph/fallback storage and\npinned revision freed
 C -> R : res.vtable->release(res.context)
 note right of R : handle keeps its own retain —\nthe dictionary stays alive until\nldict_dictionary_free
 C -> F : ldict_dictionary_free(dict)

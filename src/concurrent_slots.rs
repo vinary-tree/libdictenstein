@@ -150,23 +150,32 @@ impl<T> AtomicOnceBox<T> {
     /// Publish `value` if empty and return the canonical value.
     #[inline]
     pub fn publish_if_absent(&self, value: T) -> &T {
+        self.publish_if_absent_with_status(value).0
+    }
+
+    /// Publish `value` if empty and report whether this caller won.
+    ///
+    /// The boolean is `true` only for the publisher that installed the
+    /// canonical allocation. Losing candidates are reclaimed before return.
+    #[inline]
+    pub fn publish_if_absent_with_status(&self, value: T) -> (&T, bool) {
         let candidate = Box::into_raw(Box::new(value));
-        let canonical = match self.pointer.compare_exchange(
+        let (canonical, installed) = match self.pointer.compare_exchange(
             ptr::null_mut(),
             candidate,
             Ordering::Release,
             Ordering::Acquire,
         ) {
-            Ok(_) => candidate,
+            Ok(_) => (candidate, true),
             Err(existing) => {
                 // SAFETY: this CAS candidate was never published, and this
                 // thread still has its unique ownership.
                 unsafe { drop(Box::from_raw(candidate)) };
-                existing
+                (existing, false)
             }
         };
         // SAFETY: `canonical` is the stable winner described by `get`.
-        unsafe { &*canonical }
+        (unsafe { &*canonical }, installed)
     }
 }
 
@@ -283,16 +292,6 @@ impl<T, const N: usize> DenseArcSlots<T, N> {
     /// Number of addressable slots, including growth slack.
     pub fn capacity(&self) -> usize {
         self.chunks.load().len().saturating_mul(N)
-    }
-
-    /// Remove the directory's ownership of all chunks.
-    ///
-    /// This is intended for deterministic teardown instrumentation. Callers
-    /// must already have exclusive lifecycle ownership; append-only lookup and
-    /// publication are otherwise defined only before teardown begins.
-    #[cfg(feature = "bindings-core")]
-    pub(crate) fn clear(&mut self) {
-        self.chunks.store(Arc::new(Vec::new()));
     }
 }
 
@@ -561,11 +560,21 @@ impl<T, const N: usize, const D: usize, const S: usize> HybridOnceBoxSlots<T, N,
     /// Publish one value if absent and return the canonical value.
     #[inline]
     pub fn install_if_absent(&self, index: u64, value: T) -> &T {
+        self.install_if_absent_with_status(index, value).0
+    }
+
+    /// Publish one value if absent and report whether this caller won.
+    #[inline]
+    pub fn install_if_absent_with_status(&self, index: u64, value: T) -> (&T, bool) {
         if let Some((page, offset)) = Self::dense_coordinates(index) {
             let page = self.dense[page].publish_if_absent(OnceSlotChunk::new());
-            return page.slots[offset].publish_if_absent(value);
+            return page.slots[offset].publish_if_absent_with_status(value);
         }
-        self.overflow.install_if_absent(index, value)
+        let (chunk_id, offset, shard) = SparseOnceBoxSlots::<T, N, S>::coordinates(index);
+        let chunk = self.overflow.find_or_create_chunk(chunk_id, shard);
+        // SAFETY: the returned page is published in this append-only directory
+        // and remains alive for the `&self` borrow.
+        unsafe { (*chunk).slots[offset].publish_if_absent_with_status(value) }
     }
 
     /// Number of lazily allocated dense pages.
@@ -579,6 +588,16 @@ impl<T, const N: usize, const D: usize, const S: usize> HybridOnceBoxSlots<T, N,
     /// Number of sparse overflow pages.
     pub fn allocated_overflow_chunks(&self) -> usize {
         self.overflow.allocated_chunks()
+    }
+
+    /// Remove ownership of every published page and value.
+    ///
+    /// Callers must have exclusive lifecycle ownership. This exists so FFI
+    /// snapshot teardown can include deterministic reclamation in its causal
+    /// counters rather than deferring field destruction until after `Drop`.
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn clear(&mut self) {
+        *self = Self::new();
     }
 }
 

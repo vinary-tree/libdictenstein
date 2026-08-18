@@ -406,6 +406,11 @@ impl<V: DictionaryValue> std::fmt::Debug for ScdawgNodeHandle<V> {
 impl<V: DictionaryValue> DictionaryNode for ScdawgNodeHandle<V> {
     type Unit = u8;
 
+    #[inline]
+    fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {
+        crate::SnapshotNodeIdentity::from_index(self.node_idx)
+    }
+
     fn is_final(&self) -> bool {
         self.inner
             .nodes

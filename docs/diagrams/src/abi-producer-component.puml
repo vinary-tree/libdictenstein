@@ -2,13 +2,14 @@
 ' ============================================================================
 ' libdictenstein as the vt.dictionary.v1 PRODUCER — component view.
 ' Source of truth: src/bindings.rs (four backend bindings, ResourceContext,
-' TraversalSnapshot arena, 'static vtables, OwnedDictionaryResource) and
+' TraversalSnapshot graph/fallback views, 'static vtables,
+' OwnedDictionaryResource) and
 ' src/ffi.rs (the 35-function ldict_* C ABI). Machine-readable model:
 ' bindings/api.json.
 ' Color key (family palette + ABI concept colors):
 '   #D5F5E3 libdictenstein (producer)   #FADBD8 liblevenshtein / interop host
 '   #D6EAF8 duallity (consumer)         #DCEDC8 + #33691E VtResource handle
-'   #FFCDD2 + #B71C1C trust boundary    #FFECB3 + #FF6F00 leased node-id arena
+'   #FFCDD2 + #B71C1C trust boundary    #FFECB3 + #FF6F00 immutable views
 ' ============================================================================
 top to bottom direction
 skinparam backgroundColor #FFFFFF
@@ -47,14 +48,16 @@ package "libdictenstein cdylib — the producer" #D5F5E3 {
     component "PersistentARTrieBinding\nArc(PersistentBackend)\n→ PersistentARTrie + WAL\nu8·char·u64·vocab" as perb #FFFFFF
     component "OwnedDictionaryResource\nborn with one retain" as owned #DCEDC8
     component "ResourceContext — payload:\nLive | Secondary |\nPersistent | Snapshot" as ctx #FFFFFF
-    component "TraversalSnapshot\nMutex(NodeArena) — lazy,\nappend-only ABI-local ids" as snap #FFECB3
-    component "'static vtables\nRESOURCE_VTABLE +\n10 × VtDictionaryVTable" as statics #FFFFFF
+    component "TraversalSnapshot\nretained immutable root +\nOnceLock(native/ABI graph) +\nchunked fallback arena" as snap #FFECB3
+    component "14 'static vtables\nresource + visit + graph + identity +\n10 × VtDictionaryVTable" as statics #FFFFFF
   }
 }
 
 package "vinary-tree-interop — the family contract\n(no_std crate hosted in liblevenshtein-rust)" #FADBD8 {
   component "VtResource\n{ context, vtable }" as vtres #DCEDC8
   component "VtDictionaryVTable\nsnapshot · root · len ·\nnode_is_final · node_value_u64 ·\nnode_transition · node_edges" as vtdict #FFFFFF
+  component "VtDictionaryGraphVTable\ngraph · node_value_u64" as vtgraph #FFECB3
+  component "visit + snapshot identity\noptional capability vtables" as vtoptional #FFFFFF
 }
 
 ' --- layout hints: keep the binding grid two columns wide -------------------
@@ -80,14 +83,18 @@ ctx -down-> snap : snapshot() —\n<latex>\mathcal{O}(1)</latex> revision captur
 ctx -down-> statics : query_interface selects\ndomain × flags
 owned -down-> vtres : as_raw() —\ntwo borrowed words
 statics .down.> vtdict : conforms to
+statics .down.> vtgraph : optional immutable\nDynamicDAWG graph path
+statics .down.> vtoptional : optional capabilities
 vtres .right.> vtdict : vtable points at\none 'static instance
 
 consumers -down-> vtres : retain · release · query_interface · node walks
 
 note right of snap
-  Node ids are **leased**: valid only
-  inside this snapshot and only while
-  it stays retained.
+  DynamicDAWG snapshots publish one dense
+  immutable graph per revision. Other
+  backends use leased ABI-local ids whose
+  warmed reads are lock-free; only rare
+  chunk-directory growth takes a mutex.
 end note
 
 note right of statics

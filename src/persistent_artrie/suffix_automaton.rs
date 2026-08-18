@@ -1606,6 +1606,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomatonChar<V, S> {
 impl<V: DictionaryValue> DictionaryNode for PersistentSuffixAutomatonNode<V> {
     type Unit = u8;
 
+    #[inline]
+    fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {
+        self.state_id
+            .and_then(crate::SnapshotNodeIdentity::from_index)
+    }
+
     fn is_final(&self) -> bool {
         self.state_id
             .and_then(|state| self.graph.nodes.get(state))
@@ -1712,6 +1718,12 @@ impl<V: DictionaryValue> MappedDictionaryNode for PersistentSuffixAutomatonNode<
 
 impl<V: DictionaryValue> DictionaryNode for PersistentSuffixAutomatonCharNode<V> {
     type Unit = char;
+
+    #[inline]
+    fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {
+        self.state_id
+            .and_then(crate::SnapshotNodeIdentity::from_index)
+    }
 
     fn is_final(&self) -> bool {
         self.state_id

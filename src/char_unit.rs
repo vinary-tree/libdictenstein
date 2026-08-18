@@ -74,6 +74,18 @@ pub trait CharUnit:
     /// arithmetic. `u8::to_dat_offset` is the byte's value;
     /// `char::to_dat_offset` is the codepoint's `u32` cast.
     fn to_dat_offset(&self) -> usize;
+
+    /// Return an injective index into a 256-slot dense table when one exists.
+    ///
+    /// Implementations may return `Some(index)` only when distinct units that
+    /// return `Some` also return distinct indices. Consumers use `None` as the
+    /// correctness-preserving signal to select a sparse map. The default keeps
+    /// external `CharUnit` implementations source-compatible and makes no
+    /// assumptions about their representation.
+    #[inline]
+    fn to_dense_index(&self) -> Option<u8> {
+        None
+    }
 }
 
 /// Byte-level implementation (existing behavior).
@@ -101,6 +113,11 @@ impl CharUnit for u8 {
     fn to_dat_offset(&self) -> usize {
         *self as usize
     }
+
+    #[inline]
+    fn to_dense_index(&self) -> Option<u8> {
+        Some(*self)
+    }
 }
 
 /// Character-level implementation (Unicode-aware).
@@ -126,6 +143,11 @@ impl CharUnit for char {
     #[inline]
     fn to_dat_offset(&self) -> usize {
         *self as usize
+    }
+
+    #[inline]
+    fn to_dense_index(&self) -> Option<u8> {
+        u8::try_from(*self as u32).ok()
     }
 }
 
@@ -190,6 +212,11 @@ impl CharUnit for u64 {
         // u64 backends aren't backed by a DAT; cast the low 32 bits.
         (*self as u32) as usize
     }
+
+    #[inline]
+    fn to_dense_index(&self) -> Option<u8> {
+        u8::try_from(*self).ok()
+    }
 }
 
 #[cfg(test)]
@@ -219,6 +246,21 @@ mod tests {
         let units = char::from_str(s);
         assert_eq!(units, vec!['h', 'e', 'l', 'l', 'o']);
         assert_eq!(<char as CharUnit>::to_string(&units), s);
+    }
+
+    #[test]
+    fn dense_indices_cover_only_injective_builtin_ranges() {
+        assert_eq!(<u8 as CharUnit>::to_dense_index(&0), Some(0));
+        assert_eq!(<u8 as CharUnit>::to_dense_index(&u8::MAX), Some(u8::MAX));
+
+        assert_eq!(<char as CharUnit>::to_dense_index(&'\0'), Some(0));
+        assert_eq!(<char as CharUnit>::to_dense_index(&'\u{ff}'), Some(u8::MAX));
+        assert_eq!(<char as CharUnit>::to_dense_index(&'\u{100}'), None);
+
+        assert_eq!(<u64 as CharUnit>::to_dense_index(&0), Some(0));
+        assert_eq!(<u64 as CharUnit>::to_dense_index(&255), Some(u8::MAX));
+        assert_eq!(<u64 as CharUnit>::to_dense_index(&256), None);
+        assert_eq!(<u64 as CharUnit>::to_dense_index(&(1u64 << 32)), None);
     }
 
     #[test]

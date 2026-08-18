@@ -209,6 +209,307 @@ pub enum SyncStrategy {
     Persistent,
 }
 
+/// One compact immutable edge exposed by a captured traversal graph.
+#[derive(Clone, Copy, Debug)]
+pub struct SnapshotTraversalEdge<U: CharUnit> {
+    label: U,
+    target: u32,
+}
+
+impl<U: CharUnit> SnapshotTraversalEdge<U> {
+    /// Construct an edge from a label and zero-based target index.
+    pub fn new(label: U, target: u32) -> Self {
+        Self { label, target }
+    }
+
+    /// Edge label.
+    pub fn label(self) -> U {
+        self.label
+    }
+
+    /// Target as an opaque, one-based traversal cursor.
+    pub fn target_cursor(self) -> SnapshotTraversalCursor {
+        SnapshotTraversalCursor::new(self.target as usize + 1)
+            .expect("snapshot traversal targets are one-based")
+    }
+}
+
+/// Borrowed outgoing edge range and finality for one captured cursor.
+pub struct SnapshotTraversalEdges<'a, U: CharUnit> {
+    edges: &'a [SnapshotTraversalEdge<U>],
+    is_final: bool,
+}
+
+impl<'a, U: CharUnit> SnapshotTraversalEdges<'a, U> {
+    /// Construct a borrowed edge range.
+    pub fn new(edges: &'a [SnapshotTraversalEdge<U>], is_final: bool) -> Self {
+        Self { edges, is_final }
+    }
+
+    /// Sorted outgoing edges.
+    pub fn edges(&self) -> &'a [SnapshotTraversalEdge<U>] {
+        self.edges
+    }
+
+    /// Whether this node accepts a dictionary term.
+    pub fn is_final(&self) -> bool {
+        self.is_final
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SnapshotTraversalNode {
+    pub(crate) edge_start: u32,
+    pub(crate) edge_len: u32,
+    pub(crate) is_final: bool,
+    pub(crate) value_cursor: SnapshotTraversalCursor,
+}
+
+/// Packed immutable node range: 32-bit edge start, 31-bit edge count, and
+/// finality in the high bit. Construction rejects counts that do not fit.
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+struct SnapshotTraversalRange(u64);
+
+const _: () = assert!(std::mem::size_of::<SnapshotTraversalRange>() == 8);
+
+const SNAPSHOT_RANGE_FINAL_BIT: u64 = 1u64 << 63;
+const SNAPSHOT_RANGE_LENGTH_MASK: u64 = u32::MAX as u64 >> 1;
+
+impl SnapshotTraversalRange {
+    #[inline]
+    fn new(edge_start: u32, edge_len: u32, is_final: bool) -> Option<Self> {
+        if u64::from(edge_len) > SNAPSHOT_RANGE_LENGTH_MASK {
+            return None;
+        }
+        let finality = if is_final {
+            SNAPSHOT_RANGE_FINAL_BIT
+        } else {
+            0
+        };
+        Some(Self(
+            u64::from(edge_start) | (u64::from(edge_len) << u32::BITS) | finality,
+        ))
+    }
+
+    #[inline]
+    fn edge_start(self) -> usize {
+        self.0 as u32 as usize
+    }
+
+    #[inline]
+    fn edge_len(self) -> usize {
+        ((self.0 >> u32::BITS) & SNAPSHOT_RANGE_LENGTH_MASK) as usize
+    }
+
+    #[inline]
+    fn is_final(self) -> bool {
+        self.0 & SNAPSHOT_RANGE_FINAL_BIT != 0
+    }
+}
+
+impl SnapshotTraversalNode {
+    /// Construct one node descriptor for a compact immutable graph.
+    pub fn new(
+        edge_start: u32,
+        edge_len: u32,
+        is_final: bool,
+        value_cursor: SnapshotTraversalCursor,
+    ) -> Self {
+        Self {
+            edge_start,
+            edge_len,
+            is_final,
+            value_cursor,
+        }
+    }
+
+    /// First outgoing edge in the graph's edge array.
+    pub fn edge_start(self) -> u32 {
+        self.edge_start
+    }
+
+    /// Number of outgoing edges.
+    pub fn edge_len(self) -> u32 {
+        self.edge_len
+    }
+
+    /// Whether this node accepts a dictionary term.
+    pub fn is_final(self) -> bool {
+        self.is_final
+    }
+
+    /// Backend-native value cursor retained by the graph owner.
+    pub fn value_cursor(self) -> SnapshotTraversalCursor {
+        self.value_cursor
+    }
+}
+
+/// Shared concrete format for a compact immutable traversal projection.
+///
+/// Every backend uses the same flat node/edge arrays, so query schedulers can
+/// stay monomorphized while the root capture remains backend-neutral.
+#[derive(Debug)]
+pub struct SnapshotTraversalGraph<U: CharUnit> {
+    nodes: Box<[SnapshotTraversalRange]>,
+    value_cursors: Box<[SnapshotTraversalCursor]>,
+    pub(crate) edges: Box<[SnapshotTraversalEdge<U>]>,
+    pub(crate) root: u32,
+}
+
+impl<U: CharUnit> SnapshotTraversalGraph<U> {
+    /// Validate and construct a compact immutable traversal graph.
+    ///
+    /// Edge ranges may appear in any node order but every range and target
+    /// must lie within the supplied arrays. Labels within one node must be
+    /// strictly increasing, matching the dictionary edge contract.
+    pub fn new(
+        nodes: Vec<SnapshotTraversalNode>,
+        edges: Vec<SnapshotTraversalEdge<U>>,
+        root: u32,
+    ) -> Option<Self> {
+        if nodes.is_empty() || root as usize >= nodes.len() {
+            return None;
+        }
+        for node in &nodes {
+            let start = node.edge_start as usize;
+            let end = start.checked_add(node.edge_len as usize)?;
+            let range = edges.get(start..end)?;
+            let mut previous = None;
+            for edge in range {
+                if edge.target as usize >= nodes.len()
+                    || previous.is_some_and(|label| label >= edge.label)
+                {
+                    return None;
+                }
+                previous = Some(edge.label);
+            }
+        }
+        let mut ranges = Vec::with_capacity(nodes.len());
+        let mut value_cursors = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            ranges.push(SnapshotTraversalRange::new(
+                node.edge_start,
+                node.edge_len,
+                node.is_final,
+            )?);
+            value_cursors.push(node.value_cursor);
+        }
+        Some(Self {
+            nodes: ranges.into_boxed_slice(),
+            value_cursors: value_cursors.into_boxed_slice(),
+            edges: edges.into_boxed_slice(),
+            root,
+        })
+    }
+
+    /// Number of immutable graph nodes.
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Reconstruct one complete node descriptor.
+    pub fn node(&self, index: usize) -> Option<SnapshotTraversalNode> {
+        let range = *self.nodes.get(index)?;
+        let value_cursor = *self.value_cursors.get(index)?;
+        Some(SnapshotTraversalNode::new(
+            range.edge_start() as u32,
+            range.edge_len() as u32,
+            range.is_final(),
+            value_cursor,
+        ))
+    }
+
+    /// All immutable edges.
+    pub fn edges(&self) -> &[SnapshotTraversalEdge<U>] {
+        &self.edges
+    }
+
+    /// Zero-based root node index.
+    pub fn root_index(&self) -> u32 {
+        self.root
+    }
+
+    /// Root cursor of the captured revision.
+    #[inline]
+    pub fn root_cursor(&self) -> SnapshotTraversalCursor {
+        SnapshotTraversalCursor::new(self.root as usize + 1)
+            .expect("snapshot traversal roots are one-based")
+    }
+
+    /// Borrow one cursor's sorted outgoing edge range and finality.
+    #[inline]
+    pub fn edges_and_finality(
+        &self,
+        cursor: SnapshotTraversalCursor,
+    ) -> SnapshotTraversalEdges<'_, U> {
+        let index = cursor.get() - 1;
+        let node = self.nodes[index];
+        let start = node.edge_start();
+        let end = start + node.edge_len();
+        SnapshotTraversalEdges::new(&self.edges[start..end], node.is_final())
+    }
+
+    /// Borrow one internally produced cursor's edge range without repeating
+    /// bounds checks already established by graph construction.
+    ///
+    /// # Safety
+    ///
+    /// `cursor` must be the root cursor or an edge target produced by this
+    /// exact graph. The graph constructor validates every such target and edge
+    /// range before publication.
+    #[inline]
+    pub unsafe fn edges_and_finality_unchecked(
+        &self,
+        cursor: SnapshotTraversalCursor,
+    ) -> SnapshotTraversalEdges<'_, U> {
+        let index = cursor.get() - 1;
+        // SAFETY: upheld by the method contract.
+        let node = unsafe { *self.nodes.get_unchecked(index) };
+        let start = node.edge_start();
+        let len = node.edge_len();
+        // SAFETY: every node range was validated by `new`.
+        let edges = unsafe { std::slice::from_raw_parts(self.edges.as_ptr().add(start), len) };
+        SnapshotTraversalEdges::new(edges, node.is_final())
+    }
+
+    /// Backend-native value cursor for one dense graph cursor.
+    #[inline]
+    pub fn value_cursor(&self, cursor: SnapshotTraversalCursor) -> SnapshotTraversalCursor {
+        self.value_cursors[cursor.get() - 1]
+    }
+}
+
+/// Root node plus an optional compact traversal projection captured from the
+/// same immutable dictionary revision.
+pub struct DictionaryTraversalRoot<N: DictionaryNode> {
+    node: N,
+    snapshot: Option<std::sync::Arc<SnapshotTraversalGraph<N::Unit>>>,
+}
+
+impl<N: DictionaryNode> DictionaryTraversalRoot<N> {
+    /// Compatibility root with owned-node traversal only.
+    pub fn owned(node: N) -> Self {
+        Self {
+            node,
+            snapshot: None,
+        }
+    }
+
+    /// Root with a compact captured traversal graph.
+    pub fn captured(node: N, snapshot: std::sync::Arc<SnapshotTraversalGraph<N::Unit>>) -> Self {
+        Self {
+            node,
+            snapshot: Some(snapshot),
+        }
+    }
+
+    /// Split into the compatibility owner and optional compact graph.
+    pub fn into_parts(self) -> (N, Option<std::sync::Arc<SnapshotTraversalGraph<N::Unit>>>) {
+        (self.node, self.snapshot)
+    }
+}
+
 /// Core dictionary abstraction for approximate string matching.
 ///
 /// A dictionary represents a collection of terms that can be efficiently
@@ -229,6 +530,16 @@ pub trait Dictionary {
     /// complete dictionary or retaining a read lock for the traversal's
     /// lifetime.
     fn root(&self) -> Self::Node;
+
+    /// Capture the preferred traversal representation for one immutable
+    /// dictionary revision.
+    ///
+    /// The default preserves compatibility through an owned root node.
+    /// Backends with a compact immutable node/edge arena can override this to
+    /// share that arena once per query and enqueue copyable cursors.
+    fn traversal_root(&self) -> DictionaryTraversalRoot<Self::Node> {
+        DictionaryTraversalRoot::owned(self.root())
+    }
 
     /// Check if a term exists in the dictionary
     fn contains(&self, term: &str) -> bool {
@@ -282,6 +593,15 @@ pub trait Dictionary {
 /// are labeled with character units (bytes or Unicode characters) and final
 /// nodes mark valid terms.
 ///
+/// # Determinism invariant
+///
+/// A node has at most one outgoing edge for any label. [`transition`](Self::transition),
+/// [`edges`](Self::edges), and the visitation methods must describe that same
+/// unique mapping. Consequently, a label sequence identifies at most one path
+/// from a dictionary root, even when an acyclic graph shares suffix nodes.
+/// Query algorithms rely on this invariant and do not retain a redundant set
+/// of already-emitted terms.
+///
 /// # Type Parameters
 ///
 /// The node is generic over [`CharUnit`], which can be:
@@ -293,6 +613,87 @@ pub trait DictionaryNode: Clone + Send + Sync {
     /// Use `u8` for byte-level (existing behavior, fastest).
     /// Use `char` for character-level (proper Unicode support).
     type Unit: CharUnit;
+
+    /// Return an opaque identity for this physical node within one immutable
+    /// dictionary revision.
+    ///
+    /// The compatibility default disables identity-based sharing. A backend
+    /// may return `Some` only when equal identities mean the same physical
+    /// node and distinct physical nodes always have distinct identities for
+    /// as long as the captured root remains alive. Implementations must be
+    /// consistent when enabled: if the captured root returns `Some`, every
+    /// reachable node must return a stable identity. A root returning `None`
+    /// selects the sequential fallback and descendant identities are ignored.
+    /// Snapshot resource arenas use this optional seam to preserve DAWG suffix
+    /// sharing instead of publishing a fresh ABI node for every incoming edge.
+    #[inline]
+    fn snapshot_node_identity(&self) -> Option<SnapshotNodeIdentity> {
+        None
+    }
+
+    /// Capture this node as the owner of a revision-local traversal cursor.
+    ///
+    /// The compatibility default disables cursor traversal. Backends may
+    /// return a cursor when retaining `self` keeps every node reachable from
+    /// that cursor alive and immutable. Query schedulers can then retain this
+    /// owner once and enqueue copyable cursors instead of cloning an owned
+    /// child handle for every accepted edge.
+    #[inline]
+    fn snapshot_root_cursor(&self) -> Option<SnapshotTraversalCursor> {
+        None
+    }
+
+    /// Whether every valid snapshot cursor can be materialized back into one
+    /// owned node handle through [`snapshot_cursor_node`](Self::snapshot_cursor_node).
+    #[inline]
+    fn supports_snapshot_cursor_nodes(&self) -> bool {
+        false
+    }
+
+    /// Materialize one owned node handle from a retained snapshot cursor.
+    ///
+    /// # Safety
+    ///
+    /// `cursor` must obey the retained-revision and ancestry contract of
+    /// [`filter_map_snapshot_cursor_edges_and_finality`](Self::filter_map_snapshot_cursor_edges_and_finality).
+    #[inline]
+    unsafe fn snapshot_cursor_node(&self, cursor: SnapshotTraversalCursor) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        let _ = cursor;
+        None
+    }
+
+    /// Project the outgoing edges of a captured traversal cursor.
+    ///
+    /// Returns `None` when this backend does not support captured cursor
+    /// traversal. Supported backends return `Some(finality)` and invoke
+    /// `project` exactly once per edge, creating a child cursor only for an
+    /// accepted projection.
+    ///
+    /// # Safety
+    ///
+    /// `cursor` must have been returned by [`snapshot_root_cursor`](Self::snapshot_root_cursor)
+    /// on this node or supplied to `visitor` by an earlier invocation on the
+    /// same retained node. The retained node must outlive the call and every
+    /// queued cursor. A cursor must never be mixed with another captured
+    /// dictionary revision.
+    #[inline]
+    unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(
+        &self,
+        cursor: SnapshotTraversalCursor,
+        _project: P,
+        _visitor: F,
+    ) -> Option<bool>
+    where
+        Self: Sized,
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, SnapshotTraversalCursor, T),
+    {
+        let _ = cursor;
+        None
+    }
 
     /// Check if this node marks the end of a valid term
     fn is_final(&self) -> bool;
@@ -389,6 +790,59 @@ pub trait DictionaryNode: Clone + Send + Sync {
     }
 }
 
+/// Opaque, non-zero identity of a physical node within one captured revision.
+///
+/// This is not a persistent identifier and must never be dereferenced or
+/// compared across independently captured dictionary revisions.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct SnapshotNodeIdentity(std::num::NonZeroU64);
+
+impl SnapshotNodeIdentity {
+    /// Construct an identity from a backend-proven non-zero token.
+    pub const fn new(value: u64) -> Option<Self> {
+        match std::num::NonZeroU64::new(value) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+
+    /// Construct an identity from a zero-based immutable node index.
+    pub fn from_index(index: usize) -> Option<Self> {
+        let value = u64::try_from(index).ok()?.checked_add(1)?;
+        Self::new(value)
+    }
+
+    /// Return the opaque non-zero token.
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+/// Opaque cursor into one retained immutable dictionary revision.
+///
+/// Unlike [`SnapshotNodeIdentity`], this token is intended for traversal and
+/// may encode a backend-local pointer or array index. It is meaningful only
+/// while the node that captured it remains alive, and only for descendants of
+/// that exact captured revision.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[repr(transparent)]
+pub struct SnapshotTraversalCursor(std::num::NonZeroUsize);
+
+impl SnapshotTraversalCursor {
+    /// Construct a cursor from a backend-proven non-zero token.
+    pub const fn new(value: usize) -> Option<Self> {
+        match std::num::NonZeroUsize::new(value) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+
+    /// Return the opaque non-zero token.
+    pub const fn get(self) -> usize {
+        self.0.get()
+    }
+}
+
 /// Collect owned child handles through the monomorphized visitation seam.
 ///
 /// Some stack-based serializers and foreign-resource arenas must retain child
@@ -458,6 +912,76 @@ pub trait MappedDictionaryNode: DictionaryNode {
     /// override it to avoid repeating an expensive finality callback.
     fn value_at_final(&self) -> Option<Self::Value> {
         self.value()
+    }
+
+    /// Whether this retained node supports value reads through every snapshot
+    /// cursor reachable from [`DictionaryNode::snapshot_root_cursor`].
+    ///
+    /// This capability is separate from [`snapshot_cursor_value`](Self::snapshot_cursor_value)
+    /// so query construction never clones an empty-term value merely to detect
+    /// backend support.
+    #[inline]
+    fn supports_snapshot_cursor_values(&self) -> bool {
+        false
+    }
+
+    /// Whether this retained node can resolve the backend value cursors stored
+    /// in a compact [`SnapshotTraversalGraph`].
+    #[inline]
+    fn supports_snapshot_graph_values(&self) -> bool {
+        false
+    }
+
+    /// Build the compact traversal projection for this retained revision.
+    ///
+    /// Resource producers call this lazily after the O(1) snapshot boundary,
+    /// so graph projection never extends a backend publication/read lock.
+    /// Backends that return `Some` must keep every embedded value cursor valid
+    /// through this retained node owner.
+    #[inline]
+    fn snapshot_traversal_graph(
+        &self,
+    ) -> Option<std::sync::Arc<SnapshotTraversalGraph<Self::Unit>>> {
+        None
+    }
+
+    /// Read the value at a captured revision-local traversal cursor.
+    ///
+    /// The outer `Option` reports whether this backend supports value access
+    /// through snapshot cursors. The inner `Option` is the dictionary value,
+    /// which may be absent even at a final node for value-optional backends.
+    ///
+    /// # Safety
+    ///
+    /// `cursor` must obey the same retained-revision and ancestry contract as
+    /// [`DictionaryNode::filter_map_snapshot_cursor_edges_and_finality`].
+    #[inline]
+    unsafe fn snapshot_cursor_value(
+        &self,
+        cursor: SnapshotTraversalCursor,
+    ) -> Option<Option<Self::Value>> {
+        let _ = cursor;
+        None
+    }
+
+    /// Read the value at a dense compact-graph cursor.
+    ///
+    /// The graph translates its dense cursor to the backend-native value
+    /// cursor captured from the same immutable revision. The outer `Option`
+    /// reports capability support and the inner `Option` is the node value.
+    ///
+    /// # Safety
+    ///
+    /// `graph` must have been captured with this exact retained owner and
+    /// `cursor` must belong to that graph.
+    #[inline]
+    unsafe fn snapshot_graph_cursor_value(
+        &self,
+        graph: &SnapshotTraversalGraph<Self::Unit>,
+        cursor: SnapshotTraversalCursor,
+    ) -> Option<Option<Self::Value>> {
+        let _ = (graph, cursor);
+        None
     }
 }
 

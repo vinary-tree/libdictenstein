@@ -713,6 +713,15 @@ impl<V: DictionaryValue> Dictionary for DynamicDawg<V> {
         }
     }
 
+    fn traversal_root(&self) -> crate::DictionaryTraversalRoot<Self::Node> {
+        let (node, cursor_graph) = self.inner.root_arc_with_cursor_graph();
+        let root = DynamicDawgNode { node };
+        match cursor_graph {
+            Some(graph) => crate::DictionaryTraversalRoot::captured(root, graph),
+            None => crate::DictionaryTraversalRoot::owned(root),
+        }
+    }
+
     fn len(&self) -> Option<usize> {
         Some(self.term_count())
     }
@@ -730,6 +739,49 @@ pub struct DynamicDawgNode<V: DictionaryValue = ()> {
 
 impl<V: DictionaryValue> DictionaryNode for DynamicDawgNode<V> {
     type Unit = u8;
+
+    #[inline]
+    fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {
+        self.node.snapshot_id
+    }
+
+    #[inline]
+    fn snapshot_root_cursor(&self) -> Option<crate::SnapshotTraversalCursor> {
+        Some(LockFreeDawgNode::traversal_cursor(&self.node))
+    }
+
+    #[inline]
+    fn supports_snapshot_cursor_nodes(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_node(&self, cursor: crate::SnapshotTraversalCursor) -> Option<Self> {
+        // SAFETY: inherited from the trait contract.
+        Some(Self {
+            node: unsafe { LockFreeDawgNode::arc_from_cursor(cursor) },
+        })
+    }
+
+    #[inline]
+    unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(
+        &self,
+        cursor: crate::SnapshotTraversalCursor,
+        project: P,
+        visitor: F,
+    ) -> Option<bool>
+    where
+        P: FnMut(u8) -> Option<T>,
+        F: FnMut(u8, crate::SnapshotTraversalCursor, T),
+    {
+        // SAFETY: the trait contract requires every cursor to originate from
+        // this retained root revision.
+        Some(unsafe {
+            LockFreeDawgNode::<u8, V>::filter_map_cursor_edges_and_finality(
+                cursor, project, visitor,
+            )
+        })
+    }
 
     fn is_final(&self) -> bool {
         self.node.is_final()
@@ -806,6 +858,40 @@ impl<V: DictionaryValue> MappedDictionaryNode for DynamicDawgNode<V> {
 
     fn value(&self) -> Option<Self::Value> {
         self.node.value()
+    }
+
+    #[inline]
+    fn supports_snapshot_cursor_values(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    fn supports_snapshot_graph_values(&self) -> bool {
+        true
+    }
+
+    fn snapshot_traversal_graph(&self) -> Option<Arc<crate::SnapshotTraversalGraph<Self::Unit>>> {
+        super::lockfree::frozen_traversal_graph_from_root(&self.node).map(Arc::new)
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_value(
+        &self,
+        cursor: crate::SnapshotTraversalCursor,
+    ) -> Option<Option<Self::Value>> {
+        // SAFETY: inherited from the trait contract.
+        Some(unsafe { LockFreeDawgNode::<u8, V>::cursor_value(cursor) })
+    }
+
+    #[inline]
+    unsafe fn snapshot_graph_cursor_value(
+        &self,
+        graph: &crate::SnapshotTraversalGraph<u8>,
+        cursor: crate::SnapshotTraversalCursor,
+    ) -> Option<Option<Self::Value>> {
+        let value_cursor = graph.value_cursor(cursor);
+        // SAFETY: the graph and retained owner originate from one revision.
+        Some(unsafe { LockFreeDawgNode::<u8, V>::cursor_value(value_cursor) })
     }
 }
 

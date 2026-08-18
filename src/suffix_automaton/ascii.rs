@@ -923,6 +923,11 @@ pub struct SuffixNodeHandle<V: DictionaryValue = ()> {
 impl<V: DictionaryValue> DictionaryNode for SuffixNodeHandle<V> {
     type Unit = u8;
 
+    #[inline]
+    fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {
+        crate::SnapshotNodeIdentity::from_index(self.state_id)
+    }
+
     fn is_final(&self) -> bool {
         self.automaton
             .nodes

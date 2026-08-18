@@ -16,7 +16,9 @@ The design premise, stated once in the module header and enforced
 everywhere: **concrete dictionaries and their CRUD stay in this crate;
 consumers receive a small project-neutral resource.** Capturing a query
 revision clones an immutable root in $`\mathcal{O}(1)`$; nodes acquire
-ABI-local identifiers only when a consumer traverses their incoming edge.
+ABI-local identifiers only when a callback-fallback consumer traverses their
+incoming edge. DynamicDAWG snapshots may instead publish one compact immutable
+graph for the whole revision on first request.
 
 ---
 
@@ -27,8 +29,9 @@ ABI-local identifiers only when a consumer traverses their incoming edge.
 | binding | A cheaply clonable `Arc`-shared wrapper (`DynamicDawgBinding`, `DoubleArrayTrieBinding`, `ScdawgBinding`, `PersistentARTrieBinding`) exposing one engine's CRUD to `src/ffi.rs` and producing resources. |
 | payload | The `ResourcePayload` variant a resource context carries: `Live` (mutable DynamicDAWG), `Secondary` (DAT or SCDAWG), `Persistent` (ARTrie family), or `Snapshot` (a captured revision). |
 | revision | One immutable logical value of a dictionary. Mutable backends *publish* successor revisions; they never edit a published one in place. |
-| capture | Producing a `Snapshot` payload from any other payload: reuse the source revision's memoized snapshot or clone its current root handle and allocate a one-slot arena — no traversal, no dictionary copy. |
+| capture | Producing a `Snapshot` payload from any other payload: reuse the source revision's memoized snapshot or clone its current root handle and allocate a one-slot fallback arena plus empty graph publication cells — no traversal, no dictionary copy. |
 | identity | The optional `(producer, revision)` token exposed only by immutable snapshots. Equal tokens mean equal pinned revisions and permit consumers to share derived caches. |
+| compact graph | The optional `vt.dict.graph.v1` flat node/edge projection. DynamicDAWG snapshots construct it lazily once per revision; consumers traverse it without per-node callbacks. |
 | arena | The `TraversalSnapshot`'s append-only, 256-slot-chunked table mapping ABI-local node ids to engine node handles (plus each node's write-once materialized edge list). |
 | ABI-local node id | A `u64` index into one snapshot's arena. Meaningful only for that snapshot, only while it is retained. |
 | retain ledger | The `Arc<ResourceContext>` strong count: one owned retain per stored copy of the two words (Collins [[1]](#references)). |
@@ -37,7 +40,7 @@ ABI-local identifiers only when a consumer traverses their incoming edge.
 
 ## 2. Architecture
 
-<img src="../diagrams/abi-producer-component.svg" alt="Component diagram of the libdictenstein producer stack. At the top, inside a red trust-boundary rectangle, sit the foreign consumers: the liblevenshtein transducer, the duallity WFST constructor, and any C-ABI or facade caller. They call into the green libdictenstein cdylib package: the C ABI layer (35 ldict_* functions with catch_unwind and a thread-local last error, owning LdictDictionary handles) which fans out to the four producer bindings — DynamicDawgBinding over RwLock(DynamicBackend), DoubleArrayTrieBinding and ScdawgBinding over Arc(SecondaryBackend), and PersistentARTrieBinding over Arc(PersistentBackend) — each wrapping its dictionary core. Every binding produces an OwnedDictionaryResource (drawn in the green handle color, born with one retain) which holds an Arc(ResourceContext) whose strong count is the retain ledger. The context creates TraversalSnapshot arenas (amber leased color: lazy, append-only ABI-local ids) via O(1) revision capture, and query_interface selects one of the eleven 'static vtables (RESOURCE_VTABLE plus ten VtDictionaryVTable instances by domain and flags). The OwnedDictionaryResource exports the two borrowed words as a VtResource conforming to the pink vinary-tree-interop family contract at the bottom; consumers call retain, release, query_interface, and the node-walk operations against it across the trust boundary." width="100%"/>
+<img src="../diagrams/abi-producer-component.svg" alt="Component diagram of the libdictenstein producer stack. At the top, inside a red trust-boundary rectangle, sit the foreign consumers: the liblevenshtein transducer, the duallity WFST constructor, and any C-ABI or facade caller. They call into the green libdictenstein cdylib package: the C ABI layer (35 ldict_* functions with catch_unwind and a thread-local last error, owning LdictDictionary handles) which fans out to the four producer bindings — DynamicDawgBinding over RwLock(DynamicBackend), DoubleArrayTrieBinding and ScdawgBinding over Arc(SecondaryBackend), and PersistentARTrieBinding over Arc(PersistentBackend) — each wrapping its dictionary core. Every binding produces an OwnedDictionaryResource (drawn in the green handle color, born with one retain) which holds an Arc(ResourceContext) whose strong count is the retain ledger. The context creates TraversalSnapshot values with a lazy compact-graph publication path and a fallback append-only ABI-local-id arena via O(1) revision capture. query_interface selects the static base, dictionary, visit, compact-graph, and snapshot-identity vtables. The OwnedDictionaryResource exports the two borrowed words as a VtResource conforming to the pink vinary-tree-interop family contract at the bottom; consumers call retain, release, query_interface, and either compact-graph or node-walk operations against it across the trust boundary." width="100%"/>
 
 Five layers, from the metal up:
 
@@ -55,8 +58,9 @@ Five layers, from the metal up:
    is `Clone` (an `Arc` bump) and each has `resource() → OwnedDictionaryResource`.
 4. **Resource machinery** — `ResourceContext` (payload + domain + flags),
    `SnapshotMemo` (one warmed snapshot per source revision),
-   `TraversalSnapshot` (the chunked arena), `OwnedDictionaryResource` (the
-   retain guard), and the `'static` base/dictionary/identity vtables.
+   `TraversalSnapshot` (revision root, graph once-cells, and chunked fallback
+   arena), `OwnedDictionaryResource` (the retain guard), and the `'static`
+   base/dictionary/visit/graph/identity vtables.
 5. **The exported words** — a `VtResource { context, vtable }` whose vtable
    pointers live in the producer's read-only data for the process lifetime.
 
@@ -133,7 +137,37 @@ reports the term gone.
 
 ---
 
-## 4. Lazy ABI-local node ids — the arena
+## 4. Compact graph fast path and lazy arena fallback
+
+An immutable DynamicDAWG snapshot may negotiate `vt.dict.graph.v1`. The live
+resource never advertises it, and DAT, SCDAWG, and persistent ARTrie snapshots
+currently answer `Unsupported`; those resources continue through the universal
+callback path below.
+
+`TraversalSnapshot` contains two revision-local publication cells:
+
+```text
+native_graph: OnceLock<Option<Arc<SnapshotTraversalGraph<Unit>>>>
+abi_graph:    OnceLock<AbiTraversalGraph>
+```
+
+The first graph request projects the retained immutable DAWG root into dense
+node descriptors and one sorted flat edge array. Freeze-built revisions use
+their dense snapshot ids; path-copied revisions use pointer identity only while
+the retained root keeps every node alive. The second once-cell converts the
+native labels and targets into the family ABI layout. This
+$`\Theta(\lvert V\rvert + \lvert E\rvert)`$ work occurs after the
+$`\mathcal{O}(1)`$ snapshot callback and outside the live backend's read lock
+and snapshot-memo lock. Every later graph request for that revision is
+$`\mathcal{O}(1)`$ and returns the same stable pointers and counts.
+
+ABI `value_cursor` tokens are deliberately one-based dense graph indices—not
+backend pointers. `node_value_u64` checks nonzero conversion and the graph's
+node bound, translates the index through the retained native graph, and only
+then reads backend state. Thus arbitrary or cross-revision cursor forgery is a
+reported `InvalidArgument`, never a pointer dereference.
+
+### 4.1 Lazy ABI-local node ids — the fallback arena
 
 A dictionary node crossing an ABI must become a plain integer: engine node
 handles are Rust types (generic, lifetime-bearing, non-FFI-safe), and leaking
@@ -189,7 +223,7 @@ Properties, each load-bearing:
   the ABI view is the trie *unfolding* of the DAG. Consumers walk a tree;
   producers store a DAG. (A consumer that wants DAG-sharing back can hash on
   its side; the ABI deliberately does not promise node identity.)
-- **Memory grows only with consumer work.** A cold revision begins with one
+- **Fallback memory grows only with consumer work.** A cold revision begins with one
   entry; each first-time expansion of a node $`v`$ appends exactly
   $`\deg(v)`$ entries. After expanding the set $`E`$ of nodes:
 
@@ -197,8 +231,10 @@ Properties, each load-bearing:
   \lvert \mathrm{arena} \rvert \;=\; 1 + \sum_{v \in E} \deg(v)
   ```
 
-  — one arena entry per edge the consumer actually traversed, allocated by
-  the consumer's own calls. The producer never pre-materializes anything.
+  — one arena entry per edge the fallback consumer actually traversed,
+  allocated by the consumer's own calls. Compact-graph consumers instead
+  deliberately materialize one bounded projection of the immutable revision,
+  once, when they negotiate the optional interface.
   (Exhaustion economics: the consumer pays at least one ABI call per
   expansion; see the [boundary analysis](../security/ffi-boundary.md#resource-exhaustion).)
 - **Reclamation is synchronous and bounded by the warmed revision.** When the
@@ -212,7 +248,7 @@ Properties, each load-bearing:
   defensive portability, not dead weight). Incoming ids are narrowed with
   `usize::try_from` and bounds-checked before use.
 
-### 4.1 Only snapshots are walkable
+### 4.2 Only snapshots are walkable
 
 `root`, `len`, `node_is_final`, `node_value_u64`, `node_transition`, and
 `node_edges` all begin with `context.immutable()` — a payload check that
@@ -224,7 +260,7 @@ enforceable at the type level of the protocol — there is no API through which
 a consumer can accidentally walk a moving revision. The `IMMUTABLE` flag
 ([§ 6](#6-the-flag-truth-table)) is the discoverable marker of walkability.
 
-### 4.2 Count coherence: `len` is exact for every family
+### 4.3 Count coherence: `len` is exact for every family
 
 A captured snapshot answers `len` only when the pair `(root, count)` is
 coherent — both drawn from one published revision:
@@ -243,13 +279,14 @@ coherent — both drawn from one published revision:
 
 ---
 
-## 5. The eleven `'static` vtables
+## 5. The fourteen `'static` vtables
 
 `query_interface` never allocates: it validates the 16-byte interface id and
-the minimum version, then hands back a pointer to one of eleven immutable
-`'static` structs — the base `RESOURCE_VTABLE` (retain/release/query_interface)
-plus ten `VtDictionaryVTable` instances covering the reachable
-(domain × immutable × suffix) combinations:
+the minimum version, then hands back a pointer to one of fourteen immutable
+`'static` structs: the base `RESOURCE_VTABLE`
+(retain/release/query_interface), one dictionary-visit vtable, one compact
+graph vtable, one snapshot-identity vtable, plus ten `VtDictionaryVTable`
+instances covering the reachable (domain × immutable × suffix) combinations:
 
 | | Byte | UnicodeScalar | U64 |
 |---|---|---|---|
@@ -302,7 +339,7 @@ Three facts the table encodes:
    self-snapshotting in $`\mathcal{O}(1)`$ by arena sharing. Deliberately, a
    live DoubleArrayTrie resource does **not** carry `IMMUTABLE` even though
    the trie is frozen: `IMMUTABLE` advertises the walkability contract of
-   [§ 4.1](#41-only-snapshots-are-walkable), not the engine's mutability. A
+   [§ 4.2](#42-only-snapshots-are-walkable), not the engine's mutability. A
    DAT capture is a fresh one-slot arena either way — still $`\Theta(1)`$.
 
 ---

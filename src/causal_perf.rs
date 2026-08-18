@@ -44,6 +44,12 @@ pub struct CausalConstructionStats {
     pub resource_is_final_calls: u64,
     /// Snapshot value operations.
     pub resource_value_calls: u64,
+    /// Immutable native graphs projected into the compact ABI representation.
+    pub resource_graph_projections: u64,
+    /// Compact graph views acquired through the optional graph interface.
+    pub resource_graph_calls: u64,
+    /// Values resolved through compact-graph value cursors.
+    pub resource_graph_value_calls: u64,
     /// Snapshot edge-list operations.
     pub resource_edges_calls: u64,
     /// First edge expansions for snapshot nodes.
@@ -105,6 +111,12 @@ counter!(RESOURCE_ARENA_LOCKS);
 counter!(RESOURCE_IS_FINAL_CALLS);
 #[cfg(feature = "perf-instrumentation")]
 counter!(RESOURCE_VALUE_CALLS);
+#[cfg(feature = "perf-instrumentation")]
+counter!(RESOURCE_GRAPH_PROJECTIONS);
+#[cfg(feature = "perf-instrumentation")]
+counter!(RESOURCE_GRAPH_CALLS);
+#[cfg(feature = "perf-instrumentation")]
+counter!(RESOURCE_GRAPH_VALUE_CALLS);
 #[cfg(feature = "perf-instrumentation")]
 counter!(RESOURCE_EDGES_CALLS);
 #[cfg(feature = "perf-instrumentation")]
@@ -168,6 +180,15 @@ recorder!(
 recorder!(record_resource_arena_locks, RESOURCE_ARENA_LOCKS);
 recorder!(record_resource_is_final_calls, RESOURCE_IS_FINAL_CALLS);
 recorder!(record_resource_value_calls, RESOURCE_VALUE_CALLS);
+recorder!(
+    record_resource_graph_projections,
+    RESOURCE_GRAPH_PROJECTIONS
+);
+recorder!(record_resource_graph_calls, RESOURCE_GRAPH_CALLS);
+recorder!(
+    record_resource_graph_value_calls,
+    RESOURCE_GRAPH_VALUE_CALLS
+);
 recorder!(record_resource_edges_calls, RESOURCE_EDGES_CALLS);
 recorder!(
     record_resource_edge_cache_misses,
@@ -231,6 +252,9 @@ pub fn causal_construction_stats() -> CausalConstructionStats {
         resource_arena_locks: load(&RESOURCE_ARENA_LOCKS),
         resource_is_final_calls: load(&RESOURCE_IS_FINAL_CALLS),
         resource_value_calls: load(&RESOURCE_VALUE_CALLS),
+        resource_graph_projections: load(&RESOURCE_GRAPH_PROJECTIONS),
+        resource_graph_calls: load(&RESOURCE_GRAPH_CALLS),
+        resource_graph_value_calls: load(&RESOURCE_GRAPH_VALUE_CALLS),
         resource_edges_calls: load(&RESOURCE_EDGES_CALLS),
         resource_edge_cache_misses: load(&RESOURCE_EDGE_CACHE_MISSES),
         resource_native_edges_enumerated: load(&RESOURCE_NATIVE_EDGES_ENUMERATED),
@@ -249,7 +273,7 @@ pub fn causal_construction_stats() -> CausalConstructionStats {
 }
 
 #[cfg(feature = "perf-instrumentation")]
-fn counters() -> [&'static AtomicU64; 26] {
+fn counters() -> [&'static AtomicU64; 29] {
     [
         &TERM_INSERT_ATTEMPTS,
         &INPUT_UNITS,
@@ -269,6 +293,9 @@ fn counters() -> [&'static AtomicU64; 26] {
         &RESOURCE_ARENA_LOCKS,
         &RESOURCE_IS_FINAL_CALLS,
         &RESOURCE_VALUE_CALLS,
+        &RESOURCE_GRAPH_PROJECTIONS,
+        &RESOURCE_GRAPH_CALLS,
+        &RESOURCE_GRAPH_VALUE_CALLS,
         &RESOURCE_EDGES_CALLS,
         &RESOURCE_EDGE_CACHE_MISSES,
         &RESOURCE_NATIVE_EDGES_ENUMERATED,

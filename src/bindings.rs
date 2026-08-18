@@ -3,10 +3,11 @@
 //! This module is the producer half of the `vt.dictionary.v1` contract.
 //! Concrete dictionaries and their CRUD APIs remain in this crate while
 //! consumers retain a small project-neutral resource. Capturing a query
-//! revision clones an immutable root in O(1); nodes are assigned ABI-local
-//! identifiers only when a consumer traverses their incoming edge.
+//! revision clones an immutable root in O(1). Backends with stable physical
+//! node identity preserve graph sharing in a lock-free lazy arena; other
+//! backends retain the sequential ABI-local identifier fallback.
 
-use crate::concurrent_slots::{ArcSlotDirectory, DenseArcSlots};
+use crate::concurrent_slots::HybridOnceBoxSlots;
 use crate::double_array_trie::char::DoubleArrayTrieChar;
 use crate::double_array_trie::DoubleArrayTrie;
 use crate::dynamic_dawg::char::DynamicDawgChar;
@@ -14,17 +15,22 @@ use crate::dynamic_dawg::u64::DynamicDawgU64;
 use crate::dynamic_dawg::DynamicDawg;
 use crate::scdawg::char::ScdawgChar;
 use crate::scdawg::Scdawg;
-use crate::{Dictionary, MappedDictionaryNode};
+use crate::{
+    Dictionary, DictionaryNode, MappedDictionaryNode, SnapshotNodeIdentity,
+    SnapshotTraversalCursor, SnapshotTraversalGraph,
+};
 use std::ffi::c_void;
 #[cfg(feature = "persistent-artrie")]
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use vinary_tree_interop::{
-    dictionary_flags, VtDictionaryEdge, VtDictionaryVTable, VtDictionaryVisitVTable, VtInterfaceId,
-    VtOptionalU64, VtResource, VtResourceVTable, VtSnapshotIdentity, VtSnapshotIdentityVTable,
-    VtStatus, VtUnitDomain, VtValueDomain, VT_ABI_VERSION, VT_DICTIONARY_INTERFACE_ID,
-    VT_DICTIONARY_INTERFACE_VERSION, VT_DICTIONARY_VISIT_INTERFACE_ID,
+    dictionary_flags, VtDictionaryEdge, VtDictionaryGraphEdge, VtDictionaryGraphNode,
+    VtDictionaryGraphVTable, VtDictionaryGraphView, VtDictionaryVTable, VtDictionaryVisitVTable,
+    VtInterfaceId, VtOptionalU64, VtResource, VtResourceVTable, VtSnapshotIdentity,
+    VtSnapshotIdentityVTable, VtStatus, VtUnitDomain, VtValueDomain, VT_ABI_VERSION,
+    VT_DICTIONARY_GRAPH_INTERFACE_ID, VT_DICTIONARY_GRAPH_INTERFACE_VERSION,
+    VT_DICTIONARY_INTERFACE_ID, VT_DICTIONARY_INTERFACE_VERSION, VT_DICTIONARY_VISIT_INTERFACE_ID,
     VT_DICTIONARY_VISIT_INTERFACE_VERSION, VT_SNAPSHOT_IDENTITY_INTERFACE_ID,
     VT_SNAPSHOT_IDENTITY_INTERFACE_VERSION,
 };
@@ -1225,9 +1231,10 @@ impl DynamicDawgBinding {
             DynamicBackend::U64(dictionary) => dictionary.compact(),
         };
         drop(backend);
-        if reclaimed != 0 {
-            self.shared.snapshots.invalidate();
-        }
+        // Every compaction publishes a fresh immutable graph revision, even
+        // when minimization happens to preserve the physical node count.
+        // Snapshot memoization is revision-based, not size-based.
+        self.shared.snapshots.invalidate();
         reclaimed
     }
 
@@ -1276,6 +1283,8 @@ impl AbiUnit for u64 {
 }
 
 const TRAVERSAL_CHUNK_SIZE: usize = 256;
+const TRAVERSAL_DENSE_CHUNKS: usize = 64;
+const TRAVERSAL_SPARSE_SHARDS: usize = 64;
 
 struct ArenaNode<N> {
     node: N,
@@ -1297,23 +1306,31 @@ impl<N> ArenaNode<N> {
 /// lock. Writers geometrically grow and CAS-publish the directory. Each node's
 /// outgoing edges are expanded exactly once by its local `OnceLock`.
 struct NodeArena<N> {
-    slots: DenseArcSlots<ArenaNode<N>, TRAVERSAL_CHUNK_SIZE>,
+    slots: HybridOnceBoxSlots<
+        ArenaNode<N>,
+        TRAVERSAL_CHUNK_SIZE,
+        TRAVERSAL_DENSE_CHUNKS,
+        TRAVERSAL_SPARSE_SHARDS,
+    >,
     next_id: AtomicU64,
+    published: AtomicU64,
+    stable_identity: bool,
 }
 
 impl<N> NodeArena<N> {
-    fn new(root: N) -> Self {
-        let slots = DenseArcSlots::new();
-        let root = Arc::new(ArenaNode::new(root));
-        let installed = slots.install_if_absent(0, Arc::clone(&root));
-        debug_assert!(Arc::ptr_eq(&root, &installed));
+    fn new(root: N, root_identity: Option<SnapshotNodeIdentity>) -> Self {
+        let slots = HybridOnceBoxSlots::new();
+        let (_, installed) = slots.install_if_absent_with_status(0, ArenaNode::new(root));
+        debug_assert!(installed);
         Self {
             slots,
             next_id: AtomicU64::new(1),
+            published: AtomicU64::new(1),
+            stable_identity: root_identity.is_some(),
         }
     }
 
-    fn slot(&self, node: u64) -> Result<Arc<ArenaNode<N>>, VtStatus> {
+    fn slot(&self, node: u64) -> Result<&ArenaNode<N>, VtStatus> {
         self.slots.get(node).ok_or(VtStatus::InvalidArgument)
     }
 
@@ -1325,9 +1342,6 @@ impl<N> NodeArena<N> {
         let mut start = self.next_id.load(Ordering::Acquire);
         loop {
             let end = start.checked_add(count).ok_or(VtStatus::LimitExceeded)?;
-            self.slots
-                .ensure(end - 1)
-                .map_err(|_| VtStatus::LimitExceeded)?;
             match self.next_id.compare_exchange_weak(
                 start,
                 end,
@@ -1344,9 +1358,11 @@ impl<N> NodeArena<N> {
         if node >= self.next_id.load(Ordering::Acquire) {
             return Err(VtStatus::LimitExceeded);
         }
-        let value = Arc::new(ArenaNode::new(value));
-        let installed = self.slots.install_if_absent(node, Arc::clone(&value));
-        if Arc::ptr_eq(&value, &installed) {
+        let (_, installed) = self
+            .slots
+            .install_if_absent_with_status(node, ArenaNode::new(value));
+        if installed {
+            self.published.fetch_add(1, Ordering::Relaxed);
             Ok(())
         } else {
             Err(VtStatus::InvalidArgument)
@@ -1354,11 +1370,30 @@ impl<N> NodeArena<N> {
     }
 }
 
+impl<N: DictionaryNode> NodeArena<N> {
+    fn install_stable(&self, value: N) -> Result<(u64, bool), VtStatus> {
+        if !self.stable_identity {
+            return Err(VtStatus::InvalidArgument);
+        }
+        let node = value
+            .snapshot_node_identity()
+            .ok_or(VtStatus::InvalidArgument)?
+            .get();
+        let (_, installed) = self
+            .slots
+            .install_if_absent_with_status(node, ArenaNode::new(value));
+        if installed {
+            self.published.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok((node, installed))
+    }
+}
+
 impl<N> Drop for NodeArena<N> {
     fn drop(&mut self) {
         #[cfg(feature = "perf-instrumentation")]
         let started = std::time::Instant::now();
-        let nodes = self.next_id.load(Ordering::Relaxed);
+        let nodes = self.published.load(Ordering::Relaxed);
         // Reclaim every published chunk on the releasing thread. Swapping an
         // empty directory makes the destruction point explicit and measurable;
         // no background reclaimer or unbounded deferred queue is involved.
@@ -1373,15 +1408,74 @@ impl<N> Drop for NodeArena<N> {
     }
 }
 
-struct TraversalSnapshot<N> {
+struct TraversalSnapshot<N: DictionaryNode> {
     arena: NodeArena<N>,
+    native_graph: OnceLock<Option<Arc<SnapshotTraversalGraph<N::Unit>>>>,
+    abi_graph: OnceLock<AbiTraversalGraph>,
     len: Option<usize>,
     domain: VtUnitDomain,
     suffix: bool,
     identity: SnapshotIdentity,
 }
 
-impl<N> TraversalSnapshot<N> {
+struct AbiTraversalGraph {
+    nodes: Box<[VtDictionaryGraphNode]>,
+    edges: Box<[VtDictionaryGraphEdge]>,
+    root: u64,
+}
+
+impl AbiTraversalGraph {
+    fn from_native<U: AbiUnit + crate::CharUnit>(graph: &SnapshotTraversalGraph<U>) -> Self {
+        crate::causal_perf::record_resource_graph_projections(1);
+        let nodes = (0..graph.node_count())
+            .map(|index| {
+                let node = graph
+                    .node(index)
+                    .expect("native graph node index is in bounds");
+                VtDictionaryGraphNode {
+                    edge_start: u64::from(node.edge_start()),
+                    edge_len: u64::from(node.edge_len()),
+                    // Keep backend pointer cursors behind the producer trust
+                    // boundary. The ABI token is the checked one-based dense
+                    // graph index and is translated only by `graph_value`.
+                    value_cursor: u64::try_from(index + 1)
+                        .expect("snapshot graph node index fits u64"),
+                    is_final: u8::from(node.is_final()),
+                    reserved: [0; 7],
+                }
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        let edges = graph
+            .edges()
+            .iter()
+            .map(|edge| VtDictionaryGraphEdge {
+                label: edge.label().to_abi(),
+                target: u64::try_from(edge.target_cursor().get() - 1)
+                    .expect("snapshot graph target fits u64"),
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Self {
+            nodes,
+            edges,
+            root: u64::from(graph.root_index()),
+        }
+    }
+
+    fn view(&self) -> VtDictionaryGraphView {
+        VtDictionaryGraphView {
+            nodes: self.nodes.as_ptr(),
+            node_count: self.nodes.len(),
+            edges: self.edges.as_ptr(),
+            edge_count: self.edges.len(),
+            root: self.root,
+            reserved: 0,
+        }
+    }
+}
+
+impl<N: DictionaryNode> TraversalSnapshot<N> {
     fn new(
         root: N,
         len: Option<usize>,
@@ -1391,8 +1485,22 @@ impl<N> TraversalSnapshot<N> {
     ) -> Self {
         crate::causal_perf::record_resource_snapshots_created(1);
         crate::causal_perf::record_resource_nodes_materialized(1);
+        let root_identity = root.snapshot_node_identity();
+        // Causal profiling needs a same-binary control for the physical-node
+        // identity treatment.  Keep the switch out of ordinary builds and
+        // evaluate it only once, while capturing the immutable snapshot.
+        #[cfg(feature = "perf-instrumentation")]
+        let root_identity = if std::env::var("LIBDICTENSTEIN_CAUSAL_DISABLE_STABLE_NODE_IDENTITY")
+            .is_ok_and(|value| value == "1")
+        {
+            None
+        } else {
+            root_identity
+        };
         Self {
-            arena: NodeArena::new(root),
+            arena: NodeArena::new(root, root_identity),
+            native_graph: OnceLock::new(),
+            abi_graph: OnceLock::new(),
             len,
             domain,
             suffix,
@@ -1406,6 +1514,8 @@ trait SnapshotOps: Send + Sync {
     fn suffix(&self) -> bool;
     fn len(&self) -> Option<usize>;
     fn identity(&self) -> SnapshotIdentity;
+    fn graph(&self) -> Option<VtDictionaryGraphView>;
+    fn graph_value(&self, value_cursor: u64) -> Result<Option<u64>, VtStatus>;
     fn is_final(&self, node: u64) -> Result<bool, VtStatus>;
     fn value(&self, node: u64) -> Result<Option<u64>, VtStatus>;
     fn transition(&self, node: u64, label: u64) -> Result<Option<u64>, VtStatus>;
@@ -1438,16 +1548,26 @@ where
             let children = crate::collect_node_edges(&slot.node);
             crate::causal_perf::record_resource_native_edges_enumerated(children.len() as u64);
             let child_count = children.len();
-            let first_child = self.arena.reserve(child_count)?;
             let mut descriptors = Vec::with_capacity(child_count);
-            for (offset, (label, child)) in children.into_iter().enumerate() {
-                let child_id = first_child
-                    .checked_add(u64::try_from(offset).map_err(|_| VtStatus::LimitExceeded)?)
-                    .ok_or(VtStatus::LimitExceeded)?;
-                self.arena.install(child_id, child)?;
-                descriptors.push((label.to_abi(), child_id));
+            let mut materialized = 0_u64;
+            if self.arena.stable_identity {
+                for (label, child) in children {
+                    let (child_id, installed) = self.arena.install_stable(child)?;
+                    materialized += u64::from(installed);
+                    descriptors.push((label.to_abi(), child_id));
+                }
+            } else {
+                let first_child = self.arena.reserve(child_count)?;
+                for (offset, (label, child)) in children.into_iter().enumerate() {
+                    let child_id = first_child
+                        .checked_add(u64::try_from(offset).map_err(|_| VtStatus::LimitExceeded)?)
+                        .ok_or(VtStatus::LimitExceeded)?;
+                    self.arena.install(child_id, child)?;
+                    materialized += 1;
+                    descriptors.push((label.to_abi(), child_id));
+                }
             }
-            crate::causal_perf::record_resource_nodes_materialized(child_count as u64);
+            crate::causal_perf::record_resource_nodes_materialized(materialized);
             Ok(descriptors)
         });
         match cached {
@@ -1479,6 +1599,46 @@ where
         self.identity
     }
 
+    fn graph(&self) -> Option<VtDictionaryGraphView> {
+        let root = &self.arena.slot(0).ok()?.node;
+        if !root.supports_snapshot_graph_values() {
+            return None;
+        }
+        let native = self
+            .native_graph
+            .get_or_init(|| root.snapshot_traversal_graph())
+            .as_deref()?;
+        Some(
+            self.abi_graph
+                .get_or_init(|| AbiTraversalGraph::from_native::<N::Unit>(native))
+                .view(),
+        )
+    }
+
+    fn graph_value(&self, value_cursor: u64) -> Result<Option<u64>, VtStatus> {
+        crate::causal_perf::record_resource_value_calls(1);
+        crate::causal_perf::record_resource_graph_value_calls(1);
+        let root = &self.arena.slot(0)?.node;
+        let graph = self
+            .native_graph
+            .get_or_init(|| root.snapshot_traversal_graph())
+            .as_deref()
+            .ok_or(VtStatus::Unsupported)?;
+        let dense_cursor = usize::try_from(value_cursor)
+            .ok()
+            .and_then(SnapshotTraversalCursor::new)
+            .ok_or(VtStatus::InvalidArgument)?;
+        if dense_cursor.get() > graph.node_count() {
+            return Err(VtStatus::InvalidArgument);
+        }
+        let cursor = graph.value_cursor(dense_cursor);
+        // SAFETY: every cursor in the ABI graph came from the compact graph
+        // captured with this exact retained root revision.
+        let value =
+            unsafe { root.snapshot_cursor_value(cursor) }.ok_or(VtStatus::InvalidArgument)?;
+        Ok(value.and_then(AbiValue::into_abi_value))
+    }
+
     fn is_final(&self, node: u64) -> Result<bool, VtStatus> {
         crate::causal_perf::record_resource_is_final_calls(1);
         let slot = self.arena.slot(node)?;
@@ -1494,7 +1654,7 @@ where
     fn transition(&self, node: u64, label: u64) -> Result<Option<u64>, VtStatus> {
         let slot = self.arena.slot(node)?;
         let cache_miss = slot.edges.get().is_none();
-        let edges = self.edges(&slot)?;
+        let edges = self.edges(slot)?;
         if cache_miss {
             crate::causal_perf::record_resource_edge_cache_misses(1);
         }
@@ -1512,7 +1672,7 @@ where
         crate::causal_perf::record_resource_edges_calls(1);
         let slot = self.arena.slot(node)?;
         let cache_miss = slot.edges.get().is_none();
-        let descriptors = self.edges(&slot)?;
+        let descriptors = self.edges(slot)?;
         if cache_miss {
             crate::causal_perf::record_resource_edge_cache_misses(1);
         }
@@ -1540,7 +1700,7 @@ where
         let slot = self.arena.slot(node)?;
         let cache_miss = slot.edges.get().is_none();
         let is_final = slot.node.is_final();
-        let descriptors = self.edges(&slot)?;
+        let descriptors = self.edges(slot)?;
         if cache_miss {
             crate::causal_perf::record_resource_edge_cache_misses(1);
         }
@@ -1711,6 +1871,14 @@ unsafe fn query_interface_status(
     {
         out_vtable.write((&DICTIONARY_VISIT_VTABLE as *const VtDictionaryVisitVTable).cast());
         VtStatus::Ok
+    } else if (*interface_id).bytes == VT_DICTIONARY_GRAPH_INTERFACE_ID.bytes
+        && minimum_version <= VT_DICTIONARY_GRAPH_INTERFACE_VERSION
+        && context
+            .immutable()
+            .is_ok_and(|snapshot| snapshot.graph().is_some())
+    {
+        out_vtable.write((&DICTIONARY_GRAPH_VTABLE as *const VtDictionaryGraphVTable).cast());
+        VtStatus::Ok
     } else if (*interface_id).bytes == VT_SNAPSHOT_IDENTITY_INTERFACE_ID.bytes
         && minimum_version <= VT_SNAPSHOT_IDENTITY_INTERFACE_VERSION
         && matches!(context.payload, ResourcePayload::Snapshot(_))
@@ -1746,6 +1914,51 @@ unsafe extern "C" fn dictionary_snapshot_identity(
         revision: identity.revision,
     });
     VtStatus::Ok.to_raw()
+}
+
+unsafe extern "C" fn dictionary_graph(
+    context: *mut c_void,
+    out_graph: *mut VtDictionaryGraphView,
+) -> u32 {
+    if context.is_null() || out_graph.is_null() {
+        return VtStatus::NullPointer.to_raw();
+    }
+    let context = &*context.cast::<ResourceContext>();
+    crate::causal_perf::record_resource_graph_calls(1);
+    let graph = match context
+        .immutable()
+        .and_then(|snapshot| snapshot.graph().ok_or(VtStatus::Unsupported))
+    {
+        Ok(graph) => graph,
+        Err(status) => return status.to_raw(),
+    };
+    out_graph.write(graph);
+    VtStatus::Ok.to_raw()
+}
+
+unsafe extern "C" fn dictionary_graph_value(
+    context: *mut c_void,
+    value_cursor: u64,
+    out_value: *mut VtOptionalU64,
+) -> u32 {
+    if context.is_null() || out_value.is_null() {
+        return VtStatus::NullPointer.to_raw();
+    }
+    let context = &*context.cast::<ResourceContext>();
+    match context
+        .immutable()
+        .and_then(|snapshot| snapshot.graph_value(value_cursor))
+    {
+        Ok(value) => {
+            out_value.write(VtOptionalU64 {
+                value: value.unwrap_or_default(),
+                has_value: u8::from(value.is_some()),
+                reserved: [0; 7],
+            });
+            VtStatus::Ok.to_raw()
+        }
+        Err(status) => status.to_raw(),
+    }
 }
 
 unsafe fn dictionary_snapshot_status(
@@ -2048,6 +2261,14 @@ static DICTIONARY_VISIT_VTABLE: VtDictionaryVisitVTable = VtDictionaryVisitVTabl
     interface_version: VT_DICTIONARY_VISIT_INTERFACE_VERSION,
     reserved: 0,
     node_visit: Some(dictionary_visit),
+};
+
+static DICTIONARY_GRAPH_VTABLE: VtDictionaryGraphVTable = VtDictionaryGraphVTable {
+    struct_size: std::mem::size_of::<VtDictionaryGraphVTable>(),
+    interface_version: VT_DICTIONARY_GRAPH_INTERFACE_VERSION,
+    reserved: 0,
+    graph: Some(dictionary_graph),
+    node_value_u64: Some(dictionary_graph_value),
 };
 
 static SNAPSHOT_IDENTITY_VTABLE: VtSnapshotIdentityVTable = VtSnapshotIdentityVTable {
@@ -2440,6 +2661,107 @@ mod tests {
         assert_eq!(captured_observer.strong_count(), 0);
     }
 
+    #[test]
+    fn dynamic_snapshot_graph_is_stable_and_live_resources_do_not_advertise_it() {
+        let dictionary = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
+        dictionary.insert_text(b"a", Some(7)).unwrap();
+        dictionary.insert_text("é".as_bytes(), None).unwrap();
+        let resource = dictionary.resource();
+
+        let query = unsafe { (*resource.raw.vtable).query_interface.unwrap() };
+        let mut live_vtable = std::ptr::without_provenance::<c_void>(1);
+        assert_eq!(
+            unsafe {
+                query(
+                    resource.raw.context,
+                    &VT_DICTIONARY_GRAPH_INTERFACE_ID,
+                    VT_DICTIONARY_GRAPH_INTERFACE_VERSION,
+                    &mut live_vtable,
+                )
+            },
+            VtStatus::Unsupported.to_raw()
+        );
+        assert_eq!(
+            live_vtable,
+            std::ptr::without_provenance::<c_void>(1),
+            "failed negotiation must not modify the output slot"
+        );
+
+        let mut captured = VtResource::NULL;
+        assert_eq!(
+            unsafe { dictionary_snapshot(resource.raw.context, &mut captured) },
+            VtStatus::Ok.to_raw()
+        );
+        let snapshot_query = unsafe { (*captured.vtable).query_interface.unwrap() };
+        let mut graph_vtable = std::ptr::null();
+        assert_eq!(
+            unsafe {
+                snapshot_query(
+                    captured.context,
+                    &VT_DICTIONARY_GRAPH_INTERFACE_ID,
+                    VT_DICTIONARY_GRAPH_INTERFACE_VERSION,
+                    &mut graph_vtable,
+                )
+            },
+            VtStatus::Ok.to_raw()
+        );
+        assert_eq!(
+            graph_vtable,
+            (&DICTIONARY_GRAPH_VTABLE as *const VtDictionaryGraphVTable).cast()
+        );
+        let graph_vtable = unsafe { &*graph_vtable.cast::<VtDictionaryGraphVTable>() };
+        let graph = graph_vtable.graph.unwrap();
+        let mut first = VtDictionaryGraphView::default();
+        assert_eq!(
+            unsafe { graph(captured.context, &mut first) },
+            VtStatus::Ok.to_raw()
+        );
+        assert!(first.node_count >= 3);
+        assert!(first.edge_count >= 2);
+        assert!(!first.nodes.is_null());
+        assert!(!first.edges.is_null());
+
+        // Source mutation publishes another revision but cannot alter any
+        // pointer, count, root, label, or value cursor in this retained view.
+        dictionary.insert_text(b"z", Some(9)).unwrap();
+        let mut second = VtDictionaryGraphView::default();
+        assert_eq!(
+            unsafe { graph(captured.context, &mut second) },
+            VtStatus::Ok.to_raw()
+        );
+        assert_eq!(first.nodes, second.nodes);
+        assert_eq!(first.node_count, second.node_count);
+        assert_eq!(first.edges, second.edges);
+        assert_eq!(first.edge_count, second.edge_count);
+        assert_eq!(first.root, second.root);
+
+        let nodes = unsafe { std::slice::from_raw_parts(first.nodes, first.node_count) };
+        let value = graph_vtable.node_value_u64.unwrap();
+        let mut output = VtOptionalU64::default();
+        let mut observed_seven = false;
+        for node in nodes.iter().filter(|node| node.is_final == 1) {
+            assert_ne!(node.value_cursor, 0);
+            assert_eq!(
+                unsafe { value(captured.context, node.value_cursor, &mut output) },
+                VtStatus::Ok.to_raw()
+            );
+            assert!(output.has_value <= 1);
+            assert_eq!(output.reserved, [0; 7]);
+            observed_seven |= output.has_value == 1 && output.value == 7;
+        }
+        assert!(observed_seven, "graph value cursors preserve mapped values");
+        assert_eq!(
+            unsafe { value(captured.context, 0, &mut output) },
+            VtStatus::InvalidArgument.to_raw()
+        );
+        assert_eq!(
+            unsafe { value(captured.context, u64::MAX, &mut output) },
+            VtStatus::InvalidArgument.to_raw()
+        );
+
+        unsafe { resource_release(captured.context) };
+    }
+
     /// ABI-local node identifiers are stable within one snapshot (repeated
     /// enumeration and transition agree) and independent across snapshots
     /// (a later snapshot's ids neither move nor validate an earlier one's
@@ -2510,10 +2832,10 @@ mod tests {
     }
 
     /// INVARIANT-HOOK: LDICT-ARENA-1..6 — ids and memoized edges remain
-    /// stable when one expansion crosses multiple 256-slot chunks, including
-    /// parallel readers of the lock-free directory and write-once slots.
+    /// stable when one expansion populates many hybrid-directory pages,
+    /// including parallel readers of lock-free write-once slots.
     #[test]
-    fn chunked_arena_is_stable_across_directory_boundaries_under_concurrency() {
+    fn hybrid_arena_is_stable_across_many_pages_under_concurrency() {
         let dictionary = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
         for offset in 0..600_u32 {
             let first = char::from_u32(0x1_000 + offset).expect("test scalar");
@@ -2526,8 +2848,9 @@ mod tests {
         let snapshot = live.snapshot();
         let expected = snapshot_edges(&*snapshot, 0).expect("root edges");
         assert_eq!(expected.len(), 600);
-        assert!(expected.iter().any(|edge| edge.1 < 256));
-        assert!(expected.iter().any(|edge| edge.1 >= 512));
+        let unique: std::collections::HashSet<_> = expected.iter().map(|edge| edge.1).collect();
+        assert_eq!(unique.len(), expected.len());
+        assert!(unique.iter().all(|&node| node != 0));
 
         let threads: Vec<_> = (0..8)
             .map(|_| {
@@ -2550,7 +2873,7 @@ mod tests {
 
     #[test]
     fn failed_arena_reservation_does_not_consume_identifiers_or_create_holes() {
-        let arena = NodeArena::new(0_u8);
+        let arena = NodeArena::new(0_u8, None);
         assert_eq!(arena.next_id.load(Ordering::Acquire), 1);
         assert_eq!(
             arena.reserve(usize::MAX),
@@ -2567,6 +2890,82 @@ mod tests {
         assert_eq!(arena.reserve(1), Ok(1));
         arena.install(1, 1_u8).expect("first post-failure slot");
         assert_eq!(arena.slot(1).expect("installed slot").node, 1);
+    }
+
+    #[test]
+    fn stable_identity_preserves_shared_suffix_nodes_across_incoming_edges() {
+        let dictionary = DynamicDawgBinding::new(BindingUnitDomain::Byte);
+        dictionary
+            .insert_text_batch([(b"ab".as_slice(), None), (b"cb".as_slice(), None)])
+            .expect("minimal batch construction must succeed");
+        let resource = dictionary.resource();
+        let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };
+        let snapshot = live.snapshot();
+
+        let root = snapshot_edges(&*snapshot, 0).expect("root edges");
+        assert_eq!(root.len(), 2);
+        let a = root
+            .iter()
+            .find_map(|(label, node)| (*label == u64::from(b'a')).then_some(*node))
+            .expect("a branch");
+        let c = root
+            .iter()
+            .find_map(|(label, node)| (*label == u64::from(b'c')).then_some(*node))
+            .expect("c branch");
+        let a_leaf = snapshot_edges(&*snapshot, a).expect("a edges")[0].1;
+        let c_leaf = snapshot_edges(&*snapshot, c).expect("c edges")[0].1;
+
+        assert_eq!(
+            a_leaf, c_leaf,
+            "one physical minimized suffix node must have one ABI identity"
+        );
+        assert!(snapshot.is_final(a_leaf).expect("shared leaf finality"));
+    }
+
+    #[test]
+    fn dynamic_mutation_falls_back_to_sequential_ids_until_compaction() {
+        fn branch_leaves(snapshot: &dyn SnapshotOps) -> (u64, u64) {
+            let root = snapshot_edges(snapshot, 0).expect("root edges");
+            let branch = |wanted| {
+                root.iter()
+                    .find_map(|(label, node)| (*label == u64::from(wanted)).then_some(*node))
+                    .expect("requested root branch")
+            };
+            let a_leaf = snapshot_edges(snapshot, branch(b'a')).expect("a edges")[0].1;
+            let c_leaf = snapshot_edges(snapshot, branch(b'c')).expect("c edges")[0].1;
+            (a_leaf, c_leaf)
+        }
+
+        let dictionary = DynamicDawgBinding::new(BindingUnitDomain::Byte);
+        dictionary
+            .insert_text_batch([(b"ab".as_slice(), None), (b"cb".as_slice(), None)])
+            .expect("minimal batch construction must succeed");
+        let resource = dictionary.resource();
+        let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };
+
+        let minimal = live.snapshot();
+        let (a_leaf, c_leaf) = branch_leaves(&*minimal);
+        assert_eq!(a_leaf, c_leaf, "minimal revision shares its suffix node");
+        drop(minimal);
+
+        dictionary
+            .insert_text(b"db", None)
+            .expect("path-copy mutation must succeed");
+        let mutated = live.snapshot();
+        let (a_leaf, c_leaf) = branch_leaves(&*mutated);
+        assert_ne!(
+            a_leaf, c_leaf,
+            "mixed path-copy revisions must use the safe sequential fallback"
+        );
+        drop(mutated);
+
+        dictionary.compact();
+        let compacted = live.snapshot();
+        let (a_leaf, c_leaf) = branch_leaves(&*compacted);
+        assert_eq!(
+            a_leaf, c_leaf,
+            "compaction restores dense physical identity and suffix sharing"
+        );
     }
 
     /// INVARIANT-HOOK: LDICT-ARENA-4 — invalidating the producer memo drops its
@@ -2627,6 +3026,18 @@ mod tests {
         assert!(RESOURCE_VTABLE.retain.is_some());
         assert!(RESOURCE_VTABLE.release.is_some());
         assert!(RESOURCE_VTABLE.query_interface.is_some());
+
+        assert_eq!(
+            DICTIONARY_GRAPH_VTABLE.struct_size,
+            std::mem::size_of::<VtDictionaryGraphVTable>()
+        );
+        assert_eq!(
+            DICTIONARY_GRAPH_VTABLE.interface_version,
+            VT_DICTIONARY_GRAPH_INTERFACE_VERSION
+        );
+        assert_eq!(DICTIONARY_GRAPH_VTABLE.reserved, 0);
+        assert!(DICTIONARY_GRAPH_VTABLE.graph.is_some());
+        assert!(DICTIONARY_GRAPH_VTABLE.node_value_u64.is_some());
 
         const PR: u64 = dictionary_flags::PARALLEL_REENTRANT;
         const SUF: u64 = dictionary_flags::SUFFIX_BASED;

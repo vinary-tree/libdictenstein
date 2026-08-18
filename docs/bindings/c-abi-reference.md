@@ -1083,14 +1083,32 @@ walk_terms(dict):
     snap ← vt.snapshot(res)                              # born retained
     wt   ← snap.query_interface("vt.dictionary.v1", 1)   # flags ⊇ IMMUTABLE
 
-    # 4. Walk: node ids are ABI-local to `snap` — never mix ids
-    #    across snapshots, never use them after the release below.
+    # 4. Prefer the optional immutable graph. Validate the complete view
+    #    before publication; value_cursor is opaque and is passed back only
+    #    to this graph vtable. Unsupported selects the callback loop below.
+    gt ← snap.query_interface("vt.dict.graph.v1", 1)
+    if gt is supported:
+        graph ← gt.graph(snap)
+        validate_graph(graph)
+        frontier ← [ (graph.root, ε) ]
+        while frontier ≠ ∅:
+            (node, prefix) ← pop(frontier)
+            descriptor ← graph.nodes[node]
+            if descriptor.is_final:
+                emit(prefix,
+                     gt.node_value_u64(snap, descriptor.value_cursor))
+            for edge in graph.edges[descriptor.edge_range]:
+                push(frontier, (edge.target, prefix · edge.label))
+        goto release
+
+    # 5. Callback fallback: node ids are ABI-local to `snap` — never mix
+    #    ids across snapshots, never use them after the release below.
     frontier ← [ (wt.root(snap), ε) ]
     while frontier ≠ ∅:
         (node, prefix) ← pop(frontier)
         if wt.node_is_final(snap, node):
             emit(prefix, wt.node_value_u64(snap, node))
-        # 5. Page edges: written = min(capacity, total − start);
+        # 6. Page edges: written = min(capacity, total − start);
         #    pages concatenate losslessly; total is stable.
         start ← 0
         repeat:
@@ -1101,7 +1119,8 @@ walk_terms(dict):
             start ← start + written
         until start ≥ total
 
-    # 6. Ledger balance: one release per owned retain, any order.
+release:
+    # 7. Ledger balance: one release per owned retain, any order.
     snap.vtable.release(snap.context)
     res.vtable.release(res.context)
 ```
@@ -1110,7 +1129,7 @@ The sequence below shows the same protocol against the producer's internals,
 with the trust boundary marked (source:
 [`snapshot-capture-sequence.puml`](../diagrams/src/snapshot-capture-sequence.puml)):
 
-<img src="../diagrams/snapshot-capture-sequence.svg" alt="Sequence diagram of the snapshot-then-walk protocol. The consumer, on the foreign side of the trust boundary, borrows the two-word resource from the ldict_* C ABI, retains it, negotiates vt.dictionary.v1, and calls snapshot(). The producer's ResourceContext clones the backend revision root in O(1) (structural sharing), wraps it in a TraversalSnapshot arena, and hands back a snapshot resource born with one retain via mem::forget. A subsequent live mutation publishes a successor revision that the pinned snapshot never sees. The consumer then walks the snapshot: query_interface reports IMMUTABLE flags, root() returns id 0, and a loop of node_edges calls pages edges while the arena lazily materializes children and assigns append-only ABI-local ids under its mutex. Teardown releases the snapshot (arena freed at strong count zero), releases the source resource, and frees the dictionary handle." width="100%"/>
+<img src="../diagrams/snapshot-capture-sequence.svg" alt="Sequence diagram of the snapshot-then-walk protocol. The consumer, on the foreign side of the trust boundary, borrows the two-word resource from the ldict_* C ABI, retains it, negotiates vt.dictionary.v1, and calls snapshot(). The producer's ResourceContext clones the backend revision root in O(1) by structural sharing, wraps it in a TraversalSnapshot, and hands back a snapshot resource born with one retain via mem::forget. A subsequent live mutation publishes a successor revision that the pinned snapshot never sees. A compact-graph-aware consumer negotiates vt.dict.graph.v1 and receives stable flat arrays projected once for the revision; another consumer falls back to root and paged node_edges, whose append-only arena reads and established slots are lock-free. Teardown releases the snapshot, releases the source resource, and frees the dictionary handle." width="100%"/>
 
 ## 15. A complete, verified C example
 
