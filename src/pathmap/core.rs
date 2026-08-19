@@ -260,6 +260,8 @@ impl<V: DictionaryValue, R: TrieRefLike<V>> Clone for TrieRefNode<V, R> {
 
 impl<V: DictionaryValue, R: TrieRefLike<V>> DictionaryNode for TrieRefNode<V, R> {
     type Unit = u8;
+    type SnapshotCursor = crate::SnapshotTraversalCursor;
+    type SnapshotGraphValueHandle = crate::SnapshotTraversalCursor;
 
     #[inline]
     fn is_final(&self) -> bool {
@@ -414,6 +416,8 @@ impl<V: DictionaryValue, R: TrieRefLike<V>> Clone for TrieRefNodeChar<V, R> {
 
 impl<V: DictionaryValue, R: TrieRefLike<V>> DictionaryNode for TrieRefNodeChar<V, R> {
     type Unit = char;
+    type SnapshotCursor = crate::SnapshotTraversalCursor;
+    type SnapshotGraphValueHandle = crate::SnapshotTraversalCursor;
 
     #[inline]
     fn is_final(&self) -> bool {

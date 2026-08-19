@@ -1895,6 +1895,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTreeChar<V, S> {
 
 impl<V: DictionaryValue> DictionaryNode for PersistentSuffixTreeNode<V> {
     type Unit = u8;
+    type SnapshotCursor = crate::SnapshotTraversalCursor;
+    type SnapshotGraphValueHandle = crate::SnapshotTraversalCursor;
 
     fn is_final(&self) -> bool {
         self.graph.contains_live_units(&self.path)
@@ -1989,6 +1991,8 @@ impl<V: DictionaryValue> MappedDictionaryNode for PersistentSuffixTreeNode<V> {
 
 impl<V: DictionaryValue> DictionaryNode for PersistentSuffixTreeCharNode<V> {
     type Unit = char;
+    type SnapshotCursor = crate::SnapshotTraversalCursor;
+    type SnapshotGraphValueHandle = crate::SnapshotTraversalCursor;
 
     fn is_final(&self) -> bool {
         self.graph.contains_live_units(&self.path)

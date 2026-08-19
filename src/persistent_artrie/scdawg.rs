@@ -1418,6 +1418,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentScdawgChar<V, S> {
 
 impl<V: DictionaryValue> DictionaryNode for PersistentScdawgNode<V> {
     type Unit = u8;
+    type SnapshotCursor = crate::SnapshotTraversalCursor;
+    type SnapshotGraphValueHandle = crate::SnapshotTraversalCursor;
 
     #[inline]
     fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {
@@ -1531,6 +1533,8 @@ impl<V: DictionaryValue> MappedDictionaryNode for PersistentScdawgNode<V> {
 
 impl<V: DictionaryValue> DictionaryNode for PersistentScdawgCharNode<V> {
     type Unit = char;
+    type SnapshotCursor = crate::SnapshotTraversalCursor;
+    type SnapshotGraphValueHandle = crate::SnapshotTraversalCursor;
 
     #[inline]
     fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {

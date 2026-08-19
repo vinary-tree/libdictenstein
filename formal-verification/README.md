@@ -41,9 +41,9 @@ At a glance, the corpus comprises:
 
 | Artifact class | Tool | Count | Headline guarantee |
 |----------------|------|------:|--------------------|
-| Rocq `.v` proof files | Rocq/Coq theorem proving | **69** | functional correctness + Map-ADT refinement |
-| Rocq propositions (`Theorem`+`Lemma`+`Corollary`+`Proposition`) | Rocq/Coq | **1,301** | all closed by `Qed.`/`Defined.`; **0** `Admitted` / **0** `Axiom` / **0** `Parameter` |
-| TLA⁺ modules (`.tla`) | TLA⁺ / TLC / SANY | **55** | concurrency safety, crash-recovery, linearizability (with **65** `.cfg` TLC configs) |
+| Rocq `.v` proof files | Rocq/Coq theorem proving | **72** | functional correctness + Map-ADT refinement |
+| Rocq propositions (`Theorem`+`Lemma`+`Corollary`+`Proposition`) | Rocq/Coq | **1,348** | all closed by `Qed.`/`Defined.`; **0** `Admitted` / **0** `Axiom` / **0** `Parameter` |
+| TLA⁺ modules (`.tla`) | TLA⁺ / TLC / SANY | **57** | concurrency safety, crash-recovery, linearizability, and starvation freedom (with **69** `.cfg` TLC configs) |
 | `unsafe` inventory rows | CI set-equality gate | **43** | every `unsafe` site mapped to a reviewed contract |
 | `unsafe` safety contracts | CI set-equality gate | **31** | each contract tied to a coverage class + evidence |
 
@@ -53,7 +53,7 @@ At a glance, the corpus comprises:
 > boundary for `unsafe` is in [`UNSAFE_BOUNDARY.md`](UNSAFE_BOUNDARY.md).
 
 The current repo-wide coverage and remaining formalization candidates are
-tracked in [`GAP_LEDGER.md`](GAP_LEDGER.md). As of the 2026-06-12 audit, the
+tracked in [`GAP_LEDGER.md`](GAP_LEDGER.md). As of the 2026-08-19 audit, the
 only non-ARTrie stale model found in the refactor was the PathMap snapshot/ref
 surface, now covered by `rocq/Spec/PathMapSnapshotSpec.v`.
 
@@ -108,6 +108,8 @@ formal-verification/
 │   ├── LockFreeIndexedOverlay.tla # Char/vocab value/index overlay model
 │   ├── LockFreeCounterMergeAtomicity.tla # Checked counter merge model
 │   ├── ConcurrentCheckpointPublication.tla # Mutation/checkpoint race model
+│   ├── AbiProducerSnapshot.tla # ABI immutable-capture/publication model
+│   ├── AbiSnapshotQuiescence.tla # ABI writer-admission/starvation model
 │   ├── SharedPersistentConcurrency.tla # Shared lock-free/checkpoint model
 │   ├── PublicDurabilityPolicy.tla # Public mutation/sync acknowledgement model
 │   ├── PersistentEndToEndTrace.tla # Public checkpoint/WAL/compaction/reopen trace model
@@ -125,9 +127,9 @@ formal-verification/
 │   ├── PART.cfg               # TLC configuration (no crash)
 │   └── PART_crash.cfg         # TLC configuration (with crash)
 │
-└── rocq/                      # Rocq/Coq proofs (69 .v files, 26,767 LOC,
-    │                            1,301 theorem/lemma/corollary propositions
-    │                            = 992 Theorem + 301 Lemma + 8 Corollary,
+└── rocq/                      # Rocq/Coq proofs (72 .v files, 27,689 LOC,
+    │                            1,348 theorem/lemma/corollary propositions
+    │                            = 1,027 Theorem + 313 Lemma + 8 Corollary,
     │                            0 Admitted / 0 Axiom / 0 Parameter)
     ├── Makefile               # Build system
     ├── Spec/                  # Specifications
@@ -164,6 +166,9 @@ formal-verification/
     │   ├── PersistentRecoveryReplayCompletenessSpec.v # Recovery replay completeness laws
     │   ├── PersistentCompactionSpec.v # Persistent compaction rewrite/finalization laws
     │   ├── PersistentRewriteCompactionSpec.v # Char/vocab rewrite checkpoint laws
+    │   ├── AbiTraversalSnapshotSpec.v # ABI node-arena snapshot laws
+    │   ├── AbiPagingProducerSpec.v # ABI bounded paging laws
+    │   ├── AbiStatusMappingSpec.v # ABI status-code mapping laws
     │   ├── SubstringSearchSpec.v # Exact substring candidate laws
     │   ├── ScdawgOccurrenceSpec.v # SCDAWG occurrence-construction laws
     │   ├── FuzzyCandidateCoverageSpec.v # WallBreaker candidate coverage laws
@@ -346,6 +351,17 @@ bounded TLC model checks:
 ```bash
 RUN_TLC=1 scripts/verify-formal-correspondence.sh
 ```
+
+The TLC branch isolates every model in a unique directory under
+`target/tlc-state-spaces` and deletes that directory after the invocation.
+Paired unsafe configurations are not accepted merely because TLC returned a
+nonzero status: the harness requires TLC's invariant-violation status `12` and
+verifies that the output identifies the exact invariant listed for that
+negative control. The single temporal negative control requires TLC's distinct
+temporal-violation status `13`, its declared `PROPERTY`, and TLC's
+temporal-violation diagnostic. Infrastructure failures are
+gate failures, and their captured diagnostics remain under
+`target/tlc-negative-control-logs` for investigation.
 
 Set `RUN_MIRI=1` to add the Miri-compatible raw child-pointer ownership,
 swizzled raw-extraction, lazy-load candidate cleanup, vocab reopen/eviction
@@ -537,10 +553,10 @@ make check-Model/Key
 
 ### Proof Status
 
-As of 2026-06-12: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
-0 `Parameter` across the **69** `.v` files (verified by grep, see
+As of 2026-08-19: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
+0 `Parameter` across the **72** `.v` files (verified by grep, see
 [VERIFICATION_RESULTS.md](VERIFICATION_RESULTS.md) for the per-file tally). The
-aggregate is **1,301** propositions = 992 `Theorem` + 301 `Lemma` +
+aggregate is **1,348** propositions = 1,027 `Theorem` + 313 `Lemma` +
 8 `Corollary` + 0 `Proposition`. The status table below lists the
 longest-standing modules; the live tree additionally carries the overlay
 codec/reestablish, eviction-registry, char-node-layout, persistent-SCDAWG,

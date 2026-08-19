@@ -57,7 +57,8 @@ Five layers, from the metal up:
 3. **Bindings** — the four public structs `src/ffi.rs` dispatches into; each
    is `Clone` (an `Arc` bump) and each has `resource() → OwnedDictionaryResource`.
 4. **Resource machinery** — `ResourceContext` (payload + domain + flags),
-   `SnapshotMemo` (one warmed snapshot per source revision),
+   `SnapshotMemo` (one warmed snapshot per source revision plus bounded
+   writer-admission quiescence),
    `TraversalSnapshot` (revision root, graph once-cells, and chunked fallback
    arena), `OwnedDictionaryResource` (the retain guard), and the `'static`
    base/dictionary/visit/graph/identity vtables.
@@ -117,18 +118,40 @@ an instance of persistent-data-structure theory (Driscoll et al.
 | **Persistent ARTrie** (`Persistent`) | Copy-on-write revisions over the lock-free overlay (path-copying — the on-disk WAL/checkpoint machinery sits *below* this and is invisible to capture). | Load the current revision root from the overlay. | The revision root pins its copy-on-write structure in memory; eviction and checkpointing never mutate captured paths. |
 | **Snapshot** (re-capture) | Already immutable. | `Arc::clone` of the existing `TraversalSnapshot` — the **self-snapshot law**: snapshotting a snapshot yields a resource sharing the same arena. | Itself. |
 
-Two consequences worth internalizing:
+The DynamicDAWG memo first tries 64 optimistic captures. Its single
+`writer_state` atomic packs an admission bit above the active-writer count, so
+root/count capture and the memo revision can be validated without a mutation
+lock. If sustained writers consume every optimistic window, one snapshotter
+serializes the rare fallback, sets the admission bit, waits only for already
+admitted writers to drain, captures, and clears the bit through an RAII guard.
+New writers yield at the admission bit and resume immediately after capture.
+Thus neither continuous writers nor continuous snapshotters can create the
+previous circular starvation schedule, and ordinary mutations still perform
+one compare/exchange rather than acquiring a global lock.
 
-- **Capture never blocks writers, and writers never invalidate captures.**
-  There is no lock held for the snapshot's lifetime — the pin is ownership,
-  not exclusion.
+Three consequences worth internalizing:
+
+- **Capture never holds exclusion for the snapshot lifetime.** The optimistic
+  path does not block writers. The bounded starvation fallback closes new
+  writer admission only for the constant-time root/count capture; the pin is
+  ownership, not exclusion.
 - **`ldict_dictionary_free` does not end a snapshot.** The arena's handles own
   the revision; the handle's death merely releases the handle's own retain
   (see [§ 7](#7-the-retain-ledger--owneddictionaryresource)).
 - **Successful mutations advance the source revision and evict its memo.**
-  Mutation invalidation and memo lookup use the same short-lived mutex, so a
-  concurrent capture linearizes wholly before or after the revision change;
-  a new root can never be mislabeled with an old identity.
+  Writer admission, active-writer accounting, revision publication, and memo
+  validation use acquire/release atomics. A concurrent capture validates the
+  state on both sides and therefore linearizes wholly before or after the
+  revision change; a new root can never be mislabeled with an old identity.
+
+The deterministic regression
+`bindings::tests::snapshot_quiescence_closes_writer_admission_and_prevents_starvation`
+holds one writer active until the fallback closes admission, proves a second
+writer cannot enter, releases the first, and requires both the snapshot and
+waiting writer to complete. The concurrent FFI test then performs 12,000
+coherent root/count captures under uninterrupted insert/remove churn; it
+completes in the ordinary debug profile and checks every walked final-node
+count against the captured count.
 
 The empirical counterpart: the run-verified example in the
 [C ABI reference § 15](c-abi-reference.md#15-a-complete-verified-c-example)
@@ -147,9 +170,28 @@ callback path below.
 `TraversalSnapshot` contains two revision-local publication cells:
 
 ```text
-native_graph: OnceLock<Option<Arc<SnapshotTraversalGraph<Unit>>>>
+native_graph: OnceLock<Option<SnapshotTraversalProjection<Node>>>
 abi_graph:    OnceLock<AbiTraversalGraph>
+arena:        NodeArena<Node>                           # owner, declared last
 ```
+
+`SnapshotTraversalProjection<Node>` is an `Arc<SnapshotTraversalGraph<Unit,
+Node::SnapshotGraphValueHandle>>`. The graph therefore retains the backend's
+native value-handle type instead of erasing it into a universal integer.
+DynamicDAWG projections use opaque, strict-provenance `NonNull` capabilities;
+the graph builder deduplicates nodes with typed `NonNull` keys and never
+round-trips an address through an integer. Dense DAT and ABI projections use
+`DenseSnapshotCursor`, a nonzero one-based array position. These are distinct
+associated cursor types: the C ABI implementation is available only when the
+node's direct cursor is the dense representation, so a provenance-bearing
+DynamicDAWG pointer cannot cross the ABI by construction.
+
+Every aggregate that couples a projection with its retained owner declares the
+projection first. Rust drops fields in declaration order, so native graph
+handles are destroyed before the revision owner that makes them valid.
+`DictionaryTraversalRoot::into_parts` preserves the same rule in
+`DictionaryTraversalParts`, and moving the values out yields `(projection,
+owner)` in that order.
 
 The first graph request projects the retained immutable DAWG root into dense
 node descriptors and one sorted flat edge array. Freeze-built revisions use

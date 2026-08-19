@@ -37,7 +37,9 @@ use super::core::builder::StaticDATBuilder;
 use super::zipper::DoubleArrayTrieZipper;
 use crate::iterator::{DictionaryIterator, DictionaryTermIterator};
 use crate::value::DictionaryValue;
-use crate::{Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode};
+use crate::{
+    Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode, SnapshotTraversalCursor,
+};
 use std::sync::Arc;
 
 // serde helpers for Arc<Vec<T>> / Arc<Vec<Vec<T>>> round-tripping moved to
@@ -58,7 +60,8 @@ use crate::serialization::serde_helpers::{
 //
 // Call-sites throughout this file continue to reference `DATShared<V>`
 // unchanged.
-pub(crate) type DATShared<V = ()> = super::core::DATCoreShared<u8, V>;
+type DATRawShared<V = ()> = super::core::DATCoreShared<u8, V>;
+pub(crate) type DATShared<V = ()> = super::core::shared::ValidatedDATCoreShared<u8, V, 1>;
 
 /// A compact, cache-efficient dictionary implementation using the Double-Array Trie data structure.
 ///
@@ -104,18 +107,14 @@ pub(crate) type DATShared<V = ()> = super::core::DATCoreShared<u8, V>;
 /// assert!(dict.contains("apple"));
 /// assert!(!dict.contains("apricot"));
 /// ```
-#[cfg_attr(
-    feature = "serialization",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "serialization", derive(serde::Serialize))]
 #[cfg_attr(
     all(feature = "serialization", not(feature = "persistent-artrie")),
-    serde(bound(serialize = "V: serde::Serialize")),
-    serde(bound(deserialize = "V: serde::Deserialize<'de>"))
+    serde(bound(serialize = "V: serde::Serialize"))
 )]
 #[cfg_attr(
     all(feature = "serialization", feature = "persistent-artrie"),
-    serde(bound = "")
+    serde(bound(serialize = ""))
 )]
 #[derive(Clone, Debug)]
 pub struct DoubleArrayTrie<V: DictionaryValue = ()> {
@@ -155,6 +154,71 @@ pub struct DoubleArrayTrie<V: DictionaryValue = ()> {
     /// warrant a structural rebuild of the BASE/CHECK arrays.
     #[allow(dead_code)]
     rebuild_threshold: f64,
+}
+
+/// Exact legacy serde field layout used as the untrusted deserialization
+/// representation. The validated wrapper is absent from the wire format.
+#[cfg(feature = "serialization")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(
+    not(feature = "persistent-artrie"),
+    serde(bound(deserialize = "V: serde::Deserialize<'de>"))
+)]
+#[cfg_attr(feature = "persistent-artrie", serde(bound(deserialize = "")))]
+struct DoubleArrayTrieWire<V: DictionaryValue> {
+    shared: DATRawShared<V>,
+    #[serde(
+        serialize_with = "serialize_arc_vec",
+        deserialize_with = "deserialize_arc_vec"
+    )]
+    free_list: Arc<Vec<usize>>,
+    term_count: usize,
+    rebuild_threshold: f64,
+}
+
+#[cfg(feature = "serialization")]
+impl<V: DictionaryValue> DoubleArrayTrie<V> {
+    fn from_untrusted_wire(
+        wire: DoubleArrayTrieWire<V>,
+    ) -> Result<Self, super::core::shared::DatValidationError> {
+        if !wire.rebuild_threshold.is_finite() || !(0.0..=1.0).contains(&wire.rebuild_threshold) {
+            return Err(super::core::shared::DatValidationError::InvalidRebuildThreshold);
+        }
+        let shared = DATShared::try_from_untrusted(wire.shared, wire.term_count)?;
+        shared.validate_free_list(wire.free_list.as_ref())?;
+        debug_assert_eq!(shared.reachable_final_count(), wire.term_count);
+        Ok(Self {
+            shared,
+            free_list: wire.free_list,
+            term_count: wire.term_count,
+            rebuild_threshold: wire.rebuild_threshold,
+        })
+    }
+}
+
+#[cfg(all(feature = "serialization", not(feature = "persistent-artrie")))]
+impl<'de, V> serde::Deserialize<'de> for DoubleArrayTrie<V>
+where
+    V: DictionaryValue + serde::Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = DoubleArrayTrieWire::<V>::deserialize(deserializer)?;
+        Self::from_untrusted_wire(wire).map_err(<D::Error as serde::de::Error>::custom)
+    }
+}
+
+#[cfg(all(feature = "serialization", feature = "persistent-artrie"))]
+impl<'de, V: DictionaryValue> serde::Deserialize<'de> for DoubleArrayTrie<V> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = DoubleArrayTrieWire::<V>::deserialize(deserializer)?;
+        Self::from_untrusted_wire(wire).map_err(<D::Error as serde::de::Error>::custom)
+    }
 }
 
 /// Builder for constructing a Double-Array Trie incrementally.
@@ -472,16 +536,21 @@ impl<V: DictionaryValue> DoubleArrayTrieBuilder<V> {
             }
         }
 
+        let term_count = self.term_count;
+        let raw = DATRawShared {
+            base: Arc::new(self.base),
+            check: Arc::new(self.check),
+            is_final: Arc::new(self.is_final),
+            edges: Arc::new(edges),
+            values: Arc::new(self.values),
+        };
+        // SAFETY: the incremental builder owns every parallel array and has
+        // just derived EDGES from BASE/CHECK. Debug builds run the full proof.
+        let shared = unsafe { DATShared::from_builder_parts_unchecked(raw, term_count) };
         DoubleArrayTrie {
-            shared: DATShared {
-                base: Arc::new(self.base),
-                check: Arc::new(self.check),
-                is_final: Arc::new(self.is_final),
-                edges: Arc::new(edges),
-                values: Arc::new(self.values),
-            },
+            shared,
             free_list: Arc::new(self.free_list),
-            term_count: self.term_count,
+            term_count,
             rebuild_threshold: self.rebuild_threshold,
         }
     }
@@ -531,16 +600,21 @@ impl<V: DictionaryValue> DoubleArrayTrie<V> {
             builder.insert(term.bytes(), Some(value));
         }
         let built = builder.build(1);
+        let term_count = built.term_count;
+        let raw = DATRawShared {
+            base: Arc::new(built.base),
+            check: Arc::new(built.check),
+            is_final: Arc::new(built.is_final),
+            edges: Arc::new(built.edges),
+            values: Arc::new(built.values),
+        };
+        // SAFETY: StaticDATBuilder assigns BASE/CHECK/EDGES together and never
+        // exposes a partially constructed layout. Debug builds validate it.
+        let shared = unsafe { DATShared::from_builder_parts_unchecked(raw, term_count) };
         Self {
-            shared: DATShared {
-                base: Arc::new(built.base),
-                check: Arc::new(built.check),
-                is_final: Arc::new(built.is_final),
-                edges: Arc::new(built.edges),
-                values: Arc::new(built.values),
-            },
+            shared,
             free_list: Arc::new(Vec::new()),
-            term_count: built.term_count,
+            term_count,
             rebuild_threshold: 0.2,
         }
     }
@@ -712,16 +786,21 @@ impl DoubleArrayTrie<()> {
             builder.insert(term.bytes(), None);
         }
         let built = builder.build(1);
+        let term_count = built.term_count;
+        let raw = DATRawShared {
+            base: Arc::new(built.base),
+            check: Arc::new(built.check),
+            is_final: Arc::new(built.is_final),
+            edges: Arc::new(built.edges),
+            values: Arc::new(built.values),
+        };
+        // SAFETY: StaticDATBuilder assigns BASE/CHECK/EDGES together and never
+        // exposes a partially constructed layout. Debug builds validate it.
+        let shared = unsafe { DATShared::from_builder_parts_unchecked(raw, term_count) };
         Self {
-            shared: DATShared {
-                base: Arc::new(built.base),
-                check: Arc::new(built.check),
-                is_final: Arc::new(built.is_final),
-                edges: Arc::new(built.edges),
-                values: Arc::new(built.values),
-            },
+            shared,
             free_list: Arc::new(Vec::new()),
-            term_count: built.term_count,
+            term_count,
             rebuild_threshold: 0.2,
         }
     }
@@ -742,6 +821,105 @@ pub struct DoubleArrayTrieNode<V: DictionaryValue = ()> {
 
 impl<V: DictionaryValue> DictionaryNode for DoubleArrayTrieNode<V> {
     type Unit = u8;
+    type SnapshotCursor = SnapshotTraversalCursor;
+    type SnapshotGraphValueHandle = SnapshotTraversalCursor;
+
+    #[inline]
+    fn snapshot_root_cursor(&self) -> Option<SnapshotTraversalCursor> {
+        DATShared::<V>::traversal_cursor(self.state)
+    }
+
+    #[inline]
+    fn contains_snapshot_cursor(&self, cursor: SnapshotTraversalCursor) -> bool {
+        self.shared.contains_traversal_cursor(cursor, 1)
+    }
+
+    #[inline]
+    fn supports_snapshot_cursor_nodes(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    fn supports_snapshot_cursor_key_units(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_key_units(
+        &self,
+        cursor: SnapshotTraversalCursor,
+    ) -> Option<Vec<Self::Unit>> {
+        // SAFETY: delegated from DictionaryNode's snapshot-cursor contract;
+        // `self.state` is the captured root for root-relative reconstruction.
+        unsafe { self.shared.traversal_cursor_key_units(cursor, self.state) }
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_node(&self, cursor: SnapshotTraversalCursor) -> Option<Self> {
+        // SAFETY: delegated from DictionaryNode's snapshot-cursor contract.
+        let state = unsafe { self.shared.traversal_state(cursor) }?;
+        Some(Self {
+            state,
+            shared: Arc::clone(&self.shared),
+        })
+    }
+
+    #[inline]
+    unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(
+        &self,
+        cursor: SnapshotTraversalCursor,
+        project: P,
+        visitor: F,
+    ) -> Option<bool>
+    where
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, SnapshotTraversalCursor, T),
+    {
+        // SAFETY: delegated from DictionaryNode's snapshot-cursor contract.
+        unsafe {
+            self.shared
+                .filter_map_traversal_cursor(cursor, project, visitor)
+        }
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_is_final(&self, cursor: SnapshotTraversalCursor) -> Option<bool> {
+        // SAFETY: delegated from DictionaryNode's snapshot-cursor contract.
+        unsafe { self.shared.traversal_cursor_is_final(cursor) }
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_transition(
+        &self,
+        cursor: SnapshotTraversalCursor,
+        label: Self::Unit,
+    ) -> Option<Option<SnapshotTraversalCursor>> {
+        // SAFETY: delegated from DictionaryNode's snapshot-cursor contract.
+        unsafe { self.shared.traversal_cursor_transition(cursor, label) }
+    }
+
+    #[inline]
+    fn supports_efficient_snapshot_cursor_edge_paging(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn visit_snapshot_cursor_edge_page<F>(
+        &self,
+        cursor: SnapshotTraversalCursor,
+        start: usize,
+        capacity: usize,
+        visitor: F,
+    ) -> Option<(bool, usize)>
+    where
+        F: FnMut(Self::Unit, SnapshotTraversalCursor),
+    {
+        // SAFETY: delegated from DictionaryNode's snapshot-cursor contract.
+        unsafe {
+            self.shared
+                .visit_traversal_cursor_edge_page(cursor, start, capacity, visitor)
+        }
+    }
 
     fn is_final(&self) -> bool {
         self.state < self.shared.is_final.len() && self.shared.is_final[self.state]
@@ -895,6 +1073,20 @@ impl<V: DictionaryValue> MappedDictionaryNode for DoubleArrayTrieNode<V> {
             None
         }
     }
+
+    #[inline]
+    fn supports_snapshot_cursor_values(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_value(
+        &self,
+        cursor: SnapshotTraversalCursor,
+    ) -> Option<Option<Self::Value>> {
+        // SAFETY: delegated from MappedDictionaryNode's snapshot-cursor contract.
+        unsafe { self.shared.traversal_cursor_value(cursor) }
+    }
 }
 
 impl<V: DictionaryValue> MappedDictionary for DoubleArrayTrie<V> {
@@ -919,6 +1111,75 @@ impl<V: DictionaryValue> MappedDictionary for DoubleArrayTrie<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_cursor_traversal_preserves_edges_finality_nodes_and_values() {
+        let dat = DoubleArrayTrie::from_terms_with_values([("", 1_u32), ("car", 2), ("cat", 3)]);
+        let owner = dat.root();
+        assert!(owner.supports_snapshot_cursor_nodes());
+        assert!(owner.supports_snapshot_cursor_key_units());
+        assert!(owner.supports_snapshot_cursor_values());
+        let mut cursor = owner.snapshot_root_cursor().expect("DAT root cursor");
+        assert_eq!(cursor.get(), 2, "the byte DAT root is state one");
+
+        for expected in b"cat" {
+            let mut child = None;
+            // SAFETY: `cursor` is the root or a child produced by this exact
+            // immutable owner in the preceding iteration.
+            let finality = unsafe {
+                owner.filter_map_snapshot_cursor_edges_and_finality(
+                    cursor,
+                    |label| (label == *expected).then_some(()),
+                    |_label, next, ()| child = Some(next),
+                )
+            }
+            .expect("DAT nodes support native cursor traversal");
+            assert_eq!(finality, cursor.get() == 2);
+            cursor = child.expect("the cat path exists");
+        }
+
+        // SAFETY: the cursor was produced by this retained owner.
+        let finality = unsafe {
+            owner.filter_map_snapshot_cursor_edges_and_finality(
+                cursor,
+                |_| None::<()>,
+                |_, _, _| unreachable!(),
+            )
+        };
+        assert_eq!(finality, Some(true));
+        // SAFETY: the cursor was produced by this retained owner.
+        assert_eq!(
+            unsafe { owner.snapshot_cursor_value(cursor) },
+            Some(Some(3))
+        );
+        // SAFETY: the cursor was produced by this retained owner.
+        assert_eq!(
+            unsafe { owner.snapshot_cursor_key_units(cursor) },
+            Some(b"cat".to_vec())
+        );
+
+        let subtree = owner.transition(b'c').expect("the c subtree exists");
+        let subtree_leaf = subtree
+            .transition(b'a')
+            .and_then(|node| node.transition(b't'))
+            .expect("cat remains reachable from the c subtree");
+        let subtree_cursor = subtree_leaf.snapshot_root_cursor().expect("leaf cursor");
+        // SAFETY: `subtree_cursor` descends from the retained subtree root.
+        assert_eq!(
+            unsafe { subtree.snapshot_cursor_key_units(subtree_cursor) },
+            Some(b"at".to_vec()),
+            "cursor-key reconstruction is relative to the captured node"
+        );
+        // SAFETY: the cursor was produced by this retained owner.
+        let materialized = unsafe { owner.snapshot_cursor_node(cursor) }.expect("valid node");
+        assert!(materialized.is_final());
+        assert_eq!(materialized.value(), Some(3));
+
+        let invalid = SnapshotTraversalCursor::new(dat.shared.base.len() + 1).unwrap();
+        // Invalid external tokens stop at the safe membership boundary. Passing
+        // one to an unsafe cursor method would violate that method's contract.
+        assert!(!owner.contains_snapshot_cursor(invalid));
+    }
 
     #[test]
     fn test_empty_dat() {
@@ -1158,5 +1419,88 @@ mod tests {
         assert_eq!(dict.get_value("hello"), Some("greeting".to_string()));
         assert_eq!(dict.get_value("world"), Some("noun".to_string()));
         assert_eq!(dict.get_value("test"), Some("verb".to_string()));
+    }
+
+    #[cfg(feature = "serialization")]
+    fn legacy_wire<V: DictionaryValue>(dict: &DoubleArrayTrie<V>) -> DoubleArrayTrieWire<V> {
+        DoubleArrayTrieWire {
+            shared: DATRawShared {
+                base: Arc::clone(&dict.shared.base),
+                check: Arc::clone(&dict.shared.check),
+                is_final: Arc::clone(&dict.shared.is_final),
+                edges: Arc::clone(&dict.shared.edges),
+                values: Arc::clone(&dict.shared.values),
+            },
+            free_list: Arc::clone(&dict.free_list),
+            term_count: dict.term_count,
+            rebuild_threshold: dict.rebuild_threshold,
+        }
+    }
+
+    #[cfg(feature = "serialization")]
+    #[test]
+    fn validated_wrapper_preserves_legacy_direct_serde_bytes() {
+        let dict =
+            DoubleArrayTrie::from_terms_with_values([("", 1_u32), ("alpha", 2), ("alpine", 3)]);
+        let current = crate::serialization::bincode_compat::serialize(&dict).unwrap();
+        let legacy = crate::serialization::bincode_compat::serialize(&legacy_wire(&dict)).unwrap();
+        assert_eq!(current, legacy);
+
+        let restored: DoubleArrayTrie<u32> =
+            crate::serialization::bincode_compat::deserialize(&legacy).unwrap();
+        assert_eq!(restored.len(), Some(3));
+        assert_eq!(restored.get_value(""), Some(1));
+        assert_eq!(restored.get_value("alpha"), Some(2));
+        assert_eq!(
+            crate::serialization::bincode_compat::serialize(&restored).unwrap(),
+            legacy
+        );
+
+        let valueless = DoubleArrayTrie::from_terms(["", "cat"]);
+        let valueless_current =
+            crate::serialization::bincode_compat::serialize(&valueless).unwrap();
+        let valueless_legacy =
+            crate::serialization::bincode_compat::serialize(&legacy_wire(&valueless)).unwrap();
+        assert_eq!(valueless_current, valueless_legacy);
+    }
+
+    #[cfg(feature = "serialization")]
+    #[test]
+    fn direct_serde_rejects_malformed_byte_dat_before_cursor_trust() {
+        let dict = DoubleArrayTrie::from_terms_with_values([("cat", 7_u32)]);
+
+        let mut wrong_parent = legacy_wire(&dict);
+        let root_base = wrong_parent.shared.base[1] as usize;
+        let child = root_base + usize::from(wrong_parent.shared.edges[1][0]);
+        Arc::make_mut(&mut wrong_parent.shared.check)[child] = 0;
+        let bytes = crate::serialization::bincode_compat::serialize(&wrong_parent).unwrap();
+        assert!(
+            crate::serialization::bincode_compat::deserialize::<DoubleArrayTrie<u32>>(&bytes)
+                .is_err()
+        );
+
+        let mut wrong_count = legacy_wire(&dict);
+        wrong_count.term_count += 1;
+        let bytes = crate::serialization::bincode_compat::serialize(&wrong_count).unwrap();
+        assert!(
+            crate::serialization::bincode_compat::deserialize::<DoubleArrayTrie<u32>>(&bytes)
+                .is_err()
+        );
+
+        let mut invalid_free_list = legacy_wire(&dict);
+        invalid_free_list.free_list = Arc::new(vec![1]);
+        let bytes = crate::serialization::bincode_compat::serialize(&invalid_free_list).unwrap();
+        assert!(
+            crate::serialization::bincode_compat::deserialize::<DoubleArrayTrie<u32>>(&bytes)
+                .is_err()
+        );
+
+        let mut invalid_threshold = legacy_wire(&dict);
+        invalid_threshold.rebuild_threshold = f64::NAN;
+        let bytes = crate::serialization::bincode_compat::serialize(&invalid_threshold).unwrap();
+        assert!(
+            crate::serialization::bincode_compat::deserialize::<DoubleArrayTrie<u32>>(&bytes)
+                .is_err()
+        );
     }
 }

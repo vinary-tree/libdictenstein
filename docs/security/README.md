@@ -19,18 +19,21 @@ matter, and where each is covered:
 
 ## The one-paragraph posture
 
-The **in-memory** dictionaries are memory-safe by construction: they store nodes in flat `Vec`
-arenas addressed by integer index — no raw pointers, no manual `Drop`, so no recursive-drop or
-use-after-free surface — and the whole volatile tree carries only **4** `unsafe` sites (all
-`Send`/`Sync` assertions in the SCDAWG node handle). The one caller-reachable production panic is
-`BijectiveMap::insert` on a duplicate (with a non-panicking `try_insert` alternative). The
-**deserialization** paths are where adversarial *data* is handled: parsing is fail-closed
-(length-guarded, returns errors rather than panicking or reading out of bounds), but a few
-allocation-sizing sites read a count from untrusted input *before* validating it, so a crafted input
-can request a very large allocation — the residual OOM edge documented in
-[untrusted-input.md](untrusted-input.md). The **persistent** engine concentrates the `unsafe` (37 of
-43 crate-wide sites), each bound to a machine-checked contract; see
-[unsafe-contracts.md](unsafe-contracts.md) and the CI-gated inventory it links.
+The public **in-memory** dictionary APIs are safe, while three acceleration seams are explicit and
+reviewed: SCDAWG handle `Send`/`Sync` assertions, sealed double-array layouts validated before
+unchecked reads, and DynamicDAWG's typed `NonNull` cursors over an immutable revision retained by
+`Arc`. Dense cursors and native pointer capabilities are separate associated types, and only dense
+cursors can enter the integer ABI. Strict-provenance Miri, compile-time type separation,
+correspondence tests, and the source-derived unsafe inventory cover these seams. The one
+caller-reachable production panic is `BijectiveMap::insert` on a duplicate (with a non-panicking
+`try_insert` alternative). The **deserialization** paths are where adversarial *data* is handled:
+parsing is fail-closed (length-guarded, returns errors rather than panicking or reading out of
+bounds), but a few allocation-sizing sites read a count from untrusted input *before* validating
+it, so a crafted input can request a very large allocation — the residual OOM edge documented in
+[untrusted-input.md](untrusted-input.md). The **persistent** engine contributes 37 of the 214
+grouped inventory patterns; the remaining patterns cover generic cursor contracts, DAT and
+DynamicDAWG acceleration, ABI adapters, and test probes. Every pattern resolves to one of 40
+reviewed contracts; see [unsafe-contracts.md](unsafe-contracts.md).
 
 ## What this is not
 

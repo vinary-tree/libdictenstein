@@ -11,8 +11,8 @@ follows [`docs/notation.md`](../notation.md).
 
 | Artifact | What it is |
 |----------|------------|
-| [`formal-verification/UNSAFE_INVENTORY.tsv`](../../formal-verification/UNSAFE_INVENTORY.tsv) | Every `unsafe` site in the tree: **43 rows**, columns `path · kind · pattern · count · contract`, where `kind ∈ {unsafe_block, unsafe_fn, unsafe_impl}`. |
-| [`formal-verification/UNSAFE_CONTRACTS.tsv`](../../formal-verification/UNSAFE_CONTRACTS.tsv) | The safety contracts each site is bound to: **31 contracts**, columns `contract · scope · obligation · coverage · status · evidence`, where `coverage ∈ {rocq, tla, loom, miri, correspondence, compile-time, unit, trusted-boundary}` and `status ∈ {covered, miri-wired, trusted-boundary}`. |
+| [`formal-verification/UNSAFE_INVENTORY.tsv`](../../formal-verification/UNSAFE_INVENTORY.tsv) | Every grouped `unsafe` source pattern in the tree: **214 rows**, columns `path · kind · pattern · count · contract`, where `kind ∈ {unsafe_block, unsafe_fn, unsafe_impl}` and `count` records repeated identical patterns. |
+| [`formal-verification/UNSAFE_CONTRACTS.tsv`](../../formal-verification/UNSAFE_CONTRACTS.tsv) | The safety contracts each pattern is bound to: **40 contracts**, columns `contract · scope · obligation · coverage · status · evidence`, where `coverage ∈ {rocq, tla, loom, miri, correspondence, compile-time, unit, trusted-boundary}` and `status ∈ {covered, miri-wired, trusted-boundary}`. |
 | [`formal-verification/UNSAFE_BOUNDARY.md`](../../formal-verification/UNSAFE_BOUNDARY.md) | The prose boundary map and the safety-contract matrix that ties sites to obligations. |
 | [`scripts/verify-unsafe-boundary-inventory.sh`](../../scripts/verify-unsafe-boundary-inventory.sh) | The CI gate that keeps all of the above true. |
 

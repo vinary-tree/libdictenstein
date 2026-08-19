@@ -25,10 +25,16 @@ The map is drawn as two companion figures — one per prong — so each fits the
 | ① Model checking | TLA⁺ / TLC | temporal **safety + liveness** under concurrency and crashes | *bounded* instances, *all* interleavings |
 | ② Theorem proving | Rocq / Coq | **functional correctness** + abstract-data-type (ADT) refinement | *all* inputs, machine-checked `Qed.` |
 
-**Aggregate:** 69 Rocq `.v` files, 1,301 propositions (992 Theorem + 301 Lemma + 8
-Corollary), **0 Admitted / 0 Axiom / 0 Parameter**; 55 TLA⁺ modules, 65 `.cfg` TLC configs,
+**Aggregate:** 72 Rocq `.v` files, 1,348 propositions (1,027 Theorem + 313 Lemma + 8
+Corollary), **0 Admitted / 0 Axiom / 0 Parameter**; 57 TLA⁺ modules, 69 `.cfg` TLC configs,
 all SANY-clean (SANY = the TLA⁺ syntactic analyzer). Many models ship a paired **`_Unsafe.cfg` negative control** that must
-*violate* the invariant, proving the checker has teeth.
+*violate* the named invariant, proving the checker has teeth. The correspondence
+harness gives every TLC invocation a distinct on-disk state directory. A
+negative control succeeds only when TLC returns status `12` and the diagnostic
+names the required invariant (or, for the liveness control, status `13` and a
+temporal-property violation). Parser failures, resource failures,
+timeouts, and state-directory collisions therefore fail the gate instead of
+masquerading as successful negative controls.
 
 ## Correspondence by concern
 

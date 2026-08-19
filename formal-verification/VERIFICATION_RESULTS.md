@@ -5,12 +5,12 @@
 This document records the results of formal verification efforts for the
 Persistent Adaptive Radix Trie (PART) implementation in libdictenstein.
 
-**Originally written:** 2026-01-20. **Last reconciled:** 2026-06-12.
+**Originally written:** 2026-01-20. **Last reconciled:** 2026-08-19.
 
-As of the live tree the corpus is **69** Rocq `.v` files (**1,301**
-propositions = 992 `Theorem` + 301 `Lemma` + 8 `Corollary` + 0 `Proposition`,
+As of the live tree the corpus is **72** Rocq `.v` files (**1,348**
+propositions = 1,027 `Theorem` + 313 `Lemma` + 8 `Corollary` + 0 `Proposition`,
 all `Qed.`/`Defined.`-closed, **0** `Admitted` / **0** `Axiom` / **0**
-`Parameter`) and **55** TLA⁺ modules with **65** `.cfg` TLC configurations. The
+`Parameter`) and **57** TLA⁺ modules with **69** `.cfg` TLC configurations. The
 `unsafe` surface is pinned by **43** inventory rows and **31** safety contracts,
 both CI-gated by `scripts/verify-unsafe-boundary-inventory.sh` (set-equality).
 
@@ -19,6 +19,26 @@ both CI-gated by `scripts/verify-unsafe-boundary-inventory.sh` (set-equality).
 Newest first. Each entry is a dated milestone; the per-module tables below carry
 the detailed proof/state-count data captured at each step.
 
+- **2026-08-19** — The complete `RUN_TLC=1` correspondence gate passed with
+  72 Rocq files (1,348 closed propositions), 57 TLA⁺ modules, and 69 TLC
+  configurations. The harness now assigns every TLC invocation a unique
+  on-disk state directory and validates negative controls by semantic failure
+  class: invariant violations must return TLC status 12 and name the exact
+  required invariant; temporal violations must return status 13 and report a
+  temporal counterexample. All nine invariant controls and the one temporal
+  control fired exactly as specified. Parser, runtime, resource, timeout, and
+  state-directory failures therefore fail the gate instead of being mistaken
+  for counterexamples. No TLC state directory or negative-control log remained
+  after the successful run.
+- **2026-08-18** — Reconciled the ABI producer snapshot model and its three
+  Rocq producer-boundary specifications into the aggregate inventory, and
+  replaced an unbounded zero-writer snapshot wait with bounded optimistic
+  capture plus a quiescence admission bit. A dedicated liveness model proves
+  starvation freedom under weak scheduler fairness and its ungated negative
+  control exhibits the original writer-churn counterexample. The deterministic
+  admission test and 12,000-capture churn regression cover the Rust boundary.
+  Current totals after the storage-duplication correction are 72 `.v` / 1,348
+  propositions / 57 `.tla` / 69 `.cfg`.
 - **2026-06-12** — Count reconciliation: aggregate Rocq/TLA⁺/`unsafe` totals
   brought into agreement with the live tree (69 `.v` / 1,301 props / 55 `.tla`
   / 65 `.cfg` / 43+31 `unsafe`). The per-module snapshot tables retain the
@@ -134,18 +154,20 @@ the detailed proof/state-count data captured at each step.
 | BackgroundWorkerLifecycle.tla | 95 | TLC passed |
 | PersistentCharBulkMutationRecovery.tla | 190 | TLC passed |
 | PersistentTransactionIncrementRecovery.tla | 201 | TLC passed |
+| AbiProducerSnapshot.tla | 203 | TLC passed |
+| AbiSnapshotQuiescence.tla | 95 | TLC passed; ungated liveness control fails as required |
 | ByzantineStorage.tla | ~70 | TLC passed |
 | HotStuffConsensus.tla | ~91 | TLC passed |
 
-**Snapshot table total (these rows):** 10,413 TLA⁺ LOC. **Live tree:** **55**
-TLA⁺ modules totalling **12,583** LOC with **65** `.cfg` TLC configurations
-(verified 2026-06-12). The rows above are the long-standing, individually
+**Snapshot table total (these rows):** 11,141 TLA⁺ LOC. **Live tree:** **59**
+TLA⁺ modules totalling **13,311** LOC with **73** `.cfg` TLC configurations
+(verified 2026-08-18). The rows above are the long-standing, individually
 LOC-audited modules; the live tree additionally carries the lock-free overlay
 durable-replay/value-CAS/remove-CAS/eviction-CAS family, durable-checkpoint and
 eviction-registry-publication models, char-node-v2-layout, persistent-SCDAWG /
 suffix-automaton / suffix-tree, public read-snapshot / dictionary-node
 traversal, and concurrent-checkpoint-serialization models introduced in the
-L-campaign and eviction work. SANY parses all 55.
+L-campaign and eviction work. SANY parses all 59.
 
 ### Model Checking Configuration
 
@@ -194,7 +216,7 @@ NodeIds = {1, 2, 3, 4, 5, 6}
 | PROPERTY_CrashRecovery | Liveness | No violations in explored states |
 | Deadlock Freedom | Safety | No deadlocks found |
 
-#### Focused TLC Runs Added 2026-05-22 Through 2026-06-01
+#### Focused TLC Runs Added 2026-05-22 Through 2026-08-18
 
 | Module | Config | States Generated | Distinct States | Depth | Result |
 |--------|--------|-----------------:|----------------:|------:|--------|
@@ -221,6 +243,8 @@ NodeIds = {1, 2, 3, 4, 5, 6}
 | EpochCheckpointRecovery.tla | EpochCheckpointRecovery.cfg | 3,211 | 2,050 | 10 | No errors |
 | PersistentCharBulkMutationRecovery.tla | PersistentCharBulkMutationRecovery.cfg | 214,786 | 23,632 | 10 | No errors |
 | PersistentTransactionIncrementRecovery.tla | PersistentTransactionIncrementRecovery.cfg | 18,056,329 | 2,891,300 | 20 | No errors |
+| AbiProducerSnapshot.tla | AbiProducerSnapshot.cfg | 9,386 | 7,621 | 7 | No errors; unsafe control violates `CapturedRevisionImmutable` |
+| AbiSnapshotQuiescence.tla | AbiSnapshotQuiescence.cfg | 11 | 7 | 4 | No errors; ungated control violates `SnapshotEventuallyCompletes` |
 | ByzantineStorage.tla | ByzantineStorage.cfg | 11,059,201 | 331,776 | 21 | No errors |
 | HotStuffConsensus.tla | HotStuffConsensus.cfg | 17,991 | 2,940 | 12 | No errors |
 
@@ -306,6 +330,7 @@ implementation surface.
 | SCDAWG occurrence spec | `ScdawgOccurrenceSpec.v` to byte and Unicode SCDAWG `find`/`freq`/`locations`, handle-based occurrence APIs, and left-extension traversal | Passed, 7 default-feature tests |
 | Fuzzy candidate coverage spec | `FuzzyCandidateCoverageSpec.v` to WallBreaker-style byte/Unicode SCDAWG query-piece candidate coverage | Passed, 5 default-feature tests |
 | Public serialization roundtrip spec | `SerializationRoundtripSpec.v` to public Bincode/JSON/plaintext/gzip/protobuf serializer APIs | Passed, 8 correspondence tests plus 9 existing value-roundtrip regression tests under `--features serialization`, and 6 protobuf/compression correspondence tests under `--features "serialization protobuf compression"` |
+| ABI producer immutable snapshot, paging, status, and progress boundary | `AbiProducerSnapshot.tla`, `AbiSnapshotQuiescence.tla`, `AbiTraversalSnapshotSpec.v`, `AbiPagingProducerSpec.v`, and `AbiStatusMappingSpec.v` to `src/bindings.rs` and the `ffi_*` correspondence suites | Passed, 62 focused ABI integration/property/concurrency/checkpoint tests plus the deterministic writer-admission unit test; 12,000 captures under sustained mutation complete without a torn root/count pair, the unsafe live-alias model violates `CapturedRevisionImmutable`, and the ungated fallback violates `SnapshotEventuallyCompletes` as intended |
 | Mmap concurrent allocation | `MmapBlockStorage.tla` to `MmapDiskManager::allocate_block` | Passed, 32 concurrent allocations |
 | Mmap sub-block bounds | `BlockStorage` range contract to `MmapDiskManager::{read_bytes,write_bytes}` | Passed |
 | Mmap sync/reopen checksum | allocation metadata persistence to `MmapDiskManager::sync/open` | Passed |
@@ -341,7 +366,11 @@ implementation surface.
 | io_uring fixed-buffer registration | unsafe fixed-buffer contract to `IoUringDiskManager::register_buffer_pool` and `IoUringFixedBufferOwnership.tla` | Passed with `io-uring-backend`, including invalid registration rejection and unregister-before-owner-drop |
 
 The full command `RUN_TLC=1 scripts/verify-formal-correspondence.sh` passed on
-2026-06-01 for the then-current focused modules. After the vocab overlay-only
+2026-08-19 for the live 72-Rocq-file / 57-TLA⁺-module / 69-configuration tree.
+The run included the complete Rust correspondence suite, every safe TLC model,
+and all 10 exact negative controls. Each TLC process used an isolated on-disk state
+directory; successful completion left neither state directories nor retained
+negative-control logs. After the vocab overlay-only
 refactor, the active harness no longer runs the retired `ReverseIndexMmap.tla`
 sidecar model; reverse lookup coverage is now in `VocabPersistenceOwnership.tla`
 and the vocab checkpoint/reopen correspondence tests. The
@@ -439,16 +468,16 @@ also passed on 2026-05-23 with 8 storage correspondence tests.
 
 ### Modules Compiled
 
-All **69** `.v` files compile end-to-end with Rocq 9.1.0. Every proposition is
+All **72** `.v` files compile end-to-end with Rocq 9.1.0. Every proposition is
 closed by `Qed.` (or `Defined.` for a transparent definition) — **0 `Axiom`,
-0 `Admitted`, 0 `Parameter`** across the tree (verified 2026-06-12 by
+0 `Admitted`, 0 `Parameter`** across the tree (verified 2026-08-18 by
 `grep -rnE '^\s*(Axiom|Parameter|Admitted)\b' formal-verification --include='*.v'`,
 which returns nothing; the only word-mentions are comments asserting their
 absence).
 
 > The per-module table that follows is a dated snapshot covering **66** of the
-> **69** files (it was last LOC-audited 2026-06-11). The three uncounted files
-> are later additions; the headline aggregate **1,301** below is the live total.
+> **72** files (it was last LOC-audited 2026-06-11). The six uncounted files
+> are later additions; the headline aggregate **1,348** below is the live total.
 
 The prior 15-module core compiled with Rocq 9.1.0 (~72 s wall clock under
 `make -j1`). Every theorem is closed by `Qed.` — **0 `Axiom`, 0 `Admitted`, 0
@@ -517,12 +546,13 @@ The prior 15-module core compiled with Rocq 9.1.0 (~72 s wall clock under
 **Snapshot table total (66 modules listed above):** 26,329 Rocq LOC; 974
 `Theorem` + 301 `Lemma` + 8 `Corollary` = 1,283 propositions.
 
-**Live tree total (all 69 `.v` files, verified 2026-06-12):** **26,767** Rocq
-LOC; **992** `Theorem` + **301** `Lemma` + **8** `Corollary` + **0**
-`Proposition` = **1,301** propositions, all closed (`Qed.`/`Defined.`; no escape
-hatches — 0 `Admitted` / 0 `Axiom` / 0 `Parameter`). The 18-proposition delta
-(+18 `Theorem`) over the snapshot is the three files not yet folded into the
-per-module table above.
+**Live tree total (all 72 `.v` files, verified 2026-08-19):** **27,689** Rocq
+LOC; **1,027** `Theorem` + **313** `Lemma` + **8** `Corollary` + **0**
+`Proposition` = **1,348** propositions, all closed (`Qed.`/`Defined.`; no escape
+hatches — 0 `Admitted` / 0 `Axiom` / 0 `Parameter`). The 65-proposition delta
+(+53 `Theorem`, +12 `Lemma`) over the snapshot comprises the persistent suffix
+automaton, persistent u64 ARTrie, persistent SCDAWG, ABI traversal/paging/status,
+and related specifications not yet folded into the dated per-module table above.
 
 ### Compilation Command
 ```bash
@@ -565,7 +595,7 @@ obligations were resolved as follows:
 
 ### Proven Theorems (selected highlights)
 
-A non-exhaustive sample of the **1,301** theorem/lemma/corollary propositions.
+A non-exhaustive sample of the **1,348** theorem/lemma/corollary propositions.
 See each per-module file for the complete list, and
 [README.md](README.md) for the module-by-module status table.
 
@@ -820,6 +850,13 @@ See each per-module file for the complete list, and
   publication model for WAL-before-visible inserts, checkpoint gating,
   truncation/replay-tail safety, sync/rotation non-publication, and recovery
   after racing checkpoint schedules.
+- `AbiProducerSnapshot.tla` - Checks immutable ABI captures, revision/root/count
+  agreement, and content-preserving maintenance publication; its paired unsafe
+  configuration is required to violate `CapturedRevisionImmutable`.
+- `AbiSnapshotQuiescence.tla` - Checks that the bounded snapshot fallback
+  closes writer admission, drains already-admitted writers, and completes under
+  weak scheduler fairness. Its paired ungated configuration is required to
+  violate `SnapshotEventuallyCompletes` through continuous writer re-entry.
 - `SharedPersistentConcurrency.tla` - Checks the byte/char shared-handle lock
   collapse: lock-free writes, internally serialized checkpoint publication,
   committed-watermark checkpoint targets, dirty/WAL retention for
@@ -915,6 +952,13 @@ See each per-module file for the complete list, and
   retention on failed publication, post-checkpoint LSN continuation,
   non-checkpoint WAL sync/rotation, recovery WAL retention until checkpoint,
   and reverse-map rebuild safety.
+- `Spec/AbiTraversalSnapshotSpec.v` - Proves stable append-only ABI node-arena
+  identifiers, unambiguous traversal, write-once memoization, and snapshot
+  well-formedness preservation.
+- `Spec/AbiPagingProducerSpec.v` - Proves producer paging bounds, stable totals,
+  and lossless page decomposition.
+- `Spec/AbiStatusMappingSpec.v` - Proves status-table bijections and the explicit
+  project/interop status-code divergence.
 - `Spec/PersistentCheckpointRetentionSpec.v` - Adds checkpoint/WAL retention
   laws for valid checkpoint skip thresholds, invalid-checkpoint no-skip
   behavior, active WAL retention, archive/pending/active replay order,
@@ -1345,7 +1389,7 @@ The combination of model checking (for concurrent/crash scenarios) and theorem p
   the unsafe inventory gate rejects contract rows without valid coverage/status
   metadata
 
-As of 2026-06-12 the Rocq tree has **zero outstanding `Admitted`/`Axiom`/`Parameter` obligations** across all **69** `.v` files: all **1,301** theorem/lemma/corollary propositions across the proof modules close by `Qed.` (or `Defined.` for transparent definitions). Scoped abstraction boundaries are tracked in `GAP_LEDGER.md`; the current boundary is production Byzantine networking/liveness, certified Rust/LLVM compilation, kernel io_uring/syscall internals below the modeled outcome boundary, gzip/prost internals, cross-language protobuf implementations, optimal/minimal automata size, arena-locality/throughput optimality, Bloom false-positive rates/hash-quality guarantees, arbitrary semiring `times` as meet for arbitrary semirings, and upstream Levenshtein transducer correctness, not unchecked structural-preservation, DynamicDawg mutation/compaction, DynamicDawgU64 sequence semantics, Bloom filter no-false-negative rejection, double-array-trie traversal, traversal-language, public read traversal, valued set-combinator merge, persistent merge equivalence, persistent char prefix semantics, persistent char bulk-mutation recovery, persistent relative encoding, arena reservation/dirty-slot persistence, persistent deduplicating-arena soundness, root descriptor/reopen fallback, persistent lazy mutation atomicity, persistent WAL write-atomicity, persistent transaction increment recovery, lock-free counter merge atomicity, shared persistent public API concurrency, public durability acknowledgement, persistent vocab WAL atomicity, persistent vocab checkpoint publication, concurrent checkpoint publication, checkpoint/WAL retention safety, dirty checkpoint publication safety, WAL segment lifecycle safety, recovery planner durable-prefix safety, recovery replay completeness, persistent compaction rewrite safety, char/vocab rewrite checkpoint safety, SCDAWG occurrence construction, substring-candidate, fuzzy-candidate, storage syscall outcome, BufferManager page-lease/cached-page pinning, vocab reverse-map reconstruction, io_uring fixed-buffer/SQE-CQE lifecycle, or public serialization proof gaps.
+As of 2026-08-19 the Rocq tree has **zero outstanding `Admitted`/`Axiom`/`Parameter` obligations** across all **72** `.v` files: all **1,348** theorem/lemma/corollary propositions across the proof modules close by `Qed.` (or `Defined.` for transparent definitions). Scoped abstraction boundaries are tracked in `GAP_LEDGER.md`; the current boundary is production Byzantine networking/liveness, certified Rust/LLVM compilation, kernel io_uring/syscall internals below the modeled outcome boundary, gzip/prost internals, cross-language protobuf implementations, optimal/minimal automata size, arena-locality/throughput optimality, Bloom false-positive rates/hash-quality guarantees, arbitrary semiring `times` as meet for arbitrary semirings, and upstream Levenshtein transducer correctness, not unchecked structural-preservation, DynamicDawg mutation/compaction, DynamicDawgU64 sequence semantics, Bloom filter no-false-negative rejection, double-array-trie traversal, traversal-language, public read traversal, valued set-combinator merge, persistent char prefix semantics, persistent char bulk-mutation recovery, ABI traversal/paging/status, persistent relative encoding, arena reservation/dirty-slot persistence, persistent deduplicating-arena soundness, root descriptor/reopen fallback, persistent lazy mutation atomicity, persistent WAL write-atomicity, persistent transaction increment recovery, lock-free counter merge atomicity, shared persistent public API concurrency, public durability acknowledgement, persistent vocab WAL atomicity, persistent vocab checkpoint publication, concurrent checkpoint publication, checkpoint/WAL retention safety, dirty checkpoint publication safety, WAL segment lifecycle safety, recovery planner durable-prefix safety, recovery replay completeness, persistent compaction rewrite safety, char/vocab rewrite checkpoint safety, SCDAWG occurrence construction, substring-candidate, fuzzy-candidate, storage syscall outcome, BufferManager page-lease/cached-page pinning, vocab reverse-map reconstruction, io_uring fixed-buffer/SQE-CQE lifecycle, or public serialization proof gaps.
 
 ---
 

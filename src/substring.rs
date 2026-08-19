@@ -476,6 +476,8 @@ mod tests {
 
     impl DictionaryNode for MockNode {
         type Unit = char;
+        type SnapshotCursor = crate::SnapshotTraversalCursor;
+        type SnapshotGraphValueHandle = crate::SnapshotTraversalCursor;
 
         fn is_final(&self) -> bool {
             false

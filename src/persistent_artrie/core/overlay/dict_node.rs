@@ -132,6 +132,8 @@ impl<K: KeyEncoding, V: DictionaryValue> DictionaryNode for OverlayDictionaryNod
     /// (`u8` for byte, `char` for char). The internal overlay child map is keyed by
     /// the compact `K::Unit`; this handle converts at the boundary.
     type Unit = K::Token;
+    type SnapshotCursor = crate::SnapshotTraversalCursor;
+    type SnapshotGraphValueHandle = crate::SnapshotTraversalCursor;
 
     fn is_final(&self) -> bool {
         // overlay-only: pure owned-`Arc` read, no pin / no `unsafe`.

@@ -405,6 +405,8 @@ impl<V: DictionaryValue> std::fmt::Debug for ScdawgNodeHandle<V> {
 
 impl<V: DictionaryValue> DictionaryNode for ScdawgNodeHandle<V> {
     type Unit = u8;
+    type SnapshotCursor = crate::SnapshotTraversalCursor;
+    type SnapshotGraphValueHandle = crate::SnapshotTraversalCursor;
 
     #[inline]
     fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {

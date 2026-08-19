@@ -12,7 +12,7 @@
 # trusted base; nothing in the base reaches back out unmediated.
 #
 # Grounded in formal-verification/UNSAFE_BOUNDARY.md (Boundary Map + Safety
-# Contract Matrix): 43 inventory rows + 31 contracts, CI-gated by
+# Contract Matrix): 214 grouped inventory patterns + 40 contracts, CI-gated by
 # scripts/verify-unsafe-boundary-inventory.sh (set-equality).
 #
 # Color key (verification palette — task spec):
@@ -33,7 +33,7 @@ direction: down
 
 title: |md
   # libdictenstein — `unsafe` trust zones
-  *safe API wraps tagged `unsafe` primitives, which wrap the trusted base — 43 rows · 31 contracts · CI-gated*
+  *safe API wraps tagged `unsafe` primitives, which wrap the trusted base — 214 patterns · 40 contracts · CI-gated*
 | {
   near: top-center
   style.font-size: 18

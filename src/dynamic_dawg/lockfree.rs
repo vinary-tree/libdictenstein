@@ -92,7 +92,7 @@ pub(crate) struct LockFreeDawgNode<U: CharUnit, V: DictionaryValue> {
 #[derive(Debug)]
 struct GraphVersion<U: CharUnit, V: DictionaryValue> {
     root: Arc<LockFreeDawgNode<U, V>>,
-    cursor_graph: OnceLock<Option<Arc<FrozenTraversalGraph<U>>>>,
+    cursor_graph: OnceLock<Option<Arc<FrozenTraversalGraph<U, V>>>>,
     term_count: usize,
     needs_compaction: bool,
     revision: u64,
@@ -104,17 +104,18 @@ struct GraphVersion<U: CharUnit, V: DictionaryValue> {
 /// projection is built only at a freeze/compaction boundary and gives captured
 /// query cursors branch-free edge ranges without per-node allocations or
 /// per-edge reference counting.
-pub(crate) type FrozenTraversalGraph<U> = crate::SnapshotTraversalGraph<U>;
+pub(crate) type FrozenTraversalGraph<U, V> =
+    crate::SnapshotTraversalGraph<U, super::DynamicDawgSnapshotCursor<U, V>>;
 
 /// One atomically captured immutable root and its optional compact projection.
 type RootWithCursorGraph<U, V> = (
     Arc<LockFreeDawgNode<U, V>>,
-    Option<Arc<FrozenTraversalGraph<U>>>,
+    Option<Arc<FrozenTraversalGraph<U, V>>>,
 );
 
 pub(crate) fn frozen_traversal_graph_from_root<U: CharUnit, V: DictionaryValue>(
     root: &Arc<LockFreeDawgNode<U, V>>,
-) -> Option<FrozenTraversalGraph<U>> {
+) -> Option<FrozenTraversalGraph<U, V>> {
     frozen_traversal_graph_from_snapshot_ids(root)
         .or_else(|| frozen_traversal_graph_from_pointers(root))
 }
@@ -122,7 +123,7 @@ pub(crate) fn frozen_traversal_graph_from_root<U: CharUnit, V: DictionaryValue>(
 /// Fast projection for freeze-built graphs whose identities are already dense.
 fn frozen_traversal_graph_from_snapshot_ids<U: CharUnit, V: DictionaryValue>(
     root: &Arc<LockFreeDawgNode<U, V>>,
-) -> Option<FrozenTraversalGraph<U>> {
+) -> Option<FrozenTraversalGraph<U, V>> {
     let root_index = usize::try_from(root.snapshot_id?.get().checked_sub(1)?).ok()?;
     let node_count = root_index.checked_add(1)?;
     u32::try_from(node_count).ok()?;
@@ -157,7 +158,7 @@ fn frozen_traversal_graph_from_snapshot_ids<U: CharUnit, V: DictionaryValue>(
             edge_start,
             edge_len: u32::try_from(node.edges.edges.len()).ok()?,
             is_final: node.is_final,
-            value_cursor: LockFreeDawgNode::traversal_cursor(&node),
+            value_handle: LockFreeDawgNode::traversal_cursor(&node),
         });
     }
 
@@ -170,10 +171,10 @@ fn frozen_traversal_graph_from_snapshot_ids<U: CharUnit, V: DictionaryValue>(
 /// immutable root transitively owns every node for the projection lifetime.
 fn frozen_traversal_graph_from_pointers<U: CharUnit, V: DictionaryValue>(
     root: &Arc<LockFreeDawgNode<U, V>>,
-) -> Option<FrozenTraversalGraph<U>> {
-    let mut indices = FxHashMap::<usize, u32>::default();
+) -> Option<FrozenTraversalGraph<U, V>> {
+    let mut indices = FxHashMap::<std::ptr::NonNull<LockFreeDawgNode<U, V>>, u32>::default();
     let mut discovered = vec![Arc::clone(root)];
-    indices.insert(Arc::as_ptr(root) as usize, 0);
+    indices.insert(std::ptr::NonNull::from(Arc::as_ref(root)), 0);
     let mut descriptions = Vec::new();
     let mut index = 0usize;
 
@@ -181,12 +182,12 @@ fn frozen_traversal_graph_from_pointers<U: CharUnit, V: DictionaryValue>(
         let node = Arc::clone(&discovered[index]);
         let mut node_edges = Vec::with_capacity(node.edges.edges.len());
         for (label, child) in &node.edges.edges {
-            let address = Arc::as_ptr(child) as usize;
-            let target = match indices.get(&address).copied() {
+            let pointer = std::ptr::NonNull::from(Arc::as_ref(child));
+            let target = match indices.get(&pointer).copied() {
                 Some(target) => target,
                 None => {
                     let target = u32::try_from(discovered.len()).ok()?;
-                    indices.insert(address, target);
+                    indices.insert(pointer, target);
                     discovered.push(Arc::clone(child));
                     target
                 }
@@ -208,7 +209,7 @@ fn frozen_traversal_graph_from_pointers<U: CharUnit, V: DictionaryValue>(
             total.checked_add(edges.len())
         })?;
     let mut edges = Vec::with_capacity(edge_count);
-    for (is_final, value_cursor, node_edges) in descriptions {
+    for (is_final, value_handle, node_edges) in descriptions {
         let edge_start = u32::try_from(edges.len()).ok()?;
         let edge_len = u32::try_from(node_edges.len()).ok()?;
         edges.extend(
@@ -220,7 +221,7 @@ fn frozen_traversal_graph_from_pointers<U: CharUnit, V: DictionaryValue>(
             edge_start,
             edge_len,
             is_final,
-            value_cursor,
+            value_handle,
         ));
     }
     crate::SnapshotTraversalGraph::new(nodes, edges, 0)
@@ -260,9 +261,9 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawgNode<U, V> {
     /// Encode an immutable node address as a revision-scoped traversal cursor.
     /// The captured root `Arc` transitively retains every reachable child.
     #[inline]
-    pub(crate) fn traversal_cursor(node: &Arc<Self>) -> crate::SnapshotTraversalCursor {
-        crate::SnapshotTraversalCursor::new(Arc::as_ptr(node) as usize)
-            .expect("Arc pointers are non-null")
+    pub(crate) fn traversal_cursor(node: &Arc<Self>) -> super::DynamicDawgSnapshotCursor<U, V> {
+        let pointer = std::ptr::NonNull::from(Arc::as_ref(node));
+        super::DynamicDawgSnapshotCursor::from_node(pointer)
     }
 
     /// Traverse a cursor while the caller retains the root `Arc` that produced
@@ -275,17 +276,21 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawgNode<U, V> {
     /// immutable graph revision retained by the caller.
     #[inline]
     pub(crate) unsafe fn filter_map_cursor_edges_and_finality<T, P, F>(
-        cursor: crate::SnapshotTraversalCursor,
+        cursor: super::DynamicDawgSnapshotCursor<U, V>,
         mut project: P,
         mut visitor: F,
     ) -> bool
     where
         P: FnMut(U) -> Option<T>,
-        F: FnMut(U, crate::SnapshotTraversalCursor, T),
+        F: FnMut(U, super::DynamicDawgSnapshotCursor<U, V>, T),
     {
+        // SAFETY: the method contract ties the cursor to this exact node type
+        // and to a still-retained immutable root revision.
+        let pointer = unsafe { cursor.node_pointer::<Self>() };
         // SAFETY: upheld by the method contract. Published graph nodes are
-        // immutable, and the retained root owns every reachable child Arc.
-        let node = unsafe { &*(cursor.get() as *const Self) };
+        // immutable, the pointer retains its original provenance, and the
+        // captured root owns every reachable child Arc.
+        let node = unsafe { pointer.as_ref() };
         for (label, child) in &node.edges.edges {
             if let Some(projected) = project(*label) {
                 visitor(*label, Self::traversal_cursor(child), projected);
@@ -301,9 +306,13 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawgNode<U, V> {
     /// `cursor` must satisfy [`Self::filter_map_cursor_edges_and_finality`]'s
     /// retained-revision contract.
     #[inline]
-    pub(crate) unsafe fn cursor_value(cursor: crate::SnapshotTraversalCursor) -> Option<V> {
-        // SAFETY: upheld by the method contract.
-        let node = unsafe { &*(cursor.get() as *const Self) };
+    pub(crate) unsafe fn cursor_value(cursor: super::DynamicDawgSnapshotCursor<U, V>) -> Option<V> {
+        // SAFETY: the method contract ties the cursor to this exact node type
+        // and to a still-retained immutable root revision.
+        let pointer = unsafe { cursor.node_pointer::<Self>() };
+        // SAFETY: upheld by the method contract; `pointer` retained its Arc
+        // provenance and the captured root keeps the allocation alive.
+        let node = unsafe { pointer.as_ref() };
         node.value()
     }
 
@@ -314,13 +323,17 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawgNode<U, V> {
     /// `cursor` must satisfy [`Self::filter_map_cursor_edges_and_finality`]'s
     /// retained-revision contract.
     #[inline]
-    pub(crate) unsafe fn arc_from_cursor(cursor: crate::SnapshotTraversalCursor) -> Arc<Self> {
-        let pointer = cursor.get() as *const Self;
+    pub(crate) unsafe fn arc_from_cursor(
+        cursor: super::DynamicDawgSnapshotCursor<U, V>,
+    ) -> Arc<Self> {
+        // SAFETY: the method contract ties the cursor to this exact node type
+        // and to a still-retained immutable root revision.
+        let pointer = unsafe { cursor.node_pointer::<Self>() };
         // SAFETY: the retained root transitively owns this allocation, so its
         // strong count is non-zero for the duration of this operation.
-        unsafe { Arc::increment_strong_count(pointer) };
+        unsafe { Arc::increment_strong_count(pointer.as_ptr()) };
         // SAFETY: the increment above created exactly one owned strong count.
-        unsafe { Arc::from_raw(pointer) }
+        unsafe { Arc::from_raw(pointer.as_ptr()) }
     }
 }
 
@@ -373,19 +386,21 @@ impl<U: CharUnit, V: DictionaryValue> PendingBuildNode<U, V> {
     }
 }
 
-#[derive(Clone, Eq)]
-struct MergeSignature<U: CharUnit> {
+#[derive(Clone)]
+struct MergeSignature<U: CharUnit, V: DictionaryValue> {
     is_final: bool,
-    edges: Vec<(U, usize)>,
+    edges: Vec<(U, std::ptr::NonNull<LockFreeDawgNode<U, V>>)>,
 }
 
-impl<U: CharUnit> PartialEq for MergeSignature<U> {
+impl<U: CharUnit, V: DictionaryValue> PartialEq for MergeSignature<U, V> {
     fn eq(&self, other: &Self) -> bool {
         self.is_final == other.is_final && self.edges == other.edges
     }
 }
 
-impl<U: CharUnit> Hash for MergeSignature<U> {
+impl<U: CharUnit, V: DictionaryValue> Eq for MergeSignature<U, V> {}
+
+impl<U: CharUnit, V: DictionaryValue> Hash for MergeSignature<U, V> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.is_final.hash(state);
         self.edges.hash(state);
@@ -401,7 +416,7 @@ impl<U: CharUnit> Hash for MergeSignature<U> {
 /// published, once, after the final suffix has been minimized.
 struct SortedDawgBuilder<U: CharUnit, V: DictionaryValue> {
     pending: Vec<PendingBuildNode<U, V>>,
-    interned: FxHashMap<MergeSignature<U>, Arc<LockFreeDawgNode<U, V>>>,
+    interned: FxHashMap<MergeSignature<U, V>, Arc<LockFreeDawgNode<U, V>>>,
     previous: Vec<U>,
     term_count: usize,
     next_snapshot_id: u64,
@@ -485,7 +500,7 @@ impl<U: CharUnit, V: DictionaryValue> SortedDawgBuilder<U, V> {
             edges: pending
                 .edges
                 .iter()
-                .map(|(label, child)| (*label, Arc::as_ptr(child) as usize))
+                .map(|(label, child)| (*label, std::ptr::NonNull::from(Arc::as_ref(child))))
                 .collect(),
         };
 
@@ -1080,12 +1095,12 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
     }
 
     fn count_unique_nodes_from(root: &Arc<LockFreeDawgNode<U, V>>) -> usize {
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::<std::ptr::NonNull<LockFreeDawgNode<U, V>>>::new();
         let mut stack = vec![root.clone()];
 
         while let Some(node) = stack.pop() {
-            let ptr = Arc::as_ptr(&node) as usize;
-            if !visited.insert(ptr) {
+            let pointer = std::ptr::NonNull::from(Arc::as_ref(&node));
+            if !visited.insert(pointer) {
                 continue;
             }
 
@@ -1101,6 +1116,55 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn provenance_cursor_is_one_word_opaque_and_revision_retained() {
+        type Cursor = super::super::DynamicDawgSnapshotCursor<u8, u64>;
+
+        assert_eq!(std::mem::size_of::<Cursor>(), std::mem::size_of::<usize>());
+        assert_send_sync::<Cursor>();
+
+        let dawg = LockFreeDawg::<u8, u64>::new();
+        assert!(dawg.insert_units_with_value(b"old", 7));
+        let retained_root = dawg.root_arc();
+        let root_cursor = LockFreeDawgNode::traversal_cursor(&retained_root);
+        assert_eq!(format!("{root_cursor:?}"), "DynamicDawgSnapshotCursor(..)");
+
+        let mut child = None;
+        // SAFETY: the cursor was produced by `retained_root`, which remains
+        // alive through every child traversal and value read in this test.
+        let root_final = unsafe {
+            LockFreeDawgNode::filter_map_cursor_edges_and_finality(
+                root_cursor,
+                |label| (label == b'o').then_some(()),
+                |_, cursor, ()| child = Some(cursor),
+            )
+        };
+        assert!(!root_final);
+        let old_child = child.expect("retained revision contains the first edge");
+
+        assert!(dawg.remove_units(b"old"));
+        assert!(dawg.insert_units_with_value(b"other", 11));
+
+        let mut cursor = old_child;
+        for wanted in b"ld" {
+            let mut next = None;
+            // SAFETY: each cursor is emitted by the same retained immutable
+            // revision and `retained_root` still owns every reached node.
+            unsafe {
+                LockFreeDawgNode::filter_map_cursor_edges_and_finality(
+                    cursor,
+                    |label| (label == *wanted).then_some(()),
+                    |_, child, ()| next = Some(child),
+                );
+            }
+            cursor = next.expect("old retained path remains traversable");
+        }
+        // SAFETY: `cursor` belongs to the still-retained old revision.
+        assert_eq!(unsafe { LockFreeDawgNode::cursor_value(cursor) }, Some(7));
+    }
 
     #[test]
     fn sorted_builder_interns_equivalent_final_suffixes() {

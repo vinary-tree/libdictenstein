@@ -17,8 +17,9 @@ use crate::scdawg::char::ScdawgChar;
 use crate::scdawg::Scdawg;
 use crate::{
     Dictionary, DictionaryNode, MappedDictionaryNode, SnapshotNodeIdentity,
-    SnapshotTraversalCursor, SnapshotTraversalGraph,
+    SnapshotTraversalCursor, SnapshotTraversalGraph, SnapshotTraversalProjection,
 };
+use arc_swap::ArcSwapOption;
 use std::ffi::c_void;
 #[cfg(feature = "persistent-artrie")]
 use std::path::Path;
@@ -128,71 +129,210 @@ static NEXT_SNAPSHOT_PRODUCER: AtomicU64 = AtomicU64::new(1);
 
 struct CachedSnapshot {
     revision: u64,
-    snapshot: Arc<dyn SnapshotOps>,
+    snapshot: OnceLock<Arc<dyn SnapshotOps>>,
 }
 
+const SNAPSHOT_QUIESCENCE_BIT: u64 = 1 << 63;
+const SNAPSHOT_WRITER_COUNT_MASK: u64 = SNAPSHOT_QUIESCENCE_BIT - 1;
+const OPTIMISTIC_SNAPSHOT_ATTEMPTS: usize = 64;
+
 /// One strong warmed snapshot per shared producer revision.
+///
+/// Snapshot reads are lock-free. Writers announce themselves before changing
+/// any backend state and publish a new revision before withdrawing that
+/// announcement. A reader returns only when the writer count and revision are
+/// stable on both sides of capture, which prevents a new root from ever being
+/// labelled with an old snapshot identity.
 struct SnapshotMemo {
     producer: u64,
     revision: AtomicU64,
-    cached: Mutex<Option<CachedSnapshot>>,
+    /// High bit closes writer admission; remaining bits count active writers.
+    writer_state: AtomicU64,
+    /// Serializes the rare starvation-prevention path between snapshotters.
+    quiescence: Mutex<()>,
+    cached: ArcSwapOption<CachedSnapshot>,
+    #[cfg(feature = "perf-instrumentation")]
+    legacy_control: Mutex<()>,
+}
+
+struct SnapshotMutation<'a> {
+    memo: &'a SnapshotMemo,
+    dirty: bool,
+}
+
+struct SnapshotQuiescence<'a> {
+    memo: &'a SnapshotMemo,
 }
 
 impl SnapshotMemo {
     fn new() -> Self {
         let producer = NEXT_SNAPSHOT_PRODUCER
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 current.checked_add(1)
             })
             .expect("snapshot producer identity space exhausted");
         Self {
             producer,
             revision: AtomicU64::new(0),
-            cached: Mutex::new(None),
+            writer_state: AtomicU64::new(0),
+            quiescence: Mutex::new(()),
+            cached: ArcSwapOption::empty(),
+            #[cfg(feature = "perf-instrumentation")]
+            legacy_control: Mutex::new(()),
         }
     }
 
-    fn invalidate(&self) {
-        let mut cached = self
-            .cached
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.revision
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                current.checked_add(1)
-            })
-            .expect("snapshot revision identity space exhausted");
-        cached.take();
+    fn begin_mutation(&self) -> SnapshotMutation<'_> {
+        let mut state = self.writer_state.load(Ordering::Acquire);
+        loop {
+            if state & SNAPSHOT_QUIESCENCE_BIT != 0 {
+                std::thread::yield_now();
+                state = self.writer_state.load(Ordering::Acquire);
+                continue;
+            }
+            let count = state & SNAPSHOT_WRITER_COUNT_MASK;
+            let next = count
+                .checked_add(1)
+                .filter(|next| *next <= SNAPSHOT_WRITER_COUNT_MASK)
+                .expect("concurrent snapshot-writer count exhausted");
+            match self.writer_state.compare_exchange_weak(
+                state,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(observed) => state = observed,
+            }
+        }
+        SnapshotMutation {
+            memo: self,
+            // Conservatively invalidate if a backend mutation unwinds.
+            dirty: true,
+        }
     }
 
     fn get_or_create(
         &self,
-        create: impl FnOnce(SnapshotIdentity) -> Arc<dyn SnapshotOps>,
+        mut create: impl FnMut(SnapshotIdentity) -> Arc<dyn SnapshotOps>,
     ) -> Arc<dyn SnapshotOps> {
-        let mut cached = self
-            .cached
+        #[cfg(feature = "perf-instrumentation")]
+        let _legacy_guard = legacy_snapshot_locks_enabled().then(|| {
+            self.legacy_control
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        });
+        for _ in 0..OPTIMISTIC_SNAPSHOT_ATTEMPTS {
+            if self.writer_state.load(Ordering::Acquire) != 0 {
+                std::thread::yield_now();
+                continue;
+            }
+            let revision = self.revision.load(Ordering::Acquire);
+            if self.writer_state.load(Ordering::Acquire) != 0 {
+                continue;
+            }
+
+            let snapshot = self.snapshot_for_revision(revision, &mut create);
+            if self.writer_state.load(Ordering::Acquire) == 0
+                && self.revision.load(Ordering::Acquire) == revision
+            {
+                return snapshot;
+            }
+        }
+
+        // Continuous writers can otherwise deny the zero-writer observation
+        // forever. Serialize only this bounded fallback, close admissions with
+        // one state bit, and let already-admitted writers drain. Writers never
+        // take this mutex, so no lock cycle is possible.
+        let _serial = self
+            .quiescence
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // Read the revision while holding the same mutex that serializes
-        // invalidation. Reading before the lock permits this race: capture
-        // reads N; mutation publishes and invalidates N+1; capture then builds
-        // the new root but labels it N, colliding with still-live N snapshots.
-        let revision = self.revision.load(Ordering::Acquire);
-        if let Some(hit) = cached
-            .as_ref()
-            .filter(|snapshot| snapshot.revision == revision)
-        {
-            return Arc::clone(&hit.snapshot);
+        let previous = self
+            .writer_state
+            .fetch_or(SNAPSHOT_QUIESCENCE_BIT, Ordering::AcqRel);
+        debug_assert_eq!(previous & SNAPSHOT_QUIESCENCE_BIT, 0);
+        let _quiescence = SnapshotQuiescence { memo: self };
+        while self.writer_state.load(Ordering::Acquire) & SNAPSHOT_WRITER_COUNT_MASK != 0 {
+            std::thread::yield_now();
         }
-        let snapshot = create(SnapshotIdentity {
-            producer: self.producer,
-            revision,
-        });
-        *cached = Some(CachedSnapshot {
-            revision,
-            snapshot: Arc::clone(&snapshot),
-        });
-        snapshot
+        let revision = self.revision.load(Ordering::Acquire);
+        self.snapshot_for_revision(revision, &mut create)
+    }
+
+    fn snapshot_for_revision(
+        &self,
+        revision: u64,
+        create: &mut impl FnMut(SnapshotIdentity) -> Arc<dyn SnapshotOps>,
+    ) -> Arc<dyn SnapshotOps> {
+        loop {
+            let cell = self.cached.load_full();
+            if let Some(cached) = cell.as_ref().filter(|cached| cached.revision == revision) {
+                return Arc::clone(cached.snapshot.get_or_init(|| {
+                    create(SnapshotIdentity {
+                        producer: self.producer,
+                        revision,
+                    })
+                }));
+            }
+
+            let candidate = Arc::new(CachedSnapshot {
+                revision,
+                snapshot: OnceLock::new(),
+            });
+            let previous = self
+                .cached
+                .compare_and_swap(&cell, Some(Arc::clone(&candidate)));
+            if previous.as_ref().map(Arc::as_ptr) == cell.as_ref().map(Arc::as_ptr) {
+                return Arc::clone(candidate.snapshot.get_or_init(|| {
+                    create(SnapshotIdentity {
+                        producer: self.producer,
+                        revision,
+                    })
+                }));
+            }
+        }
+    }
+}
+
+#[cfg(feature = "perf-instrumentation")]
+fn legacy_snapshot_locks_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("LIBLEVENSHTEIN_CAUSAL_USE_LEGACY_SNAPSHOT_LOCKS").is_some()
+    })
+}
+
+impl SnapshotMutation<'_> {
+    fn finish(mut self, dirty: bool) {
+        self.dirty = dirty;
+    }
+}
+
+impl Drop for SnapshotMutation<'_> {
+    fn drop(&mut self) {
+        if self.dirty {
+            self.memo.cached.store(None);
+            self.memo
+                .revision
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    current.checked_add(1)
+                })
+                .expect("snapshot revision identity space exhausted");
+        }
+        let previous = self.memo.writer_state.fetch_sub(1, Ordering::Release);
+        debug_assert_ne!(previous & SNAPSHOT_WRITER_COUNT_MASK, 0);
+    }
+}
+
+impl Drop for SnapshotQuiescence<'_> {
+    fn drop(&mut self) {
+        let previous = self
+            .memo
+            .writer_state
+            .fetch_and(SNAPSHOT_WRITER_COUNT_MASK, Ordering::Release);
+        debug_assert_ne!(previous & SNAPSHOT_QUIESCENCE_BIT, 0);
+        debug_assert_eq!(previous & SNAPSHOT_WRITER_COUNT_MASK, 0);
     }
 }
 
@@ -457,6 +597,7 @@ impl PersistentARTrieBinding {
 
     /// Insert/update a byte or Unicode term and optional u64 metadata.
     pub fn insert_text(&self, term: &[u8], value: Option<u64>) -> Result<bool, BindingError> {
+        let mutation = self.shared.snapshots.begin_mutation();
         let result = match &self.shared.backend {
             PersistentBackend::Byte(dictionary) => dictionary
                 .upsert_bytes(term, BindingValue::from_option(value))
@@ -479,14 +620,13 @@ impl PersistentARTrieBinding {
             }
             PersistentBackend::U64(_) => Err(BindingError::DomainMismatch),
         };
-        if result.is_ok() {
-            self.shared.snapshots.invalidate();
-        }
+        mutation.finish(result.is_ok());
         result
     }
 
     /// Remove a byte or Unicode term where the selected variant supports removal.
     pub fn remove_text(&self, term: &[u8]) -> Result<bool, BindingError> {
+        let mutation = self.shared.snapshots.begin_mutation();
         let result = match &self.shared.backend {
             PersistentBackend::Byte(dictionary) => {
                 dictionary.remove_cas_durable(term).map_err(io_error)
@@ -498,9 +638,7 @@ impl PersistentARTrieBinding {
             PersistentBackend::Vocab(_) => Err(BindingError::Unsupported),
             PersistentBackend::U64(_) => Err(BindingError::DomainMismatch),
         };
-        if matches!(result, Ok(true)) {
-            self.shared.snapshots.invalidate();
-        }
+        mutation.finish(matches!(result, Ok(true)));
         result
     }
 
@@ -545,15 +683,14 @@ impl PersistentARTrieBinding {
     /// wrapper (which logs and returns `false`) is deliberately not used
     /// here — the ABI must report `IO_ERROR`, never a silent no-op `OK`.
     pub fn insert_u64(&self, term: &[u64], value: Option<u64>) -> Result<bool, BindingError> {
+        let mutation = self.shared.snapshots.begin_mutation();
         let result = match &self.shared.backend {
             PersistentBackend::U64(dictionary) => dictionary
                 .try_insert_sequence_with_value(term, BindingValue::from_option(value))
                 .map_err(io_error),
             _ => Err(BindingError::DomainMismatch),
         };
-        if result.is_ok() {
-            self.shared.snapshots.invalidate();
-        }
+        mutation.finish(result.is_ok());
         result
     }
 
@@ -561,15 +698,14 @@ impl PersistentARTrieBinding {
     ///
     /// Engine write failures propagate as I/O errors (see `insert_u64`).
     pub fn remove_u64(&self, term: &[u64]) -> Result<bool, BindingError> {
+        let mutation = self.shared.snapshots.begin_mutation();
         let result = match &self.shared.backend {
             PersistentBackend::U64(dictionary) => {
                 dictionary.try_remove_sequence(term).map_err(io_error)
             }
             _ => Err(BindingError::DomainMismatch),
         };
-        if matches!(result, Ok(true)) {
-            self.shared.snapshots.invalidate();
-        }
+        mutation.finish(matches!(result, Ok(true)));
         result
     }
 
@@ -627,6 +763,22 @@ enum SecondaryBackend {
     ScdawgUnicode(ScdawgChar<BindingValue>),
 }
 
+/// Same-binary causal control for direct immutable-DAT cursor snapshots.
+#[inline]
+fn dat_cursor_resource_snapshots_enabled() -> bool {
+    #[cfg(any(feature = "perf-instrumentation", feature = "benchmark-controls"))]
+    {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| {
+            std::env::var_os("LIBDICTENSTEIN_CAUSAL_DISABLE_DAT_CURSOR_SNAPSHOTS").is_none()
+        })
+    }
+    #[cfg(not(any(feature = "perf-instrumentation", feature = "benchmark-controls")))]
+    {
+        true
+    }
+}
+
 impl SecondaryBackend {
     fn domain(&self) -> BindingUnitDomain {
         match self {
@@ -654,20 +806,52 @@ impl SecondaryBackend {
         match self {
             // DoubleArrayTrie backends are immutable after construction, so
             // separate root()/len() reads cannot tear (no writer exists).
-            Self::DoubleArrayByte(dictionary) => Arc::new(TraversalSnapshot::new(
-                dictionary.root(),
-                dictionary.len(),
-                VtUnitDomain::Byte,
-                false,
-                identity,
-            )),
-            Self::DoubleArrayUnicode(dictionary) => Arc::new(TraversalSnapshot::new(
-                dictionary.root(),
-                dictionary.len(),
-                VtUnitDomain::UnicodeScalar,
-                false,
-                identity,
-            )),
+            Self::DoubleArrayByte(dictionary) => {
+                let root = dictionary.root();
+                if dat_cursor_resource_snapshots_enabled() {
+                    Arc::new(
+                        CursorTraversalSnapshot::new(
+                            root,
+                            dictionary.len(),
+                            VtUnitDomain::Byte,
+                            false,
+                            identity,
+                        )
+                        .expect("byte DAT roots provide validated mapped cursors"),
+                    )
+                } else {
+                    Arc::new(TraversalSnapshot::new(
+                        root,
+                        dictionary.len(),
+                        VtUnitDomain::Byte,
+                        false,
+                        identity,
+                    ))
+                }
+            }
+            Self::DoubleArrayUnicode(dictionary) => {
+                let root = dictionary.root();
+                if dat_cursor_resource_snapshots_enabled() {
+                    Arc::new(
+                        CursorTraversalSnapshot::new(
+                            root,
+                            dictionary.len(),
+                            VtUnitDomain::UnicodeScalar,
+                            false,
+                            identity,
+                        )
+                        .expect("Unicode DAT roots provide validated mapped cursors"),
+                    )
+                } else {
+                    Arc::new(TraversalSnapshot::new(
+                        root,
+                        dictionary.len(),
+                        VtUnitDomain::UnicodeScalar,
+                        false,
+                        identity,
+                    ))
+                }
+            }
             // SCDAWGs are mutable: pair the root with the count from ONE
             // published revision (finding LDICT-B4).
             Self::ScdawgByte(dictionary) => {
@@ -822,6 +1006,7 @@ impl ScdawgBinding {
 
     /// Insert or update a term and optional metadata.
     pub fn insert(&self, term: &str, value: Option<u64>) -> bool {
+        let mutation = self.shared.snapshots.begin_mutation();
         let value = BindingValue::from_option(value);
         let inserted = match &self.shared.backend {
             SecondaryBackend::ScdawgByte(dictionary) => dictionary.insert_with_value(term, value),
@@ -830,7 +1015,7 @@ impl ScdawgBinding {
             }
             _ => unreachable!("ScdawgBinding contains only SCDAWG backends"),
         };
-        self.shared.snapshots.invalidate();
+        mutation.finish(true);
         inserted
     }
 
@@ -941,6 +1126,7 @@ impl DynamicDawgBinding {
             .backend
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mutation = self.shared.snapshots.begin_mutation();
         let result = match &*backend {
             DynamicBackend::Byte(dictionary) => {
                 Ok(dictionary
@@ -953,9 +1139,7 @@ impl DynamicDawgBinding {
             DynamicBackend::U64(_) => Err(BindingError::DomainMismatch),
         };
         drop(backend);
-        if result.is_ok() {
-            self.shared.snapshots.invalidate();
-        }
+        mutation.finish(result.is_ok());
         result
     }
 
@@ -1018,10 +1202,11 @@ impl DynamicDawgBinding {
                 }
                 DynamicBackend::U64(_) => return Err(BindingError::DomainMismatch),
             };
+            let mutation = self.shared.snapshots.begin_mutation();
             *backend = replacement;
             let len = backend.len();
             drop(backend);
-            self.shared.snapshots.invalidate();
+            mutation.finish(true);
             return Ok(len);
         }
         drop(backend);
@@ -1040,6 +1225,7 @@ impl DynamicDawgBinding {
             .backend
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mutation = self.shared.snapshots.begin_mutation();
         let result = match &*backend {
             DynamicBackend::Byte(dictionary) => Ok(dictionary.remove_bytes(term)),
             DynamicBackend::Unicode(dictionary) => {
@@ -1049,9 +1235,7 @@ impl DynamicDawgBinding {
             DynamicBackend::U64(_) => Err(BindingError::DomainMismatch),
         };
         drop(backend);
-        if matches!(result, Ok(true)) {
-            self.shared.snapshots.invalidate();
-        }
+        mutation.finish(matches!(result, Ok(true)));
         result
     }
 
@@ -1100,15 +1284,14 @@ impl DynamicDawgBinding {
             .backend
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mutation = self.shared.snapshots.begin_mutation();
         let result = match &*backend {
             DynamicBackend::U64(dictionary) => Ok(dictionary
                 .insert_sequence_with_optional_value(term, value.map(BindingValue::present))),
             _ => Err(BindingError::DomainMismatch),
         };
         drop(backend);
-        if result.is_ok() {
-            self.shared.snapshots.invalidate();
-        }
+        mutation.finish(result.is_ok());
         result
     }
 
@@ -1141,10 +1324,11 @@ impl DynamicDawgBinding {
                 );
                 owned.sort_by(|left, right| left.0.cmp(&right.0));
             }
+            let mutation = self.shared.snapshots.begin_mutation();
             *backend = DynamicBackend::U64(DynamicDawgU64::from_sorted_sequence_entries(owned));
             let len = backend.len();
             drop(backend);
-            self.shared.snapshots.invalidate();
+            mutation.finish(true);
             return Ok(len);
         }
         drop(backend);
@@ -1163,14 +1347,13 @@ impl DynamicDawgBinding {
             .backend
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mutation = self.shared.snapshots.begin_mutation();
         let result = match &*backend {
             DynamicBackend::U64(dictionary) => Ok(dictionary.remove_sequence(term)),
             _ => Err(BindingError::DomainMismatch),
         };
         drop(backend);
-        if matches!(result, Ok(true)) {
-            self.shared.snapshots.invalidate();
-        }
+        mutation.finish(matches!(result, Ok(true)));
         result
     }
 
@@ -1211,11 +1394,10 @@ impl DynamicDawgBinding {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let domain = backend.domain();
         let changed = backend.len() != 0;
+        let mutation = self.shared.snapshots.begin_mutation();
         *backend = DynamicBackend::new(domain);
         drop(backend);
-        if changed {
-            self.shared.snapshots.invalidate();
-        }
+        mutation.finish(changed);
     }
 
     /// Restore compact DynamicDAWG structure and return reclaimed nodes.
@@ -1225,6 +1407,7 @@ impl DynamicDawgBinding {
             .backend
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mutation = self.shared.snapshots.begin_mutation();
         let reclaimed = match &*backend {
             DynamicBackend::Byte(dictionary) => dictionary.compact(),
             DynamicBackend::Unicode(dictionary) => dictionary.compact(),
@@ -1234,7 +1417,7 @@ impl DynamicDawgBinding {
         // Every compaction publishes a fresh immutable graph revision, even
         // when minimization happens to preserve the physical node count.
         // Snapshot memoization is revision-based, not size-based.
-        self.shared.snapshots.invalidate();
+        mutation.finish(true);
         reclaimed
     }
 
@@ -1246,6 +1429,7 @@ impl DynamicDawgBinding {
 
 trait AbiUnit: Copy + Send + Sync + 'static {
     fn to_abi(self) -> u64;
+    fn from_abi(value: u64) -> Option<Self>;
 }
 
 trait AbiValue: crate::DictionaryValue {
@@ -1268,17 +1452,29 @@ impl AbiUnit for u8 {
     fn to_abi(self) -> u64 {
         u64::from(self)
     }
+
+    fn from_abi(value: u64) -> Option<Self> {
+        u8::try_from(value).ok()
+    }
 }
 
 impl AbiUnit for char {
     fn to_abi(self) -> u64 {
         u64::from(u32::from(self))
     }
+
+    fn from_abi(value: u64) -> Option<Self> {
+        u32::try_from(value).ok().and_then(char::from_u32)
+    }
 }
 
 impl AbiUnit for u64 {
     fn to_abi(self) -> u64 {
         self
+    }
+
+    fn from_abi(value: u64) -> Option<Self> {
+        Some(value)
     }
 }
 
@@ -1409,9 +1605,25 @@ impl<N> Drop for NodeArena<N> {
 }
 
 struct TraversalSnapshot<N: DictionaryNode> {
-    arena: NodeArena<N>,
-    native_graph: OnceLock<Option<Arc<SnapshotTraversalGraph<N::Unit>>>>,
+    native_graph: OnceLock<Option<SnapshotTraversalProjection<N>>>,
     abi_graph: OnceLock<AbiTraversalGraph>,
+    len: Option<usize>,
+    domain: VtUnitDomain,
+    suffix: bool,
+    identity: SnapshotIdentity,
+    // Keep the immutable owner last so native provenance handles are dropped
+    // before the revision that makes them valid.
+    arena: NodeArena<N>,
+}
+
+/// Immutable resource snapshot backed by the dictionary's own compact cursor.
+///
+/// The retained root owns the immutable revision. ABI node identifiers are the
+/// backend's validated one-based cursor words, so visits copy edge descriptors
+/// directly into the caller's page and never populate a second node arena.
+struct CursorTraversalSnapshot<N: DictionaryNode<SnapshotCursor = SnapshotTraversalCursor>> {
+    root: N,
+    root_cursor: SnapshotTraversalCursor,
     len: Option<usize>,
     domain: VtUnitDomain,
     suffix: bool,
@@ -1425,7 +1637,11 @@ struct AbiTraversalGraph {
 }
 
 impl AbiTraversalGraph {
-    fn from_native<U: AbiUnit + crate::CharUnit>(graph: &SnapshotTraversalGraph<U>) -> Self {
+    fn from_native<U, H>(graph: &SnapshotTraversalGraph<U, H>) -> Self
+    where
+        U: AbiUnit + crate::CharUnit,
+        H: Copy,
+    {
         crate::causal_perf::record_resource_graph_projections(1);
         let nodes = (0..graph.node_count())
             .map(|index| {
@@ -1498,18 +1714,19 @@ impl<N: DictionaryNode> TraversalSnapshot<N> {
             root_identity
         };
         Self {
-            arena: NodeArena::new(root, root_identity),
             native_graph: OnceLock::new(),
             abi_graph: OnceLock::new(),
             len,
             domain,
             suffix,
             identity,
+            arena: NodeArena::new(root, root_identity),
         }
     }
 }
 
 trait SnapshotOps: Send + Sync {
+    fn root(&self) -> u64;
     fn domain(&self) -> VtUnitDomain;
     fn suffix(&self) -> bool;
     fn len(&self) -> Option<usize>;
@@ -1534,6 +1751,166 @@ trait SnapshotOps: Send + Sync {
         let is_final = self.is_final(node)?;
         let (written, total) = self.copy_edges(node, start, output)?;
         Ok((is_final, written, total))
+    }
+}
+
+impl<N> CursorTraversalSnapshot<N>
+where
+    N: MappedDictionaryNode<SnapshotCursor = SnapshotTraversalCursor> + 'static,
+    N::Unit: AbiUnit,
+    N::Value: AbiValue,
+{
+    fn new(
+        root: N,
+        len: Option<usize>,
+        domain: VtUnitDomain,
+        suffix: bool,
+        identity: SnapshotIdentity,
+    ) -> Option<Self> {
+        let root_cursor = root.snapshot_root_cursor()?;
+        if !root.contains_snapshot_cursor(root_cursor) || !root.supports_snapshot_cursor_values() {
+            return None;
+        }
+        crate::causal_perf::record_resource_snapshots_created(1);
+        Some(Self {
+            root,
+            root_cursor,
+            len,
+            domain,
+            suffix,
+            identity,
+        })
+    }
+
+    #[inline]
+    fn abi_cursor(cursor: SnapshotTraversalCursor) -> Result<u64, VtStatus> {
+        u64::try_from(cursor.get()).map_err(|_| VtStatus::LimitExceeded)
+    }
+
+    #[inline]
+    fn native_cursor(&self, node: u64) -> Result<SnapshotTraversalCursor, VtStatus> {
+        let cursor = usize::try_from(node)
+            .ok()
+            .and_then(SnapshotTraversalCursor::new)
+            .ok_or(VtStatus::InvalidArgument)?;
+        self.root
+            .contains_snapshot_cursor(cursor)
+            .then_some(cursor)
+            .ok_or(VtStatus::InvalidArgument)
+    }
+
+    fn copy_cursor_node(
+        &self,
+        node: u64,
+        start: usize,
+        output: &mut [VtDictionaryEdge],
+    ) -> Result<(bool, usize, usize), VtStatus> {
+        let cursor = self.native_cursor(node)?;
+        let mut written = 0usize;
+        // SAFETY: `native_cursor` validated this cursor against the retained
+        // root revision. Every child is emitted by that same revision.
+        let (is_final, total) = unsafe {
+            self.root.visit_snapshot_cursor_edge_page(
+                cursor,
+                start,
+                output.len(),
+                |label, child| {
+                    output[written] = VtDictionaryEdge {
+                        label: label.to_abi(),
+                        node: Self::abi_cursor(child)
+                            .expect("a native cursor already fits the platform usize"),
+                    };
+                    written += 1;
+                },
+            )
+        }
+        .ok_or(VtStatus::Unsupported)?;
+        crate::causal_perf::record_resource_native_edges_enumerated(written as u64);
+        Ok((is_final, written, total))
+    }
+}
+
+impl<N> SnapshotOps for CursorTraversalSnapshot<N>
+where
+    N: MappedDictionaryNode<SnapshotCursor = SnapshotTraversalCursor> + 'static,
+    N::Unit: AbiUnit,
+    N::Value: AbiValue,
+{
+    fn root(&self) -> u64 {
+        Self::abi_cursor(self.root_cursor).expect("the root cursor fits the ABI")
+    }
+
+    fn domain(&self) -> VtUnitDomain {
+        self.domain
+    }
+
+    fn suffix(&self) -> bool {
+        self.suffix
+    }
+
+    fn len(&self) -> Option<usize> {
+        self.len
+    }
+
+    fn identity(&self) -> SnapshotIdentity {
+        self.identity
+    }
+
+    fn graph(&self) -> Option<VtDictionaryGraphView> {
+        None
+    }
+
+    fn graph_value(&self, _value_cursor: u64) -> Result<Option<u64>, VtStatus> {
+        Err(VtStatus::Unsupported)
+    }
+
+    fn is_final(&self, node: u64) -> Result<bool, VtStatus> {
+        crate::causal_perf::record_resource_is_final_calls(1);
+        let cursor = self.native_cursor(node)?;
+        // SAFETY: `native_cursor` validated this cursor against `self.root`.
+        unsafe { self.root.snapshot_cursor_is_final(cursor) }.ok_or(VtStatus::Unsupported)
+    }
+
+    fn value(&self, node: u64) -> Result<Option<u64>, VtStatus> {
+        crate::causal_perf::record_resource_value_calls(1);
+        let cursor = self.native_cursor(node)?;
+        // SAFETY: `native_cursor` validated this cursor against `self.root`.
+        let value =
+            unsafe { self.root.snapshot_cursor_value(cursor) }.ok_or(VtStatus::Unsupported)?;
+        Ok(value.and_then(AbiValue::into_abi_value))
+    }
+
+    fn transition(&self, node: u64, label: u64) -> Result<Option<u64>, VtStatus> {
+        let cursor = self.native_cursor(node)?;
+        let Some(label) = N::Unit::from_abi(label) else {
+            return Ok(None);
+        };
+        // SAFETY: `native_cursor` validated this cursor against `self.root`.
+        let result = unsafe { self.root.snapshot_cursor_transition(cursor, label) }
+            .ok_or(VtStatus::Unsupported)?;
+        result.map(Self::abi_cursor).transpose()
+    }
+
+    fn copy_edges(
+        &self,
+        node: u64,
+        start: usize,
+        output: &mut [VtDictionaryEdge],
+    ) -> Result<(usize, usize), VtStatus> {
+        crate::causal_perf::record_resource_edges_calls(1);
+        let (_, written, total) = self.copy_cursor_node(node, start, output)?;
+        Ok((written, total))
+    }
+
+    fn copy_node(
+        &self,
+        node: u64,
+        start: usize,
+        output: &mut [VtDictionaryEdge],
+    ) -> Result<(bool, usize, usize), VtStatus> {
+        crate::causal_perf::record_resource_is_final_calls(1);
+        crate::causal_perf::record_resource_edges_calls(1);
+        self.copy_cursor_node(node, start, output)
     }
 }
 
@@ -1583,6 +1960,10 @@ where
     N::Unit: AbiUnit,
     N::Value: AbiValue,
 {
+    fn root(&self) -> u64 {
+        0
+    }
+
     fn domain(&self) -> VtUnitDomain {
         self.domain
     }
@@ -1610,7 +1991,7 @@ where
             .as_deref()?;
         Some(
             self.abi_graph
-                .get_or_init(|| AbiTraversalGraph::from_native::<N::Unit>(native))
+                .get_or_init(|| AbiTraversalGraph::from_native::<N::Unit, _>(native))
                 .view(),
         )
     }
@@ -1631,11 +2012,11 @@ where
         if dense_cursor.get() > graph.node_count() {
             return Err(VtStatus::InvalidArgument);
         }
-        let cursor = graph.value_cursor(dense_cursor);
-        // SAFETY: every cursor in the ABI graph came from the compact graph
-        // captured with this exact retained root revision.
-        let value =
-            unsafe { root.snapshot_cursor_value(cursor) }.ok_or(VtStatus::InvalidArgument)?;
+        // SAFETY: the dense cursor was range-checked against the exact compact
+        // graph captured with this retained root revision. Backend-native
+        // handles remain inside the generic graph and never cross the ABI.
+        let value = unsafe { root.snapshot_graph_cursor_value(graph, dense_cursor) }
+            .ok_or(VtStatus::InvalidArgument)?;
         Ok(value.and_then(AbiValue::into_abi_value))
     }
 
@@ -1985,8 +2366,8 @@ unsafe fn dictionary_root_status(context: *mut c_void, out_node: *mut u64) -> Vt
     }
     let context = &*context.cast::<ResourceContext>();
     match context.immutable() {
-        Ok(_) => {
-            out_node.write(0);
+        Ok(snapshot) => {
+            out_node.write(snapshot.root());
             VtStatus::Ok
         }
         Err(status) => status,
@@ -2373,6 +2754,8 @@ fn dictionary_vtable(domain: VtUnitDomain, flags: u64) -> *const VtDictionaryVTa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
 
     fn snapshot_edges(snapshot: &dyn SnapshotOps, node: u64) -> Result<Vec<(u64, u64)>, VtStatus> {
         let (_, total) = snapshot.copy_edges(node, 0, &mut [])?;
@@ -2384,6 +2767,188 @@ mod tests {
             .into_iter()
             .map(|edge| (edge.label, edge.node))
             .collect())
+    }
+
+    fn captured_resource(snapshot: Arc<dyn SnapshotOps>) -> OwnedDictionaryResource {
+        OwnedDictionaryResource::new(ResourcePayload::Snapshot(snapshot))
+    }
+
+    #[test]
+    fn snapshot_quiescence_closes_writer_admission_and_prevents_starvation() {
+        let memo = Arc::new(SnapshotMemo::new());
+        let backend = Arc::new(DynamicBackend::new(BindingUnitDomain::U64));
+        let admitted = memo.begin_mutation();
+        let (snapshot_tx, snapshot_rx) = mpsc::channel();
+        let (writer_tx, writer_rx) = mpsc::channel();
+
+        std::thread::scope(|scope| {
+            let snapshot_memo = Arc::clone(&memo);
+            let snapshot_backend = Arc::clone(&backend);
+            scope.spawn(move || {
+                let snapshot =
+                    snapshot_memo.get_or_create(|identity| snapshot_backend.snapshot(identity));
+                snapshot_tx
+                    .send(snapshot.identity())
+                    .expect("snapshot receiver remains live");
+            });
+
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while memo.writer_state.load(Ordering::Acquire) & SNAPSHOT_QUIESCENCE_BIT == 0 {
+                assert!(
+                    Instant::now() < deadline,
+                    "snapshotter did not close writer admission"
+                );
+                std::thread::yield_now();
+            }
+
+            let waiting_writer_memo = Arc::clone(&memo);
+            scope.spawn(move || {
+                let mutation = waiting_writer_memo.begin_mutation();
+                writer_tx.send(()).expect("writer receiver remains live");
+                mutation.finish(false);
+            });
+            assert!(
+                writer_rx.try_recv().is_err(),
+                "writer entered while quiescence bit closed admission"
+            );
+
+            admitted.finish(false);
+            let identity = snapshot_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("snapshot completes after admitted writer drains");
+            assert_eq!(identity.producer, memo.producer);
+            writer_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("writer resumes after snapshot quiescence ends");
+        });
+    }
+
+    #[test]
+    fn byte_dat_snapshot_uses_validated_native_cursor_tokens_end_to_end() {
+        let dictionary = DoubleArrayTrieBinding::from_byte_terms([
+            ("", Some(10)),
+            ("car", Some(20)),
+            ("cat", None),
+        ]);
+        let resource = dictionary.resource();
+        let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };
+        let snapshot = live.snapshot();
+        assert_eq!(snapshot.root(), 2, "byte DAT state one is cursor token two");
+        assert_eq!(snapshot.len(), Some(3));
+        assert!(snapshot.graph().is_none());
+        assert!(snapshot.is_final(snapshot.root()).unwrap());
+        assert_eq!(snapshot.value(snapshot.root()).unwrap(), Some(10));
+
+        let c = snapshot
+            .transition(snapshot.root(), u64::from(b'c'))
+            .unwrap()
+            .expect("c edge");
+        let a = snapshot
+            .transition(c, u64::from(b'a'))
+            .unwrap()
+            .expect("a edge");
+        let t = snapshot
+            .transition(a, u64::from(b't'))
+            .unwrap()
+            .expect("t edge");
+        assert!(snapshot.is_final(t).unwrap());
+        assert_eq!(
+            snapshot.value(t).unwrap(),
+            None,
+            "terminal may be valueless"
+        );
+        assert_eq!(snapshot.transition(a, u64::from(b'z')).unwrap(), None);
+        assert_eq!(snapshot.transition(a, 256).unwrap(), None);
+
+        let mut page = [VtDictionaryEdge::default(); 1];
+        let (is_final, written, total) = snapshot
+            .copy_node(a, 0, &mut page)
+            .expect("first one-edge page");
+        assert!(!is_final);
+        assert_eq!((written, total), (1, 2));
+        let first = page[0];
+        let (_, written, confirmed_total) = snapshot
+            .copy_node(a, 1, &mut page)
+            .expect("second one-edge page");
+        assert_eq!((written, confirmed_total), (1, 2));
+        assert_ne!(page[0].label, first.label);
+        assert_eq!(snapshot.copy_node(a, 2, &mut page).unwrap().1, 0);
+        assert_eq!(snapshot.copy_node(a, 3, &mut page).unwrap().1, 0);
+
+        for invalid in [0, 1, u64::MAX] {
+            let sentinel = VtDictionaryEdge {
+                label: 0xfeed,
+                node: 0xbeef,
+            };
+            let mut untouched = [sentinel];
+            assert_eq!(
+                snapshot.copy_node(invalid, 0, &mut untouched),
+                Err(VtStatus::InvalidArgument)
+            );
+            assert_eq!(untouched[0].label, sentinel.label);
+            assert_eq!(untouched[0].node, sentinel.node);
+        }
+
+        let captured = captured_resource(Arc::clone(&snapshot));
+        let mut abi_root = 0;
+        assert_eq!(
+            unsafe { dictionary_root_status(captured.raw.context, &mut abi_root) },
+            VtStatus::Ok
+        );
+        assert_eq!(abi_root, snapshot.root());
+        let captured_context = unsafe { &*captured.raw.context.cast::<ResourceContext>() };
+        let nested = captured_context.snapshot();
+        assert_eq!(nested.root(), snapshot.root());
+        assert_eq!(nested.identity(), snapshot.identity());
+        drop(resource);
+        assert!(
+            nested.is_final(t).unwrap(),
+            "retained snapshot owns DAT arrays"
+        );
+    }
+
+    #[test]
+    fn unicode_dat_cursor_snapshot_pages_sparse_high_degree_roots() {
+        let entries =
+            std::iter::once((String::new(), Some(99))).chain((0..300_u32).map(|offset| {
+                let scalar = char::from_u32(0x1_000 + offset).expect("test scalar");
+                (scalar.to_string(), Some(u64::from(offset)))
+            }));
+        let dictionary = DoubleArrayTrieBinding::from_unicode_terms(entries);
+        let resource = dictionary.resource();
+        let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };
+        let snapshot = live.snapshot();
+        assert_eq!(
+            snapshot.root(),
+            1,
+            "Unicode DAT state zero is cursor token one"
+        );
+        assert!(snapshot.is_final(1).unwrap());
+        assert_eq!(snapshot.value(1).unwrap(), Some(99));
+
+        let mut page = [VtDictionaryEdge::default(); 32];
+        assert_eq!(snapshot.copy_node(1, 0, &mut []).unwrap(), (true, 0, 300));
+        let (is_final, written, total) = snapshot.copy_node(1, 256, &mut page).unwrap();
+        assert!(is_final);
+        assert_eq!((written, total), (32, 300));
+        let (_, tail_written, tail_total) = snapshot.copy_node(1, 288, &mut page).unwrap();
+        assert_eq!((tail_written, tail_total), (12, 300));
+        assert!(page[..tail_written]
+            .windows(2)
+            .all(|pair| pair[0].label < pair[1].label));
+
+        let wanted = u64::from(0x1_000_u32 + 299);
+        let child = snapshot
+            .transition(1, wanted)
+            .unwrap()
+            .expect("high Unicode transition");
+        assert!(snapshot.is_final(child).unwrap());
+        assert_eq!(snapshot.value(child).unwrap(), Some(299));
+        assert_eq!(snapshot.transition(1, 0x11_0000).unwrap(), None);
+        assert_eq!(snapshot.transition(1, 0xd800).unwrap(), None);
+        assert_eq!(snapshot.is_final(0), Err(VtStatus::InvalidArgument));
+        assert_eq!(snapshot.is_final(2), Err(VtStatus::InvalidArgument));
+        assert_eq!(snapshot.is_final(u64::MAX), Err(VtStatus::InvalidArgument));
     }
 
     #[test]

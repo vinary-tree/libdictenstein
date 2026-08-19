@@ -27,7 +27,9 @@ use super::char_zipper::DoubleArrayTrieCharZipper;
 use super::core::builder::StaticDATBuilder;
 use crate::iterator::DictionaryIterator;
 use crate::value::DictionaryValue;
-use crate::{Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode};
+use crate::{
+    Dictionary, DictionaryNode, MappedDictionary, MappedDictionaryNode, SnapshotTraversalCursor,
+};
 use std::sync::Arc;
 
 // serde helpers for Arc<Vec<T>> / Arc<Vec<Vec<T>>> round-tripping moved to
@@ -47,7 +49,8 @@ use crate::serialization::serde_helpers::{
 //
 // Call-sites throughout this file continue to reference `DATSharedChar<V>`
 // unchanged.
-pub(crate) type DATSharedChar<V = ()> = super::core::DATCoreShared<char, V>;
+type DATRawSharedChar<V = ()> = super::core::DATCoreShared<char, V>;
+pub(crate) type DATSharedChar<V = ()> = super::core::shared::ValidatedDATCoreShared<char, V, 0>;
 
 /// Character-level Double-Array Trie for proper Unicode support.
 ///
@@ -71,18 +74,14 @@ pub(crate) type DATSharedChar<V = ()> = super::core::DATCoreShared<char, V>;
 /// assert!(dict.contains("中文"));
 /// assert!(dict.contains("🎉"));
 /// ```
-#[cfg_attr(
-    feature = "serialization",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "serialization", derive(serde::Serialize))]
 #[cfg_attr(
     all(feature = "serialization", not(feature = "persistent-artrie")),
-    serde(bound(serialize = "V: serde::Serialize")),
-    serde(bound(deserialize = "V: serde::Deserialize<'de>"))
+    serde(bound(serialize = "V: serde::Serialize"))
 )]
 #[cfg_attr(
     all(feature = "serialization", feature = "persistent-artrie"),
-    serde(bound = "")
+    serde(bound(serialize = ""))
 )]
 #[derive(Clone, Debug)]
 pub struct DoubleArrayTrieChar<V: DictionaryValue = ()> {
@@ -108,6 +107,66 @@ pub struct DoubleArrayTrieChar<V: DictionaryValue = ()> {
 
     /// Number of terms in the dictionary
     num_terms: usize,
+}
+
+/// Exact legacy serde field layout used as the untrusted deserialization
+/// representation. The validated wrapper is absent from the wire format.
+#[cfg(feature = "serialization")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[cfg_attr(
+    not(feature = "persistent-artrie"),
+    serde(bound(deserialize = "V: serde::Deserialize<'de>"))
+)]
+#[cfg_attr(feature = "persistent-artrie", serde(bound(deserialize = "")))]
+struct DoubleArrayTrieCharWire<V: DictionaryValue> {
+    shared: DATRawSharedChar<V>,
+    #[serde(
+        serialize_with = "serialize_arc_vec",
+        deserialize_with = "deserialize_arc_vec"
+    )]
+    free_list: Arc<Vec<usize>>,
+    num_terms: usize,
+}
+
+#[cfg(feature = "serialization")]
+impl<V: DictionaryValue> DoubleArrayTrieChar<V> {
+    fn from_untrusted_wire(
+        wire: DoubleArrayTrieCharWire<V>,
+    ) -> Result<Self, super::core::shared::DatValidationError> {
+        let shared = DATSharedChar::try_from_untrusted(wire.shared, wire.num_terms)?;
+        shared.validate_free_list(wire.free_list.as_ref())?;
+        debug_assert_eq!(shared.reachable_final_count(), wire.num_terms);
+        Ok(Self {
+            shared,
+            free_list: wire.free_list,
+            num_terms: wire.num_terms,
+        })
+    }
+}
+
+#[cfg(all(feature = "serialization", not(feature = "persistent-artrie")))]
+impl<'de, V> serde::Deserialize<'de> for DoubleArrayTrieChar<V>
+where
+    V: DictionaryValue + serde::Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = DoubleArrayTrieCharWire::<V>::deserialize(deserializer)?;
+        Self::from_untrusted_wire(wire).map_err(<D::Error as serde::de::Error>::custom)
+    }
+}
+
+#[cfg(all(feature = "serialization", feature = "persistent-artrie"))]
+impl<'de, V: DictionaryValue> serde::Deserialize<'de> for DoubleArrayTrieChar<V> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = DoubleArrayTrieCharWire::<V>::deserialize(deserializer)?;
+        Self::from_untrusted_wire(wire).map_err(<D::Error as serde::de::Error>::custom)
+    }
 }
 
 impl DoubleArrayTrieChar<()> {
@@ -150,14 +209,17 @@ impl DoubleArrayTrieChar<()> {
 
     /// Create an empty character-level Double-Array Trie.
     pub fn empty() -> Self {
+        let raw = DATRawSharedChar {
+            base: Arc::new(vec![0]),
+            check: Arc::new(vec![0]),
+            is_final: Arc::new(vec![false]),
+            edges: Arc::new(vec![vec![]]),
+            values: Arc::new(vec![None]),
+        };
+        // SAFETY: this is the canonical historical empty Unicode DAT layout.
+        let shared = unsafe { DATSharedChar::from_builder_parts_unchecked(raw, 0) };
         Self {
-            shared: DATSharedChar {
-                base: Arc::new(vec![0]),
-                check: Arc::new(vec![0]),
-                is_final: Arc::new(vec![false]),
-                edges: Arc::new(vec![vec![]]),
-                values: Arc::new(vec![None]),
-            },
+            shared,
             free_list: Arc::new(Vec::new()),
             num_terms: 0,
         }
@@ -167,16 +229,21 @@ impl DoubleArrayTrieChar<()> {
 impl<V: DictionaryValue> DoubleArrayTrieChar<V> {
     fn from_static_builder(builder: StaticDATBuilder<char, V>) -> Self {
         let built = builder.build(0);
+        let num_terms = built.term_count;
+        let raw = DATRawSharedChar {
+            base: Arc::new(built.base),
+            check: Arc::new(built.check),
+            is_final: Arc::new(built.is_final),
+            edges: Arc::new(built.edges),
+            values: Arc::new(built.values),
+        };
+        // SAFETY: StaticDATBuilder assigns BASE/CHECK/EDGES together and never
+        // exposes a partially constructed layout. Debug builds validate it.
+        let shared = unsafe { DATSharedChar::from_builder_parts_unchecked(raw, num_terms) };
         Self {
-            shared: DATSharedChar {
-                base: Arc::new(built.base),
-                check: Arc::new(built.check),
-                is_final: Arc::new(built.is_final),
-                edges: Arc::new(built.edges),
-                values: Arc::new(built.values),
-            },
+            shared,
             free_list: Arc::new(Vec::new()),
-            num_terms: built.term_count,
+            num_terms,
         }
     }
 
@@ -217,14 +284,17 @@ impl<V: DictionaryValue> DoubleArrayTrieChar<V> {
         let num_terms = term_value_pairs.len();
 
         if term_value_pairs.is_empty() {
+            let raw = DATRawSharedChar {
+                base: Arc::new(vec![0]),
+                check: Arc::new(vec![0]),
+                is_final: Arc::new(vec![false]),
+                edges: Arc::new(vec![vec![]]),
+                values: Arc::new(vec![None]),
+            };
+            // SAFETY: this is the canonical historical empty Unicode DAT layout.
+            let shared = unsafe { DATSharedChar::from_builder_parts_unchecked(raw, 0) };
             return Self {
-                shared: DATSharedChar {
-                    base: Arc::new(vec![0]),
-                    check: Arc::new(vec![0]),
-                    is_final: Arc::new(vec![false]),
-                    edges: Arc::new(vec![vec![]]),
-                    values: Arc::new(vec![None]),
-                },
+                shared,
                 free_list: Arc::new(Vec::new()),
                 num_terms: 0,
             };
@@ -411,6 +481,105 @@ pub struct DoubleArrayTrieCharNode<V: DictionaryValue = ()> {
 
 impl<V: DictionaryValue> DictionaryNode for DoubleArrayTrieCharNode<V> {
     type Unit = char;
+    type SnapshotCursor = SnapshotTraversalCursor;
+    type SnapshotGraphValueHandle = SnapshotTraversalCursor;
+
+    #[inline]
+    fn snapshot_root_cursor(&self) -> Option<SnapshotTraversalCursor> {
+        DATSharedChar::<V>::traversal_cursor(self.state)
+    }
+
+    #[inline]
+    fn contains_snapshot_cursor(&self, cursor: SnapshotTraversalCursor) -> bool {
+        self.shared.contains_traversal_cursor(cursor, 0)
+    }
+
+    #[inline]
+    fn supports_snapshot_cursor_nodes(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    fn supports_snapshot_cursor_key_units(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_key_units(
+        &self,
+        cursor: SnapshotTraversalCursor,
+    ) -> Option<Vec<Self::Unit>> {
+        // SAFETY: delegated from DictionaryNode's snapshot-cursor contract;
+        // `self.state` is the captured root for root-relative reconstruction.
+        unsafe { self.shared.traversal_cursor_key_units(cursor, self.state) }
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_node(&self, cursor: SnapshotTraversalCursor) -> Option<Self> {
+        // SAFETY: delegated from DictionaryNode's snapshot-cursor contract.
+        let state = unsafe { self.shared.traversal_state(cursor) }?;
+        Some(Self {
+            state,
+            shared: Arc::clone(&self.shared),
+        })
+    }
+
+    #[inline]
+    unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(
+        &self,
+        cursor: SnapshotTraversalCursor,
+        project: P,
+        visitor: F,
+    ) -> Option<bool>
+    where
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, SnapshotTraversalCursor, T),
+    {
+        // SAFETY: delegated from DictionaryNode's snapshot-cursor contract.
+        unsafe {
+            self.shared
+                .filter_map_traversal_cursor(cursor, project, visitor)
+        }
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_is_final(&self, cursor: SnapshotTraversalCursor) -> Option<bool> {
+        // SAFETY: delegated from DictionaryNode's snapshot-cursor contract.
+        unsafe { self.shared.traversal_cursor_is_final(cursor) }
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_transition(
+        &self,
+        cursor: SnapshotTraversalCursor,
+        label: Self::Unit,
+    ) -> Option<Option<SnapshotTraversalCursor>> {
+        // SAFETY: delegated from DictionaryNode's snapshot-cursor contract.
+        unsafe { self.shared.traversal_cursor_transition(cursor, label) }
+    }
+
+    #[inline]
+    fn supports_efficient_snapshot_cursor_edge_paging(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn visit_snapshot_cursor_edge_page<F>(
+        &self,
+        cursor: SnapshotTraversalCursor,
+        start: usize,
+        capacity: usize,
+        visitor: F,
+    ) -> Option<(bool, usize)>
+    where
+        F: FnMut(Self::Unit, SnapshotTraversalCursor),
+    {
+        // SAFETY: delegated from DictionaryNode's snapshot-cursor contract.
+        unsafe {
+            self.shared
+                .visit_traversal_cursor_edge_page(cursor, start, capacity, visitor)
+        }
+    }
 
     fn is_final(&self) -> bool {
         self.state < self.shared.is_final.len() && self.shared.is_final[self.state]
@@ -552,6 +721,20 @@ impl<V: DictionaryValue> MappedDictionaryNode for DoubleArrayTrieCharNode<V> {
             None
         }
     }
+
+    #[inline]
+    fn supports_snapshot_cursor_values(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_value(
+        &self,
+        cursor: SnapshotTraversalCursor,
+    ) -> Option<Option<Self::Value>> {
+        // SAFETY: delegated from MappedDictionaryNode's snapshot-cursor contract.
+        unsafe { self.shared.traversal_cursor_value(cursor) }
+    }
 }
 
 impl<V: DictionaryValue> MappedDictionary for DoubleArrayTrieChar<V> {
@@ -629,10 +812,166 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_cursor_traversal_preserves_unicode_edges_finality_nodes_and_values() {
+        let dat = DoubleArrayTrieChar::from_terms_with_values([
+            ("", 1_u32),
+            ("猫", 2),
+            ("猫咪", 3),
+            ("🎉", 4),
+        ]);
+        let owner = dat.root();
+        assert!(owner.supports_snapshot_cursor_nodes());
+        assert!(owner.supports_snapshot_cursor_key_units());
+        assert!(owner.supports_snapshot_cursor_values());
+        let mut cursor = owner
+            .snapshot_root_cursor()
+            .expect("Unicode DAT root cursor");
+        assert_eq!(cursor.get(), 1, "the Unicode DAT root is state zero");
+
+        for (expected, expected_finality) in [('猫', true), ('咪', true)] {
+            let mut child = None;
+            // SAFETY: `cursor` is the root or a child produced by this exact
+            // immutable owner in the preceding iteration.
+            let finality = unsafe {
+                owner.filter_map_snapshot_cursor_edges_and_finality(
+                    cursor,
+                    |label| (label == expected).then_some(()),
+                    |_label, next, ()| child = Some(next),
+                )
+            }
+            .expect("Unicode DAT nodes support native cursor traversal");
+            assert_eq!(finality, expected_finality);
+            cursor = child.expect("the Unicode path exists");
+        }
+
+        // SAFETY: the cursor was produced by this retained owner.
+        let finality = unsafe {
+            owner.filter_map_snapshot_cursor_edges_and_finality(
+                cursor,
+                |_| None::<()>,
+                |_, _, _| unreachable!(),
+            )
+        };
+        assert_eq!(finality, Some(true));
+        // SAFETY: the cursor was produced by this retained owner.
+        assert_eq!(
+            unsafe { owner.snapshot_cursor_value(cursor) },
+            Some(Some(3))
+        );
+        // SAFETY: the cursor was produced by this retained owner.
+        assert_eq!(
+            unsafe { owner.snapshot_cursor_key_units(cursor) },
+            Some(vec!['猫', '咪'])
+        );
+
+        let subtree = owner.transition('猫').expect("the 猫 subtree exists");
+        let subtree_leaf = subtree.transition('咪').expect("猫咪 remains reachable");
+        let subtree_cursor = subtree_leaf.snapshot_root_cursor().expect("leaf cursor");
+        // SAFETY: `subtree_cursor` descends from the retained subtree root.
+        assert_eq!(
+            unsafe { subtree.snapshot_cursor_key_units(subtree_cursor) },
+            Some(vec!['咪']),
+            "cursor-key reconstruction is relative to the captured node"
+        );
+        // SAFETY: the cursor was produced by this retained owner.
+        let materialized = unsafe { owner.snapshot_cursor_node(cursor) }.expect("valid node");
+        assert!(materialized.is_final());
+        assert_eq!(materialized.value(), Some(3));
+
+        let invalid = SnapshotTraversalCursor::new(dat.shared.base.len() + 1).unwrap();
+        // Invalid external tokens stop at the safe membership boundary. Passing
+        // one to an unsafe cursor method would violate that method's contract.
+        assert!(!owner.contains_snapshot_cursor(invalid));
+    }
+
+    #[test]
     fn test_empty_dict() {
         let dict = DoubleArrayTrieChar::empty();
         assert_eq!(dict.len(), Some(0));
         assert!(!dict.contains("test"));
+    }
+
+    #[cfg(feature = "serialization")]
+    fn legacy_wire<V: DictionaryValue>(
+        dict: &DoubleArrayTrieChar<V>,
+    ) -> DoubleArrayTrieCharWire<V> {
+        DoubleArrayTrieCharWire {
+            shared: DATRawSharedChar {
+                base: Arc::clone(&dict.shared.base),
+                check: Arc::clone(&dict.shared.check),
+                is_final: Arc::clone(&dict.shared.is_final),
+                edges: Arc::clone(&dict.shared.edges),
+                values: Arc::clone(&dict.shared.values),
+            },
+            free_list: Arc::clone(&dict.free_list),
+            num_terms: dict.num_terms,
+        }
+    }
+
+    #[cfg(feature = "serialization")]
+    #[test]
+    fn validated_wrapper_preserves_unicode_and_empty_legacy_serde_bytes() {
+        let dict = DoubleArrayTrieChar::from_terms_with_values([
+            ("", 1_u32),
+            ("猫", 2),
+            ("\u{10ffff}", 3),
+        ]);
+        let current = crate::serialization::bincode_compat::serialize(&dict).unwrap();
+        let legacy = crate::serialization::bincode_compat::serialize(&legacy_wire(&dict)).unwrap();
+        assert_eq!(current, legacy);
+        let restored: DoubleArrayTrieChar<u32> =
+            crate::serialization::bincode_compat::deserialize(&legacy).unwrap();
+        assert_eq!(restored.len(), Some(3));
+        assert_eq!(restored.get_value("猫"), Some(2));
+        assert_eq!(
+            crate::serialization::bincode_compat::serialize(&restored).unwrap(),
+            legacy
+        );
+
+        let empty = DoubleArrayTrieChar::empty();
+        assert_eq!(
+            empty.shared.check[0], 0,
+            "exercise the historical root encoding"
+        );
+        let empty_current = crate::serialization::bincode_compat::serialize(&empty).unwrap();
+        let empty_legacy =
+            crate::serialization::bincode_compat::serialize(&legacy_wire(&empty)).unwrap();
+        assert_eq!(empty_current, empty_legacy);
+        let restored_empty: DoubleArrayTrieChar =
+            crate::serialization::bincode_compat::deserialize(&empty_legacy).unwrap();
+        assert_eq!(restored_empty.len(), Some(0));
+    }
+
+    #[cfg(feature = "serialization")]
+    #[test]
+    fn direct_serde_rejects_malformed_unicode_dat_before_cursor_trust() {
+        let dict = DoubleArrayTrieChar::from_terms_with_values([("猫", 7_u32)]);
+
+        let mut wrong_parent = legacy_wire(&dict);
+        let root_base = wrong_parent.shared.base[0] as usize;
+        let child = root_base + wrong_parent.shared.edges[0][0] as usize;
+        Arc::make_mut(&mut wrong_parent.shared.check)[child] = -1;
+        let bytes = crate::serialization::bincode_compat::serialize(&wrong_parent).unwrap();
+        assert!(
+            crate::serialization::bincode_compat::deserialize::<DoubleArrayTrieChar<u32>>(&bytes)
+                .is_err()
+        );
+
+        let mut wrong_count = legacy_wire(&dict);
+        wrong_count.num_terms += 1;
+        let bytes = crate::serialization::bincode_compat::serialize(&wrong_count).unwrap();
+        assert!(
+            crate::serialization::bincode_compat::deserialize::<DoubleArrayTrieChar<u32>>(&bytes)
+                .is_err()
+        );
+
+        let mut invalid_free_list = legacy_wire(&dict);
+        invalid_free_list.free_list = Arc::new(vec![0]);
+        let bytes = crate::serialization::bincode_compat::serialize(&invalid_free_list).unwrap();
+        assert!(
+            crate::serialization::bincode_compat::deserialize::<DoubleArrayTrieChar<u32>>(&bytes)
+                .is_err()
+        );
     }
 
     #[test]

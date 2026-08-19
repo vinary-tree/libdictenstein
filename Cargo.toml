@@ -184,6 +184,10 @@ io-uring-backend = ["persistent-artrie", "dep:io-uring", "dep:libc"]
 bench-internals = ["io-uring-backend"]
 # Causal work counters for profiling builds; never enable for timing runs.
 perf-instrumentation = []
+# Same-binary runtime controls for paired optimization experiments. Unlike
+# perf-instrumentation, this feature does not execute work counters or retain
+# diagnostic sets, so timing profiles remain representative of production.
+benchmark-controls = []
 
 [lib]
 name = "libdictenstein"

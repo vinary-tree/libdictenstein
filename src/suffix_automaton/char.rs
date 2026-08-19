@@ -959,6 +959,8 @@ pub struct SuffixNodeCharHandle<V: DictionaryValue = ()> {
 
 impl<V: DictionaryValue> DictionaryNode for SuffixNodeCharHandle<V> {
     type Unit = char;
+    type SnapshotCursor = crate::SnapshotTraversalCursor;
+    type SnapshotGraphValueHandle = crate::SnapshotTraversalCursor;
 
     #[inline]
     fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {

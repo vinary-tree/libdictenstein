@@ -1605,6 +1605,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomatonChar<V, S> {
 
 impl<V: DictionaryValue> DictionaryNode for PersistentSuffixAutomatonNode<V> {
     type Unit = u8;
+    type SnapshotCursor = crate::SnapshotTraversalCursor;
+    type SnapshotGraphValueHandle = crate::SnapshotTraversalCursor;
 
     #[inline]
     fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {
@@ -1718,6 +1720,8 @@ impl<V: DictionaryValue> MappedDictionaryNode for PersistentSuffixAutomatonNode<
 
 impl<V: DictionaryValue> DictionaryNode for PersistentSuffixAutomatonCharNode<V> {
     type Unit = char;
+    type SnapshotCursor = crate::SnapshotTraversalCursor;
+    type SnapshotGraphValueHandle = crate::SnapshotTraversalCursor;
 
     #[inline]
     fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {

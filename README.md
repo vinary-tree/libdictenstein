@@ -26,7 +26,7 @@ It is the companion to **[liblevenshtein](https://github.com/vinary-tree/libleve
 - **A lock-free, crash-durable persistent ARTrie family** — disk-backed (`mmap` or `io_uring`), write-ahead-logged, with native byte, Unicode, vocabulary, and `u64` sequence profiles.
 - **Native persistent substring indexes** — suffix automaton, suffix-tree-compatible, and SCDAWG variants for byte and Unicode corpora.
 - **Set algebra over dictionaries** — union / intersection / difference / prefix *zippers* compose any two backends lazily.
-- **Formally verified core** — 69 Rocq files (0 axioms, 0 admits), 55 TLA⁺ models, and a CI-gated `unsafe` contract inventory (see [Formal verification](#formal-verification)).
+- **Formally verified core** — 72 Rocq files (0 axioms, 0 admits), 57 TLA⁺ models, and a CI-gated `unsafe` contract inventory (see [Formal verification](#formal-verification)).
 
 ---
 
@@ -367,8 +367,8 @@ The persistent ARTrie carries an unusually strong correctness budget. All figure
 
 | Tool | Scope | Status |
 |---|---|---|
-| **Rocq (Coq)** | functional correctness + refinement of the trie to an abstract map ADT | **69** `.v` files, **1,301** propositions (theorem/lemma/corollary), **0 `Admitted`, 0 `Axiom`, 0 `Parameter`** — fully constructive (every obligation closed by `Qed.`/`Defined.`) |
-| **TLA⁺ / TLC** | concurrency & crash-recovery safety/liveness | **55** specification modules — e.g. `LockFreeARTrieLinearizability`, `CrashRecovery`, `PersistentSuffixAutomaton`, `PublicDurabilityPolicy`; the composed model explores multi-million-state spaces (PART $`\approx`$ 4.2 M distinct states) |
+| **Rocq (Coq)** | functional correctness + refinement of the trie to an abstract map ADT | **72** `.v` files, **1,348** propositions (theorem/lemma/corollary), **0 `Admitted`, 0 `Axiom`, 0 `Parameter`** — fully constructive (every obligation closed by `Qed.`/`Defined.`) |
+| **TLA⁺ / TLC** | concurrency & crash-recovery safety/liveness | **57** specification modules — e.g. `LockFreeARTrieLinearizability`, `AbiSnapshotQuiescence`, `CrashRecovery`, `PersistentSuffixAutomaton`; the composed model explores multi-million-state spaces (PART $`\approx`$ 4.2 M distinct states) |
 | **loom** | exhaustive interleaving of the lock-free CAS paths | root-CAS, overlay value/index CAS, counter-merge, EBR |
 | **`unsafe` inventory** | every `unsafe` site bound to a reviewed contract + coverage class | **43** inventory rows / **31** contracts, CI-gated by `scripts/verify-unsafe-boundary-inventory.sh` (set-equality — no silent drift) |
 

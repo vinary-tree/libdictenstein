@@ -14,6 +14,90 @@ run_capped() {
   fi
 }
 
+run_tlc_isolated() {
+  local label="$1"
+  shift
+  local state_parent="$repo_root/target/tlc-state-spaces"
+  local state_directory
+  local status=0
+
+  mkdir -p "$state_parent"
+  state_directory="$(mktemp -d "$state_parent/${label}.XXXXXX")"
+  run_capped tlc -metadir "$state_directory" "$@" || status=$?
+  rm -rf -- "$state_directory"
+  return "$status"
+}
+
+run_tlc_negative_control() {
+  local module="$1"
+  local assertion_kind="$2"
+  local assertion_name="$3"
+  local log_parent="$repo_root/target/tlc-negative-control-logs"
+  local log_file
+  local expected_status
+  local status=0
+
+  case "$assertion_kind" in
+    invariant)
+      expected_status=12
+      ;;
+    temporal)
+      expected_status=13
+      ;;
+    *)
+      echo "ERROR: unknown TLC assertion kind: $assertion_kind" >&2
+      return 1
+      ;;
+  esac
+
+  if ! grep -Fq "$assertion_name" "${module}_Unsafe.cfg"; then
+    echo "ERROR: ${module}_Unsafe.cfg does not declare required ${assertion_kind} ${assertion_name}" >&2
+    return 1
+  fi
+
+  mkdir -p "$log_parent"
+  log_file="$(mktemp "$log_parent/${module}.XXXXXX.log")"
+  if run_tlc_isolated "${module}_Unsafe" \
+    -workers 1 \
+    -config "${module}_Unsafe.cfg" \
+    "${module}.tla" 2>&1 | tee "$log_file"; then
+    status=0
+  else
+    status="${PIPESTATUS[0]}"
+  fi
+
+  if [ "$status" -eq 0 ]; then
+    echo "ERROR: ${module}_Unsafe.cfg PASSED but MUST violate ${assertion_name}" >&2
+    echo "TLC output retained at $log_file" >&2
+    return 1
+  fi
+  if [ "$status" -ne "$expected_status" ]; then
+    echo "ERROR: ${module}_Unsafe.cfg exited with TLC status $status instead of required ${assertion_kind}-violation status $expected_status" >&2
+    echo "TLC output retained at $log_file" >&2
+    return 1
+  fi
+
+  case "$assertion_kind" in
+    invariant)
+      if ! grep -Fq "Invariant ${assertion_name} is violated." "$log_file"; then
+        echo "ERROR: ${module}_Unsafe.cfg did not violate required invariant ${assertion_name}" >&2
+        echo "TLC output retained at $log_file" >&2
+        return 1
+      fi
+      ;;
+    temporal)
+      if ! grep -Fq "Error: Temporal properties were violated." "$log_file"; then
+        echo "ERROR: ${module}_Unsafe.cfg did not violate required temporal property ${assertion_name}" >&2
+        echo "TLC output retained at $log_file" >&2
+        return 1
+      fi
+      ;;
+  esac
+
+  rm -f -- "$log_file"
+  echo "OK: ${module}_Unsafe.cfg violated required ${assertion_kind} ${assertion_name}"
+}
+
 assert_nonzero_cargo_filter() {
   local output
   output="$(run_capped cargo test "$@" -- --list)"
@@ -31,6 +115,15 @@ run_filtered_cargo_test() {
 
 echo "== Unsafe boundary inventory =="
 run_capped bash scripts/verify-unsafe-boundary-inventory.sh
+
+echo "== Snapshot cursor strict-provenance source gate =="
+if cursor_provenance_drift="$(rg -n \
+  'Arc::as_ptr.*as usize|from_provenance|\.provenance::<|DENSE_TAG|without_provenance|expose_provenance|with_exposed_provenance' \
+  src/lib.rs src/dynamic_dawg/lockfree.rs src/dynamic_dawg/mod.rs)"; then
+  printf '%s\n' "$cursor_provenance_drift" >&2
+  echo "Snapshot cursor code must not tag pointers, expose addresses, or recover provenance from integers" >&2
+  exit 1
+fi
 
 echo "== ABI invariant registry =="
 run_capped python3 scripts/check-abi-invariants.py
@@ -110,16 +203,12 @@ run_capped cargo test --features persistent-artrie --test persistent_public_dura
 run_capped cargo test --features persistent-artrie --test persistent_public_lifecycle_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_end_to_end_trace_correspondence
 run_capped cargo test --features persistent-artrie --test epoch_checkpoint_recovery_correspondence
-(
-  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
-  run_capped cargo test --features persistent-artrie --test persistent_merge_correspondence
-)
-(
-  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
-  run_capped cargo test \
-    --features "persistent-artrie parallel-merge" \
-    --test persistent_merge_correspondence
-)
+run_capped env CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" \
+  cargo test --features persistent-artrie --test persistent_merge_correspondence
+run_capped env CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" \
+  cargo test \
+  --features "persistent-artrie parallel-merge" \
+  --test persistent_merge_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_artrie_storage_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_artrie_loom_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_lockfree_overlay_loom
@@ -208,6 +297,24 @@ if [ "${RUN_MIRI:-0}" = "1" ]; then
   run_miri_filtered \
     --lib \
     concurrent_slots::tests::raw_box_ownership_paths_reclaim_exactly_once
+  run_miri_filtered \
+    --lib \
+    snapshot_traversal_cursor_tests::dense_cursor_is_one_word_and_round_trips_both_index_forms
+  run_miri_filtered \
+    --lib \
+    dynamic_dawg::lockfree::tests::provenance_cursor_is_one_word_opaque_and_revision_retained
+  run_miri_filtered \
+    --features ffi \
+    --lib \
+    double_array_trie::core::shared::tests::trusted_edge_projection_matches_checked_projection
+  run_miri_filtered \
+    --features ffi \
+    --lib \
+    bindings::tests::byte_dat_snapshot_uses_validated_native_cursor_tokens_end_to_end
+  run_miri_filtered \
+    --features ffi \
+    --lib \
+    bindings::tests::dynamic_snapshot_graph_is_stable_and_live_resources_do_not_advertise_it
 else
   echo "Skipping Miri unsafe-boundary checks; set RUN_MIRI=1 to enable them"
 fi
@@ -274,7 +381,8 @@ if command -v tla2sany >/dev/null 2>&1; then
       LockFreeOverlayDurableReplay \
       LockFreeOverlayValueCas \
       ConcurrentCheckpointSerialization \
-      AbiProducerSnapshot
+      AbiProducerSnapshot \
+      AbiSnapshotQuiescence
     do
       run_capped tla2sany "${module}.tla"
     done
@@ -333,12 +441,19 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       LockFreeOverlayDurableReplay \
       LockFreeOverlayValueCas \
       ConcurrentCheckpointSerialization \
-      AbiProducerSnapshot
+      AbiProducerSnapshot \
+      AbiSnapshotQuiescence
     do
-      run_capped tlc -workers 1 -config "${module}.cfg" "${module}.tla"
+      run_tlc_isolated "$module" -workers 1 -config "${module}.cfg" "${module}.tla"
     done
-    run_capped tlc -workers 1 -config LockFreeIndexedOverlayCounter.cfg LockFreeIndexedOverlay.tla
-    run_capped tlc -workers 1 -config LockFreeIndexedOverlayVocabulary.cfg LockFreeIndexedOverlay.tla
+    run_tlc_isolated LockFreeIndexedOverlayCounter \
+      -workers 1 \
+      -config LockFreeIndexedOverlayCounter.cfg \
+      LockFreeIndexedOverlay.tla
+    run_tlc_isolated LockFreeIndexedOverlayVocabulary \
+      -workers 1 \
+      -config LockFreeIndexedOverlayVocabulary.cfg \
+      LockFreeIndexedOverlay.tla
 
     # ── Negative controls (each `_Unsafe.cfg` MUST FAIL its model's safety) ──
     # Each `_Unsafe.cfg` deliberately relaxes the one design choice the model
@@ -373,6 +488,12 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
     #     post-capture publish rewrites what an ABI consumer already captured —
     #     proving the pinned-immutable-revision capture (vt.dictionary.v1, family
     #     FV obligation #10) is REQUIRED.
+    #   * AbiSnapshotQuiescence sets USE_ADMISSION_GATE = FALSE (the rejected
+    #     fallback that only waits for a transient zero-writer observation) and
+    #     MUST violate `SnapshotEventuallyCompletes`: writers can continuously
+    #     re-enter between a departure and capture. This proves that atomically
+    #     closing admission before draining existing writers is REQUIRED for
+    #     starvation-free capture under weak scheduler fairness.
     # If TLC unexpectedly PASSES one of these, the model no longer exhibits the
     # bug it must catch → the negative control is broken → fail the whole gate.
     #   * ConcurrentCheckpointSerialization sets USE_LOCK = FALSE (no checkpoint_lock —
@@ -387,25 +508,21 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
     #     failed-CAS phantom behind compare_and_swap + the C2 merge CAS-retry loop) —
     #     proving the `mark_committed_burned` (UNRANKED, dropped on Overlay reopen)
     #     choice is REQUIRED.
-    for unsafe_module in \
-      LockFreeDurableCheckpoint \
-      LockFreeDurableCheckpointEviction \
-      OverlayEvictionCas \
-      OverlayEvictionStale \
-      LockFreeOverlayRemoveCas \
-      LockFreeOverlayDurableReplay \
-      LockFreeOverlayValueCas \
-      ConcurrentCheckpointSerialization \
-      AbiProducerSnapshot
-    do
-      echo "== Negative control: ${unsafe_module}_Unsafe.cfg (MUST violate a safety invariant) =="
-      if run_capped tlc -workers 1 -config "${unsafe_module}_Unsafe.cfg" "${unsafe_module}.tla"; then
-        echo "ERROR: ${unsafe_module}_Unsafe.cfg PASSED but MUST FAIL (negative control did not fire)" >&2
-        exit 1
-      else
-        echo "OK: ${unsafe_module}_Unsafe.cfg failed as required (negative control fired)"
-      fi
-    done
+    while IFS='|' read -r unsafe_module assertion_kind assertion_name; do
+      echo "== Negative control: ${unsafe_module}_Unsafe.cfg (MUST violate ${assertion_name}) =="
+      run_tlc_negative_control "$unsafe_module" "$assertion_kind" "$assertion_name"
+    done <<'NEGATIVE_CONTROLS'
+LockFreeDurableCheckpoint|invariant|NoLostWriteUnderLockFreeCommit
+LockFreeDurableCheckpointEviction|invariant|NoLostWriteUnderLockFreeCommit
+OverlayEvictionCas|invariant|ReadNeverMissesCommitted
+OverlayEvictionStale|invariant|NoStaleEvict
+LockFreeOverlayRemoveCas|invariant|LastWriterWins
+LockFreeOverlayDurableReplay|invariant|ReplayEqualsCommittedVisible
+LockFreeOverlayValueCas|invariant|NoPhantomConditionalWrite
+ConcurrentCheckpointSerialization|invariant|NoTornDescriptor
+AbiProducerSnapshot|invariant|CapturedRevisionImmutable
+AbiSnapshotQuiescence|temporal|SnapshotEventuallyCompletes
+NEGATIVE_CONTROLS
   )
 else
   echo "Skipping TLC model checking; set RUN_TLC=1 to enable bounded TLC runs"

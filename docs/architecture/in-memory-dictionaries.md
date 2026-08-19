@@ -120,13 +120,16 @@ reclamation mechanism, and it is safe precisely because the replaced data is imm
 published. (The *persistent* ARTrie, by contrast, does use explicit epoch-based reclamation for its
 raw-pointer overlay; see [`docs/persistence/`](../persistence/README.md).)
 
-## 5. Where the unsafe is (there is almost none)
+## 5. Where the unsafe is
 
-The volatile tree carries only **four** `unsafe` sites, all in `src/scdawg/{ascii,char}.rs`, and all
-are `unsafe impl Send`/`Sync` thread-safety assertions for the SCDAWG node handle — not raw-pointer
-or memory-layout unsafety. Every other volatile backend is entirely safe Rust over `Arc`/`ArcSwap`.
-The concentration of `unsafe` (37 of 43 crate-wide sites) is in the persistent tree. See the
-[security cluster](../security/unsafe-contracts.md) for the full boundary.
+The volatile public APIs remain safe, while three implementation seams are explicit in the unsafe
+ledger: SCDAWG handle `Send`/`Sync` assertions, sealed double-array layouts whose complete parallel
+arrays are validated before unchecked reads, and DynamicDAWG's opaque typed `NonNull` cursors over
+an immutable revision retained by `Arc`. Dense arena indices and native pointer capabilities are
+different associated types, so pointer cursors cannot cross the integer ABI. The crate currently
+tracks 214 grouped source patterns under 40 reviewed contracts; 37 patterns belong to the
+persistent engine. See the [security cluster](../security/unsafe-contracts.md) for the full map and
+strict-provenance evidence.
 
 ## Related
 
