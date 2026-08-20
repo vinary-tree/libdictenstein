@@ -9,6 +9,7 @@
 //! - Concurrency errors (lock poisoning, swizzle failures)
 //! - Resource errors (out of space, buffer pool exhausted)
 
+use std::collections::TryReserveError;
 use std::io;
 use thiserror::Error;
 
@@ -112,6 +113,20 @@ pub enum PersistentARTrieError {
         pinned_pages: usize,
         /// Total pages in pool
         total_pages: usize,
+    },
+
+    /// A fallible collection reservation could not be satisfied.
+    #[error(
+        "Memory allocation failed during {operation} while reserving {requested_entries} entries: {source}"
+    )]
+    AllocationFailed {
+        /// Operation whose bounded working collection was being reserved.
+        operation: String,
+        /// Number of entries requested from the collection.
+        requested_entries: usize,
+        /// Standard-library reservation failure.
+        #[source]
+        source: TryReserveError,
     },
 
     /// Lock was poisoned (panic occurred while holding lock)
@@ -335,6 +350,19 @@ impl PersistentARTrieError {
         }
     }
 
+    /// Create a typed fallible-allocation error with operation context.
+    pub fn allocation_failed(
+        operation: impl Into<String>,
+        requested_entries: usize,
+        source: TryReserveError,
+    ) -> Self {
+        Self::AllocationFailed {
+            operation: operation.into(),
+            requested_entries,
+            source,
+        }
+    }
+
     /// Check if this error is recoverable (can retry operation)
     pub fn is_recoverable(&self) -> bool {
         matches!(
@@ -358,7 +386,10 @@ impl PersistentARTrieError {
 
     /// Check if this error is transient (e.g., out of buffer space)
     pub fn is_transient(&self) -> bool {
-        matches!(self, Self::BufferPoolExhausted { .. })
+        matches!(
+            self,
+            Self::BufferPoolExhausted { .. } | Self::AllocationFailed { .. }
+        )
     }
 }
 
@@ -500,6 +531,29 @@ mod tests {
                 assert_eq!(source.kind(), io::ErrorKind::NotFound);
             }
             _ => panic!("Expected IoError variant"),
+        }
+    }
+
+    #[test]
+    fn test_allocation_failure_is_transient_but_not_corruption() {
+        let mut entries = Vec::<u8>::new();
+        let source = entries
+            .try_reserve_exact(usize::MAX)
+            .expect_err("an impossible capacity must be rejected");
+        let error = PersistentARTrieError::allocation_failed("test arena", usize::MAX, source);
+
+        assert!(error.is_transient());
+        assert!(!error.is_corruption());
+        match error {
+            PersistentARTrieError::AllocationFailed {
+                operation,
+                requested_entries,
+                ..
+            } => {
+                assert_eq!(operation, "test arena");
+                assert_eq!(requested_entries, usize::MAX);
+            }
+            _ => panic!("expected AllocationFailed variant"),
         }
     }
 }

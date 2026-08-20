@@ -6,6 +6,7 @@ use libdictenstein::persistent_artrie::{
 };
 use libdictenstein::{CharUnit, Dictionary, DictionaryNode, MappedDictionaryNode, SyncStrategy};
 use proptest::prelude::*;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
@@ -51,8 +52,15 @@ fn assert_sequence_parity(sequences: Vec<Vec<u64>>, probes: Vec<Vec<u64>>) {
         );
     }
 
+    let persistent_sequences = persistent.iter_sequences().collect::<Vec<_>>();
+    assert!(
+        persistent_sequences
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]),
+        "native persistent iteration must be strictly lexicographic"
+    );
     assert_eq!(
-        sorted_sequences(persistent.iter_sequences().collect()),
+        persistent_sequences,
         sorted_sequences(volatile.iter().collect())
     );
 }
@@ -76,6 +84,50 @@ fn sequence_operations_match_dynamic_u64_contract() {
             vec![42],
         ],
     );
+}
+
+#[test]
+fn native_iteration_is_lexicographic_and_prefix_local() {
+    let trie = PersistentARTrieU64Compact::<u64>::new();
+    for (sequence, value) in [
+        (vec![2], 20),
+        (vec![], 0),
+        (vec![1, 3], 13),
+        (vec![1], 10),
+        (vec![1, 2, 0], 120),
+        (vec![1, 2], 12),
+    ] {
+        assert!(trie.insert_sequence_with_value(&sequence, value));
+    }
+
+    let mut snapshot = trie.iter_sequences();
+    assert_eq!(snapshot.next(), Some(vec![]));
+    assert!(trie.insert_sequence_with_value(&[0], 1));
+    assert_eq!(
+        snapshot.collect::<Vec<_>>(),
+        vec![vec![1], vec![1, 2], vec![1, 2, 0], vec![1, 3], vec![2],]
+    );
+    let mut current = trie.iter_sequences();
+    assert_eq!(
+        current.by_ref().collect::<Vec<_>>(),
+        vec![
+            vec![],
+            vec![0],
+            vec![1],
+            vec![1, 2],
+            vec![1, 2, 0],
+            vec![1, 3],
+            vec![2],
+        ]
+    );
+    assert_eq!(current.next(), None);
+    assert_eq!(current.next(), None);
+    assert_eq!(
+        trie.iter_sequence_prefix_with_values(&[1, 2])
+            .collect::<Vec<_>>(),
+        vec![(vec![1, 2], Some(12)), (vec![1, 2, 0], Some(120))]
+    );
+    assert!(trie.iter_sequence_prefix(&[9, 9]).next().is_none());
 }
 
 #[test]
@@ -252,6 +304,127 @@ fn cx_prefix_four_checkpoint_reopens() {
 }
 
 #[test]
+fn deep_native_u64_lifecycle_is_stack_safe() {
+    const SEQUENCE_LEN: usize = 100_000;
+
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("persistent_artrie_u64_deep.artrie");
+    let first: Vec<u64> = (0..SEQUENCE_LEN)
+        .map(|index| u64::try_from(index).expect("sequence index fits u64"))
+        .collect();
+    let mut sibling = first.clone();
+    sibling[SEQUENCE_LEN - 1] = u64::MAX;
+
+    {
+        let trie = PersistentARTrieU64Compact::<u64>::create(&path).expect("create deep u64 trie");
+        assert!(!trie.contains_sequence(&first));
+        assert_eq!(trie.get_sequence_value(&first), None);
+        assert!(trie.insert_sequence_with_value(&first, 1));
+        assert!(trie.insert_sequence_with_value(&sibling, 2));
+        assert!(!trie.insert_sequence_with_value(&first, 3));
+        assert_eq!(trie.get_sequence_value(&first), Some(3));
+        assert_eq!(trie.get_sequence_value(&sibling), Some(2));
+
+        // Dropping never-started and partially consumed iterators must release an
+        // arbitrarily deep active machine without recursive `Arc` destruction.
+        let never_started = trie.iter_sequences_with_values();
+        drop(never_started);
+        let mut partially_consumed = trie.iter_sequences_with_values();
+        assert_eq!(partially_consumed.next(), Some((first.clone(), Some(3))));
+        drop(partially_consumed);
+        let mut prefix_partially_consumed = trie.iter_sequence_prefix_with_values(&first[..50_000]);
+        assert_eq!(
+            prefix_partially_consumed.next(),
+            Some((first.clone(), Some(3)))
+        );
+        drop(prefix_partially_consumed);
+
+        assert_eq!(
+            trie.iter_sequences_with_values().collect::<Vec<_>>(),
+            vec![(first.clone(), Some(3)), (sibling.clone(), Some(2))]
+        );
+        assert!(trie.remove_sequence(&first));
+        assert!(!trie.contains_sequence(&first));
+        assert!(trie.contains_sequence(&sibling));
+        assert_eq!(trie.term_count(), 1);
+        trie.checkpoint().expect("checkpoint deep u64 trie");
+    }
+
+    {
+        let trie = PersistentARTrieU64Compact::<u64>::open(&path).expect("reopen deep u64 trie");
+        assert!(!trie.contains_sequence(&first));
+        assert_eq!(trie.get_sequence_value(&sibling), Some(2));
+        assert!(trie.remove_sequence(&sibling));
+        assert_eq!(trie.term_count(), 0);
+        trie.checkpoint().expect("checkpoint emptied deep u64 trie");
+    }
+
+    let reopened =
+        PersistentARTrieU64Compact::<u64>::open(&path).expect("reopen emptied deep u64 trie");
+    assert_eq!(reopened.term_count(), 0);
+    assert!(!reopened.contains_sequence(&first));
+    assert!(!reopened.contains_sequence(&sibling));
+}
+
+#[test]
+fn cx_checkpoint_bytes_are_stable_across_reopen() {
+    let dir = tempdir().expect("temp dir");
+
+    let compact_path = dir.path().join("stable-prefix4.artrie");
+    {
+        let trie = PersistentARTrieU64Compact::<u64>::create(&compact_path)
+            .expect("create prefix4 stability trie");
+        assert!(trie.insert_sequence_with_value(&[], 11));
+        assert!(trie.insert_sequence_with_value(&[3, 5, 8, 13, 21], 34));
+        assert!(trie.insert_sequence_with_value(&[3, 5, 8, 13, 22], 35));
+        assert!(trie.insert_sequence_with_value(&[9, 9, 9], 99));
+        assert!(trie.remove_sequence(&[9, 9, 9]));
+        trie.checkpoint().expect("write first prefix4 checkpoint");
+    }
+    let compact_before = std::fs::read(&compact_path).expect("read first prefix4 checkpoint");
+    {
+        let trie =
+            PersistentARTrieU64Compact::<u64>::open(&compact_path).expect("reopen prefix4 trie");
+        trie.checkpoint().expect("write second prefix4 checkpoint");
+    }
+    let compact_after = std::fs::read(&compact_path).expect("read second prefix4 checkpoint");
+    assert_eq!(compact_after, compact_before);
+    assert_eq!(
+        xxhash_rust::xxh3::xxh3_64(&compact_after),
+        0xb7ad_f877_da1a_6bc1,
+        "prefix4 AR64CX01 bytes changed"
+    );
+
+    let prefix3_path = dir.path().join("stable-prefix3.artrie");
+    {
+        let trie =
+            libdictenstein::persistent_artrie::PersistentARTrieU64Prefix3Compat::<u64>::create(
+                &prefix3_path,
+            )
+            .expect("create prefix3 stability trie");
+        assert!(trie.insert_sequence_with_value(&[1, 1, 2, 3, 5, 8], 13));
+        assert!(trie.insert_sequence_with_value(&[1, 1, 2, 3, 5, 9], 14));
+        trie.checkpoint().expect("write first prefix3 checkpoint");
+    }
+    let prefix3_before = std::fs::read(&prefix3_path).expect("read first prefix3 checkpoint");
+    {
+        let trie =
+            libdictenstein::persistent_artrie::PersistentARTrieU64Prefix3Compat::<u64>::open(
+                &prefix3_path,
+            )
+            .expect("reopen prefix3 trie");
+        trie.checkpoint().expect("write second prefix3 checkpoint");
+    }
+    let prefix3_after = std::fs::read(&prefix3_path).expect("read second prefix3 checkpoint");
+    assert_eq!(prefix3_after, prefix3_before);
+    assert_eq!(
+        xxhash_rust::xxh3::xxh3_64(&prefix3_after),
+        0x4155_bf8b_54f6_2a3a,
+        "prefix3 AR64CX01 bytes changed"
+    );
+}
+
+#[test]
 fn f64_and_string_helpers_use_u64_units() {
     let trie = PersistentARTrieU64::<i32>::new();
 
@@ -278,5 +451,45 @@ proptest! {
         probes in prop::collection::vec(prop::collection::vec(0u64..8, 0..5), 0..12),
     ) {
         assert_sequence_parity(sequences, probes);
+    }
+
+    #[test]
+    fn valued_iteration_and_arbitrary_prefixes_match_btree_map(
+        entries in prop::collection::vec(
+            (prop::collection::vec(any::<u64>(), 0..7), any::<u64>()),
+            0..32,
+        ),
+        prefixes in prop::collection::vec(prop::collection::vec(any::<u64>(), 0..5), 0..16),
+    ) {
+        let trie = PersistentARTrieU64Compact::<u64>::new();
+        let mut oracle = BTreeMap::new();
+        for (key, value) in entries {
+            trie.insert_sequence_with_value(&key, value);
+            oracle.insert(key, value);
+        }
+
+        let emitted = trie
+            .try_iter_sequences_with_values()
+            .collect::<libdictenstein::persistent_artrie::Result<Vec<_>>>()
+            .expect("public native-u64 topology is resident");
+        let expected = oracle
+            .iter()
+            .map(|(key, value)| (key.clone(), Some(*value)))
+            .collect::<Vec<_>>();
+        prop_assert_eq!(emitted, expected);
+
+        for prefix in prefixes {
+            let emitted = trie
+                .try_iter_sequence_prefix_with_values(&prefix)
+                .expect("prefix lookup must preserve resident topology")
+                .collect::<libdictenstein::persistent_artrie::Result<Vec<_>>>()
+                .expect("prefix traversal must preserve resident topology");
+            let expected = oracle
+                .iter()
+                .filter(|(key, _)| key.starts_with(&prefix))
+                .map(|(key, value)| (key.clone(), Some(*value)))
+                .collect::<Vec<_>>();
+            prop_assert_eq!(emitted, expected, "prefix {:?}", prefix);
+        }
     }
 }

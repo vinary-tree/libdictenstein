@@ -143,7 +143,7 @@ pub(crate) enum FaultMode {
 // Free COMMON descent functions — generic over <K: KeyEncoding, V>
 // ============================================================================
 
-/// Non-faulting recursive leaf find: descend `key[depth..]` through IN-MEMORY
+/// Non-faulting iterative leaf find: descend `key[depth..]` through IN-MEMORY
 /// children only, returning the final leaf `Arc` iff the full path exists AND the
 /// leaf is final, else `None`. An `OnDisk` child short-circuits to `None` (the
 /// lock-free overlay cannot traverse a disk ref without a faulter — the per-variant
@@ -158,21 +158,20 @@ pub(crate) fn find_leaf_recursive<K: KeyEncoding, V: Clone>(
     key: &[K::Unit],
     depth: usize,
 ) -> Option<Arc<OverlayNode<K, V>>> {
-    if depth == key.len() {
-        return if node.is_final() {
-            Some(Arc::clone(node))
-        } else {
-            None
-        };
+    let mut current = node;
+    let mut cursor = depth;
+    while cursor < key.len() {
+        let child = current.find_child(key[cursor])?;
+        // Can't traverse disk refs in the lock-free overlay; `as_in_mem`
+        // short-circuits an on-disk child to `None` without cloning the Arc.
+        current = child.as_in_mem()?;
+        cursor += 1;
     }
-    let child = node.find_child(key[depth])?;
-    // Can't traverse disk refs in the lock-free overlay; `as_in_mem` returns
-    // `None` for an on-disk child, short-circuiting via `?` (owned `Arc`).
-    let child_arc = child.as_in_mem()?;
-    find_leaf_recursive(&Arc::clone(child_arc), key, depth + 1)
+
+    current.is_final().then(|| Arc::clone(current))
 }
 
-/// Non-faulting recursive membership check: `true` iff `key[depth..]` reaches a
+/// Non-faulting iterative membership check: `true` iff `key[depth..]` reaches a
 /// final node through IN-MEMORY children only. Token-for-token the prior
 /// per-variant `find_in_lockfree_trie` (byte `lockfree_cas.rs:511`, char `:1252`),
 /// now generic over `K::Unit`.
@@ -183,16 +182,19 @@ pub(crate) fn find_in_lockfree_trie<K: KeyEncoding, V: Clone>(
     key: &[K::Unit],
     depth: usize,
 ) -> bool {
-    if depth >= key.len() {
-        return node.is_final();
+    let mut current = node;
+    let mut cursor = depth;
+    while cursor < key.len() {
+        let Some(child) = current.find_child(key[cursor]) else {
+            return false;
+        };
+        let Some(child_arc) = child.as_in_mem() else {
+            return false;
+        };
+        current = child_arc;
+        cursor += 1;
     }
-    let key_unit = key[depth];
-    if let Some(child) = node.find_child(key_unit) {
-        if let Some(child_arc) = child.as_in_mem() {
-            return find_in_lockfree_trie(&Arc::clone(child_arc), key, depth + 1);
-        }
-    }
-    false
+    current.is_final()
 }
 
 /// Build a NEW path for the remaining `suffix` units, bottom-up, with the terminal
@@ -231,6 +233,33 @@ where
         current = Arc::new(parent);
     }
     (current, leaf)
+}
+
+/// Rebuild a recorded root-to-parent path around `child`, from the deepest
+/// parent back to the root.
+///
+/// This is the return transition of the explicit CAS-walk pushdown machine:
+/// descent pushes `(parent, unit)` frames into [`super::OverlaySpine`], the
+/// terminal transition constructs or transforms one child, and this loop pops
+/// the frames while path-copying each immutable ancestor. Native call-stack use
+/// is therefore independent of key depth.
+///
+/// The reverse fold preserves the exact structure and version-bump order of the
+/// former recursive return path. It performs no publication; the caller's root
+/// compare-and-swap remains the sole linearization point.
+#[inline]
+pub(crate) fn unwind_spine<K, V>(
+    spine: super::OverlaySpine<K, V>,
+    mut child: Arc<OverlayNode<K, V>>,
+) -> Arc<OverlayNode<K, V>>
+where
+    K: KeyEncoding,
+    V: Clone,
+{
+    for (parent, unit) in spine.into_iter().rev() {
+        child = Arc::new(parent.with_child(unit, Child::InMem(child)));
+    }
+    child
 }
 
 /// The ITERATIVE valued path-copy: descend `key[depth..]` from `node` collecting the
@@ -274,11 +303,8 @@ where
         if d == key.len() {
             // Reached the leaf: bake finality + value into a fresh copy, then rebuild
             // every ancestor bottom-up (the path copy).
-            let mut new_node = Arc::new(current.as_final().with_value(value));
-            for (parent, unit) in spine.into_iter().rev() {
-                new_node = Arc::new(parent.with_child(unit, Child::InMem(new_node)));
-            }
-            return Some(new_node);
+            let new_node = Arc::new(current.as_final().with_value(value));
+            return Some(unwind_spine(spine, new_node));
         }
 
         let unit = key[d];
@@ -312,11 +338,8 @@ where
                 for &u in key[d + 1..].iter().rev() {
                     sub = Arc::new(OverlayNode::<K, V>::new().with_child(u, Child::InMem(sub)));
                 }
-                let mut new_node = Arc::new(current.with_child(unit, Child::InMem(sub)));
-                for (parent, u) in spine.into_iter().rev() {
-                    new_node = Arc::new(parent.with_child(u, Child::InMem(new_node)));
-                }
-                return Some(new_node);
+                let new_node = Arc::new(current.with_child(unit, Child::InMem(sub)));
+                return Some(unwind_spine(spine, new_node));
             }
         }
     }

@@ -366,6 +366,8 @@ if command -v tla2sany >/dev/null 2>&1; then
       PersistentSuffixTree \
       PersistentScdawg \
       PersistentARTrieU64 \
+      PersistentARTrieU64Iteration \
+      PersistentARTrieU64WorkMachines \
       CharNodeV2Layout \
       ConcurrentVocabLinearizability \
       EpochCheckpointRecovery \
@@ -426,6 +428,8 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       PersistentSuffixTree \
       PersistentScdawg \
       PersistentARTrieU64 \
+      PersistentARTrieU64Iteration \
+      PersistentARTrieU64WorkMachines \
       CharNodeV2Layout \
       ConcurrentVocabLinearizability \
       EpochCheckpointRecovery \
@@ -446,6 +450,22 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
     do
       run_tlc_isolated "$module" -workers 1 -config "${module}.cfg" "${module}.tla"
     done
+    run_tlc_isolated PersistentARTrieU64WorkMachines_Cycle \
+      -workers 1 \
+      -config PersistentARTrieU64WorkMachines_Cycle.cfg \
+      PersistentARTrieU64WorkMachines.tla
+    run_tlc_isolated PersistentARTrieU64Iteration_Chain \
+      -workers 1 \
+      -config PersistentARTrieU64Iteration_Chain.cfg \
+      PersistentARTrieU64Iteration.tla
+    run_tlc_isolated PersistentARTrieU64Iteration_Prefix \
+      -workers 1 \
+      -config PersistentARTrieU64Iteration_Prefix.cfg \
+      PersistentARTrieU64Iteration.tla
+    run_tlc_isolated PersistentARTrieU64Iteration_OnDisk \
+      -workers 1 \
+      -config PersistentARTrieU64Iteration_OnDisk.cfg \
+      PersistentARTrieU64Iteration.tla
     run_tlc_isolated LockFreeIndexedOverlayCounter \
       -workers 1 \
       -config LockFreeIndexedOverlayCounter.cfg \
@@ -508,6 +528,14 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
     #     failed-CAS phantom behind compare_and_swap + the C2 merge CAS-retry loop) —
     #     proving the `mark_committed_burned` (UNRANKED, dropped on Overlay reopen)
     #     choice is REQUIRED.
+    #   * PersistentARTrieU64WorkMachines selects the LateCycle graph and sets
+    #     RejectBackEdge = FALSE, modeling a
+    #     disk materializer that accepts a gray/Visiting back-edge. It MUST
+    #     violate `NoCyclicSnapshotAccepted`, proving rejection occurs before an
+    #     Arc edge can be spliced into the reconstructed overlay.
+    #   * PersistentARTrieU64Iteration enables global node-identity suppression
+    #     on the Diamond DAG. It MUST violate `CompletionIsExact`, proving trie
+    #     language enumeration remains path-sensitive across shared nodes.
     while IFS='|' read -r unsafe_module assertion_kind assertion_name; do
       echo "== Negative control: ${unsafe_module}_Unsafe.cfg (MUST violate ${assertion_name}) =="
       run_tlc_negative_control "$unsafe_module" "$assertion_kind" "$assertion_name"
@@ -522,6 +550,8 @@ LockFreeOverlayValueCas|invariant|NoPhantomConditionalWrite
 ConcurrentCheckpointSerialization|invariant|NoTornDescriptor
 AbiProducerSnapshot|invariant|CapturedRevisionImmutable
 AbiSnapshotQuiescence|temporal|SnapshotEventuallyCompletes
+PersistentARTrieU64WorkMachines|invariant|NoCyclicSnapshotAccepted
+PersistentARTrieU64Iteration|invariant|CompletionIsExact
 NEGATIVE_CONTROLS
   )
 else

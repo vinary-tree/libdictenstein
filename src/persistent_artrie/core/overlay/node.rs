@@ -59,7 +59,7 @@
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
-use crate::persistent_artrie::core::adaptive_edge_store::AdaptiveEdgeStore;
+use crate::persistent_artrie::core::adaptive_edge_store::{AdaptiveEdgeStore, SortedUniqueEntries};
 use crate::persistent_artrie::core::key_encoding::KeyEncoding;
 use crate::persistent_artrie::core::swizzled_ptr::SwizzledPtr;
 // `DictionaryValue` is the bound callers supply for the genericized value `V`; it
@@ -204,6 +204,25 @@ impl<K: KeyEncoding, V> ChildStore<K, V> {
         Self {
             inner: AdaptiveEdgeStore::new(),
         }
+    }
+
+    /// Construct a child store in one pass from strictly ascending, unique
+    /// edges. Untrusted callers validate that precondition at their boundary.
+    #[cfg(test)]
+    #[inline]
+    fn from_sorted_children(children: SortedUniqueEntries<K::Unit, Child<K, V>>) -> Self {
+        Self {
+            inner: AdaptiveEdgeStore::from_sorted_entries(children),
+        }
+    }
+
+    #[inline]
+    fn try_from_sorted_children(
+        children: SortedUniqueEntries<K::Unit, Child<K, V>>,
+    ) -> Result<Self, std::collections::TryReserveError> {
+        Ok(Self {
+            inner: AdaptiveEdgeStore::try_from_sorted_entries(children)?,
+        })
     }
 
     #[inline]
@@ -378,6 +397,75 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
             prefix: prefix_data,
             prefix_len,
         }
+    }
+
+    fn from_sorted_children_with<E, F>(
+        is_final: bool,
+        value: Option<V>,
+        children: SortedUniqueEntries<K::Unit, Child<K, V>>,
+        build_store: F,
+    ) -> Result<Self, E>
+    where
+        F: FnOnce(SortedUniqueEntries<K::Unit, Child<K, V>>) -> Result<ChildStore<K, V>, E>,
+    {
+        let has_value = value.is_some();
+        let mut node_flags = 0;
+        if is_final {
+            node_flags |= flags::IS_FINAL;
+        }
+        if has_value {
+            node_flags |= flags::HAS_VALUE;
+        }
+        let version = children.as_slice().len() as u64 + u64::from(is_final) + u64::from(has_value);
+
+        Ok(Self {
+            version: AtomicU64::new(version),
+            serial_disk_ptr: AtomicU64::new(0),
+            store: build_store(children)?,
+            flags: AtomicU8::new(node_flags),
+            value,
+            prefix: Arc::new([]),
+            prefix_len: 0,
+        })
+    }
+
+    /// Build a fresh node from a validated, strictly ascending child vector.
+    ///
+    /// This is the linear-time construction primitive for persistent-image
+    /// materializers. Repeatedly calling [`Self::with_child`] would copy all
+    /// preceding immutable edges for every insertion and therefore take
+    /// quadratic work on a wide node. The resulting node is observationally
+    /// identical to starting from [`Self::new`], applying `as_final`, then
+    /// `with_value`, and finally inserting the same children in order:
+    /// version count, flags, value, prefix, and non-durable stamp all match.
+    ///
+    /// Decoders must reject duplicate or descending labels before calling this
+    /// function. Internal callers operate on canonical vectors, so the release
+    /// path pays no redundant per-edge validation branches.
+    #[cfg(test)]
+    pub(crate) fn from_sorted_children(
+        is_final: bool,
+        value: Option<V>,
+        children: SortedUniqueEntries<K::Unit, Child<K, V>>,
+    ) -> Self {
+        Self::from_sorted_children_with(is_final, value, children, |children| {
+            Ok::<_, std::convert::Infallible>(ChildStore::from_sorted_children(children))
+        })
+        .unwrap_or_else(|never| match never {})
+    }
+
+    /// Fallible counterpart used by untrusted persistent-image materializers.
+    pub(crate) fn try_from_sorted_children(
+        is_final: bool,
+        value: Option<V>,
+        children: SortedUniqueEntries<K::Unit, Child<K, V>>,
+    ) -> Result<Self, std::collections::TryReserveError> {
+        Self::from_sorted_children_with(
+            is_final,
+            value,
+            children,
+            ChildStore::try_from_sorted_children,
+        )
     }
 
     /// Get the current version number.
@@ -747,7 +835,7 @@ impl<K: KeyEncoding, V> Drop for OverlayNode<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persistent_artrie::core::key_encoding::{ByteKey, CharKey};
+    use crate::persistent_artrie::core::key_encoding::{ByteKey, CharKey, U64Key};
     use crate::persistent_artrie::core::swizzled_ptr::NodeType;
 
     // The shared `OverlayNode` is exercised at BOTH instantiations: `ByteKey`
@@ -759,6 +847,7 @@ mod tests {
     type ByteValuedNode = OverlayNode<ByteKey, u64>;
     type CharNode = OverlayNode<CharKey, ()>;
     type CharValuedNode = OverlayNode<CharKey, u64>;
+    type U64ValuedNode = OverlayNode<U64Key<4>, u64>;
 
     fn child_store_is_tiny<K: KeyEncoding, V>(store: &ChildStore<K, V>) -> bool {
         matches!(&store.inner, AdaptiveEdgeStore::Tiny(_))
@@ -1120,6 +1209,86 @@ mod tests {
         let (k, _) = node.child_at(1).expect("should exist");
         assert_eq!(*k, b'b');
         assert!(node.child_at(2).is_none());
+    }
+
+    #[test]
+    fn bulk_sorted_construction_matches_sequential_path_at_every_byte_tier() {
+        for child_count in [0usize, 1, 4, 5, 16, 17, 48, 49, 64, 65, 255] {
+            let entries = (0..child_count)
+                .map(|index| {
+                    let label = index as u8;
+                    let child =
+                        Child::OnDisk(SwizzledPtr::on_disk(0, index as u32, NodeType::CharBucket));
+                    (label, child)
+                })
+                .collect::<Vec<_>>();
+
+            let mut sequential = ByteValuedNode::new().as_final().with_value(73);
+            for (label, child) in &entries {
+                sequential = sequential.with_child(*label, child.clone());
+            }
+
+            let witness = SortedUniqueEntries::try_new(entries)
+                .expect("generated labels are strictly ascending and unique");
+            let bulk = ByteValuedNode::from_sorted_children(true, Some(73), witness);
+
+            assert_eq!(bulk.version(), sequential.version());
+            assert_eq!(bulk.is_final(), sequential.is_final());
+            assert_eq!(bulk.get_value(), sequential.get_value());
+            assert_eq!(bulk.prefix(), sequential.prefix());
+            assert_eq!(bulk.durable_stamp(), sequential.durable_stamp());
+            assert_eq!(bulk.num_children(), sequential.num_children());
+
+            let sequential_edges = sequential
+                .iter_children()
+                .map(|(&label, child)| (label, child.as_on_disk().expect("disk child").to_raw()))
+                .collect::<Vec<_>>();
+            let bulk_edges = bulk
+                .iter_children()
+                .map(|(&label, child)| (label, child.as_on_disk().expect("disk child").to_raw()))
+                .collect::<Vec<_>>();
+            assert_eq!(bulk_edges, sequential_edges);
+        }
+    }
+
+    #[test]
+    fn bulk_sorted_construction_matches_sequential_path_at_every_u64_tier() {
+        for child_count in [0usize, 1, 4, 5, 16, 17, 64, 65, 128, 129, 255, 1_024] {
+            let entries = (0..child_count)
+                .map(|index| {
+                    let label = index as u64;
+                    let child =
+                        Child::OnDisk(SwizzledPtr::on_disk(0, index as u32, NodeType::CharBucket));
+                    (label, child)
+                })
+                .collect::<Vec<_>>();
+
+            let mut sequential = U64ValuedNode::new().as_final().with_value(73);
+            for (label, child) in &entries {
+                sequential = sequential.with_child(*label, child.clone());
+            }
+
+            let witness = SortedUniqueEntries::try_new(entries)
+                .expect("generated labels are strictly ascending and unique");
+            let bulk = U64ValuedNode::from_sorted_children(true, Some(73), witness);
+
+            assert_eq!(bulk.version(), sequential.version());
+            assert_eq!(bulk.is_final(), sequential.is_final());
+            assert_eq!(bulk.get_value(), sequential.get_value());
+            assert_eq!(bulk.prefix(), sequential.prefix());
+            assert_eq!(bulk.durable_stamp(), sequential.durable_stamp());
+            assert_eq!(bulk.num_children(), sequential.num_children());
+
+            let sequential_edges = sequential
+                .iter_children()
+                .map(|(&label, child)| (label, child.as_on_disk().expect("disk child").to_raw()))
+                .collect::<Vec<_>>();
+            let bulk_edges = bulk
+                .iter_children()
+                .map(|(&label, child)| (label, child.as_on_disk().expect("disk child").to_raw()))
+                .collect::<Vec<_>>();
+            assert_eq!(bulk_edges, sequential_edges);
+        }
     }
 
     #[test]

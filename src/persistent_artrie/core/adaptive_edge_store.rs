@@ -19,6 +19,59 @@ const BYTE_INDEXED_LIMIT: usize = 48;
 const BYTE_INDEX48_SENTINEL: u8 = u8::MAX;
 const BYTE_DENSE_SENTINEL: u16 = u16::MAX;
 
+/// An edge vector whose labels have been proven strictly ascending and unique.
+///
+/// The field is private so code outside this module cannot manufacture the
+/// witness without validation. Mapping only the child values preserves the
+/// label proof and lets persistent-image decoders validate raw indices once,
+/// then construct immutable child stores without a second branch per edge.
+#[derive(Debug)]
+pub(crate) struct SortedUniqueEntries<L, C> {
+    entries: Vec<(L, C)>,
+}
+
+impl<L: AdaptiveLabel, C> SortedUniqueEntries<L, C> {
+    /// Validate an externally assembled edge vector. The error is the index of
+    /// the second edge in the first non-increasing pair.
+    pub(crate) fn try_new(entries: Vec<(L, C)>) -> Result<Self, usize> {
+        if let Some(index) = entries.windows(2).position(|pair| pair[0].0 >= pair[1].0) {
+            return Err(index + 1);
+        }
+        Ok(Self { entries })
+    }
+
+    /// Map child payloads while retaining the validated label sequence.
+    pub(crate) fn try_map<D, E, F, A>(
+        &self,
+        mut map: F,
+        allocation_error: A,
+    ) -> Result<SortedUniqueEntries<L, D>, E>
+    where
+        F: FnMut(&C) -> Result<D, E>,
+        A: FnOnce(std::collections::TryReserveError) -> E,
+    {
+        let mut mapped = Vec::new();
+        mapped
+            .try_reserve_exact(self.entries.len())
+            .map_err(allocation_error)?;
+        for (label, child) in &self.entries {
+            mapped.push((*label, map(child)?));
+        }
+        Ok(SortedUniqueEntries { entries: mapped })
+    }
+
+    #[inline]
+    pub(crate) fn as_slice(&self) -> &[(L, C)] {
+        &self.entries
+    }
+
+    #[inline]
+    fn trusted(entries: Vec<(L, C)>) -> Self {
+        debug_assert!(entries.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        Self { entries }
+    }
+}
+
 /// Label types supported by `AdaptiveEdgeStore`.
 pub trait AdaptiveLabel: Copy + Eq + Ord + Hash + Send + Sync + 'static {
     /// Return the byte value for byte-specialized ART tiers.
@@ -220,31 +273,36 @@ impl<L: AdaptiveLabel, C> AdaptiveEdgeStore<L, C> {
         }
     }
 
-    fn from_sorted_entries(entries: Vec<(L, C)>) -> Self {
+    fn from_sorted_entries_with<E, F>(
+        sorted: SortedUniqueEntries<L, C>,
+        build_sparse: F,
+    ) -> Result<Self, E>
+    where
+        F: FnOnce(&[(L, C)]) -> Result<FxHashMap<L, usize>, E>,
+    {
+        let entries = sorted.entries;
         let len = entries.len();
         #[cfg(part_legacy_edge_store)]
         {
             if len <= TINY_LIMIT {
-                return Self::Tiny(entries.into_iter().collect());
+                return Ok(Self::Tiny(entries.into_iter().collect()));
             }
             if len <= L::legacy_inline_limit() {
-                return Self::Small(entries.into_iter().collect());
+                return Ok(Self::Small(entries.into_iter().collect()));
             }
             if len <= L::legacy_sorted_limit() {
-                return Self::Sorted(entries);
+                return Ok(Self::Sorted(entries));
             }
-            return Self::SparseIndexed {
-                positions: build_sparse_index(&entries),
-                entries,
-            };
+            let positions = build_sparse(&entries)?;
+            return Ok(Self::SparseIndexed { positions, entries });
         }
         #[cfg(not(part_legacy_edge_store))]
         {
             if len <= TINY_LIMIT {
-                return Self::Tiny(entries.into_iter().collect());
+                return Ok(Self::Tiny(entries.into_iter().collect()));
             }
             if len <= SMALL_LIMIT {
-                return Self::Small(entries.into_iter().collect());
+                return Ok(Self::Small(entries.into_iter().collect()));
             }
             if entries
                 .first()
@@ -252,24 +310,38 @@ impl<L: AdaptiveLabel, C> AdaptiveEdgeStore<L, C> {
                 .is_some()
             {
                 if len <= BYTE_INDEXED_LIMIT {
-                    return Self::ByteIndexed48 {
+                    return Ok(Self::ByteIndexed48 {
                         index: build_byte_index48(&entries),
                         entries,
-                    };
+                    });
                 }
-                return Self::ByteDense256 {
+                return Ok(Self::ByteDense256 {
                     index: build_byte_dense_index(&entries),
                     entries,
-                };
+                });
             }
             if len <= L::adaptive_sorted_limit() {
-                return Self::Sorted(entries);
+                return Ok(Self::Sorted(entries));
             }
-            Self::SparseIndexed {
-                positions: build_sparse_index(&entries),
-                entries,
-            }
+            let positions = build_sparse(&entries)?;
+            Ok(Self::SparseIndexed { positions, entries })
         }
+    }
+
+    /// Build the optimal tier from a validated edge vector.
+    pub(crate) fn from_sorted_entries(sorted: SortedUniqueEntries<L, C>) -> Self {
+        Self::from_sorted_entries_with(sorted, |entries| {
+            Ok::<_, std::convert::Infallible>(build_sparse_index(entries))
+        })
+        .unwrap_or_else(|never| match never {})
+    }
+
+    /// Build the optimal tier while reporting an input-sized sparse-index
+    /// allocation failure to an untrusted-image decoder.
+    pub(crate) fn try_from_sorted_entries(
+        sorted: SortedUniqueEntries<L, C>,
+    ) -> Result<Self, std::collections::TryReserveError> {
+        Self::from_sorted_entries_with(sorted, try_build_sparse_index)
     }
 }
 
@@ -282,14 +354,14 @@ impl<L: AdaptiveLabel, C: Clone> AdaptiveEdgeStore<L, C> {
                 next.extend_from_slice(&entries[..index]);
                 next.push((label, child));
                 next.extend_from_slice(&entries[index + 1..]);
-                Self::from_sorted_entries(next)
+                Self::from_sorted_entries(SortedUniqueEntries::trusted(next))
             }
             Err(index) => {
                 let mut next = Vec::with_capacity(entries.len() + 1);
                 next.extend_from_slice(&entries[..index]);
                 next.push((label, child));
                 next.extend_from_slice(&entries[index..]);
-                Self::from_sorted_entries(next)
+                Self::from_sorted_entries(SortedUniqueEntries::trusted(next))
             }
         }
     }
@@ -302,13 +374,15 @@ impl<L: AdaptiveLabel, C: Clone> AdaptiveEdgeStore<L, C> {
         let mut next = Vec::with_capacity(entries.len().saturating_sub(1));
         next.extend_from_slice(&entries[..index]);
         next.extend_from_slice(&entries[index + 1..]);
-        Some(Self::from_sorted_entries(next))
+        Some(Self::from_sorted_entries(SortedUniqueEntries::trusted(
+            next,
+        )))
     }
 }
 
 impl<L: AdaptiveLabel, C: Clone> Clone for AdaptiveEdgeStore<L, C> {
     fn clone(&self) -> Self {
-        Self::from_sorted_entries(self.entries().to_vec())
+        Self::from_sorted_entries(SortedUniqueEntries::trusted(self.entries().to_vec()))
     }
 }
 
@@ -375,6 +449,17 @@ fn build_sparse_index<L: AdaptiveLabel, C>(entries: &[(L, C)]) -> FxHashMap<L, u
         positions.insert(*label, idx);
     }
     positions
+}
+
+fn try_build_sparse_index<L: AdaptiveLabel, C>(
+    entries: &[(L, C)],
+) -> Result<FxHashMap<L, usize>, std::collections::TryReserveError> {
+    let mut positions = FxHashMap::default();
+    positions.try_reserve(entries.len())?;
+    for (idx, (label, _)) in entries.iter().enumerate() {
+        positions.insert(*label, idx);
+    }
+    Ok(positions)
 }
 
 fn build_byte_index48<L: AdaptiveLabel, C>(entries: &[(L, C)]) -> Box<[u8; 256]> {
@@ -496,5 +581,56 @@ mod tests {
         assert_eq!(store.find(b'c'), Some(&999));
         let keys: Vec<_> = store.iter().map(|(&key, _)| key).collect();
         assert_eq!(keys, vec![b'a', b'b', b'c', b'd']);
+    }
+
+    #[test]
+    fn sorted_unique_witness_maps_children_without_revalidating_labels() {
+        let witness = SortedUniqueEntries::try_new(vec![(3u64, 7u32), (5, 11), (8, 13)])
+            .expect("labels are strictly ascending and unique");
+        let mapped = witness
+            .try_map(
+                |child| Ok::<_, &'static str>(u64::from(*child) * 2),
+                |_| "allocation failed",
+            )
+            .expect("bounded mapping succeeds");
+
+        assert_eq!(mapped.as_slice(), &[(3, 14), (5, 22), (8, 26)]);
+    }
+
+    #[test]
+    fn sorted_unique_witness_stops_at_the_first_child_mapping_error() {
+        let witness = SortedUniqueEntries::try_new(vec![(3u64, 7u32), (5, 11), (8, 13)])
+            .expect("labels are strictly ascending and unique");
+        let mut visited = Vec::new();
+        let error = witness
+            .try_map(
+                |child| {
+                    visited.push(*child);
+                    if *child == 11 {
+                        Err("sentinel child")
+                    } else {
+                        Ok(u64::from(*child))
+                    }
+                },
+                |_| "allocation failed",
+            )
+            .expect_err("the mapper error must be preserved");
+
+        assert_eq!(error, "sentinel child");
+        assert_eq!(visited, vec![7, 11]);
+    }
+
+    #[test]
+    fn fallible_sparse_construction_preserves_the_builder_error() {
+        let entries = (0u64..=128).map(|label| (label, label)).collect();
+        let witness = SortedUniqueEntries::try_new(entries)
+            .expect("generated labels are strictly ascending and unique");
+
+        let error = AdaptiveEdgeStore::<u64, u64>::from_sorted_entries_with(witness, |_| {
+            Err::<FxHashMap<u64, usize>, _>("sentinel sparse allocation")
+        })
+        .expect_err("129 u64 edges require the sparse-index builder");
+
+        assert_eq!(error, "sentinel sparse allocation");
     }
 }
