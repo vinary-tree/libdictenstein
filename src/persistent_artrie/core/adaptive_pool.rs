@@ -789,7 +789,10 @@ mod tests {
         );
 
         controller.start();
-        thread::sleep(Duration::from_millis(20));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while controller.stats().adjustments == 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
         controller.stop();
 
         let stats = controller.stats();
