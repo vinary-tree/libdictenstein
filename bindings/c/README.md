@@ -1,12 +1,6 @@
-# Vinary Tree libdictenstein for Fortran
+# Vinary Tree libdictenstein for C
 
-This Fortran 2018 package provides DynamicDAWG CRUD and contiguous batch
-insertion, immutable DoubleArrayTrie construction, SCDAWG substring operations,
-persistent ARTrie CRUD/checkpoint/reopen, persistent vocabulary reverse lookup,
-and the shared retained `vt_resource` used by liblevenshtein.
-
-The fpm package is `vinary-tree-libdictenstein`. Link against
-`libdictenstein`; published CMake packages support shared or static linkage.
+This guide documents the supported C facade over libdictenstein's stable dictionary ABI.
 
 <!-- BEGIN GENERATED BINDING OPERATIONS; DO NOT EDIT -->
 
@@ -14,12 +8,12 @@ The fpm package is `vinary-tree-libdictenstein`. Link against
 
 | Property | Contract |
 |---|---|
-| Binding | Fortran |
-| Languages/runtime | Fortran 2018 |
-| Support tier | Tier 2 |
-| Distribution | fpm `vinary-tree-libdictenstein` |
-| Native boundary | `iso_c_binding` over `ldict_*` |
-| Canonical facade source | [`bindings/fortran/src/vinary_tree_libdictenstein.f90`](../../bindings/fortran/src/vinary_tree_libdictenstein.f90) |
+| Binding | C |
+| Languages/runtime | C17/C23 |
+| Support tier | Tier 1 |
+| Distribution | CMake/pkg-config native package |
+| Native boundary | Direct `ldict_*` calls |
+| Canonical facade source | [`include/libdictenstein.h`](../../include/libdictenstein.h) |
 
 All tiers implement the same ownership, snapshot, status, and compatibility
 laws. The tier controls release gating rather than semantic quality. Start with
@@ -40,11 +34,11 @@ handshake. Never silently load an arbitrary same-named system library.
 
 ## Executable example and verification
 
-The canonical checked example is [`bindings/fortran/test/conformance.f90`](../../bindings/fortran/test/conformance.f90). CI runs
+The canonical checked example is [`bindings/c/examples/snapshot_walk.c`](../../bindings/c/examples/snapshot_walk.c). CI runs
 the public package path with:
 
 ```sh
-fpm test --profile release --directory bindings/fortran
+cc -std=c17 -Wall -Wextra -Werror -fsyntax-only -Iinclude bindings/c/examples/snapshot_walk.c
 ```
 
 The example is also conformance evidence: it uses public constructors, checks
@@ -76,7 +70,7 @@ sentinel and empty terms remain valid when supported.
 
 The current facade exposes lookup, length, mutation, and deterministic resource
 ownership, but does **not** yet claim the complete host collection protocol.
-The planned native shape for this runtime is counted batches and callback/fold procedures with explicit status results. The
+The planned native shape for this runtime is a bounded entry-batch cursor plus callback reducer; C has no standard collection protocol. The
 ordinary collection view will own host data from one immutable revision, while
 the large-dictionary stream will retain one bounded native snapshot and require
 lexical cleanup. Membership remains a direct lookup, never an iteration scan.
@@ -95,7 +89,7 @@ as shipped only after its language conformance and performance gates pass.
 
 ## Ownership, snapshots, and resource handoff
 
-Call the derived handle's `close`; final procedures are last-resort cleanup.
+Balance every successful constructor or retained resource with exactly one free or release.
 
 An exported resource is borrowed until its base-vtable `retain` succeeds. A
 captured snapshot arrives owning one retain and may outlive the mutable
@@ -105,7 +99,7 @@ failed construction transfers no ownership.
 
 ## Errors and failure containment
 
-Procedures preserve both the project status and native diagnostic. Branch on the typed status or exception, not diagnostic text.
+Inspect `LdictStatus` and copy the thread-local diagnostic before another call. Branch on the typed status or exception, not diagnostic text.
 Invalid UTF-8, domain mismatch, unsupported capability, closed handle, bad
 path, allocation failure, provider fault, I/O failure, and contained panic are
 distinct cases. Copy thread-local diagnostics before another native call.

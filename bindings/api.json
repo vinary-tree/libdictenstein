@@ -55,6 +55,44 @@
       "luarocks": "bindings/lua/vinary-tree-libdictenstein-0.2.1-1.rockspec package"
     }
   },
+  "documentation": {
+    "hub": "docs/bindings/README.md",
+    "architecture": "docs/bindings/resource-producer.md",
+    "rustIdioms": "docs/bindings/rust-api-idioms.md",
+    "collectionProtocols": "https://github.com/vinary-tree/liblevenshtein-rust/blob/master/docs/bindings/collection-protocols.md",
+    "generator": "scripts/generate-binding-guides.py",
+    "checker": "scripts/check-binding-docs.py",
+    "requiredTopics": [
+      "Support and package contract",
+      "Installation and native loading",
+      "Executable example and verification",
+      "Public API, backends, and data domains",
+      "Native collection idioms and planned parity",
+      "Ownership, snapshots, and resource handoff",
+      "Errors and failure containment",
+      "Concurrency and reentrancy",
+      "Performance, durability, and marshalling",
+      "Security model",
+      "Compatibility and troubleshooting",
+      "Maintainer checklist"
+    ],
+    "facades": {
+      "c": {"languages": ["C"], "guide": "bindings/c/README.md", "example": "bindings/c/examples/snapshot_walk.c"},
+      "cpp": {"languages": ["C++"], "guide": "bindings/cpp/README.md", "example": "bindings/cpp/tests/conformance.cpp"},
+      "python": {"languages": ["Python"], "guide": "bindings/python/README.md", "example": "bindings/python/tests/test_backends.py"},
+      "jvm": {"languages": ["Java", "Kotlin", "Scala"], "guide": "bindings/jvm/README.md", "example": "bindings/jvm/src/test/java/io/vinarytree/libdictenstein/BackendIntegrationTest.java"},
+      "clojure": {"languages": ["Clojure"], "guide": "bindings/clojure/README.md", "example": "bindings/clojure/test/vinary_tree/libdictenstein_test.clj"},
+      "javascript": {"languages": ["JavaScript", "TypeScript", "ClojureScript"], "guide": "bindings/javascript/README.md", "example": "bindings/javascript/test/facades.test.mjs"},
+      "dotnet": {"languages": ["C#"], "guide": "bindings/dotnet/README.md", "example": "bindings/dotnet/tests/VinaryTree.Libdictenstein.Tests/Program.cs"},
+      "go": {"languages": ["Go"], "guide": "bindings/go/README.md", "example": "bindings/go/libdictenstein_test.go"},
+      "swift": {"languages": ["Swift"], "guide": "bindings/swift/README.md", "example": "bindings/swift/libdictenstein/Tests/LibdictensteinTests/ConformanceTests.swift"},
+      "ruby": {"languages": ["Ruby"], "guide": "bindings/ruby/README.md", "example": "bindings/ruby/test/test_conformance.rb"},
+      "fortran": {"languages": ["Fortran"], "guide": "bindings/fortran/README.md", "example": "bindings/fortran/test/conformance.f90"},
+      "ocaml": {"languages": ["OCaml"], "guide": "bindings/ocaml/README.md", "example": "bindings/ocaml/test/conformance.ml"},
+      "haskell": {"languages": ["Haskell"], "guide": "bindings/haskell/README.md", "example": "bindings/haskell/test/Conformance.hs"},
+      "lua": {"languages": ["Lua"], "guide": "bindings/lua/README.md", "example": "bindings/lua/test/conformance.lua"}
+    }
+  },
   "packageVersion": "0.2.1",
   "siblingPins": {
     "liblevenshtein": "0.10.0",
@@ -240,6 +278,13 @@
     {"name": "ldict_dictionary_insert_u64_batch", "group": "batch"}
   ],
   "facades": {
+    "c": {
+      "root": "bindings/c",
+      "parser": "c-header-declarations",
+      "importLayers": ["include/libdictenstein.h"],
+      "package": null,
+      "_source": "canonical native C ABI distributed through the CMake/pkg-config package"
+    },
     "clojure": {
       "root": "bindings/clojure",
       "parser": "clojure-defs",

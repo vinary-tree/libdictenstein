@@ -2,7 +2,7 @@
 """Dependency-free architectural gate for the libdictenstein language bindings.
 
 Cross-checks the machine-readable binding model (bindings/api.json) against the
-three sources it mirrors and the thirteen language facades that consume it:
+three sources it mirrors and the fourteen language facades that consume it:
 
   A. Symbol parity      - api.json cFunctions == `pub extern "C" fn ldict_*` in
                           src/ffi.rs == declarations in include/libdictenstein.h,
@@ -577,12 +577,14 @@ def check_facades(report: Report, model: dict) -> None:
             elif parser == "c-source":
                 refs, _ = c_source_symbols(source)
                 referenced |= refs
+            elif parser == "c-header-declarations":
+                referenced |= set(SYMBOL.findall(source))
             else:
                 report.fail("facades", f"{language}: unknown parser {parser!r} in api.json")
         record(language, referenced)
 
-    if len(facades) != 13:
-        report.fail("facades", f"expected 13 modeled facades, api.json lists {len(facades)}")
+    if len(facades) != 14:
+        report.fail("facades", f"expected 14 modeled facades, api.json lists {len(facades)}")
     missing_dirs = [
         language
         for language, facade in facades.items()

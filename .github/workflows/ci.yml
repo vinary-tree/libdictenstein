@@ -457,6 +457,8 @@ jobs:
             || echo "::warning::liblevenshtein-rust sibling clone failed; the interop-header byte-equality leg will be skipped"
       - name: Run the binding architecture gate
         run: python3 scripts/check-bindings.py
+      - name: Run the binding documentation gate
+        run: python3 scripts/check-binding-docs.py
 
   # -----------------------------------------------------------------
   # Scheduled/manual deep bounded model check. This is intentionally
