@@ -26,6 +26,11 @@ use super::dict_impl::PersistentARTrie;
 use super::error::Result;
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
+    /// Fallibly insert a term, preserving the backend error.
+    pub fn try_insert(&self, term: &str) -> Result<bool> {
+        self.insert_cas_durable(term.as_bytes())
+    }
+
     /// Insert a term into the dictionary.
     ///
     /// The overlay is the sole representation, so this routes to the proven Order-A
@@ -35,11 +40,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// `false` (no insert) rather than panicking — consistent with `insert_batch`'s
     /// fail-soft WAL handling.
     pub fn insert(&self, term: &str) -> bool {
-        self.insert_cas_durable(term.as_bytes())
-            .unwrap_or_else(|e| {
-                warn!("insert overlay route failed (reporting no-insert): {:?}", e);
-                false
-            })
+        self.try_insert(term).unwrap_or_else(|e| {
+            warn!("insert overlay route failed (reporting no-insert): {:?}", e);
+            false
+        })
+    }
+
+    /// Fallibly upsert a mapped term, preserving the backend error.
+    pub fn try_insert_with_value(&self, term: &str, value: V) -> Result<bool> {
+        <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
+            self,
+            term.as_bytes(),
+            value,
+        )
     }
 
     /// Insert a term with an associated value.
@@ -57,12 +70,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// overwrite semantics — a silent mismatch on duplicate keys.) A durable failure
     /// is logged and reported `false` (byte's `bool` signature).
     pub fn insert_with_value(&self, term: &str, value: V) -> bool {
-        <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
-            self,
-            term.as_bytes(),
-            value,
-        )
-        .unwrap_or_else(|e| {
+        self.try_insert_with_value(term, value).unwrap_or_else(|e| {
             warn!(
                 "insert_with_value overlay route failed (reporting no-insert): {:?}",
                 e

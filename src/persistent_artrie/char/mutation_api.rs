@@ -16,6 +16,11 @@ use crate::persistent_artrie::error::Result;
 use crate::value::DictionaryValue;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+    /// Alias that makes fallibility explicit in generic collection code.
+    pub fn try_insert(&self, term: &str) -> Result<bool> {
+        self.insert(term)
+    }
+
     /// Insert a term with WAL logging.
     ///
     /// **Flip routing (design §2):** when `route_overlay()` (the kill-switch
@@ -56,6 +61,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             V,
             S,
         >>::upsert_cas_durable_default(self, term.as_bytes(), value)
+    }
+
+    /// Alias that makes fallibility explicit in generic collection code.
+    pub fn try_insert_with_value(&self, term: &str, value: V) -> Result<bool> {
+        self.insert_with_value(term, value)
     }
 
     /// Remove a term with WAL logging.

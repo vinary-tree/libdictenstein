@@ -23,10 +23,15 @@
     "./clojurescript": { "types": "./index.d.ts", "import": "./facades/clojurescript.mjs", "require": "./facades/clojurescript.cjs" },
     "./wasm": { "types": "./index.d.ts", "import": "./facades/wasm.mjs" },
     "./wasi": { "types": "./index.d.ts", "import": "./facades/wasi.mjs" },
+    "./benchmarks/collection-traversal-profile": {
+      "types": "./benchmarks/collection-traversal-profile.d.ts",
+      "import": "./benchmarks/collection-traversal-profile.mjs"
+    },
     "./cljs/vinary_tree/libdictenstein.cljs": "./cljs/vinary_tree/libdictenstein.cljs"
   },
   "cljs": { "namespaces": { "vinary-tree.libdictenstein": "./cljs/vinary_tree/libdictenstein.cljs" } },
-  "files": ["index.d.ts", "facades/", "cljs/", "deps.cljs", "README.md"],
+  "bin": { "libdictenstein-collection-profile": "./bin/libdictenstein-collection-profile.mjs" },
+  "files": ["index.d.ts", "facades/", "benchmarks/", "bin/", "cljs/", "deps.cljs", "README.md"],
   "publishConfig": { "access": "public", "provenance": true },
-  "scripts": { "test": "node --test test/facades.test.mjs", "prepack": "npm test" }
+  "scripts": { "test": "node --test test/*.test.mjs", "prepack": "npm test" }
 }

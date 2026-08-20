@@ -528,9 +528,156 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
         DawgIterator::new(self)
     }
 
-    /// Iterate over all terms with their values.
+    /// Iterate over all terms that have values.
+    ///
+    /// This legacy mapped-only iterator omits present sequences whose value is
+    /// `None`. Use `(&dictionary).into_iter()` or
+    /// [`DictionaryEntries::entries`](crate::DictionaryEntries::entries) for
+    /// lossless [`DictionaryEntry`](crate::DictionaryEntry) snapshots.
     pub fn iter_with_values(&self) -> impl Iterator<Item = (Vec<u64>, V)> + '_ {
         DawgIteratorWithValues::new(self)
+    }
+}
+
+impl<V: DictionaryValue> std::iter::FromIterator<String> for DynamicDawgU64<V> {
+    /// Builds one minimal immutable revision instead of repeatedly publishing
+    /// path-copied revisions through [`insert`](Self::insert).
+    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
+        Self::from_terms(iter)
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::FromIterator<&'a str> for DynamicDawgU64<V> {
+    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
+        Self::from_terms(iter)
+    }
+}
+
+impl<V: DictionaryValue> std::iter::FromIterator<Vec<u64>> for DynamicDawgU64<V> {
+    fn from_iter<I: IntoIterator<Item = Vec<u64>>>(iter: I) -> Self {
+        let mut sequences: Vec<Vec<u64>> = iter.into_iter().collect();
+        crate::causal_perf::record_batch_sort_calls(1);
+        crate::causal_perf::record_batch_sort_terms(sequences.len() as u64);
+        crate::causal_perf::record_batch_sort_units(
+            sequences.iter().map(Vec::len).sum::<usize>() as u64
+        );
+        sequences.sort_unstable();
+        Self {
+            core: LockFreeDawg::from_sorted_terms_by(sequences, |sequence, units| {
+                units.extend_from_slice(sequence);
+            }),
+        }
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::FromIterator<&'a [u64]> for DynamicDawgU64<V> {
+    fn from_iter<I: IntoIterator<Item = &'a [u64]>>(iter: I) -> Self {
+        iter.into_iter().map(<[u64]>::to_vec).collect()
+    }
+}
+
+impl<V: DictionaryValue> std::iter::FromIterator<(String, V)> for DynamicDawgU64<V> {
+    fn from_iter<I: IntoIterator<Item = (String, V)>>(iter: I) -> Self {
+        Self::from_terms_with_values(iter)
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::FromIterator<(&'a str, V)> for DynamicDawgU64<V> {
+    fn from_iter<I: IntoIterator<Item = (&'a str, V)>>(iter: I) -> Self {
+        Self::from_terms_with_values(iter)
+    }
+}
+
+impl<V: DictionaryValue> std::iter::FromIterator<(Vec<u64>, V)> for DynamicDawgU64<V> {
+    fn from_iter<I: IntoIterator<Item = (Vec<u64>, V)>>(iter: I) -> Self {
+        let mut entries: Vec<(Vec<u64>, V)> = iter.into_iter().collect();
+        crate::causal_perf::record_batch_sort_calls(1);
+        crate::causal_perf::record_batch_sort_terms(entries.len() as u64);
+        crate::causal_perf::record_batch_sort_units(
+            entries.iter().map(|(key, _)| key.len()).sum::<usize>() as u64,
+        );
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        Self {
+            core: LockFreeDawg::from_sorted_entries_by(
+                entries.into_iter().map(|(key, value)| (key, Some(value))),
+                |key, units| units.extend_from_slice(key),
+            ),
+        }
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::FromIterator<(&'a [u64], V)> for DynamicDawgU64<V> {
+    fn from_iter<I: IntoIterator<Item = (&'a [u64], V)>>(iter: I) -> Self {
+        iter.into_iter()
+            .map(|(key, value)| (key.to_vec(), value))
+            .collect()
+    }
+}
+
+impl<V: DictionaryValue> std::iter::Extend<String> for DynamicDawgU64<V> {
+    fn extend<I: IntoIterator<Item = String>>(&mut self, iter: I) {
+        let _ = DynamicDawgU64::extend(self, iter);
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::Extend<&'a str> for DynamicDawgU64<V> {
+    fn extend<I: IntoIterator<Item = &'a str>>(&mut self, iter: I) {
+        let _ = DynamicDawgU64::extend(self, iter);
+    }
+}
+
+impl<V: DictionaryValue> std::iter::Extend<Vec<u64>> for DynamicDawgU64<V> {
+    fn extend<I: IntoIterator<Item = Vec<u64>>>(&mut self, iter: I) {
+        let mut sequences: Vec<Vec<u64>> = iter.into_iter().collect();
+        sequences.sort_unstable();
+        for sequence in sequences {
+            self.insert_sequence(&sequence);
+        }
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::Extend<&'a [u64]> for DynamicDawgU64<V> {
+    fn extend<I: IntoIterator<Item = &'a [u64]>>(&mut self, iter: I) {
+        <Self as std::iter::Extend<Vec<u64>>>::extend(self, iter.into_iter().map(<[u64]>::to_vec));
+    }
+}
+
+impl<V: DictionaryValue> std::iter::Extend<(String, V)> for DynamicDawgU64<V> {
+    fn extend<I: IntoIterator<Item = (String, V)>>(&mut self, iter: I) {
+        let mut entries: Vec<(String, V)> = iter.into_iter().collect();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        for (term, value) in entries {
+            self.insert_with_value(&term, value);
+        }
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::Extend<(&'a str, V)> for DynamicDawgU64<V> {
+    fn extend<I: IntoIterator<Item = (&'a str, V)>>(&mut self, iter: I) {
+        <Self as std::iter::Extend<(String, V)>>::extend(
+            self,
+            iter.into_iter()
+                .map(|(term, value)| (term.to_owned(), value)),
+        );
+    }
+}
+
+impl<V: DictionaryValue> std::iter::Extend<(Vec<u64>, V)> for DynamicDawgU64<V> {
+    fn extend<I: IntoIterator<Item = (Vec<u64>, V)>>(&mut self, iter: I) {
+        let mut entries: Vec<(Vec<u64>, V)> = iter.into_iter().collect();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        for (key, value) in entries {
+            self.insert_sequence_with_value(&key, value);
+        }
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::Extend<(&'a [u64], V)> for DynamicDawgU64<V> {
+    fn extend<I: IntoIterator<Item = (&'a [u64], V)>>(&mut self, iter: I) {
+        <Self as std::iter::Extend<(Vec<u64>, V)>>::extend(
+            self,
+            iter.into_iter().map(|(key, value)| (key.to_vec(), value)),
+        );
     }
 }
 

@@ -232,6 +232,18 @@ impl<N: DictionaryNode> SubstringMatch<N> {
 /// }
 /// ```
 pub trait SubstringDictionary: Dictionary {
+    /// Search one already-captured immutable revision.
+    ///
+    /// `snapshot_root` must be a root returned by [`Dictionary::root`]. The
+    /// node owns or retains the complete revision needed by the search, so
+    /// repeated calls on the same root cannot observe later dictionary
+    /// mutation. Multi-piece consumers such as WallBreaker capture the root
+    /// once and call this method for every piece.
+    fn find_exact_substring_in_snapshot(
+        snapshot_root: &Self::Node,
+        pattern: &str,
+    ) -> Vec<SubstringMatch<Self::Node>>;
+
     /// Find all dictionary terms containing the exact substring.
     ///
     /// # Arguments
@@ -249,7 +261,10 @@ pub trait SubstringDictionary: Dictionary {
     /// For SCDAWG-based dictionaries:
     /// - Time: O(|pattern| + occurrences)
     /// - The returned vector is typically small for non-trivial patterns
-    fn find_exact_substring(&self, pattern: &str) -> Vec<SubstringMatch<Self::Node>>;
+    fn find_exact_substring(&self, pattern: &str) -> Vec<SubstringMatch<Self::Node>> {
+        let snapshot_root = self.root();
+        Self::find_exact_substring_in_snapshot(&snapshot_root, pattern)
+    }
 
     /// Find all dictionary terms containing the exact substring, with limit.
     ///

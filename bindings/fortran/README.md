@@ -8,6 +8,27 @@ and the shared retained `vt_resource` used by liblevenshtein.
 The fpm package is `vinary-tree-libdictenstein`. Link against
 `libdictenstein`; published CMake packages support shared or static linkage.
 
+## Ordered entry collections
+
+`dictionary%open_entries` captures one immutable revision and returns a
+finalizable `dictionary_entry_cursor`. Pull owned `dictionary_entry_batch`
+values with `cursor%next_batch`; byte octets, Unicode scalar arrays, raw `u64`
+token arrays, and the separate `has_value` bit are preserved exactly. A batch
+may be assigned normally to retain its deep host-owned copy after the next
+pull. `dictionary%fold_entries` provides the synchronous reducer form; set the
+callback's `stop` output to close early. Explicit `close` is deterministic and
+finalization is a fallback.
+
+The public-package traversal benchmark emits
+`libdictenstein.host-collection-traversal.v1` JSON for `materialized`,
+`stream`, `stream-cancel`, and `reduce`:
+
+```sh
+fpm run --directory bindings/fortran --profile release \
+  --example collection_traversal_profile -- \
+  --arm stream-cancel --entries 65536 --batch-size 64 --early-cancel 64
+```
+
 <!-- BEGIN GENERATED BINDING OPERATIONS; DO NOT EDIT -->
 
 ## Support and package contract
@@ -72,14 +93,16 @@ arbitrary octets. Token APIs preserve the full `u64` range. Optional dictionary
 values are represented separately from terminal membership, so `None` is not a
 sentinel and empty terms remain valid when supported.
 
-## Native collection idioms and planned parity
+## Native collection surface
 
-The current facade exposes lookup, length, mutation, and deterministic resource
-ownership, but does **not** yet claim the complete host collection protocol.
-The planned native shape for this runtime is counted batches and callback/fold procedures with explicit status results. The
-ordinary collection view will own host data from one immutable revision, while
-the large-dictionary stream will retain one bounded native snapshot and require
-lexical cleanup. Membership remains a direct lookup, never an iteration scan.
+`dictionary%open_entries` returns a derived
+`dictionary_entry_cursor` with bounded `next_batch`, cancellation, and explicit
+`close`; copied batches preserve byte, Unicode-scalar, and full-range `int64`
+bit patterns plus optional values. `dictionary%fold_entries` is the natural
+synchronous reducer and settles every native lease before invoking subsequent
+Fortran code. Status values remain explicit, and finalization is only a
+last-resort cleanup path.
+
 
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk

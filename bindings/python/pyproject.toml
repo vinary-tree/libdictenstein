@@ -27,6 +27,9 @@ Homepage = "https://github.com/vinary-tree/libdictenstein"
 Repository = "https://github.com/vinary-tree/libdictenstein"
 Issues = "https://github.com/vinary-tree/libdictenstein/issues"
 
+[project.scripts]
+libdictenstein-collection-profile = "libdictenstein._collection_profile:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

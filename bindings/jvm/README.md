@@ -156,14 +156,17 @@ arbitrary octets. Token APIs preserve the full `u64` range. Optional dictionary
 values are represented separately from terminal membership, so `None` is not a
 sentinel and empty terms remain valid when supported.
 
-## Native collection idioms and planned parity
+## Native collection surface
 
-The current facade exposes lookup, length, mutation, and deterministic resource
-ownership, but does **not** yet claim the complete host collection protocol.
-The planned native shape for this runtime is Java Set/Map/Iterable/Spliterator/Stream views, Kotlin collections/Sequence, and Scala collections/Iterator. The
-ordinary collection view will own host data from one immutable revision, while
-the large-dictionary stream will retain one bounded native snapshot and require
-lexical cleanup. Membership remains a direct lookup, never an iteration scan.
+`Dictionary.snapshot()` returns an immutable ordered
+`DictionarySnapshot` with `Collection`, `List`, `Set`, and `Map` views over
+value-semantic `DictionaryKey`/`DictionaryEntry` objects. The dictionary is
+repeatably `Iterable`; `openEntryStream` is a closeable `Iterator`/`Spliterator`,
+and `streamEntries` is a sequential Java `Stream`. Java uses
+try-with-resources, Kotlin uses collections/`asSequence()`/`use`, and Scala uses
+collection converters/`Using`; all share the same FFM cursor and never depend
+on garbage collection for native cleanup.
+
 
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk

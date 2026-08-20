@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define LDICT_ABI_VERSION 1u
-#define LDICT_API_REVISION 4u
+#define LDICT_API_REVISION 5u
 
 #define LDICT_KIND_DYNAMIC_DAWG 1u
 #define LDICT_KIND_DOUBLE_ARRAY_TRIE 2u
@@ -55,7 +55,9 @@ typedef enum LdictStatus {
     LDICT_STATUS_IO_ERROR = 7,
     LDICT_STATUS_CLOSED = 8,
     LDICT_STATUS_DOMAIN_MISMATCH = 9,
-    LDICT_STATUS_LIMIT_EXCEEDED = 10
+    LDICT_STATUS_LIMIT_EXCEEDED = 10,
+    LDICT_STATUS_PROVIDER_ERROR = 11,
+    LDICT_STATUS_BATCH_IN_USE = 12
 } LdictStatus;
 
 typedef struct LdictOptionalU64 {
@@ -75,6 +77,24 @@ typedef struct LdictU64Entry {
     size_t len;
     LdictOptionalU64 value;
 } LdictU64Entry;
+
+/* Natural project aliases for the vt.dict.entry.v1 descriptor arenas. Keys are
+ * always present; value_len == 0 means a valueless member and value_len == 1
+ * means values[value_offset] is present, including the value zero. */
+typedef VtDictionaryEntry LdictEntry;
+typedef VtDictionaryEntryBatchLimits LdictEntryBatchLimits;
+typedef VtDictionaryEntryBatchView LdictEntryBatch;
+typedef VtDictionaryEntriesInfo LdictEntriesInfo;
+
+#define LDICT_ENTRY_ORDER_LEXICOGRAPHIC VT_DICTIONARY_ENTRY_ORDER_LEXICOGRAPHIC
+#define LDICT_ENTRIES_INFO_FLAG_EXACT_LEN VT_DICTIONARY_ENTRIES_INFO_FLAG_EXACT_LEN
+#define LDICT_ENTRIES_INFO_FLAG_SNAPSHOT_IDENTITY \
+    VT_DICTIONARY_ENTRIES_INFO_FLAG_SNAPSHOT_IDENTITY
+
+typedef struct LdictEntryCursor LdictEntryCursor;
+typedef LdictStatus (*LdictEntryReducer)(
+    void* reducer_context,
+    const LdictEntryBatch* batch);
 
 typedef struct LdictDictionary LdictDictionary;
 
@@ -123,6 +143,34 @@ LDICT_API LdictStatus ldict_dictionary_capabilities(
 LDICT_API LdictStatus ldict_dictionary_resource(
     const LdictDictionary* dictionary,
     VtResource* out_resource);
+
+/* Open one immutable lexicographic revision. The opaque cursor owns that
+ * snapshot and may outlive the source dictionary. */
+LDICT_API LdictStatus ldict_dictionary_entries_open(
+    const LdictDictionary* dictionary,
+    LdictEntryCursor** out_cursor,
+    LdictEntriesInfo* out_info);
+/* On OK, the returned arenas are borrowed until the exact generation is
+ * released. A second next/reduce while leased returns BATCH_IN_USE. */
+LDICT_API LdictStatus ldict_entry_cursor_next(
+    LdictEntryCursor* cursor,
+    const LdictEntryBatchLimits* limits,
+    LdictEntryBatch* out_batch);
+LDICT_API LdictStatus ldict_entry_cursor_release(
+    LdictEntryCursor* cursor,
+    uint64_t generation);
+/* The callback returns OK to continue, END to stop successfully, or another
+ * LdictStatus to abort. out_count counts entries in completed callbacks. */
+LDICT_API LdictStatus ldict_entry_cursor_reduce(
+    LdictEntryCursor* cursor,
+    const LdictEntryBatchLimits* limits,
+    LdictEntryReducer reducer,
+    void* reducer_context,
+    size_t* out_count);
+LDICT_API LdictStatus ldict_entry_cursor_cancel(LdictEntryCursor* cursor);
+/* Null is a no-op. A live lease returns BATCH_IN_USE without consuming the
+ * cursor; release the lease and retry. */
+LDICT_API LdictStatus ldict_entry_cursor_free(LdictEntryCursor* cursor);
 
 LDICT_API LdictStatus ldict_dictionary_len(
     const LdictDictionary* dictionary,

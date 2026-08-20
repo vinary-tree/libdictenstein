@@ -56,7 +56,7 @@ class ConformanceTest < Minitest::Test
 
   def test_c1_identity_constants
     assert_equal 1, LD.abi_version
-    assert_equal 4, LD.api_revision
+    assert_equal 5, LD.api_revision
   end
 
   def test_c1_kind_and_capabilities
@@ -304,6 +304,63 @@ class ConformanceTest < Minitest::Test
       end
       dawg.close
     end
+  end
+
+  def test_c7_enumerable_entries_preserve_snapshot_domains_and_values
+    dawg = LD::DynamicDawg.new
+    dawg.put("", nil)
+    dawg.put("a", 0)
+    dawg.put("é", (1 << 64) - 1)
+    enumerator = dawg.each
+    assert_kind_of Enumerator, enumerator
+    dawg.put("later", 7)
+    dawg.close
+
+    captured = enumerator.to_a
+    assert_equal ["", "a", "é"], captured.map(&:key)
+    assert_equal [nil, 0, (1 << 64) - 1], captured.map(&:value)
+    assert captured.all? { |entry| entry.domain == LD::UNICODE_SCALAR }
+
+    bytes = LD::DynamicDawg.new(domain: LD::BYTE)
+    raw = "\x00\xFF".b
+    bytes.put(raw, nil)
+    byte_entry = bytes.entries.fetch(0)
+    assert_equal raw, byte_entry.key
+    assert_equal Encoding::BINARY, byte_entry.key.encoding
+    assert_nil byte_entry.value
+
+    tokens = LD::DynamicDawg.new(domain: LD::U64)
+    tokens.put_u64([1, (1 << 64) - 1], 0)
+    token_entry = tokens.entries.fetch(0)
+    assert_equal [1, (1 << 64) - 1], token_entry.key
+    assert_equal 0, token_entry.value
+  ensure
+    dawg&.close
+    bytes&.close
+    tokens&.close
+  end
+
+  def test_c7_stream_early_break_exception_and_materialized_idioms
+    dawg = LD::DynamicDawg.new
+    %w[a b c].each { |term| dawg.put(term, nil) }
+
+    stream = dawg.entry_stream(max_entries: 3, max_units: 3, max_values: 0)
+    stream.each { |_entry| break }
+    assert_nil stream.next
+    stream.close
+
+    stream = dawg.entry_stream(max_entries: 3, max_units: 3, max_values: 0)
+    assert_raises(RuntimeError) do
+      stream.each { |_entry| raise "stop" }
+    end
+    assert_nil stream.next
+
+    assert_equal %w[a b c], dawg.keys
+    assert_equal [nil, nil, nil], dawg.values
+    assert_equal dawg.entries, dawg.to_a
+  ensure
+    stream&.close
+    dawg&.close
   end
 
   # --------------------------------------------------------------------------

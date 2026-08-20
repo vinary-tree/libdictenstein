@@ -26,9 +26,8 @@ import resource
 import threading
 from pathlib import Path
 
-import pytest
-
 import libdictenstein
+import pytest
 from libdictenstein import _native as native
 from vinary_tree_interop import UnitDomain
 
@@ -50,7 +49,7 @@ def _entries() -> list[tuple[str, int | None]]:
 
 def test_c1_identity_constants() -> None:
     assert libdictenstein.abi_version() == 1
-    assert libdictenstein.api_revision() == 4
+    assert libdictenstein.api_revision() == 5
 
 
 def test_c1_kind_and_capabilities() -> None:
@@ -87,7 +86,12 @@ def test_c2_free_order_independence() -> None:
     for index, dictionary in enumerate(dictionaries):
         dictionary.insert(f"term{index}")
     # Free in an order unrelated to construction order.
-    for dictionary in (dictionaries[2], dictionaries[0], dictionaries[3], dictionaries[1]):
+    for dictionary in (
+        dictionaries[2],
+        dictionaries[0],
+        dictionaries[3],
+        dictionaries[1],
+    ):
         dictionary.close()
 
 
@@ -129,7 +133,10 @@ def test_c3_domain_mismatch() -> None:
     with libdictenstein.DynamicDawg(UnitDomain.UNICODE_SCALAR) as dictionary:
         tokens = (ctypes.c_uint64 * 2)(1, 2)
         status = native._lib.ldict_dictionary_insert_u64(
-            dictionary._handle, tokens, 2, native._optional(None),
+            dictionary._handle,
+            tokens,
+            2,
+            native._optional(None),
             ctypes.byref(ctypes.c_uint8()),
         )
         assert status == 9  # DOMAIN_MISMATCH
@@ -180,7 +187,7 @@ def _assert_fixture_reads(dictionary: object) -> None:
     for item in FIXTURE["contains"]:
         assert (item["term"] in dictionary) == item["expected"], item["term"]
     for item in FIXTURE["get"]:
-        found, value = dictionary.get(item["term"])
+        found, value = dictionary.lookup(item["term"])
         assert found == item["found"], item["term"]
         assert value == item["value"], item["term"]
 
@@ -209,7 +216,9 @@ def test_c4_scdawg_matches_substring_oracle() -> None:
         for item in FIXTURE["substring_frequency"]:
             assert dictionary.frequency(item["pattern"]) == item["expected"], item
         for item in FIXTURE["substring_contains"]:
-            assert dictionary.contains_substring(item["pattern"]) == item["expected"], item
+            assert dictionary.contains_substring(item["pattern"]) == item["expected"], (
+                item
+            )
 
 
 # --------------------------------------------------------------------------
@@ -221,7 +230,7 @@ def test_c5_crud_round_trip() -> None:
     with libdictenstein.DynamicDawg() as dictionary:
         assert dictionary.insert("cat", 1)
         assert not dictionary.insert("cat", 1)  # idempotent
-        assert dictionary.get("cat") == (True, 1)
+        assert dictionary.lookup("cat") == (True, 1)
         assert dictionary.remove("cat")
         assert not dictionary.remove("cat")
         assert "cat" not in dictionary
@@ -234,7 +243,7 @@ def test_c5_compact_preserves_terms() -> None:
             assert dictionary.remove(f"t{i}")
         dictionary.compact()
         assert len(dictionary) == 25
-        assert dictionary.get("t1") == (True, 1)
+        assert dictionary.lookup("t1") == (True, 1)
         assert "t0" not in dictionary
 
 
@@ -256,7 +265,7 @@ def test_c6_precomposed_and_multibyte() -> None:
         assert dictionary.insert("café", 7)  # precomposed U+00E9
         assert dictionary.insert("🦀", 255)  # 4-byte scalar
         assert "café" in dictionary
-        assert dictionary.get("🦀") == (True, 255)
+        assert dictionary.lookup("🦀") == (True, 255)
 
 
 def test_c6_combining_sequence_is_distinct_from_precomposed() -> None:
@@ -266,8 +275,8 @@ def test_c6_combining_sequence_is_distinct_from_precomposed() -> None:
         assert dictionary.insert(precomposed, 1)
         assert dictionary.insert(combining, 2)
         assert len(dictionary) == 2
-        assert dictionary.get(precomposed) == (True, 1)
-        assert dictionary.get(combining) == (True, 2)
+        assert dictionary.lookup(precomposed) == (True, 1)
+        assert dictionary.lookup(combining) == (True, 2)
 
 
 def test_c6_byte_domain_accepts_nul_and_invalid_utf8() -> None:
@@ -275,15 +284,15 @@ def test_c6_byte_domain_accepts_nul_and_invalid_utf8() -> None:
         assert dictionary.insert(b"a\x00b", 1)  # embedded NUL
         assert dictionary.insert(b"\xff\xfe", 2)  # invalid UTF-8, valid bytes
         assert b"a\x00b" in dictionary
-        assert dictionary.get(b"\xff\xfe") == (True, 2)
+        assert dictionary.lookup(b"\xff\xfe") == (True, 2)
 
 
 def test_c6_u64_domain_values_zero_and_max() -> None:
     with libdictenstein.DynamicDawg(UnitDomain.U64) as dictionary:
         assert dictionary.insert([1, 2, 3], 0)
         assert dictionary.insert([9], (1 << 64) - 1)
-        assert dictionary.get([1, 2, 3]) == (True, 0)
-        assert dictionary.get([9]) == (True, (1 << 64) - 1)
+        assert dictionary.lookup([1, 2, 3]) == (True, 0)
+        assert dictionary.lookup([9]) == (True, (1 << 64) - 1)
 
 
 # --------------------------------------------------------------------------
@@ -298,8 +307,8 @@ def test_c7_batch_sizes(size: int) -> None:
         assert inserted == size
         assert len(dictionary) == size
         if size:
-            assert dictionary.get("t0") == (True, 0)
-            assert dictionary.get(f"t{size - 1}") == (True, size - 1)
+            assert dictionary.lookup("t0") == (True, 0)
+            assert dictionary.lookup(f"t{size - 1}") == (True, size - 1)
 
 
 # --------------------------------------------------------------------------
@@ -327,9 +336,9 @@ def test_c8_crud_script_matches_dict_oracle() -> None:
             elif op < 0.95:
                 assert (key in dictionary) == (key in oracle)
                 if key in oracle:
-                    assert dictionary.get(key) == (True, oracle[key])
+                    assert dictionary.lookup(key) == (True, oracle[key])
                 else:
-                    assert dictionary.get(key) == (False, None)
+                    assert dictionary.lookup(key) == (False, None)
             else:
                 dictionary.compact()
             assert len(dictionary) == len(oracle)
@@ -338,8 +347,11 @@ def test_c8_crud_script_matches_dict_oracle() -> None:
 def test_c8_substring_matches_naive_oracle() -> None:
     rng = random.Random(0x5CDA)
     alphabet = "abcx"
-    terms = {"".join(rng.choice(alphabet) for _ in range(rng.randint(1, 6)))
-             for _ in range(60)}
+    terms = {
+        "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 6)))
+        for _ in range(60)
+    }
+
     def occurrences(term: str, pattern: str) -> int:
         # frequency counts overlapping occurrences, summed across all terms.
         return sum(
@@ -377,7 +389,9 @@ def test_c9_create_use_free_cycles_do_not_leak() -> None:
     after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     # ru_maxrss is a high-watermark in KiB; a per-cycle native leak would blow
     # far past a few MiB over 12k cycles.
-    assert after - before < 32 * 1024, f"RSS grew {after - before} KiB over {cycles} cycles"
+    assert after - before < 32 * 1024, (
+        f"RSS grew {after - before} KiB over {cycles} cycles"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -394,7 +408,7 @@ def test_c10_independent_dictionaries_per_thread() -> None:
                 for i in range(2000):
                     dictionary.insert(f"t{seed}_{i}", i)
                 assert len(dictionary) == 2000
-                assert dictionary.get(f"t{seed}_1500") == (True, 1500)
+                assert dictionary.lookup(f"t{seed}_1500") == (True, 1500)
         except BaseException as failure:  # noqa: BLE001 - surfaced to main thread
             errors.append(failure)
 
@@ -416,7 +430,7 @@ def test_c10_concurrent_readers_during_writer() -> None:
         try:
             while not stop.is_set():
                 assert "seed0" in dictionary
-                dictionary.get("seed250")
+                dictionary.lookup("seed250")
         except BaseException as failure:  # noqa: BLE001
             errors.append(failure)
 
@@ -431,5 +445,5 @@ def test_c10_concurrent_readers_during_writer() -> None:
         for thread in readers:
             thread.join()
     assert not errors
-    assert dictionary.get("w2999") == (True, 2999)
+    assert dictionary.lookup("w2999") == (True, 2999)
     dictionary.close()

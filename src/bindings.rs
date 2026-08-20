@@ -7,6 +7,8 @@
 //! node identity preserve graph sharing in a lock-free lazy arena; other
 //! backends retain the sequential ABI-local identifier fallback.
 
+mod entries;
+
 use crate::concurrent_slots::HybridOnceBoxSlots;
 use crate::double_array_trie::char::DoubleArrayTrieChar;
 use crate::double_array_trie::DoubleArrayTrie;
@@ -33,6 +35,7 @@ use vinary_tree_interop::{
     VtDictionaryGraphVTable, VtDictionaryGraphView, VtDictionaryVTable, VtDictionaryVisitVTable,
     VtInterfaceId, VtOptionalU64, VtResource, VtResourceVTable, VtSnapshotIdentity,
     VtSnapshotIdentityVTable, VtStatus, VtUnitDomain, VtValueDomain, VT_ABI_VERSION,
+    VT_DICTIONARY_ENTRIES_INTERFACE_ID, VT_DICTIONARY_ENTRIES_INTERFACE_VERSION,
     VT_DICTIONARY_GRAPH_INTERFACE_ID, VT_DICTIONARY_GRAPH_INTERFACE_VERSION,
     VT_DICTIONARY_INTERFACE_ID, VT_DICTIONARY_INTERFACE_VERSION, VT_DICTIONARY_VISIT_INTERFACE_ID,
     VT_DICTIONARY_VISIT_INTERFACE_VERSION, VT_SNAPSHOT_IDENTITY_INTERFACE_ID,
@@ -82,6 +85,117 @@ pub enum BindingUnitDomain {
     /// Arbitrary unsigned 64-bit token sequences.
     U64 = 3,
 }
+
+/// One owned term emitted by a binding snapshot traversal.
+///
+/// The variants preserve arbitrary byte and `u64` keys without coercing them
+/// through UTF-8. Unicode keys are validated scalar strings.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BindingTerm {
+    /// Arbitrary bytes.
+    Bytes(Vec<u8>),
+    /// A Unicode scalar string.
+    Unicode(String),
+    /// Unsigned 64-bit tokens.
+    U64(Vec<u64>),
+}
+
+/// One lossless, owned dictionary record from an immutable revision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BindingEntry {
+    /// Exact key in its native unit domain.
+    pub term: BindingTerm,
+    /// Mapped value, or `None` for a present term-only record.
+    pub value: Option<u64>,
+}
+
+/// Snapshot-owning, iterative binding traversal.
+///
+/// This direct Rust adapter shares the same engine as the batched family ABI
+/// but avoids FFI for in-process runtimes such as browser WebAssembly.
+pub struct BindingEntries {
+    state: entries::EntryCursorState,
+    domain: VtUnitDomain,
+    remaining: Option<usize>,
+    ended: bool,
+}
+
+impl BindingEntries {
+    fn new(snapshot: Arc<dyn SnapshotOps>) -> Self {
+        let domain = snapshot.domain();
+        let remaining = snapshot.len();
+        Self {
+            state: entries::EntryCursorState::new(snapshot),
+            domain,
+            remaining,
+            ended: false,
+        }
+    }
+
+    fn decode(&self, entry: entries::PendingEntry) -> Result<BindingEntry, VtStatus> {
+        let term = match self.domain {
+            VtUnitDomain::Byte => BindingTerm::Bytes(
+                entry
+                    .units
+                    .into_iter()
+                    .map(|unit| u8::try_from(unit).map_err(|_| VtStatus::ProviderError))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            VtUnitDomain::UnicodeScalar => BindingTerm::Unicode(
+                entry
+                    .units
+                    .into_iter()
+                    .map(|unit| {
+                        u32::try_from(unit)
+                            .ok()
+                            .and_then(char::from_u32)
+                            .ok_or(VtStatus::ProviderError)
+                    })
+                    .collect::<Result<String, _>>()?,
+            ),
+            VtUnitDomain::U64 => BindingTerm::U64(entry.units),
+        };
+        Ok(BindingEntry {
+            term,
+            value: entry.value,
+        })
+    }
+}
+
+impl Iterator for BindingEntries {
+    type Item = Result<BindingEntry, VtStatus>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.ended {
+            return None;
+        }
+        match self.state.next_entry() {
+            Ok(Some(entry)) => {
+                if let Some(remaining) = &mut self.remaining {
+                    *remaining = remaining.saturating_sub(1);
+                }
+                Some(self.decode(entry))
+            }
+            Ok(None) => {
+                self.ended = true;
+                self.remaining = Some(0);
+                None
+            }
+            Err(error) => {
+                self.ended = true;
+                self.remaining = Some(0);
+                Some(Err(error))
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.remaining
+            .map_or((0, None), |remaining| (remaining, Some(remaining)))
+    }
+}
+
+impl std::iter::FusedIterator for BindingEntries {}
 
 impl From<BindingUnitDomain> for VtUnitDomain {
     fn from(value: BindingUnitDomain) -> Self {
@@ -323,7 +437,7 @@ impl SnapshotMemo {
 
     #[inline]
     fn request_snapshot_window(&self) {
-        let _ = self.snapshot_backoff_credits.fetch_update(
+        let _ = self.snapshot_backoff_credits.try_update(
             Ordering::Release,
             Ordering::Relaxed,
             |credits| Some(credits.saturating_add(1).min(MAX_SNAPSHOT_BACKOFF_CREDITS)),
@@ -571,31 +685,31 @@ impl DynamicSnapshotCapture {
         match self {
             Self::Byte {
                 root, term_count, ..
-            } => Arc::new(TraversalSnapshot::new(
+            } => exact_traversal_snapshot(
                 root.clone(),
-                Some(*term_count),
+                *term_count,
                 VtUnitDomain::Byte,
                 false,
                 identity,
-            )),
+            ),
             Self::Unicode {
                 root, term_count, ..
-            } => Arc::new(TraversalSnapshot::new(
+            } => exact_traversal_snapshot(
                 root.clone(),
-                Some(*term_count),
+                *term_count,
                 VtUnitDomain::UnicodeScalar,
                 false,
                 identity,
-            )),
+            ),
             Self::U64 {
                 root, term_count, ..
-            } => Arc::new(TraversalSnapshot::new(
+            } => exact_traversal_snapshot(
                 root.clone(),
-                Some(*term_count),
+                *term_count,
                 VtUnitDomain::U64,
                 false,
                 identity,
-            )),
+            ),
         }
     }
 }
@@ -730,43 +844,31 @@ impl PersistentBackend {
         match self {
             Self::Byte(dictionary) => {
                 let (root, term_count) = dictionary.root_with_term_count();
-                Arc::new(TraversalSnapshot::new(
-                    root,
-                    Some(term_count),
-                    VtUnitDomain::Byte,
-                    false,
-                    identity,
-                ))
+                exact_traversal_snapshot(root, term_count, VtUnitDomain::Byte, false, identity)
             }
             Self::Unicode(dictionary) => {
                 let (root, term_count) = dictionary.root_with_term_count();
-                Arc::new(TraversalSnapshot::new(
+                exact_traversal_snapshot(
                     root,
-                    Some(term_count),
+                    term_count,
                     VtUnitDomain::UnicodeScalar,
                     false,
                     identity,
-                ))
+                )
             }
             Self::U64(dictionary) => {
                 let (root, term_count) = dictionary.root_with_term_count();
-                Arc::new(TraversalSnapshot::new(
-                    root,
-                    Some(term_count),
-                    VtUnitDomain::U64,
-                    false,
-                    identity,
-                ))
+                exact_traversal_snapshot(root, term_count, VtUnitDomain::U64, false, identity)
             }
             Self::Vocab(dictionary) => {
                 let (root, term_count) = dictionary.root_with_term_count();
-                Arc::new(TraversalSnapshot::new(
+                exact_traversal_snapshot(
                     root,
-                    Some(term_count),
+                    term_count,
                     VtUnitDomain::UnicodeScalar,
                     false,
                     identity,
-                ))
+                )
             }
         }
     }
@@ -1123,24 +1225,44 @@ impl SecondaryBackend {
             // SCDAWGs are mutable: pair the root with the count from ONE
             // published revision (finding LDICT-B4).
             Self::ScdawgByte(dictionary) => {
-                let (root, term_count) = dictionary.root_with_term_count();
-                Arc::new(TraversalSnapshot::new(
-                    root,
-                    Some(term_count),
-                    VtUnitDomain::Byte,
-                    true,
-                    identity,
-                ))
+                let (root, term_count, entries) = dictionary.root_with_term_count_and_entries();
+                Arc::new(
+                    TraversalSnapshot::new(
+                        root,
+                        Some(term_count),
+                        VtUnitDomain::Byte,
+                        true,
+                        identity,
+                    )
+                    .with_entry_factory(move || {
+                        entries.clone().map(|(term, value)| {
+                            (
+                                term.into_bytes().into_iter().map(u64::from).collect(),
+                                value.and_then(BindingValue::into_option),
+                            )
+                        })
+                    }),
+                )
             }
             Self::ScdawgUnicode(dictionary) => {
-                let (root, term_count) = dictionary.root_with_term_count();
-                Arc::new(TraversalSnapshot::new(
-                    root,
-                    Some(term_count),
-                    VtUnitDomain::UnicodeScalar,
-                    true,
-                    identity,
-                ))
+                let (root, term_count, entries) = dictionary.root_with_term_count_and_entries();
+                Arc::new(
+                    TraversalSnapshot::new(
+                        root,
+                        Some(term_count),
+                        VtUnitDomain::UnicodeScalar,
+                        true,
+                        identity,
+                    )
+                    .with_entry_factory(move || {
+                        entries.clone().map(|(term, value)| {
+                            (
+                                term.chars().map(|unit| u64::from(unit as u32)).collect(),
+                                value.and_then(BindingValue::into_option),
+                            )
+                        })
+                    }),
+                )
             }
         }
     }
@@ -1803,6 +1925,7 @@ struct TraversalSnapshot<N: DictionaryNode> {
     domain: VtUnitDomain,
     suffix: bool,
     identity: SnapshotIdentity,
+    entry_factory: Option<SnapshotEntryFactory>,
     // Keep the immutable owner last so native provenance handles are dropped
     // before the revision that makes them valid.
     arena: NodeArena<N>,
@@ -1912,10 +2035,61 @@ impl<N: DictionaryNode> TraversalSnapshot<N> {
             domain,
             suffix,
             identity,
+            entry_factory: None,
             arena: NodeArena::new(root, root_identity),
         }
     }
+
+    fn with_entry_factory<F, I>(mut self, factory: F) -> Self
+    where
+        F: Fn() -> I + Send + Sync + 'static,
+        I: Iterator<Item = (Vec<u64>, Option<u64>)> + Send + 'static,
+    {
+        self.entry_factory = Some(Arc::new(move || Box::new(factory())));
+        self
+    }
 }
+
+/// Build one exact-dictionary snapshot with a sequential entry stream backed
+/// by the same generic native/graph/owned traversal selector as the pure Rust
+/// collection API.
+///
+/// The random-access graph ABI retains its lazy, validated node arena. Entry
+/// cursors do not accept caller-supplied node identifiers, so they can safely
+/// keep the captured root and use backend-native cursors directly. This avoids
+/// populating and probing a second arena during a full collection scan while
+/// preserving one implementation across byte, Unicode-scalar, and `u64`
+/// dictionaries.
+fn exact_traversal_snapshot<N>(
+    root: N,
+    len: usize,
+    domain: VtUnitDomain,
+    suffix: bool,
+    identity: SnapshotIdentity,
+) -> Arc<dyn SnapshotOps>
+where
+    N: MappedDictionaryNode + 'static,
+    N::Unit: AbiUnit,
+    N::Value: AbiValue,
+{
+    let entry_root = root.clone();
+    Arc::new(
+        TraversalSnapshot::new(root, Some(len), domain, suffix, identity).with_entry_factory(
+            move || {
+                crate::collection::ExactSnapshotEntryIterator::from_node(entry_root.clone(), len)
+                    .map(|entry| {
+                        (
+                            entry.key.into_iter().map(AbiUnit::to_abi).collect(),
+                            entry.value.and_then(AbiValue::into_abi_value),
+                        )
+                    })
+            },
+        ),
+    )
+}
+
+type SnapshotEntryStream = Box<dyn Iterator<Item = (Vec<u64>, Option<u64>)> + Send>;
+type SnapshotEntryFactory = Arc<dyn Fn() -> SnapshotEntryStream + Send + Sync>;
 
 trait SnapshotOps: Send + Sync {
     fn root(&self) -> u64;
@@ -1923,6 +2097,9 @@ trait SnapshotOps: Send + Sync {
     fn suffix(&self) -> bool;
     fn len(&self) -> Option<usize>;
     fn identity(&self) -> SnapshotIdentity;
+    fn entries(&self) -> Option<SnapshotEntryStream> {
+        None
+    }
     fn graph(&self) -> Option<VtDictionaryGraphView>;
     fn graph_value(&self, value_cursor: u64) -> Result<Option<u64>, VtStatus>;
     fn is_final(&self, node: u64) -> Result<bool, VtStatus>;
@@ -2172,6 +2349,10 @@ where
         self.identity
     }
 
+    fn entries(&self) -> Option<SnapshotEntryStream> {
+        self.entry_factory.as_ref().map(|factory| factory())
+    }
+
     fn graph(&self) -> Option<VtDictionaryGraphView> {
         let root = &self.arena.slot(0).ok()?.node;
         if !root.supports_snapshot_graph_values() {
@@ -2389,6 +2570,15 @@ impl OwnedDictionaryResource {
     pub fn as_raw(&self) -> VtResource {
         self.raw
     }
+
+    /// Traverse one immutable revision without crossing the C ABI.
+    ///
+    /// The returned iterator owns the snapshot and remains coherent if the
+    /// live producer changes or this resource is dropped.
+    pub fn entries(&self) -> BindingEntries {
+        let context = unsafe { &*self.raw.context.cast::<ResourceContext>() };
+        BindingEntries::new(context.snapshot())
+    }
 }
 
 impl Drop for OwnedDictionaryResource {
@@ -2437,6 +2627,15 @@ unsafe fn query_interface_status(
         && minimum_version <= VT_DICTIONARY_VISIT_INTERFACE_VERSION
     {
         out_vtable.write((&DICTIONARY_VISIT_VTABLE as *const VtDictionaryVisitVTable).cast());
+        VtStatus::Ok
+    } else if (*interface_id).bytes == VT_DICTIONARY_ENTRIES_INTERFACE_ID.bytes
+        && minimum_version <= VT_DICTIONARY_ENTRIES_INTERFACE_VERSION
+    {
+        out_vtable.write(
+            (&entries::DICTIONARY_ENTRIES_VTABLE
+                as *const vinary_tree_interop::VtDictionaryEntriesVTable)
+                .cast(),
+        );
         VtStatus::Ok
     } else if (*interface_id).bytes == VT_DICTIONARY_GRAPH_INTERFACE_ID.bytes
         && minimum_version <= VT_DICTIONARY_GRAPH_INTERFACE_VERSION

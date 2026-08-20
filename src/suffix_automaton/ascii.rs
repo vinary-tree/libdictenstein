@@ -118,7 +118,7 @@
 //! same set of ending positions. Fully removing a term would require rebuilding
 //! significant portions of the automaton.
 //!
-//! **Recommendation**: Use `iter()` to enumerate explicitly indexed terms, or
+//! **Recommendation**: Use `iter_entries()` to enumerate explicitly indexed terms, or
 //! track indexed terms externally if precise removal semantics are required.
 //!
 //! # References
@@ -127,6 +127,7 @@
 //! - Design document: `docs/SUFFIX_AUTOMATON_DESIGN.md`
 
 use std::collections::HashMap;
+use std::iter::FusedIterator;
 use std::sync::Arc;
 
 use super::lockfree::LockFreeSuffixAutomaton;
@@ -231,6 +232,46 @@ pub struct SuffixAutomaton<V: DictionaryValue = ()> {
     pub(crate) inner: LockFreeSuffixAutomaton<u8, V>,
 }
 
+/// Snapshot iterator over explicitly inserted source records.
+pub struct SuffixAutomatonEntryIterator<V: DictionaryValue = ()> {
+    inner: Arc<SuffixAutomatonInner<V>>,
+    index: usize,
+}
+
+impl<V: DictionaryValue> Iterator for SuffixAutomatonEntryIterator<V> {
+    type Item = (String, Option<V>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let source_id = *self.inner.sorted_source_indices.get(self.index)?;
+        self.index += 1;
+        let text = self
+            .inner
+            .source_texts
+            .get(source_id)
+            .expect("the revision record index references a source")
+            .clone();
+        let value = self
+            .inner
+            .source_values
+            .get(source_id)
+            .cloned()
+            .unwrap_or_else(|| SuffixAutomaton::<V>::value_from_inner(&self.inner, &text));
+        Some((text, value))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self
+            .inner
+            .sorted_source_indices
+            .len()
+            .saturating_sub(self.index);
+        (remaining, Some(remaining))
+    }
+}
+
+impl<V: DictionaryValue> ExactSizeIterator for SuffixAutomatonEntryIterator<V> {}
+impl<V: DictionaryValue> FusedIterator for SuffixAutomatonEntryIterator<V> {}
+
 impl<V: DictionaryValue> SuffixAutomaton<V> {
     #[inline]
     fn from_inner(inner: SuffixAutomatonInner<V>) -> Self {
@@ -243,6 +284,7 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
         inner.last_state = 0;
         let string_id = inner.source_texts.len();
         inner.source_texts.push(text.to_string());
+        inner.source_values.push(value.clone());
 
         for byte in text.bytes() {
             inner.extend(byte);
@@ -257,8 +299,29 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
             .entry(last_state)
             .or_default()
             .push((string_id, text.len()));
+        inner.index_source(string_id);
         inner.string_count += 1;
         inner.last_state = 0;
+    }
+
+    fn from_records(records: Vec<(String, Option<V>)>) -> Self {
+        let mut inner = SuffixAutomatonInner::new();
+        for (text, value) in records {
+            Self::insert_text_into_inner(&mut inner, &text, value);
+        }
+        Self::from_inner(inner)
+    }
+
+    fn extend_records(&self, records: Vec<(String, Option<V>)>) {
+        if records.is_empty() {
+            return;
+        }
+        self.inner.mutate(|inner| {
+            for (text, value) in &records {
+                Self::insert_text_into_inner(inner, text, value.clone());
+            }
+            ((), true)
+        });
     }
 
     fn find_term_state(inner: &SuffixAutomatonInner<V>, term: &str) -> Option<usize> {
@@ -272,6 +335,61 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
     fn value_from_inner(inner: &SuffixAutomatonInner<V>, term: &str) -> Option<V> {
         let state = Self::find_term_state(inner, term)?;
         inner.nodes.get(state).and_then(|node| node.value.clone())
+    }
+
+    #[cfg(feature = "serialization")]
+    fn restore_missing_source_values(inner: &mut SuffixAutomatonInner<V>) {
+        if inner.source_values.len() >= inner.source_texts.len() {
+            return;
+        }
+        let restored: Vec<_> = inner.source_texts[inner.source_values.len()..]
+            .iter()
+            .map(|text| Self::value_from_inner(inner, text))
+            .collect();
+        inner.source_values.extend(restored);
+    }
+
+    fn update_source_record_value(
+        inner: &mut SuffixAutomatonInner<V>,
+        state: usize,
+        term: &str,
+        value: V,
+    ) {
+        let source_id = inner.positions.get(&state).and_then(|positions| {
+            positions
+                .iter()
+                .filter_map(|(source_id, end)| {
+                    (*end == term.len()
+                        && inner
+                            .source_texts
+                            .get(*source_id)
+                            .is_some_and(|text| text == term))
+                    .then_some(*source_id)
+                })
+                .filter(|source_id| {
+                    inner
+                        .source_values
+                        .get(*source_id)
+                        .is_some_and(Option::is_some)
+                })
+                .max()
+                .or_else(|| {
+                    positions
+                        .iter()
+                        .filter_map(|(source_id, end)| {
+                            (*end == term.len()
+                                && inner
+                                    .source_texts
+                                    .get(*source_id)
+                                    .is_some_and(|text| text == term))
+                            .then_some(*source_id)
+                        })
+                        .max()
+                })
+        });
+        if let Some(record_value) = source_id.and_then(|id| inner.source_values.get_mut(id)) {
+            *record_value = Some(value);
+        }
     }
 
     /// Create an empty suffix automaton.
@@ -419,6 +537,7 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
                 }
             }
 
+            let removed_source = remove_location.map(|(source_id, _, _)| source_id);
             let removed_state = remove_location.map(|(_, state, _)| state);
             let removed = if let Some((_, state, index)) = remove_location {
                 if let Some(positions) = inner.positions.get_mut(&state) {
@@ -432,6 +551,9 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
             };
 
             if removed {
+                if let Some(source_id) = removed_source {
+                    inner.unindex_source(source_id);
+                }
                 // Source text slots stay stable; position metadata is the active set.
                 let should_remove = removed_state
                     .and_then(|state| inner.positions.get(&state).map(|v| (state, v.is_empty())));
@@ -720,9 +842,15 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
                         .as_mut()
                         .expect("value.is_some() checked one line above"),
                 );
+                let value = inner.nodes[state]
+                    .value
+                    .clone()
+                    .expect("value remains present after an in-place update");
+                Self::update_source_record_value(inner, state, term, value);
                 (false, true)
             } else {
                 inner.nodes[state].value = Some(default_value.clone());
+                Self::update_source_record_value(inner, state, term, default_value.clone());
                 inner.nodes[state].is_final = true;
                 if !inner.positions.get(&state).is_some_and(|positions| {
                     positions.iter().any(|(source_id, end)| {
@@ -736,11 +864,13 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
                 }) {
                     let string_id = inner.source_texts.len();
                     inner.source_texts.push(term.to_string());
+                    inner.source_values.push(Some(default_value.clone()));
                     inner
                         .positions
                         .entry(state)
                         .or_default()
                         .push((string_id, term.len()));
+                    inner.index_source(string_id);
                     inner.string_count += 1;
                 }
                 (true, true)
@@ -778,6 +908,18 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
         inner.source_texts.clone()
     }
 
+    /// Iterate over explicitly stored source records in lexicographic order.
+    ///
+    /// Unlike [`Self::iter_terms`], this does not enumerate the recognized
+    /// substring language. The iterator owns one immutable revision and is not
+    /// affected by later insertions, removals, clears, or compaction.
+    pub fn iter_entries(&self) -> SuffixAutomatonEntryIterator<V> {
+        SuffixAutomatonEntryIterator {
+            inner: self.inner.load(),
+            index: 0,
+        }
+    }
+
     /// Iterate over all substrings as raw byte vectors (without values).
     ///
     /// Returns an iterator yielding `Vec<u8>` in depth-first order.
@@ -805,8 +947,11 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
     /// Returns an iterator yielding `(Vec<u8>, V)` tuples in depth-first order.
     /// Note: This yields all indexed substrings, not just complete terms.
     ///
-    /// **Note**: This only works for dictionaries created with values.
-    /// For dictionaries without values, use `iter_terms()` instead.
+    /// This legacy language iterator omits recognized substrings without
+    /// values. Use [`Self::iter_entries`] or borrowed `IntoIterator` for stored
+    /// source records, and
+    /// [`DictionaryLanguageEntries::language_entries`](crate::DictionaryLanguageEntries::language_entries)
+    /// for lossless substring-language traversal.
     ///
     /// # Examples
     ///
@@ -830,6 +975,8 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
     ///
     /// Returns an iterator yielding `(String, V)` tuples in depth-first order.
     /// Note: This yields all indexed substrings, not just complete terms.
+    /// Like `iter_bytes()`, this legacy language iterator omits entries without
+    /// values and does not represent the stored source-record collection.
     ///
     /// # Examples
     ///
@@ -848,13 +995,67 @@ impl<V: DictionaryValue> SuffixAutomaton<V> {
     }
 }
 
-impl<V: DictionaryValue> IntoIterator for &SuffixAutomaton<V> {
-    type Item = (Vec<u8>, V);
-    type IntoIter = DictionaryIterator<SuffixAutomatonZipper<V>>;
+impl<V: DictionaryValue> FromIterator<String> for SuffixAutomaton<V> {
+    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
+        Self::from_texts(iter)
+    }
+}
 
-    /// Creates an iterator over all `(substring, value)` pairs as raw byte vectors.
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter_bytes()
+impl<'a, V: DictionaryValue> FromIterator<&'a str> for SuffixAutomaton<V> {
+    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
+        Self::from_texts(iter)
+    }
+}
+
+impl<V: DictionaryValue> FromIterator<(String, V)> for SuffixAutomaton<V> {
+    fn from_iter<I: IntoIterator<Item = (String, V)>>(iter: I) -> Self {
+        Self::from_records(
+            iter.into_iter()
+                .map(|(text, value)| (text, Some(value)))
+                .collect(),
+        )
+    }
+}
+
+impl<'a, V: DictionaryValue> FromIterator<(&'a str, V)> for SuffixAutomaton<V> {
+    fn from_iter<I: IntoIterator<Item = (&'a str, V)>>(iter: I) -> Self {
+        Self::from_records(
+            iter.into_iter()
+                .map(|(text, value)| (text.to_owned(), Some(value)))
+                .collect(),
+        )
+    }
+}
+
+impl<V: DictionaryValue> Extend<String> for SuffixAutomaton<V> {
+    fn extend<I: IntoIterator<Item = String>>(&mut self, iter: I) {
+        self.extend_records(iter.into_iter().map(|text| (text, None)).collect());
+    }
+}
+
+impl<'a, V: DictionaryValue> Extend<&'a str> for SuffixAutomaton<V> {
+    fn extend<I: IntoIterator<Item = &'a str>>(&mut self, iter: I) {
+        <Self as Extend<String>>::extend(self, iter.into_iter().map(str::to_owned));
+    }
+}
+
+impl<V: DictionaryValue> Extend<(String, V)> for SuffixAutomaton<V> {
+    fn extend<I: IntoIterator<Item = (String, V)>>(&mut self, iter: I) {
+        self.extend_records(
+            iter.into_iter()
+                .map(|(text, value)| (text, Some(value)))
+                .collect(),
+        );
+    }
+}
+
+impl<'a, V: DictionaryValue> Extend<(&'a str, V)> for SuffixAutomaton<V> {
+    fn extend<I: IntoIterator<Item = (&'a str, V)>>(&mut self, iter: I) {
+        <Self as Extend<(String, V)>>::extend(
+            self,
+            iter.into_iter()
+                .map(|(text, value)| (text.to_owned(), value)),
+        );
     }
 }
 
@@ -885,7 +1086,9 @@ impl<'de, V: DictionaryValue + serde::Deserialize<'de>> serde::Deserialize<'de>
     where
         D: serde::Deserializer<'de>,
     {
-        let inner = SuffixAutomatonInner::deserialize(deserializer)?;
+        let mut inner = SuffixAutomatonInner::deserialize(deserializer)?;
+        SuffixAutomaton::restore_missing_source_values(&mut inner);
+        inner.rebuild_sorted_source_indices();
         Ok(SuffixAutomaton {
             inner: LockFreeSuffixAutomaton::from_inner(inner),
         })
@@ -900,7 +1103,9 @@ impl<'de, V: DictionaryValue> serde::Deserialize<'de> for SuffixAutomaton<V> {
     where
         D: serde::Deserializer<'de>,
     {
-        let inner = SuffixAutomatonInner::deserialize(deserializer)?;
+        let mut inner = SuffixAutomatonInner::deserialize(deserializer)?;
+        SuffixAutomaton::restore_missing_source_values(&mut inner);
+        inner.rebuild_sorted_source_indices();
         Ok(SuffixAutomaton {
             inner: LockFreeSuffixAutomaton::from_inner(inner),
         })

@@ -54,6 +54,24 @@ tasks.test {
     )
 }
 
+tasks.register<JavaExec>("collectionTraversalProfile") {
+    group = "benchmark"
+    description = "Run one public-facade collection traversal benchmark arm."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass = "io.vinarytree.libdictenstein.CollectionTraversalProfile"
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    systemProperty(
+        "java.library.path",
+        providers.gradleProperty("vinaryTree.nativeDir")
+            .orElse("../../target/debug:../../../liblevenshtein-rust/target/debug")
+            .get()
+    )
+    doFirst {
+        val raw = providers.gradleProperty("profileArgs").orElse("").get().trim()
+        setArgs(if (raw.isEmpty()) emptyList<String>() else raw.split(Regex("\\s+")))
+    }
+}
+
 val nativeResourcesByPlatform = mapOf(
     "linux-x86_64" to "META-INF/native/linux-x86_64/liblibdictenstein.so",
     "linux-aarch64" to "META-INF/native/linux-aarch64/liblibdictenstein.so",

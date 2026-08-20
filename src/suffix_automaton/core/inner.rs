@@ -45,6 +45,21 @@ pub struct SuffixAutomatonInner<U: CharUnit, V: DictionaryValue = ()> {
     pub string_count: usize,
     /// Original source texts for serialization.
     pub source_texts: Vec<String>,
+    /// Optional value supplied for each source record.
+    ///
+    /// This parallel vector preserves the distinction between a term-only
+    /// insertion and a mapped insertion even when duplicate source texts share
+    /// the same suffix-automaton state.
+    #[cfg_attr(feature = "serialization", serde(default))]
+    pub source_values: Vec<Option<V>>,
+    /// Active source IDs in lexicographic source-text order.
+    ///
+    /// This is a derived, revision-local index. It is deliberately omitted
+    /// from serialization and rebuilt after deserialization so the wire format
+    /// remains compatible with snapshots written before stored-record
+    /// iteration was added.
+    #[cfg_attr(feature = "serialization", serde(skip))]
+    pub sorted_source_indices: Vec<usize>,
     /// Position metadata: maps state IDs to (string_id, end_position).
     pub positions: HashMap<usize, Vec<(usize, usize)>>,
     /// Flag indicating compaction is recommended.
@@ -59,8 +74,54 @@ impl<U: CharUnit, V: DictionaryValue> SuffixAutomatonInner<U, V> {
             last_state: 0,
             string_count: 0,
             source_texts: Vec::new(),
+            source_values: Vec::new(),
+            sorted_source_indices: Vec::new(),
             positions: HashMap::new(),
             needs_compaction: false,
+        }
+    }
+
+    /// Rebuild the derived active-source index for this revision.
+    pub fn rebuild_sorted_source_indices(&mut self) {
+        let mut active = vec![false; self.source_texts.len()];
+        for positions in self.positions.values() {
+            for &(source_id, _) in positions {
+                if let Some(slot) = active.get_mut(source_id) {
+                    *slot = true;
+                }
+            }
+        }
+
+        self.sorted_source_indices = active
+            .into_iter()
+            .enumerate()
+            .filter_map(|(source_id, is_active)| is_active.then_some(source_id))
+            .collect();
+        self.sorted_source_indices.sort_by(|&left, &right| {
+            self.source_texts[left]
+                .cmp(&self.source_texts[right])
+                .then_with(|| left.cmp(&right))
+        });
+    }
+
+    /// Add one newly-active source to the sorted revision index.
+    pub fn index_source(&mut self, source_id: usize) {
+        let insertion = self.sorted_source_indices.partition_point(|&existing| {
+            self.source_texts[existing] < self.source_texts[source_id]
+                || (self.source_texts[existing] == self.source_texts[source_id]
+                    && existing < source_id)
+        });
+        self.sorted_source_indices.insert(insertion, source_id);
+    }
+
+    /// Remove one source from the sorted revision index.
+    pub fn unindex_source(&mut self, source_id: usize) {
+        if let Some(index) = self
+            .sorted_source_indices
+            .iter()
+            .position(|&existing| existing == source_id)
+        {
+            self.sorted_source_indices.remove(index);
         }
     }
 

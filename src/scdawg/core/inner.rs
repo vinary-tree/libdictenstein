@@ -36,6 +36,10 @@ pub struct ScdawgCoreInner<U: CharUnit, V: DictionaryValue> {
     pub term_count: usize,
     /// Stored terms for enumeration.
     pub terms: Vec<String>,
+    /// Insertion-record indices ordered by Unicode scalar/UTF-8 lexicographic
+    /// term order. This keeps entry-cursor creation O(1) while preserving the
+    /// immutable record indices used by occurrence metadata.
+    pub sorted_term_indices: Vec<usize>,
     /// Fast duplicate detection using hash set.
     pub term_set: FxHashSet<String>,
     /// Exact term-to-value table for public mapped-dictionary semantics.
@@ -57,6 +61,7 @@ impl<U: CharUnit, V: DictionaryValue> ScdawgCoreInner<U, V> {
             last: 0,
             term_count: 0,
             terms: Vec::new(),
+            sorted_term_indices: Vec::new(),
             term_set: FxHashSet::default(),
             term_values: FxHashMap::default(),
             left_edges_computed: false,
@@ -74,6 +79,7 @@ impl<U: CharUnit, V: DictionaryValue> ScdawgCoreInner<U, V> {
             last: 0,
             term_count: 0,
             terms: Vec::with_capacity(term_count),
+            sorted_term_indices: Vec::with_capacity(term_count),
             term_set: FxHashSet::with_capacity_and_hasher(term_count, Default::default()),
             term_values: FxHashMap::with_capacity_and_hasher(term_count, Default::default()),
             left_edges_computed: false,
@@ -201,6 +207,10 @@ impl<U: CharUnit, V: DictionaryValue> ScdawgCoreInner<U, V> {
         let term_string = term.to_string();
         self.term_set.insert(term_string.clone());
         self.terms.push(term_string);
+        let sorted_position = self
+            .sorted_term_indices
+            .partition_point(|&index| self.terms[index].as_str() < term);
+        self.sorted_term_indices.insert(sorted_position, term_idx);
         self.term_count += 1;
 
         true

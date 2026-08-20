@@ -25,4 +25,11 @@
     io.vinarytree/liblevenshtein
     {:local/root "../../../liblevenshtein-rust/bindings/jvm"}
     io.vinarytree/libdictenstein {:local/root "../jvm"}}
-   :main-opts ["-m" "vinary-tree.libdictenstein-conformance-runner"]}}}
+   :main-opts ["-m" "vinary-tree.libdictenstein-conformance-runner"]}
+  :profile
+  {:jvm-opts ["--enable-native-access=ALL-UNNAMED"]
+   :override-deps
+   {io.vinarytree/vinary-tree-interop
+    {:local/root "../../../liblevenshtein-rust/vinary-tree-interop/bindings/jvm"}
+    io.vinarytree/libdictenstein {:local/root "../jvm"}}
+   :main-opts ["-m" "vinary-tree.libdictenstein-collection-profile"]}}}

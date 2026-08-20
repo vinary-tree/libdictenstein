@@ -2,15 +2,28 @@
 #include <lauxlib.h>
 
 #include <stdint.h>
+#include <inttypes.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "libdictenstein.h"
 #include "vinary_tree_lua.h"
+#include "dictionary_entries.h"
+
+#define VT_LUA_ENTRY_CURSOR_METATABLE "vinary-tree.dictionary.entries.cursor.v1"
+#define VT_LUA_ENTRIES_METATABLE "vinary-tree.dictionary.entries.snapshot.v1"
 
 typedef struct LuaDictionary {
     VtLuaDictionaryResource resource;
     LdictDictionary* dictionary;
 } LuaDictionary;
+
+typedef struct LuaEntryCursor {
+    VtBindingEntryCursor cursor;
+    uint8_t active;
+} LuaEntryCursor;
 
 static int dictionary_error(lua_State* state, LdictStatus status) {
     const char* message = ldict_last_error_message();
@@ -33,21 +46,36 @@ static uint32_t domain(lua_State* state, int index) {
     return 0;
 }
 
+static uint64_t nonnegative_integer(lua_State* state, int index, const char* label);
+static void push_unsigned(lua_State* state, uint64_t value);
+
 static LdictOptionalU64 optional_value(lua_State* state, int index) {
     LdictOptionalU64 result = {0, 0, {0}};
     if (!lua_isnoneornil(state, index)) {
-        lua_Integer value = luaL_checkinteger(state, index);
-        luaL_argcheck(state, value >= 0, index, "value must be a non-negative integer");
-        result.value = (uint64_t)value;
+        result.value = nonnegative_integer(
+            state, index, "value must be an unsigned integer or decimal string");
         result.has_value = 1;
     }
     return result;
 }
 
 static uint64_t nonnegative_integer(lua_State* state, int index, const char* label) {
-    lua_Integer value = luaL_checkinteger(state, index);
-    luaL_argcheck(state, value >= 0, index, label);
-    return (uint64_t)value;
+    if (lua_isinteger(state, index)) {
+        lua_Integer value = lua_tointeger(state, index);
+        luaL_argcheck(state, value >= 0, index, label);
+        return (uint64_t)value;
+    }
+    size_t length = 0;
+    const char* decimal = luaL_checklstring(state, index, &length);
+    luaL_argcheck(state, length != 0, index, label);
+    for (size_t position = 0; position < length; ++position)
+        luaL_argcheck(state, decimal[position] >= '0' && decimal[position] <= '9',
+                      index, label);
+    errno = 0;
+    char* end = NULL;
+    uint64_t value = strtoull(decimal, &end, 10);
+    luaL_argcheck(state, errno != ERANGE && end == decimal + length, index, label);
+    return value;
 }
 
 static const uint64_t* u64_sequence(lua_State* state, int index, size_t* out_length) {
@@ -69,9 +97,245 @@ static int push_lookup(lua_State* state, uint8_t found, LdictOptionalU64 result)
     lua_createtable(state, 0, 2);
     lua_pushboolean(state, found); lua_setfield(state, -2, "found");
     if (result.has_value) {
-        lua_pushinteger(state, (lua_Integer)result.value);
+        push_unsigned(state, result.value);
         lua_setfield(state, -2, "value");
     }
+    return 1;
+}
+
+static void push_unsigned(lua_State* state, uint64_t value) {
+    if (value <= (uint64_t)LUA_MAXINTEGER) {
+        lua_pushinteger(state, (lua_Integer)value);
+        return;
+    }
+    char decimal[32];
+    int length = snprintf(decimal, sizeof(decimal), "%" PRIu64, value);
+    lua_pushlstring(state, decimal, (size_t)length);
+}
+
+static size_t utf8_length(const uint32_t* scalars, size_t count) {
+    size_t length = 0;
+    for (size_t index = 0; index < count; ++index) {
+        uint32_t scalar = scalars[index];
+        length += scalar <= 0x7f ? 1 : scalar <= 0x7ff ? 2 : scalar <= 0xffff ? 3 : 4;
+    }
+    return length;
+}
+
+static void utf8_copy(char* output, const uint32_t* scalars, size_t count) {
+    size_t position = 0;
+    for (size_t index = 0; index < count; ++index) {
+        uint32_t scalar = scalars[index];
+        if (scalar <= 0x7f) output[position++] = (char)scalar;
+        else if (scalar <= 0x7ff) {
+            output[position++] = (char)(0xc0 | (scalar >> 6));
+            output[position++] = (char)(0x80 | (scalar & 0x3f));
+        } else if (scalar <= 0xffff) {
+            output[position++] = (char)(0xe0 | (scalar >> 12));
+            output[position++] = (char)(0x80 | ((scalar >> 6) & 0x3f));
+            output[position++] = (char)(0x80 | (scalar & 0x3f));
+        } else {
+            output[position++] = (char)(0xf0 | (scalar >> 18));
+            output[position++] = (char)(0x80 | ((scalar >> 12) & 0x3f));
+            output[position++] = (char)(0x80 | ((scalar >> 6) & 0x3f));
+            output[position++] = (char)(0x80 | (scalar & 0x3f));
+        }
+    }
+}
+
+static void push_entry_key(
+    lua_State* state, uint32_t domain, const VtBindingEntryView* entry) {
+    if (domain == VT_UNIT_DOMAIN_BYTE) {
+        lua_pushlstring(state,
+            entry->units ? (const char*)entry->units : "", entry->unit_len);
+    } else if (domain == VT_UNIT_DOMAIN_UNICODE_SCALAR) {
+        size_t length = utf8_length((const uint32_t*)entry->units, entry->unit_len);
+        luaL_Buffer buffer;
+        char* output = luaL_buffinitsize(state, &buffer, length);
+        utf8_copy(output, (const uint32_t*)entry->units, entry->unit_len);
+        luaL_pushresultsize(&buffer, length);
+    } else {
+        const uint64_t* tokens = (const uint64_t*)entry->units;
+        lua_createtable(state, (int)entry->unit_len, 0);
+        for (size_t index = 0; index < entry->unit_len; ++index) {
+            push_unsigned(state, tokens[index]);
+            lua_rawseti(state, -2, (lua_Integer)index + 1);
+        }
+    }
+}
+
+static int entry_cursor_error(
+    lua_State* state, LuaEntryCursor* cursor, VtStatus status) {
+    const char* message = cursor && cursor->cursor.error
+        ? cursor->cursor.error : ldict_last_error_message();
+    return luaL_error(state, "%s (status %d)",
+        message && *message ? message : "dictionary entries failed", (int)status);
+}
+
+static LuaEntryCursor* entry_cursor(lua_State* state, int index) {
+    return (LuaEntryCursor*)luaL_checkudata(
+        state, index, VT_LUA_ENTRY_CURSOR_METATABLE);
+}
+
+static size_t entry_limit_field(
+    lua_State* state, int index, const char* field, size_t fallback) {
+    lua_getfield(state, index, field);
+    lua_Integer value = luaL_optinteger(state, -1, (lua_Integer)fallback);
+    lua_pop(state, 1);
+    luaL_argcheck(state, value > 0, index, "entry batch limits must be positive");
+    return (size_t)value;
+}
+
+static LuaEntryCursor* push_entry_cursor(
+    lua_State* state, LuaDictionary* source, int limits_index) {
+    size_t max_entries = 256;
+    size_t max_units = 65536;
+    size_t max_values = 256;
+    if (!lua_isnoneornil(state, limits_index)) {
+        luaL_checktype(state, limits_index, LUA_TTABLE);
+        max_entries = entry_limit_field(
+            state, limits_index, "max_entries", max_entries);
+        max_units = entry_limit_field(state, limits_index, "max_units", max_units);
+        max_values = entry_limit_field(
+            state, limits_index, "max_values", max_values);
+    }
+    LuaEntryCursor* cursor =
+        (LuaEntryCursor*)lua_newuserdatauv(state, sizeof(*cursor), 0);
+    memset(cursor, 0, sizeof(*cursor));
+    VtStatus status = vt_binding_entries_open(
+        &source->resource.resource, max_entries, max_units, max_values,
+        &cursor->cursor);
+    if (status != VT_STATUS_OK) entry_cursor_error(state, cursor, status);
+    cursor->active = 1;
+    luaL_setmetatable(state, VT_LUA_ENTRY_CURSOR_METATABLE);
+    return cursor;
+}
+
+static int close_entry_cursor(lua_State* state) {
+    LuaEntryCursor* cursor = entry_cursor(state, 1);
+    if (cursor->active) {
+        VtStatus status = vt_binding_entries_close(&cursor->cursor);
+        cursor->active = 0;
+        if (status != VT_STATUS_OK) return entry_cursor_error(state, cursor, status);
+    }
+    return 0;
+}
+
+static int next_entry_cursor(lua_State* state) {
+    LuaEntryCursor* cursor = entry_cursor(state, 1);
+    if (!cursor->active) return 0;
+    VtBindingEntryView entry = {0};
+    uint8_t present = 0;
+    VtStatus status = vt_binding_entries_next(&cursor->cursor, &entry, &present);
+    if (status == VT_STATUS_END) {
+        cursor->active = 0;
+        return 0;
+    }
+    if (status != VT_STATUS_OK) return entry_cursor_error(state, cursor, status);
+    if (!present) return 0;
+    push_entry_key(state, cursor->cursor.info.unit_domain, &entry);
+    if (entry.has_value) push_unsigned(state, entry.value);
+    else lua_pushnil(state);
+    lua_pushboolean(state, entry.has_value);
+    return 3;
+}
+
+static int entry_cursor_metadata(lua_State* state) {
+    LuaEntryCursor* cursor = entry_cursor(state, 1);
+    VtDictionaryEntriesInfo* info = &cursor->cursor.info;
+    lua_createtable(state, 0, 5);
+    lua_pushstring(state, info->unit_domain == VT_UNIT_DOMAIN_BYTE ? "byte"
+        : info->unit_domain == VT_UNIT_DOMAIN_UNICODE_SCALAR ? "unicode" : "u64");
+    lua_setfield(state, -2, "unit_domain");
+    lua_pushstring(state, info->value_domain == VT_VALUE_DOMAIN_UNIT
+        ? "unit" : "optional_u64");
+    lua_setfield(state, -2, "value_domain");
+    if (info->flags & VT_DICTIONARY_ENTRIES_INFO_FLAG_EXACT_LEN) {
+        push_unsigned(state, info->exact_len);
+        lua_setfield(state, -2, "exact_length");
+    }
+    if (info->flags & VT_DICTIONARY_ENTRIES_INFO_FLAG_SNAPSHOT_IDENTITY) {
+        lua_createtable(state, 0, 2);
+        push_unsigned(state, info->identity.producer);
+        lua_setfield(state, -2, "producer");
+        push_unsigned(state, info->identity.revision);
+        lua_setfield(state, -2, "revision");
+        lua_setfield(state, -2, "snapshot_identity");
+    }
+    return 1;
+}
+
+static int open_entry_cursor(lua_State* state) {
+    push_entry_cursor(state, dictionary(state, 1), 2);
+    return 1;
+}
+
+static int stream_entries(lua_State* state) {
+    push_entry_cursor(state, dictionary(state, 1), 2);
+    lua_pushcfunction(state, next_entry_cursor);
+    lua_insert(state, -2);
+    lua_pushvalue(state, -1);
+    lua_pushnil(state);
+    lua_insert(state, -2);
+    return 4;
+}
+
+static int snapshot_next(lua_State* state) {
+    lua_Integer index = lua_tointeger(state, lua_upvalueindex(2)) + 1;
+    lua_pushinteger(state, index);
+    lua_replace(state, lua_upvalueindex(2));
+    lua_rawgeti(state, lua_upvalueindex(1), index);
+    if (lua_isnil(state, -1)) return 0;
+    lua_rawgeti(state, -1, 1);
+    lua_rawgeti(state, -2, 2);
+    lua_rawgeti(state, -3, 3);
+    return 3;
+}
+
+static int snapshot_pairs(lua_State* state) {
+    lua_pushvalue(state, 1);
+    lua_pushinteger(state, 0);
+    lua_pushcclosure(state, snapshot_next, 2);
+    lua_pushnil(state);
+    lua_pushnil(state);
+    return 3;
+}
+
+static int materialize_entries(lua_State* state) {
+    LuaDictionary* source = dictionary(state, 1);
+    LuaEntryCursor* cursor = push_entry_cursor(state, source, 2);
+    int cursor_index = lua_gettop(state);
+    lua_toclose(state, cursor_index);
+    lua_createtable(state, 0, 1);
+    int snapshot_index = lua_gettop(state);
+    lua_pushcfunction(state, entry_cursor_metadata);
+    lua_pushvalue(state, cursor_index);
+    lua_call(state, 1, 1);
+    lua_setfield(state, snapshot_index, "metadata");
+    lua_Integer count = 0;
+    for (;;) {
+        VtBindingEntryView entry = {0};
+        uint8_t present = 0;
+        VtStatus status = vt_binding_entries_next(&cursor->cursor, &entry, &present);
+        if (status == VT_STATUS_END) {
+            cursor->active = 0;
+            break;
+        }
+        if (status != VT_STATUS_OK) return entry_cursor_error(state, cursor, status);
+        if (!present) break;
+        lua_createtable(state, 3, 0);
+        push_entry_key(state, cursor->cursor.info.unit_domain, &entry);
+        lua_rawseti(state, -2, 1);
+        if (entry.has_value) push_unsigned(state, entry.value);
+        else lua_pushnil(state);
+        lua_rawseti(state, -2, 2);
+        lua_pushboolean(state, entry.has_value);
+        lua_rawseti(state, -2, 3);
+        lua_rawseti(state, snapshot_index, ++count);
+    }
+    luaL_setmetatable(state, VT_LUA_ENTRIES_METATABLE);
+    lua_closeslot(state, cursor_index);
+    lua_remove(state, cursor_index);
     return 1;
 }
 
@@ -364,11 +628,26 @@ static const luaL_Reg dictionary_methods[] = {
     {"put", put}, {"remove", remove_term}, {"get", get}, {"contains", contains},
     {"put_u64", put_u64}, {"remove_u64", remove_u64}, {"get_u64", get_u64},
     {"contains_u64", contains_u64}, {"term", vocabulary_term},
+    {"entries", materialize_entries}, {"entry_cursor", open_entry_cursor},
+    {"entries_iter", stream_entries},
     {"clear", clear}, {"compact", compact}, {"checkpoint", checkpoint},
     {"contains_substring", contains_substring}, {"frequency", frequency}, {NULL, NULL}
 };
 
 int luaopen_vinary_tree_libdictenstein(lua_State* state) {
+    luaL_newmetatable(state, VT_LUA_ENTRY_CURSOR_METATABLE);
+    lua_pushcfunction(state, close_entry_cursor); lua_setfield(state, -2, "__gc");
+    lua_pushcfunction(state, close_entry_cursor); lua_setfield(state, -2, "__close");
+    lua_pushcfunction(state, next_entry_cursor); lua_setfield(state, -2, "__call");
+    lua_newtable(state);
+    lua_pushcfunction(state, close_entry_cursor); lua_setfield(state, -2, "close");
+    lua_pushcfunction(state, next_entry_cursor); lua_setfield(state, -2, "next");
+    lua_pushcfunction(state, entry_cursor_metadata); lua_setfield(state, -2, "metadata");
+    lua_setfield(state, -2, "__index");
+    lua_pop(state, 1);
+    luaL_newmetatable(state, VT_LUA_ENTRIES_METATABLE);
+    lua_pushcfunction(state, snapshot_pairs); lua_setfield(state, -2, "__pairs");
+    lua_pop(state, 1);
     luaL_newmetatable(state, VT_LUA_DICTIONARY_METATABLE);
     lua_pushcfunction(state, close_dictionary); lua_setfield(state, -2, "__gc");
     lua_pushcfunction(state, close_dictionary); lua_setfield(state, -2, "__close");

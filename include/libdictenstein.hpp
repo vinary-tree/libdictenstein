@@ -6,7 +6,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <iterator>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -54,6 +56,14 @@ struct lookup final {
     bool found = false;
     std::optional<std::uint64_t> value;
 };
+
+struct entry_batch_limits final {
+    std::size_t max_entries = 256;
+    std::size_t max_units = 4096;
+    std::size_t max_values = 256;
+};
+
+class entries_view;
 
 class dictionary {
 public:
@@ -111,6 +121,7 @@ public:
         check(ldict_dictionary_get_u64(value_, term.data(), term.size(), &found, &result));
         return {found != 0, result.has_value ? std::optional(result.value) : std::nullopt};
     }
+    [[nodiscard]] entries_view entries(entry_batch_limits limits = {}) const;
 
 protected:
     explicit dictionary(LdictDictionary* value) : value_(value) {
@@ -147,6 +158,236 @@ protected:
 private:
     LdictDictionary* value_;
 };
+
+// Borrowed reference into one leased native batch. It is valid only until its
+// owning entries_view iterator advances beyond that batch or the view closes.
+class entry_view final {
+public:
+    [[nodiscard]] unit_domain domain() const noexcept { return domain_; }
+
+    [[nodiscard]] std::span<const std::uint8_t> bytes() const {
+        require_domain(unit_domain::byte);
+        return units<std::uint8_t>();
+    }
+
+    [[nodiscard]] std::span<const std::uint32_t> unicode_scalars() const {
+        require_domain(unit_domain::unicode_scalar);
+        return units<std::uint32_t>();
+    }
+
+    [[nodiscard]] std::span<const std::uint64_t> u64_units() const {
+        require_domain(unit_domain::u64);
+        return units<std::uint64_t>();
+    }
+
+    [[nodiscard]] std::optional<std::uint64_t> value() const {
+        if (descriptor_.value_len == 0) return std::nullopt;
+        if (descriptor_.value_len != 1 || values_ == nullptr)
+            throw std::logic_error("invalid optional-u64 entry descriptor");
+        return values_[descriptor_.value_offset];
+    }
+
+private:
+    friend class entries_view;
+
+    entry_view(LdictEntry descriptor, const void* units, const std::uint64_t* values,
+               unit_domain domain) noexcept
+        : descriptor_(descriptor), units_(units), values_(values), domain_(domain) {}
+
+    void require_domain(unit_domain expected) const {
+        if (domain_ != expected) throw std::logic_error("entry unit-domain mismatch");
+    }
+
+    template <typename Unit>
+    [[nodiscard]] std::span<const Unit> units() const noexcept {
+        if (descriptor_.unit_len == 0) return {};
+        const auto* base = static_cast<const Unit*>(units_);
+        return {base + descriptor_.unit_offset, descriptor_.unit_len};
+    }
+
+    LdictEntry descriptor_{};
+    const void* units_ = nullptr;
+    const std::uint64_t* values_ = nullptr;
+    unit_domain domain_ = unit_domain::byte;
+};
+
+// Move-only, single-pass snapshot range. It owns an opaque native cursor and
+// at most one borrowed batch lease; destruction cancels, releases, and closes
+// in that order, including when a range-for loop exits early.
+class entries_view final : public std::ranges::view_interface<entries_view> {
+public:
+    class iterator final {
+    public:
+        using iterator_concept = std::input_iterator_tag;
+        using iterator_category = std::input_iterator_tag;
+        using value_type = entry_view;
+        using difference_type = std::ptrdiff_t;
+        using reference = entry_view;
+
+        iterator() noexcept = default;
+
+        [[nodiscard]] entry_view operator*() const { return owner_->current(); }
+
+        iterator& operator++() {
+            owner_->advance();
+            if (owner_->ended_) owner_ = nullptr;
+            return *this;
+        }
+
+        void operator++(int) { ++*this; }
+
+        friend bool operator==(const iterator& value, std::default_sentinel_t) noexcept {
+            return value.owner_ == nullptr;
+        }
+
+        friend bool operator==(std::default_sentinel_t sentinel, const iterator& value) noexcept {
+            return value == sentinel;
+        }
+
+    private:
+        friend class entries_view;
+        explicit iterator(entries_view* owner) noexcept : owner_(owner) {}
+        entries_view* owner_ = nullptr;
+    };
+
+    entries_view() noexcept = default;
+    entries_view(const entries_view&) = delete;
+    entries_view& operator=(const entries_view&) = delete;
+
+    entries_view(entries_view&& other) noexcept { move_from(other); }
+
+    entries_view& operator=(entries_view&& other) noexcept {
+        if (this != &other) {
+            cleanup_noexcept();
+            move_from(other);
+        }
+        return *this;
+    }
+
+    ~entries_view() { cleanup_noexcept(); }
+
+    [[nodiscard]] iterator begin() {
+        if (cursor_ == nullptr || ended_) return iterator{};
+        if (!started_) {
+            started_ = true;
+            acquire_next();
+        }
+        return ended_ ? iterator{} : iterator{this};
+    }
+
+    [[nodiscard]] std::default_sentinel_t end() const noexcept { return {}; }
+
+    [[nodiscard]] unit_domain domain() const noexcept {
+        return static_cast<unit_domain>(info_.unit_domain);
+    }
+
+    [[nodiscard]] std::optional<std::size_t> exact_size() const noexcept {
+        if ((info_.flags & LDICT_ENTRIES_INFO_FLAG_EXACT_LEN) == 0) return std::nullopt;
+        return info_.exact_len;
+    }
+
+    [[nodiscard]] const LdictEntriesInfo& info() const noexcept { return info_; }
+
+    void cancel() {
+        if (cursor_ == nullptr || ended_) return;
+        check(ldict_entry_cursor_cancel(cursor_));
+        release_lease();
+        ended_ = true;
+    }
+
+    void close() {
+        if (cursor_ == nullptr) return;
+        check(ldict_entry_cursor_cancel(cursor_));
+        release_lease();
+        check(ldict_entry_cursor_free(cursor_));
+        cursor_ = nullptr;
+        ended_ = true;
+    }
+
+private:
+    friend class dictionary;
+
+    entries_view(LdictDictionary* dictionary, entry_batch_limits limits)
+        : limits_{limits.max_entries, limits.max_units, limits.max_values, 0} {
+        if (limits.max_entries == 0)
+            throw std::invalid_argument("entry batch max_entries must be nonzero");
+        check(ldict_dictionary_entries_open(dictionary, &cursor_, &info_));
+    }
+
+    [[nodiscard]] entry_view current() const {
+        return entry_view(batch_.entries[index_], batch_.units, batch_.values, domain());
+    }
+
+    void acquire_next() {
+        const LdictStatus status = ldict_entry_cursor_next(cursor_, &limits_, &batch_);
+        if (status == LDICT_STATUS_END) {
+            ended_ = true;
+            batch_ = {};
+            index_ = 0;
+            return;
+        }
+        check(status);
+        leased_ = true;
+        index_ = 0;
+    }
+
+    void advance() {
+        if (ended_) return;
+        ++index_;
+        if (index_ < batch_.entry_count) return;
+        release_lease();
+        acquire_next();
+    }
+
+    void release_lease() {
+        if (!leased_) return;
+        check(ldict_entry_cursor_release(cursor_, batch_.generation));
+        leased_ = false;
+        batch_ = {};
+        index_ = 0;
+    }
+
+    void cleanup_noexcept() noexcept {
+        if (cursor_ == nullptr) return;
+        static_cast<void>(ldict_entry_cursor_cancel(cursor_));
+        if (leased_)
+            static_cast<void>(ldict_entry_cursor_release(cursor_, batch_.generation));
+        static_cast<void>(ldict_entry_cursor_free(cursor_));
+        cursor_ = nullptr;
+        leased_ = false;
+        ended_ = true;
+        batch_ = {};
+    }
+
+    void move_from(entries_view& other) noexcept {
+        cursor_ = std::exchange(other.cursor_, nullptr);
+        info_ = other.info_;
+        limits_ = other.limits_;
+        batch_ = other.batch_;
+        index_ = other.index_;
+        started_ = other.started_;
+        ended_ = other.ended_;
+        leased_ = other.leased_;
+        other.batch_ = {};
+        other.index_ = 0;
+        other.started_ = false;
+        other.ended_ = true;
+        other.leased_ = false;
+    }
+
+    LdictEntryCursor* cursor_ = nullptr;
+    LdictEntriesInfo info_{};
+    LdictEntryBatchLimits limits_{};
+    LdictEntryBatch batch_{};
+    std::size_t index_ = 0;
+    bool started_ = false;
+    bool ended_ = false;
+    bool leased_ = false;
+};
+
+inline entries_view dictionary::entries(entry_batch_limits limits) const {
+    return entries_view(value_, limits);
+}
 
 class dynamic_dawg final : public dictionary {
 public:

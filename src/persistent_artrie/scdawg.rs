@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::iter::FusedIterator;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -70,6 +71,7 @@ struct ScdawgTermRecord<V: DictionaryValue> {
 struct NativeScdawgGraph<U: PersistentScdawgUnit, V: DictionaryValue> {
     core: ScdawgCoreInner<U, V>,
     records: Vec<ScdawgTermRecord<V>>,
+    sorted_active_record_indices: Vec<usize>,
     needs_compaction: bool,
 }
 
@@ -79,6 +81,17 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgGraph<U, V> {
     }
 
     fn from_records(records: Vec<ScdawgTermRecord<V>>, needs_compaction: bool) -> Self {
+        let mut sorted_active_record_indices: Vec<_> = records
+            .iter()
+            .enumerate()
+            .filter_map(|(index, record)| record.active.then_some(index))
+            .collect();
+        sorted_active_record_indices.sort_by(|&left, &right| {
+            records[left]
+                .term
+                .cmp(&records[right].term)
+                .then_with(|| left.cmp(&right))
+        });
         let active_records: Vec<_> = records.iter().filter(|record| record.active).collect();
         let total_units = active_records
             .iter()
@@ -96,6 +109,7 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgGraph<U, V> {
         Self {
             core,
             records,
+            sorted_active_record_indices,
             needs_compaction,
         }
     }
@@ -111,7 +125,7 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgGraph<U, V> {
     }
 
     fn term_count(&self) -> usize {
-        self.core.term_count()
+        self.sorted_active_record_indices.len()
     }
 
     fn contains(&self, term: &str) -> bool {
@@ -954,6 +968,52 @@ pub struct PersistentScdawgChar<V: DictionaryValue = (), S: BlockStorage = MmapD
     _storage: PhantomData<S>,
 }
 
+/// Snapshot iterator over stored byte-SCDAWG term records.
+pub struct PersistentScdawgEntryIterator<V: DictionaryValue = ()> {
+    graph: Arc<NativeScdawgGraph<u8, V>>,
+    index: usize,
+}
+
+/// Snapshot iterator over stored Unicode-SCDAWG term records.
+pub struct PersistentScdawgCharEntryIterator<V: DictionaryValue = ()> {
+    graph: Arc<NativeScdawgGraph<char, V>>,
+    index: usize,
+}
+
+macro_rules! impl_scdawg_record_iterator {
+    ($iterator:ident) => {
+        impl<V: DictionaryValue> Iterator for $iterator<V> {
+            type Item = (String, Option<V>);
+
+            fn next(&mut self) -> Option<Self::Item> {
+                let record_index = *self.graph.sorted_active_record_indices.get(self.index)?;
+                self.index += 1;
+                let record = self
+                    .graph
+                    .records
+                    .get(record_index)
+                    .expect("the revision record index references a term");
+                Some((record.term.clone(), record.value.clone()))
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                let remaining = self
+                    .graph
+                    .sorted_active_record_indices
+                    .len()
+                    .saturating_sub(self.index);
+                (remaining, Some(remaining))
+            }
+        }
+
+        impl<V: DictionaryValue> ExactSizeIterator for $iterator<V> {}
+        impl<V: DictionaryValue> FusedIterator for $iterator<V> {}
+    };
+}
+
+impl_scdawg_record_iterator!(PersistentScdawgEntryIterator);
+impl_scdawg_record_iterator!(PersistentScdawgCharEntryIterator);
+
 /// Byte-level persistent SCDAWG node handle.
 #[derive(Clone)]
 pub struct PersistentScdawgNode<V: DictionaryValue = ()> {
@@ -1094,16 +1154,23 @@ impl<V: DictionaryValue> PersistentScdawg<V, MmapDiskManager> {
 }
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentScdawg<V, S> {
+    pub fn try_insert(&self, term: &str) -> Result<bool> {
+        self.index.insert(term, None)
+    }
+
     pub fn insert(&self, term: &str) -> bool {
-        self.index.insert(term, None).unwrap_or_else(|error| {
+        self.try_insert(term).unwrap_or_else(|error| {
             log::warn!("PersistentScdawg::insert failed: {error}");
             false
         })
     }
 
+    pub fn try_insert_with_value(&self, term: &str, value: V) -> Result<bool> {
+        self.index.insert(term, Some(value))
+    }
+
     pub fn insert_with_value(&self, term: &str, value: V) -> bool {
-        self.index
-            .insert(term, Some(value))
+        self.try_insert_with_value(term, value)
             .unwrap_or_else(|error| {
                 log::warn!("PersistentScdawg::insert_with_value failed: {error}");
                 false
@@ -1163,6 +1230,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentScdawg<V, S> {
 
     pub fn source_texts(&self) -> Vec<String> {
         self.iter().collect()
+    }
+
+    /// Iterate over stored term records from one immutable revision.
+    pub fn iter_entries(&self) -> PersistentScdawgEntryIterator<V> {
+        PersistentScdawgEntryIterator {
+            graph: self.index.load(),
+            index: 0,
+        }
     }
 
     pub fn contains_substring(&self, pattern: &str) -> bool {
@@ -1299,16 +1374,23 @@ impl<V: DictionaryValue> PersistentScdawgChar<V, MmapDiskManager> {
 }
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentScdawgChar<V, S> {
+    pub fn try_insert(&self, term: &str) -> Result<bool> {
+        self.index.insert(term, None)
+    }
+
     pub fn insert(&self, term: &str) -> bool {
-        self.index.insert(term, None).unwrap_or_else(|error| {
+        self.try_insert(term).unwrap_or_else(|error| {
             log::warn!("PersistentScdawgChar::insert failed: {error}");
             false
         })
     }
 
+    pub fn try_insert_with_value(&self, term: &str, value: V) -> Result<bool> {
+        self.index.insert(term, Some(value))
+    }
+
     pub fn insert_with_value(&self, term: &str, value: V) -> bool {
-        self.index
-            .insert(term, Some(value))
+        self.try_insert_with_value(term, value)
             .unwrap_or_else(|error| {
                 log::warn!("PersistentScdawgChar::insert_with_value failed: {error}");
                 false
@@ -1368,6 +1450,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentScdawgChar<V, S> {
 
     pub fn source_texts(&self) -> Vec<String> {
         self.iter().collect()
+    }
+
+    /// Iterate over stored term records from one immutable revision.
+    pub fn iter_entries(&self) -> PersistentScdawgCharEntryIterator<V> {
+        PersistentScdawgCharEntryIterator {
+            graph: self.index.load(),
+            index: 0,
+        }
     }
 
     pub fn contains_substring(&self, pattern: &str) -> bool {
@@ -1879,11 +1969,23 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary for Persistent
 }
 
 impl<V: DictionaryValue, S: BlockStorage> SubstringDictionary for PersistentScdawg<V, S> {
-    fn find_exact_substring(&self, pattern: &str) -> Vec<SubstringMatch<Self::Node>> {
-        let Some(node) = self.find(pattern) else {
+    fn find_exact_substring_in_snapshot(
+        snapshot_root: &Self::Node,
+        pattern: &str,
+    ) -> Vec<SubstringMatch<Self::Node>> {
+        debug_assert_eq!(snapshot_root.node_idx, Some(0));
+        debug_assert!(snapshot_root.path.is_empty());
+        let graph = Arc::clone(&snapshot_root.graph);
+        let Some(node_idx) = graph.core.find_substring_fast(pattern) else {
             return Vec::new();
         };
-        self.locations(pattern)
+        let node = PersistentScdawgNode {
+            graph: Arc::clone(&graph),
+            node_idx: Some(node_idx),
+            path: pattern.as_bytes().to_vec(),
+        };
+        graph
+            .locations(pattern)
             .into_iter()
             .map(|(term, position)| {
                 SubstringMatch::new(node.clone(), term, position, pattern.len())
@@ -1977,12 +2079,24 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary for Persistent
 }
 
 impl<V: DictionaryValue, S: BlockStorage> SubstringDictionary for PersistentScdawgChar<V, S> {
-    fn find_exact_substring(&self, pattern: &str) -> Vec<SubstringMatch<Self::Node>> {
-        let Some(node) = self.find(pattern) else {
+    fn find_exact_substring_in_snapshot(
+        snapshot_root: &Self::Node,
+        pattern: &str,
+    ) -> Vec<SubstringMatch<Self::Node>> {
+        debug_assert_eq!(snapshot_root.node_idx, Some(0));
+        debug_assert!(snapshot_root.path.is_empty());
+        let graph = Arc::clone(&snapshot_root.graph);
+        let Some(node_idx) = graph.core.find_substring_fast(pattern) else {
             return Vec::new();
         };
+        let node = PersistentScdawgCharNode {
+            graph: Arc::clone(&graph),
+            node_idx: Some(node_idx),
+            path: pattern.to_owned(),
+        };
         let pattern_len = pattern.chars().count();
-        self.locations(pattern)
+        graph
+            .locations(pattern)
             .into_iter()
             .map(|(term, position)| SubstringMatch::new(node.clone(), term, position, pattern_len))
             .collect()

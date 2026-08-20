@@ -1,45 +1,43 @@
 # Pure Rust collection and iterator idioms
 
-**Status:** confirmed surface audit and implementation plan. Existing APIs named
-below ship today; target traits and uniformity requirements do not ship until
-their work package passes the stated gates.
+**Status:** shipped and gated. The common collection views, borrowed and
+snapshot-owning iteration, infallible construction traits, explicit fallible
+bulk APIs, and lazy zipper traversal described below are implemented.
 
 Rust is the semantic and performance reference for collection traversal. The
 native API must be pleasant without a foreign ABI, and foreign facades must not
 force callbacks, vtables, leased C buffers, or dynamic dispatch into the
 monomorphic Rust hot path.
 
-## Confirmed current surface
+## Shipped surface
 
-The crate already provides a strong base:
+The crate provides one lossless, snapshot-consistent collection layer:
 
 - `Dictionary`, `MappedDictionary`, `MutableDictionary`, and related capability
   traits separate membership, values, and supported mutation;
-- `DictionaryIterator<Z>` and `DictionaryTermIterator<Z>` provide iterative
-  zipper traversal;
-- byte and character Dynamic DAWG, double-array trie, and suffix-automaton types
-  implement borrowed `IntoIterator`;
-- the byte PathMap dictionary implements borrowed `IntoIterator`;
-- persistent byte, character, and `u64` ARTrie variants expose backend-specific
-  iteration, including a lazy character `entries_stream` pinned to an immutable
-  overlay revision; and
-- `PersistentARTrieChar` implements `FromIterator<String>` and
-  `FromIterator<&str>`.
-
-The surface is not yet uniform. The following are confirmed gaps rather than
-aspirational guesses:
-
-| Area | Current inconsistency | Target |
-|---|---|---|
-| Backend coverage | Borrowed `IntoIterator` is limited to seven in-memory byte/character types | All applicable DAWG, double-array, PathMap, ARTrie, suffix, SCDAWG, vocabulary, bijective, byte/scalar/`u64`, persistent/shared variants |
-| Construction | Only character persistent ARTrie implements standard `FromIterator`; it loops over individual inserts | Bulk-builder-backed `FromIterator` for infallible types; named fallible and sorted constructors for durable stores |
-| Mutation | No uniform `Extend` surface | `Extend` only where mutation is infallible; `try_extend` and batch atomicity policy elsewhere |
-| Entry model | Some iterators emit `(key, V)`, some terms only, some skip term-only finals, some use `(key, Option<V>)` | One lossless entry model preserving final-without-value separately from absence |
-| Naming | `iter`, `iter_bytes`, `iter_chars`, `iter_terms`, `iter_sequences`, `iter_with_values`, and `entries_stream` differ by backend | Consistent `keys`, `entries`, `values`, raw-domain names, prefix variants, and compatibility aliases |
-| Laziness | Several persistent convenience iterators first collect a complete `Vec` | Snapshot-pinned O(depth) streaming by default; explicit `to_*` materializers |
-| Iterator traits | Generic iterators implement `Iterator` but do not uniformly expose `FusedIterator` or useful `size_hint` | Every sound standard iterator trait, with no false exactness |
-| Ordering | Backend traversal order is not one documented cross-backend contract | Deterministic lexicographic unit order or an explicitly named unordered traversal |
-| Query consumers | liblevenshtein query types are lazy iterators but trait metadata and borrowed/reducer forms vary | Common exhaustion, order, cancellation-by-drop, collection, and reducer laws |
+- `DictionaryEntry<U, V>` represents every stored final as an owned key plus
+  `Option<V>`; `None` means present without a mapped value, not absent;
+- `DictionaryEntries`, `DictionaryTerms`, `DictionaryKeys`, and
+  `DictionaryValues` provide consistent views, while `fold_entries` and
+  `try_fold_entries` let cursor-backed implementations reuse one path buffer;
+- borrowed `IntoIterator` captures one revision across Dynamic DAWG,
+  double-array trie, PathMap, persistent ARTrie, suffix, SCDAWG, vocabulary,
+  and bijective families in their applicable byte, scalar, and `u64` forms;
+- public PathMap snapshot types also implement consuming `IntoIterator`;
+- `Arc<D>` shared handles delegate the same collection views to `D` and retain
+  the same captured-revision behavior;
+- byte, character, and `u64` Dynamic DAWGs implement bulk-builder-backed
+  `FromIterator` for owned and borrowed text/unit keys and key/value pairs;
+- byte and character double-array tries implement the corresponding
+  `FromIterator` forms through their two-phase static builder;
+- mutable Dynamic DAWG, PathMap, SCDAWG, and suffix-automaton families implement
+  `Extend`; immutable double-array tries deliberately do not;
+- persistent and invariant-checked stores expose named `try_from_iter`,
+  `try_extend`, entry, and stable-sorted variants instead of standard traits
+  that cannot return their errors; and
+- `ZipperCollection` and `ValuedZipperCollection` traverse union,
+  intersection, difference, symmetric-difference, and other zipper views lazily
+  without materializing a result dictionary.
 
 `Index` is intentionally not a target. Concurrent mutation and cloned values do
 not generally permit a sound, stable `&V`. `Deref` to `HashMap`/`BTreeMap` would
@@ -50,8 +48,8 @@ also misrepresent the automata and persistence contracts.
 Infallible in-memory dictionaries should support ordinary Rust composition:
 
 ```rust,ignore
-let dictionary: DynamicDawg<u64> = entries.into_iter().collect();
-dictionary.extend(more_entries);
+let mut dictionary: DynamicDawg<u64> = entries.into_iter().collect();
+std::iter::Extend::extend(&mut dictionary, more_entries);
 
 for entry in &dictionary {
     consume(entry);
@@ -66,28 +64,46 @@ let selected: Vec<_> = dictionary
 Fallible persistent stores remain honest about failure:
 
 ```rust,ignore
-let dictionary = PersistentARTrie::try_from_iter(path, entries)?;
-dictionary.try_extend(more_entries)?;
+let dictionary = PersistentARTrie::try_from_entries(entries)?;
+dictionary.try_extend_entries(more_entries)?;
 
-let snapshot = dictionary.snapshot();
-for entry in snapshot.entries() {
-    consume(entry?);
+for entry in dictionary.entries() {
+    consume(entry);
 }
 ```
 
-The actual item should be infallible after a successfully captured in-memory
-snapshot whenever possible. If lazy storage I/O can still fail, use an
-`Iterator<Item = Result<Entry, Error>>`; never discard the error or silently
-terminate iteration.
+These bulk methods have explicit prefix-commit semantics: successful writes
+before the first error remain visible. Sorted variants stably sort first, then
+apply the sorted prefix. A failing `try_from_*` constructor returns no partial
+dictionary, because its private partial value is dropped.
+
+### The two `extend` APIs
+
+The Dynamic DAWG types predate their standard collection implementations and
+already expose an inherent, key-only `extend(&self, terms) -> usize`; the
+[`MutableDictionary::extend`] capability trait has the same count-returning
+shape. Inherent methods win method lookup, so use explicit UFCS whenever the
+standard trait is intended, especially for key/value pairs:
+
+```rust,ignore
+let added = MutableDictionary::extend(&dictionary, more_keys);
+std::iter::Extend::extend(&mut dictionary, more_entries);
+```
+
+The first expression reports newly added keys. The second follows the standard
+`Extend` contract and returns `()`. This distinction is retained for source
+compatibility rather than silently changing the established batch API.
 
 ## Generic implementation shape
 
-Introduce narrow capability traits rather than one universal collection trait:
+Narrow capability traits avoid pretending that every backend has the same
+mutation or storage contract:
 
-- `DictionaryKeys` for term membership traversal;
 - `DictionaryEntries` for lossless key/value-state traversal;
-- `SnapshotEntries` for an owned immutable revision;
-- `DictionaryFold` for allocation-reusing callbacks; and
+- `DictionaryTerms`, `DictionaryKeys`, and `DictionaryValues` for derived views;
+- `DictionaryEntries::{fold_entries, try_fold_entries}` for
+  allocation-reusing callbacks;
+- `ZipperCollection` and `ValuedZipperCollection` for lazy derived sets; and
 - existing mutation/persistence traits for construction and update.
 
 Associated iterator types or generic associated types preserve static dispatch.
@@ -165,21 +181,16 @@ reference, including empty keys, arbitrary bytes, Unicode, `u64::MAX`, duplicate
 construction, shared suffixes, term-only/valued entries, concurrent mutation,
 compaction, checkpoint/reopen, prefix bounds, and early iterator drop.
 
-## Delivery sequence
+## Verification
 
-1. Specify the lossless entry and capability traits; compile-fail-test invalid
-   combinations.
-2. Build the generic snapshot traversal and reference-model law suite.
-3. Migrate the existing seven borrowed `IntoIterator` implementations and the
-   character persistent stream to the common engine without regression.
-4. Add uncovered automata and unit domains; retain only measured specializations.
-5. Add standard construction/mutation traits and explicit fallible variants,
-   routing all of them through optimized bulk paths.
-6. Complete query-result iterator idioms in liblevenshtein.
-7. Expose the optional batched family ABI and build language-native collection
-   adapters from it.
-8. Run semantic, Miri/sanitizer, concurrency, allocation, profiler, and admitted
-   performance gates before documenting a surface as shipped.
+`tests/borrowed_into_iterator_laws.rs` gates snapshot ownership, lossless
+values, exact size where sound, mutation after iterator start, and fused
+exhaustion. `tests/standard_collection_construction.rs` and
+`tests/collection_idiom_laws.rs` provide compile-time trait matrices and
+reference laws for construction, folds, consuming snapshots, fallible bulk
+methods, and lazy set-operation traversal. Suffix-specific laws separately
+ensure stored source records are not confused with the recognized substring
+language.
 
 The cross-language target and lifecycle rationale are normative in the family
 [collection-protocol plan](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/docs/bindings/collection-protocols.md).

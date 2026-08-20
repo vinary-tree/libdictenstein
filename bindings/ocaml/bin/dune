@@ -1,0 +1,5 @@
+(executable
+ (name collection_traversal_profile)
+ (public_name vinary-tree-libdictenstein-collection-profile)
+ (package vinary-tree-libdictenstein)
+ (libraries vinary-tree-libdictenstein vinary-tree-interop unix))

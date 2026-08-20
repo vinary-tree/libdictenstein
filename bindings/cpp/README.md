@@ -110,6 +110,48 @@ packaged liblevenshtein transducer retains it in constant time, and a query it
 started keeps the exact immutable revision it saw at its start even after this
 dictionary is destroyed.
 
+## Snapshot entry ranges
+
+`dictionary::entries()` captures one immutable revision immediately and
+returns a move-only C++20 input range. Entries borrow the current bounded
+native batch, so consume their spans before incrementing the iterator:
+
+```cpp
+ld::dynamic_dawg dictionary(ld::unit_domain::unicode_scalar);
+(void) dictionary.insert("cat", 0);        // mapped zero
+(void) dictionary.insert("cut");           // present without a value
+
+auto entries = dictionary.entries({64, 4096, 64});
+for (const ld::entry_view entry : entries) {
+    const std::span<const std::uint32_t> key = entry.unicode_scalars();
+    const std::optional<std::uint64_t> value = entry.value();
+    // key and value remain valid for this iteration step.
+}
+```
+
+Use `bytes()`, `unicode_scalars()`, or `u64_units()` according to
+`entries.domain()`. `exact_size()` is populated only when the captured provider
+advertises exact cardinality; the range intentionally does not claim
+`sized_range` conditionally at runtime. Destruction after normal exhaustion,
+`break`, or an exception cancels the cursor, releases any live batch generation,
+and closes it. Moving transfers this entire ownership ledger; copying is
+disabled.
+
+## Collection benchmark entrypoint
+
+The public-header benchmark uses the Rust driver's deterministic corpus and
+wrapping checksum. Dictionary construction and warmup occur before timing, and
+the `materialized`, `stream`, and `stream-cancel` arms emit one JSON record:
+
+```sh
+c++ -std=c++20 -O2 -Wall -Wextra -Werror \
+  bindings/cpp/examples/collection_traversal_profile.cpp \
+  -I include -L target/release -llibdictenstein \
+  -o /tmp/libdictenstein-cpp-collection-profile
+LD_LIBRARY_PATH=target/release /tmp/libdictenstein-cpp-collection-profile \
+  --arm stream --entries 4096 --batch-size 256
+```
+
 ## Testing
 
 The cross-project snapshot test in
@@ -181,14 +223,15 @@ arbitrary octets. Token APIs preserve the full `u64` range. Optional dictionary
 values are represented separately from terminal membership, so `None` is not a
 sentinel and empty terms remain valid when supported.
 
-## Native collection idioms and planned parity
+## Native collection surface
 
-The current facade exposes lookup, length, mutation, and deterministic resource
-ownership, but does **not** yet claim the complete host collection protocol.
-The planned native shape for this runtime is RAII snapshot ranges, input iterators, and sized ranges only when cardinality is exact. The
-ordinary collection view will own host data from one immutable revision, while
-the large-dictionary stream will retain one bounded native snapshot and require
-lexical cleanup. Membership remains a direct lookup, never an iteration scan.
+The shipped `dictionary::entries()` surface returns a move-only
+`entries_view` satisfying the C++20 input-range/view concepts. Each
+`entry_view` borrows byte, Unicode-scalar (`uint32_t`), or `u64` units and
+returns `std::optional<uint64_t>` for mapped values. The range owns its snapshot
+cursor; advancing releases completed batches, while destruction after `break`
+or exception cancels, releases the live generation, and closes the cursor.
+
 
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk

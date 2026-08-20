@@ -100,7 +100,7 @@ final class ConformanceTest {
     @Test
     void c1_identityConstants() {
         assertEquals(1, Dictionary.abiVersion());
-        assertEquals(4, Dictionary.apiRevision());
+        assertEquals(5, Dictionary.apiRevision());
     }
 
     @Test

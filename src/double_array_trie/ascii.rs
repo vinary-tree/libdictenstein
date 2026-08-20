@@ -107,6 +107,16 @@ pub(crate) type DATShared<V = ()> = super::core::shared::ValidatedDATCoreShared<
 /// assert!(dict.contains("apple"));
 /// assert!(!dict.contains("apricot"));
 /// ```
+///
+/// A double-array trie is immutable after construction, so it deliberately
+/// does not implement [`std::iter::Extend`]:
+///
+/// ```compile_fail
+/// use libdictenstein::double_array_trie::DoubleArrayTrie;
+///
+/// let mut dictionary = DoubleArrayTrie::from_terms(["built"]);
+/// std::iter::Extend::extend(&mut dictionary, ["later".to_owned()]);
+/// ```
 #[cfg_attr(feature = "serialization", derive(serde::Serialize))]
 #[cfg_attr(
     all(feature = "serialization", not(feature = "persistent-artrie")),
@@ -563,6 +573,27 @@ impl<V: DictionaryValue> Default for DoubleArrayTrieBuilder<V> {
 }
 
 impl<V: DictionaryValue> DoubleArrayTrie<V> {
+    fn from_static_builder(builder: StaticDATBuilder<u8, V>) -> Self {
+        let built = builder.build(1);
+        let term_count = built.term_count;
+        let raw = DATRawShared {
+            base: Arc::new(built.base),
+            check: Arc::new(built.check),
+            is_final: Arc::new(built.is_final),
+            edges: Arc::new(built.edges),
+            values: Arc::new(built.values),
+        };
+        // SAFETY: StaticDATBuilder assigns BASE/CHECK/EDGES together and never
+        // exposes a partially constructed layout. Debug builds validate it.
+        let shared = unsafe { DATShared::from_builder_parts_unchecked(raw, term_count) };
+        Self {
+            shared,
+            free_list: Arc::new(Vec::new()),
+            term_count,
+            rebuild_threshold: 0.2,
+        }
+    }
+
     /// Create a new empty Double-Array Trie.
     pub fn new() -> Self {
         DoubleArrayTrieBuilder::new().build()
@@ -599,24 +630,7 @@ impl<V: DictionaryValue> DoubleArrayTrie<V> {
         for (term, value) in term_value_pairs {
             builder.insert(term.bytes(), Some(value));
         }
-        let built = builder.build(1);
-        let term_count = built.term_count;
-        let raw = DATRawShared {
-            base: Arc::new(built.base),
-            check: Arc::new(built.check),
-            is_final: Arc::new(built.is_final),
-            edges: Arc::new(built.edges),
-            values: Arc::new(built.values),
-        };
-        // SAFETY: StaticDATBuilder assigns BASE/CHECK/EDGES together and never
-        // exposes a partially constructed layout. Debug builds validate it.
-        let shared = unsafe { DATShared::from_builder_parts_unchecked(raw, term_count) };
-        Self {
-            shared,
-            free_list: Arc::new(Vec::new()),
-            term_count,
-            rebuild_threshold: 0.2,
-        }
+        Self::from_static_builder(builder)
     }
 
     /// Get the value associated with a term.
@@ -688,8 +702,10 @@ impl<V: DictionaryValue> DoubleArrayTrie<V> {
     /// Returns an iterator yielding `(Vec<u8>, V)` tuples in depth-first order.
     /// This is more efficient than `iter()` as it avoids UTF-8 string allocation.
     ///
-    /// **Note**: This only works for dictionaries created with `from_terms_with_values()`.
-    /// For dictionaries without values, use `iter_terms()` instead.
+    /// This legacy mapped-only iterator omits present terms whose value is
+    /// `None`. Use `(&dictionary).into_iter()` or
+    /// [`DictionaryEntries::entries`](crate::DictionaryEntries::entries) for
+    /// lossless [`DictionaryEntry`](crate::DictionaryEntry) snapshots.
     ///
     /// # Examples
     ///
@@ -714,6 +730,7 @@ impl<V: DictionaryValue> DoubleArrayTrie<V> {
     ///
     /// Returns an iterator yielding `(String, V)` tuples in depth-first order.
     /// For better performance with raw bytes, use `iter_bytes()` instead.
+    /// Like `iter_bytes()`, this legacy iterator omits term-only entries.
     ///
     /// # Examples
     ///
@@ -734,35 +751,91 @@ impl<V: DictionaryValue> DoubleArrayTrie<V> {
     }
 }
 
-impl<V: DictionaryValue> IntoIterator for &DoubleArrayTrie<V> {
-    type Item = (Vec<u8>, V);
-    type IntoIter = DictionaryIterator<DoubleArrayTrieZipper<V>>;
-
-    /// Creates an iterator over all `(term, value)` pairs as raw byte vectors.
-    ///
-    /// This enables the idiomatic `for (term, value) in &dict` syntax.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use libdictenstein::double_array_trie::DoubleArrayTrie;
-    ///
-    /// let dict = DoubleArrayTrie::from_terms_with_values(vec![
-    ///     ("hello", 1), ("world", 2)
-    /// ]);
-    ///
-    /// for (term_bytes, value) in &dict {
-    ///     println!("{:?} -> {}", term_bytes, value);
-    /// }
-    /// ```
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter_bytes()
-    }
-}
-
 impl<V: DictionaryValue> Default for DoubleArrayTrie<V> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<V: DictionaryValue> std::iter::FromIterator<String> for DoubleArrayTrie<V> {
+    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
+        let mut builder = StaticDATBuilder::new();
+        for term in iter {
+            builder.insert(term.bytes(), None);
+        }
+        Self::from_static_builder(builder)
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::FromIterator<&'a str> for DoubleArrayTrie<V> {
+    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
+        let mut builder = StaticDATBuilder::new();
+        for term in iter {
+            builder.insert(term.bytes(), None);
+        }
+        Self::from_static_builder(builder)
+    }
+}
+
+impl<V: DictionaryValue> std::iter::FromIterator<Vec<u8>> for DoubleArrayTrie<V> {
+    /// Streams keys into the two-phase static builder; no sequence of
+    /// incrementally relocated DATs is constructed.
+    fn from_iter<I: IntoIterator<Item = Vec<u8>>>(iter: I) -> Self {
+        let mut builder = StaticDATBuilder::new();
+        for key in iter {
+            builder.insert(key, None);
+        }
+        Self::from_static_builder(builder)
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::FromIterator<&'a [u8]> for DoubleArrayTrie<V> {
+    fn from_iter<I: IntoIterator<Item = &'a [u8]>>(iter: I) -> Self {
+        let mut builder = StaticDATBuilder::new();
+        for key in iter {
+            builder.insert(key.iter().copied(), None);
+        }
+        Self::from_static_builder(builder)
+    }
+}
+
+impl<V: DictionaryValue> std::iter::FromIterator<(String, V)> for DoubleArrayTrie<V> {
+    fn from_iter<I: IntoIterator<Item = (String, V)>>(iter: I) -> Self {
+        let mut builder = StaticDATBuilder::new();
+        for (term, value) in iter {
+            builder.insert(term.bytes(), Some(value));
+        }
+        Self::from_static_builder(builder)
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::FromIterator<(&'a str, V)> for DoubleArrayTrie<V> {
+    fn from_iter<I: IntoIterator<Item = (&'a str, V)>>(iter: I) -> Self {
+        let mut builder = StaticDATBuilder::new();
+        for (term, value) in iter {
+            builder.insert(term.bytes(), Some(value));
+        }
+        Self::from_static_builder(builder)
+    }
+}
+
+impl<V: DictionaryValue> std::iter::FromIterator<(Vec<u8>, V)> for DoubleArrayTrie<V> {
+    fn from_iter<I: IntoIterator<Item = (Vec<u8>, V)>>(iter: I) -> Self {
+        let mut builder = StaticDATBuilder::new();
+        for (key, value) in iter {
+            builder.insert(key, Some(value));
+        }
+        Self::from_static_builder(builder)
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::FromIterator<(&'a [u8], V)> for DoubleArrayTrie<V> {
+    fn from_iter<I: IntoIterator<Item = (&'a [u8], V)>>(iter: I) -> Self {
+        let mut builder = StaticDATBuilder::new();
+        for (key, value) in iter {
+            builder.insert(key.iter().copied(), Some(value));
+        }
+        Self::from_static_builder(builder)
     }
 }
 
@@ -785,24 +858,7 @@ impl DoubleArrayTrie<()> {
         for term in sorted_terms {
             builder.insert(term.bytes(), None);
         }
-        let built = builder.build(1);
-        let term_count = built.term_count;
-        let raw = DATRawShared {
-            base: Arc::new(built.base),
-            check: Arc::new(built.check),
-            is_final: Arc::new(built.is_final),
-            edges: Arc::new(built.edges),
-            values: Arc::new(built.values),
-        };
-        // SAFETY: StaticDATBuilder assigns BASE/CHECK/EDGES together and never
-        // exposes a partially constructed layout. Debug builds validate it.
-        let shared = unsafe { DATShared::from_builder_parts_unchecked(raw, term_count) };
-        Self {
-            shared,
-            free_list: Arc::new(Vec::new()),
-            term_count,
-            rebuild_threshold: 0.2,
-        }
+        Self::from_static_builder(builder)
     }
 }
 

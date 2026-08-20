@@ -83,6 +83,26 @@ Non-OK statuses throw an `IOError` carrying the thread-local
 retains the dictionary in constant time and keeps its query-start revision valid
 after `close`. A `ForeignPtr` finalizer frees any handle a caller forgets.
 
+## Ordered entry collections
+
+`withEntryStream` brackets a one-shot `EntryStream`; `nextEntry` returns owned
+`DictionaryEntry` values in native lexicographic order and cleanup runs after
+normal completion or an exception. Use `withEntryStreamLimits` with
+`EntryBatchLimits` to tune native batches. `materializeEntries` returns a
+`Foldable DictionarySnapshot`, while `foldEntries` and
+`foldEntriesWithLimits` provide synchronous reduction. `ByteKey`,
+`UnicodeKey`, and `U64Key` preserve the domain and `Maybe Word64` preserves the
+full value channel.
+
+The Cabal benchmark emits `libdictenstein.host-collection-traversal.v1` JSON
+for `materialized`, `stream`, `stream-cancel`, and `reduce`:
+
+```sh
+cabal run --project-file=bindings/haskell/cabal.project \
+  libdictenstein-collection-profile -- \
+  --arm stream-cancel --entries 65536 --batch-size 64 --early-cancel 64
+```
+
 <!-- BEGIN GENERATED BINDING OPERATIONS; DO NOT EDIT -->
 
 ## Support and package contract
@@ -147,14 +167,15 @@ arbitrary octets. Token APIs preserve the full `u64` range. Optional dictionary
 values are represented separately from terminal membership, so `None` is not a
 sentinel and empty terms remain valid when supported.
 
-## Native collection idioms and planned parity
+## Native collection surface
 
-The current facade exposes lookup, length, mutation, and deterministic resource
-ownership, but does **not** yet claim the complete host collection protocol.
-The planned native shape for this runtime is Foldable-style materialized views and bracketed streaming folds. The
-ordinary collection view will own host data from one immutable revision, while
-the large-dictionary stream will retain one bounded native snapshot and require
-lexical cleanup. Membership remains a direct lookup, never an iteration scan.
+`materializeEntries` returns a host-owned `Foldable`
+snapshot. `withEntryStream` brackets a bounded cursor whose `nextEntry` values
+own their `ByteString`, `Text`, or `Vector Word64` keys, while `foldEntries`
+uses the native reducer without an intermediate list. Acquire/release is masked
+against asynchronous exceptions, and every callback restores the caller's
+masking state.
+
 
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk

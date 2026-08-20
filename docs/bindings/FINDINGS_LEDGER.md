@@ -2,7 +2,7 @@
 
 Scrutiny ledger for the libdictenstein language-binding surface: the
 `ldict_*` C ABI (`src/ffi.rs`, `include/libdictenstein.h`), the producer
-binding layer (`src/bindings.rs`), the 13 language facades under
+binding layer (`src/bindings.rs`), the 14 governed facades under
 [`bindings/`](../../bindings/), and their packaging/release metadata.
 
 Every entry follows the uniform family schema:
@@ -19,7 +19,8 @@ effort (family plan decision #4).
 
 **Gate bring-up note (2026-08-08).** The first end-to-end run of
 `check-bindings.py` against baseline commit `686f102` found **zero parity
-defects**: 35/35/35 symbol agreement across model, `src/ffi.rs`, and
+defects**: the then-35-function ABI had 35/35/35 symbol agreement across the
+model, `src/ffi.rs`, and
 `include/libdictenstein.h`; all `LdictStatus`/kind/capability/unit-domain
 constants aligned; all 12 registry coordinates and every facade version at
 0.2.1; identity guard clean; `include/vinary_tree_interop.h` byte-identical to
@@ -78,44 +79,48 @@ reference pins 0.1.0. Tag existence is to be re-verified at release time.
 
 ---
 
-## Finding LDICT-B2 — producer C ABI has zero direct tests
+## Finding LDICT-B2 — producer C ABI lacked direct tests at baseline
 
 | Field | Value |
 |-------|-------|
 | id | LDICT-B2 |
 | date | 2026-08-08 |
-| component | `src/ffi.rs` (35 `ldict_*` extern "C" functions) |
+| component | `src/ffi.rs` (35 `ldict_*` functions at the finding date; 41 now) |
 | class | test-coverage |
 | severity | high |
-| status | **OPEN** (accepted; scheduled for wave W2) |
+| status | **FIXED** — direct ABI, resource, snapshot, and entry-lease suites ship |
 
-**Evidence.** `grep -c '#\[test\]' src/ffi.rs` → **0**. `src/bindings.rs`
-carries only 2 unit tests. The FFI-adjacent suites
+**Baseline evidence.** At the finding date, `grep -c '#\[test\]' src/ffi.rs`
+→ **0** and `src/bindings.rs` carried only 2 unit tests. The FFI-adjacent suites
 (`tests/query_start_snapshot_correspondence.rs`; the release workflow's
 `cargo test --features ffi --lib ffi`) exercise the Rust binding layer and the
 core dictionaries, not the C ABI entry points themselves.
 
-**Analysis.** The `ldict_*` surface landed in baseline commit `686f102` with
+**Baseline analysis.** The `ldict_*` surface landed in baseline commit `686f102` with
 `catch_unwind` boundaries, thread-local error text, out-param nulling on
 failure, and capability-gated `Unsupported`/`DomainMismatch` arms — none of
-which is pinned by a test. Untested semantics include: null-pointer sweeps for
+which was pinned by a test. Untested semantics included: null-pointer sweeps for
 every function, `LdictOptionalU64.has_value == 2` rejection
 (`InvalidArgument`), `InvalidUtf8` paths on the UTF-8-validating backends,
 batch-insert edge counts, `ldict_vocab_get_term` size-query/`LimitExceeded`
 truncation protocol, `ldict_dictionary_free(NULL)` no-op, and the
 kind/capability constants as observed through the ABI. A regression in any of
-these would ship silently today.
+these could have shipped silently.
 
-**Fix.** Scheduled — wave W2 (plan Phase T1) adds the producer suite:
+**Fix.** Wave W2 added the producer suite:
 `tests/ffi_status_matrix.rs`, `tests/ffi_batch_edges.rs`,
 `tests/ffi_resource_paging_proptest.rs`,
 `tests/ffi_crud_model_correspondence.rs`, `tests/ffi_snapshot_law.rs`,
 `tests/ffi_persistent_checkpoint_reopen.rs`,
-`tests/ffi_concurrent_snapshot_stress.rs`, plus `src/bindings.rs` test
-extensions — all `#![cfg(feature = "ffi")]`.
+`tests/ffi_concurrent_snapshot_stress.rs`, and `src/bindings.rs` test
+extensions. The collection expansion adds `tests/ffi_entries_batches.rs` for
+the versioned lease laws and `bindings/c/tests/entries.c` for the six public
+cursor/reducer functions. Rust suites remain `#![cfg(feature = "ffi")]`.
 
-**Verification.** Pending W2 (suite green under
-`cargo test --no-default-features --features ffi`).
+**Verification.** `cargo nextest run --workspace --all-features` exercises the
+Rust suites. The C conformance job compiles and runs
+`bindings/c/tests/entries.c` against the built `cdylib`; the binding contract
+gate independently proves the modeled/header/exported 41-symbol set is exact.
 
 ---
 
@@ -128,43 +133,48 @@ extensions — all `#![cfg(feature = "ffi")]`.
 | component | facade FFI import layers (`bindings/*`) |
 | class | facade-coverage |
 | severity | low |
-| status | **OPEN** (accepted; completeness enforcement scheduled for W2/W7) |
+| status | **ACCEPTED** — semantic completeness is gated; duplicate raw calling forms may be omitted |
 
-**Evidence.** Gate coverage matrix, first run 2026-08-08 (referenced /
+**Evidence.** Current gate coverage matrix, 2026-08-20 (referenced / 41
 modeled `ldict_*` symbols):
 
 | Facade | Coverage | Facade | Coverage |
 |--------|----------|--------|----------|
-| python | 30 / 35 | ocaml | 28 / 35 |
-| jvm | 29 / 35 | ruby | 28 / 35 |
-| cpp | 28 / 35 | fortran | 27 / 35 |
-| dotnet | 28 / 35 | lua | 27 / 35 |
-| go | 28 / 35 | swift | 20 / 35 |
-| haskell | 28 / 35 | clojure | mediated (JVM facade) |
+| python | 36 / 41 | ocaml | 30 / 41 |
+| jvm | 36 / 41 | ruby | 35 / 41 |
+| cpp | 35 / 41 | fortran | 30 / 41 |
+| dotnet | 35 / 41 | lua | 29 / 41 |
+| go | 35 / 41 | swift | 29 / 41 |
+| haskell | 30 / 41 | C | 41 / 41 |
+| | | clojure | mediated (JVM facade) |
 | | | javascript | mediated (umbrella runtime) |
 
-Notably, `bindings/fortran/src/vinary_tree_libdictenstein.f90` declares no
-`bind(c)` import for `ldict_last_error_message`, so Fortran callers see only
-numeric status codes and never the thread-local error text. Several facades
+At the first measurement, Fortran lacked a `bind(c)` import for
+`ldict_last_error_message`; the dated addendum below records its closure.
+Several facades
 skip either the aggregate-by-value forms (e.g. `ldict_dictionary_insert_text`
 with a struct argument) or their scalar `…_value` twins, depending on which
 calling convention their FFI runtime handles; the scalar twins exist precisely
 for the dynamic runtimes (ruby/haskell/fortran use them, ctypes/FFM/cgo use
 the aggregate forms).
 
-**Analysis.** This is by design at W0: the gate enforces *referenced-symbol
-validity* (every symbol a facade names must exist in the model — asymmetry,
-coordinate, and version mismatches fail) but not *completeness*. The uniform
-completeness matrix (35/35 per facade, or an explicit ledgered waiver per
-symbol) belongs to the language sweep, where each facade also gains the
-C1–C10 contract suite.
+**Analysis.** Raw-symbol equality is neither necessary nor desirable for every
+facade. Aggregate-by-value functions and their scalar twins are alternative
+calling conventions; importing both adds no host capability. Clojure and the
+JavaScript family intentionally consume governed facades rather than importing
+C symbols. The gate therefore enforces *referenced-symbol validity* while the
+language conformance suites enforce constructor, CRUD, tri-state value,
+snapshot, collection, cancellation, and deterministic-lifetime semantics.
 
-**Fix.** Scheduled — wave W2 (13 language suites, per-language READMEs) and
-wave W7 (uniform contract instantiation; completeness enforcement switched on
-in `scripts/check-bindings.py` last, per the family plan's scrutiny protocol).
+**Fix.** The 14 governed guides and their conformance suites now instantiate
+the uniform semantic contract. `scripts/check-bindings.py` intentionally keeps
+referenced-symbol validation instead of demanding unused duplicate calling
+forms. Any future import omission that removes a host capability must be
+ledgered as a semantic gap, not hidden by a raw symbol count.
 
-**Verification.** Pending W7 (gate flips from referenced-symbol mode to
-completeness mode and stays green).
+**Verification.** `python3 scripts/check-bindings.py` reports the matrix above
+and fails any unknown import, model/header/export mismatch, package-coordinate
+drift, or mediated facade that starts importing unmanaged raw symbols.
 
 **Addendum (2026-08-09, W7 uniform sweep).** The specifically-flagged Fortran
 gap is closed: `bindings/fortran/src/vinary_tree_libdictenstein.f90` now binds
@@ -174,7 +184,7 @@ the whole ABI meta group — `ldict_abi_version`, `ldict_api_revision`, and
 these marshals the borrowed, NUL-terminated thread-local C string into an owned
 Fortran string (length bounded by a `strlen` interop binding, so no read runs
 past the terminator), returning an empty string when no message is set.
-Fortran gate coverage rose 27 → 30 / 35; the four aggregate-by-value CRUD forms
+Fortran gate coverage rose 27 → 30 / 35 then-modeled functions; the four aggregate-by-value CRUD forms
 (`insert_text`, `insert_u64`, `get_text`, `get_u64`) and `insert_u64_batch`
 remain intentionally uncovered — the scalar `…_value` twins and the text batch
 are the calling conventions the Fortran `bind(c)` layer uses. Regression:

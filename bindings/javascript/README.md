@@ -73,14 +73,16 @@ arbitrary octets. Token APIs preserve the full `u64` range. Optional dictionary
 values are represented separately from terminal membership, so `None` is not a
 sentinel and empty terms remain valid when supported.
 
-## Native collection idioms and planned parity
+## Native collection surface
 
-The current facade exposes lookup, length, mutation, and deterministic resource
-ownership, but does **not** yet claim the complete host collection protocol.
-The planned native shape for this runtime is iterable immutable views and an async iterator only for genuinely asynchronous runtimes. The
-ordinary collection view will own host data from one immutable revision, while
-the large-dictionary stream will retain one bounded native snapshot and require
-lexical cleanup. Membership remains a direct lookup, never an iteration scan.
+Dictionaries expose familiar `size`, `has`, `get`, `set`,
+`delete`, `entries`, `keys`, `values`, `forEach`, and `[Symbol.iterator]`
+operations. Ordinary iteration is backed by one host-owned immutable snapshot;
+`streamEntries()` is the explicit bounded native cursor and implements
+`return`, `close`, and `Symbol.dispose` for prompt cleanup after early exit.
+Native Node, browser-WASM, and WASI runtimes preserve the same synchronous
+contract; no fake async iterator or promise hop is introduced.
+
 
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk

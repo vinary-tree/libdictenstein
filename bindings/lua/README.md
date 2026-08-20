@@ -2,7 +2,7 @@
 
 A C extension module over libdictenstein's stable `ldict_*` C ABI. The LuaRocks
 package is `vinary-tree-libdictenstein`; the module loads as
-`vinary_tree_libdictenstein`. It exposes DynamicDAWG CRUD, immutable
+`vinary_tree.libdictenstein`. It exposes DynamicDAWG CRUD, immutable
 DoubleArrayTrie construction, SCDAWG substring search, persistent ARTrie
 CRUD/checkpoint/reopen, and persistent vocabulary reverse lookup.
 
@@ -20,7 +20,7 @@ export LD_LIBRARY_PATH="$PWD/target/release:$LD_LIBRARY_PATH"
 ## Quickstart
 
 ```lua
-local ld = require("vinary_tree_libdictenstein")
+local ld = require("vinary_tree.libdictenstein")
 
 local dictionary = ld.dynamic_dawg()          -- "unicode" domain by default
 dictionary:put("cat", 1)
@@ -68,9 +68,9 @@ The `domain` argument is the string `"byte"`, `"unicode"`, or `"u64"` (default
 ## Values and domains
 
 The Unicode-scalar backends validate UTF-8 and reject invalid input. Mapped
-values are non-negative Lua integers; because `lua_Integer` is a signed 64-bit
-type, representable values run `0 .. 2^63 - 1` (u64 values above that are not
-expressible from Lua). A `nil` value and a value of `0` are distinct.
+values are non-negative Lua integers or canonical decimal strings. Values above
+`math.maxinteger` are returned as decimal strings, so the full `u64` range is
+lossless. A `nil` value and a value of `0` are distinct.
 
 ## Error handling
 
@@ -83,6 +83,24 @@ Failing calls raise a Lua error whose message is the thread-local
 Each dictionary userdata carries the shared `VtResource`, so an independently
 packaged liblevenshtein transducer retains it in constant time and keeps its
 query-start revision valid after `close`.
+
+## Ordered entry collections
+
+`dictionary:entries()` materializes one immutable revision and its metadata;
+`pairs(snapshot)` yields `(key, value, has_value)` in native lexicographic
+order. `dictionary:entries_iter(limits)` is the bounded generic-for form and
+uses Lua 5.4's closing value to release on EOF, `break`, or error. An explicit
+`dictionary:entry_cursor(limits)` offers `:metadata()`, `:next()`, and
+`:close()`. Limits are a table with positive `max_entries`, `max_units`, and
+`max_values` fields.
+
+The Lua benchmark supports `materialized`, `stream`, and `stream-cancel` and
+prints one `libdictenstein.host-collection-traversal.v1` record:
+
+```sh
+lua bindings/lua/examples/collection_traversal_profile.lua \
+  --arm stream-cancel --entries 65536 --batch-size 64 --early-cancel 64
+```
 
 <!-- BEGIN GENERATED BINDING OPERATIONS; DO NOT EDIT -->
 
@@ -148,14 +166,15 @@ arbitrary octets. Token APIs preserve the full `u64` range. Optional dictionary
 values are represented separately from terminal membership, so `None` is not a
 sentinel and empty terms remain valid when supported.
 
-## Native collection idioms and planned parity
+## Native collection surface
 
-The current facade exposes lookup, length, mutation, and deterministic resource
-ownership, but does **not** yet claim the complete host collection protocol.
-The planned native shape for this runtime is pairs-style materialized iteration and an explicitly closeable stream. The
-ordinary collection view will own host data from one immutable revision, while
-the large-dictionary stream will retain one bounded native snapshot and require
-lexical cleanup. Membership remains a direct lookup, never an iteration scan.
+`dictionary:entries()` materializes one immutable
+revision for ordinary table iteration, while `dictionary:entries_iter()`
+provides the idiomatic generic-for triple. `dictionary:entry_cursor(limits)`
+exposes explicit `:next()`, metadata, and idempotent `:close()` for bounded
+streaming. Lua 5.4 to-be-closed variables provide lexical cleanup and `__gc`
+only contains abandoned userdata.
+
 
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk

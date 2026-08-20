@@ -151,14 +151,16 @@ arbitrary octets. Token APIs preserve the full `u64` range. Optional dictionary
 values are represented separately from terminal membership, so `None` is not a
 sentinel and empty terms remain valid when supported.
 
-## Native collection idioms and planned parity
+## Native collection surface
 
-The current facade exposes lookup, length, mutation, and deterministic resource
-ownership, but does **not** yet claim the complete host collection protocol.
-The planned native shape for this runtime is IReadOnlySet/IReadOnlyDictionary/IEnumerable views and a using-scoped streaming enumerator. The
-ordinary collection view will own host data from one immutable revision, while
-the large-dictionary stream will retain one bounded native snapshot and require
-lexical cleanup. Membership remains a direct lookup, never an iteration scan.
+`SnapshotEntries()` returns a repeatable immutable
+`IReadOnlyCollection<DictionaryEntry>` with ordered `IReadOnlySet<DictionaryKey>`
+and `IReadOnlyDictionary<DictionaryKey, ulong?>` views. `StreamEntries()` is an
+`IEnumerable<DictionaryEntry>`/`IEnumerator<DictionaryEntry>` whose native
+cursor implements `IDisposable`; `foreach` and LINQ work naturally, while
+early-stop code uses `using`. `DictionaryKey` has value equality across text,
+bytes, and unsigned `ulong` token sequences.
+
 
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk

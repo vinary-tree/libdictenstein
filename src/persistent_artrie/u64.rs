@@ -785,7 +785,6 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
     }
 
     /// Capture a traversal root and exact cardinality from one atomic revision.
-    #[cfg(feature = "bindings-core")]
     pub(crate) fn root_with_term_count(&self) -> (PersistentARTrieU64Node<V, PREFIX>, usize) {
         let (root, term_count) = self
             .root

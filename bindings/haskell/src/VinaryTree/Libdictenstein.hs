@@ -4,6 +4,15 @@ module VinaryTree.Libdictenstein
   ( Dictionary
   , UnitDomain(..)
   , Lookup(..)
+  , EntryKey(..)
+  , DictionaryEntry(..)
+  , EntriesMetadata(..)
+  , EntryBatchLimits(..)
+  , defaultEntryBatchLimits
+  , EntryStream
+  , entryMetadata
+  , nextEntry
+  , DictionarySnapshot(..)
   , abiVersion
   , apiRevision
   , dynamicDawg
@@ -37,10 +46,16 @@ module VinaryTree.Libdictenstein
   , containsSubstring
   , substringFrequency
   , vocabularyTerm
+  , withEntryStream
+  , withEntryStreamLimits
+  , foldEntries
+  , foldEntriesWithLimits
+  , materializeEntries
   ) where
 
-import Control.Exception (throwIO)
+import Control.Exception (bracket, onException, throwIO)
 import Control.Monad ((>=>))
+import Data.Char (chr)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Unsafe as BSU
@@ -53,16 +68,50 @@ import Foreign.C.Types (CChar, CInt(..), CSize(..))
 import Foreign.ForeignPtr
   (ForeignPtr, finalizeForeignPtr, newForeignPtr, withForeignPtr)
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
-import Foreign.Marshal.Array (withArray)
+import Foreign.Marshal.Array (peekArray, withArray)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable, peek, poke)
 import VinaryTree.Interop
   (DictionaryResource, UnitDomain(..), VtResource, fromOwnedResource)
 
 data LdictDictionary
+data LdictEntryCursor
 newtype Dictionary = Dictionary (ForeignPtr LdictDictionary)
 data Lookup = Lookup { found :: !Bool, mappedValue :: !(Maybe Word64) }
   deriving stock (Eq, Show)
+data EntryKey
+  = ByteKey !ByteString
+  | UnicodeKey !Text
+  | U64Key ![Word64]
+  deriving stock (Eq, Show)
+data DictionaryEntry = DictionaryEntry
+  { entryKey :: !EntryKey
+  , entryValue :: !(Maybe Word64)
+  } deriving stock (Eq, Show)
+data EntriesMetadata = EntriesMetadata
+  { entriesUnitDomain :: !UnitDomain
+  , entriesHaveOptionalValues :: !Bool
+  , entriesExactLength :: !(Maybe Word64)
+  , entriesSnapshotIdentity :: !(Maybe (Word64, Word64))
+  } deriving stock (Eq, Show)
+data EntryBatchLimits = EntryBatchLimits
+  { maxBatchEntries :: !Int
+  , maxBatchUnits :: !Int
+  , maxBatchValues :: !Int
+  } deriving stock (Eq, Show)
+defaultEntryBatchLimits :: EntryBatchLimits
+defaultEntryBatchLimits = EntryBatchLimits 256 65536 256
+data EntryStream = EntryStream
+  { entryMetadata :: !EntriesMetadata
+  , entryCursor :: !(Ptr LdictEntryCursor)
+  }
+data DictionarySnapshot a = DictionarySnapshot
+  { snapshotMetadata :: !EntriesMetadata
+  , snapshotEntries :: ![a]
+  } deriving stock (Eq, Show)
+
+instance Foldable DictionarySnapshot where
+  foldMap action = foldMap action . snapshotEntries
 
 type Status = CInt
 
@@ -135,6 +184,22 @@ foreign import ccall unsafe "ldict_scdawg_substring_frequency"
 foreign import ccall unsafe "ldict_vocab_get_term"
   cVocabTerm :: Ptr LdictDictionary -> Word64 -> Ptr Word8 -> CSize
              -> Ptr CSize -> Ptr Word8 -> IO Status
+foreign import ccall unsafe "ldict_hs_entries_open"
+  cEntriesOpen :: Ptr LdictDictionary -> CSize -> CSize -> CSize
+               -> Ptr Status -> IO (Ptr LdictEntryCursor)
+foreign import ccall unsafe "ldict_hs_entries_next"
+  cEntriesNext :: Ptr LdictEntryCursor -> Ptr (Ptr ()) -> Ptr CSize
+               -> Ptr Word64 -> Ptr Word8 -> Ptr Word8 -> IO Status
+foreign import ccall unsafe "ldict_hs_entries_info"
+  cEntriesInfo :: Ptr LdictEntryCursor -> Ptr Word32 -> Ptr Word32
+               -> Ptr Word8 -> Ptr CSize -> Ptr Word8 -> Ptr Word64
+               -> Ptr Word64 -> IO ()
+foreign import ccall unsafe "ldict_hs_entries_error"
+  cEntriesError :: Ptr LdictEntryCursor -> IO (Ptr CChar)
+foreign import ccall unsafe "ldict_hs_entries_close"
+  cEntriesClose :: Ptr LdictEntryCursor -> IO Status
+foreign import ccall unsafe "ldict_hs_entries_free"
+  cEntriesFree :: Ptr LdictEntryCursor -> IO ()
 
 -- | Native ABI version (LDICT_ABI_VERSION); always 1 for this family.
 abiVersion :: IO Word32
@@ -315,3 +380,118 @@ vocabularyTerm dictionary index = withDictionary dictionary $ \d ->
         cVocabTerm d index buffer (fromIntegral length') lengthPointer isFound >>= check
         BS.packCStringLen (castPtr buffer, length')
       pure (Just text)
+
+entryFailure :: Ptr LdictEntryCursor -> Status -> IO a
+entryFailure cursor status = do
+  local <- if cursor == nullPtr then pure nullPtr else cEntriesError cursor
+  native <- cLastError
+  localMessage <- if local == nullPtr then pure "" else peekCString local
+  nativeMessage <- if native == nullPtr then pure "" else peekCString native
+  let message = if null localMessage then nativeMessage else localMessage
+  throwIO (userError (if null message
+    then "dictionary entries failed with status " ++ show status
+    else message))
+
+readEntryMetadata :: Ptr LdictEntryCursor -> IO EntriesMetadata
+readEntryMetadata cursor =
+  alloca $ \unit -> alloca $ \valueDomain ->
+  alloca $ \hasExact -> alloca $ \exact ->
+  alloca $ \hasIdentity -> alloca $ \producer -> alloca $ \revision -> do
+    cEntriesInfo cursor unit valueDomain hasExact exact hasIdentity producer revision
+    unitCode <- peek unit
+    domain' <- case unitCode of
+      1 -> pure Byte
+      2 -> pure UnicodeScalar
+      3 -> pure U64
+      _ -> throwIO (userError "unknown dictionary entries unit domain")
+    valueCode <- peek valueDomain
+    optional <- case valueCode of
+      0 -> pure False
+      1 -> pure True
+      _ -> throwIO (userError "unknown dictionary entries value domain")
+    exact' <- (/= 0) <$> peek hasExact
+    exactValue <- if exact' then Just . fromIntegral <$> peek exact else pure Nothing
+    identity <- (/= 0) <$> peek hasIdentity
+    identityValue <- if identity
+      then Just <$> ((,) <$> peek producer <*> peek revision)
+      else pure Nothing
+    pure EntriesMetadata
+      { entriesUnitDomain = domain'
+      , entriesHaveOptionalValues = optional
+      , entriesExactLength = exactValue
+      , entriesSnapshotIdentity = identityValue
+      }
+
+acquireEntryStream :: EntryBatchLimits -> Dictionary -> IO EntryStream
+acquireEntryStream limits dictionary
+  | maxBatchEntries limits <= 0 || maxBatchUnits limits < 0 || maxBatchValues limits < 0 =
+      ioError (userError "invalid dictionary entry batch limits")
+  | otherwise = withDictionary dictionary $ \raw -> alloca $ \statusPointer -> do
+      cursor <- cEntriesOpen raw
+        (fromIntegral (maxBatchEntries limits))
+        (fromIntegral (maxBatchUnits limits))
+        (fromIntegral (maxBatchValues limits)) statusPointer
+      status <- peek statusPointer
+      if status /= 0 || cursor == nullPtr
+        then entryFailure cursor status
+        else (EntryStream <$> readEntryMetadata cursor <*> pure cursor)
+          `onException` cEntriesFree cursor
+
+releaseEntryStream :: EntryStream -> IO ()
+releaseEntryStream stream = do
+  status <- cEntriesClose (entryCursor stream)
+  if status == 0
+    then cEntriesFree (entryCursor stream)
+    else do
+      local <- cEntriesError (entryCursor stream)
+      message <- if local == nullPtr then pure "" else peekCString local
+      cEntriesFree (entryCursor stream)
+      throwIO (userError (if null message then "closing dictionary entries failed" else message))
+
+-- | Bracket a one-shot pull stream. Native batches are copied and released
+-- before 'nextEntry' returns, and the cursor closes on normal return or exception.
+withEntryStream :: Dictionary -> (EntryStream -> IO a) -> IO a
+withEntryStream = withEntryStreamLimits defaultEntryBatchLimits
+
+withEntryStreamLimits :: EntryBatchLimits -> Dictionary -> (EntryStream -> IO a) -> IO a
+withEntryStreamLimits limits dictionary = bracket
+  (acquireEntryStream limits dictionary) releaseEntryStream
+
+nextEntry :: EntryStream -> IO (Maybe DictionaryEntry)
+nextEntry stream =
+  alloca $ \units -> alloca $ \lengthPointer -> alloca $ \value ->
+  alloca $ \hasValue -> alloca $ \hasEntry -> do
+    status <- cEntriesNext (entryCursor stream) units lengthPointer value hasValue hasEntry
+    if status == 1 then pure Nothing else if status /= 0
+      then entryFailure (entryCursor stream) status
+      else do
+        present <- (/= 0) <$> peek hasEntry
+        if not present then pure Nothing else do
+          pointer <- peek units
+          count <- fromIntegral <$> peek lengthPointer
+          key <- case entriesUnitDomain (entryMetadata stream) of
+            Byte | count == 0 -> pure (ByteKey BS.empty)
+            Byte -> ByteKey <$> BS.packCStringLen (castPtr pointer, count)
+            UnicodeScalar -> do
+              scalars <- peekArray count (castPtr pointer :: Ptr Word32)
+              pure (UnicodeKey (Text.pack (map (chr . fromIntegral) scalars)))
+            U64 -> U64Key <$> peekArray count (castPtr pointer :: Ptr Word64)
+          mapped <- (/= 0) <$> peek hasValue
+          mappedValue' <- if mapped then Just <$> peek value else pure Nothing
+          pure (Just (DictionaryEntry key mappedValue'))
+
+foldEntries :: Dictionary -> (a -> DictionaryEntry -> IO a) -> a -> IO a
+foldEntries = foldEntriesWithLimits defaultEntryBatchLimits
+
+foldEntriesWithLimits :: EntryBatchLimits -> Dictionary -> (a -> DictionaryEntry -> IO a) -> a -> IO a
+foldEntriesWithLimits limits dictionary action initial = withEntryStreamLimits limits dictionary $ \stream ->
+  let loop accumulator = nextEntry stream >>= maybe (pure accumulator)
+        (action accumulator >=> loop)
+  in loop initial
+
+materializeEntries :: Dictionary -> IO (DictionarySnapshot DictionaryEntry)
+materializeEntries dictionary = withEntryStream dictionary $ \stream -> do
+  let loop reversed = nextEntry stream >>= maybe
+        (pure (DictionarySnapshot (entryMetadata stream) (reverse reversed)))
+        (\entry -> loop (entry : reversed))
+  loop []

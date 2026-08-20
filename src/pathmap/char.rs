@@ -101,6 +101,40 @@ impl<V: DictionaryValue> PathMapDictionaryChar<V> {
         Arc::ptr_eq(&previous, current)
     }
 
+    fn from_char_entries(entries: Vec<(Vec<char>, V)>) -> Self {
+        let mut map = PathMap::new();
+        let mut len = 0;
+        for (key, value) in entries {
+            let key: String = key.into_iter().collect();
+            if map.insert(key.as_bytes(), value).is_none() {
+                len += 1;
+            }
+        }
+        Self::from_state(map, len)
+    }
+
+    fn extend_char_entries(&self, entries: Vec<(Vec<char>, V)>) -> usize {
+        if entries.is_empty() {
+            return 0;
+        }
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.load_state();
+            let mut map = current.map.clone();
+            let mut inserted = 0;
+            for (key, value) in &entries {
+                let key: String = key.iter().collect();
+                if map.insert(key.as_bytes(), value.clone()).is_none() {
+                    inserted += 1;
+                }
+            }
+            if self.compare_store_state(&current, PathMapState::new(map, current.len + inserted)) {
+                return inserted;
+            }
+            backoff.snooze();
+        }
+    }
+
     /// Create a new empty character-level dictionary
     pub fn new() -> Self
     where
@@ -334,6 +368,118 @@ impl<V: DictionaryValue> PathMapDictionaryChar<V> {
     pub fn snapshot(&self) -> PathMapSnapshotChar<V> {
         let state = self.load_state();
         PathMapSnapshotChar::from_map(state.map.clone()).with_len(state.len)
+    }
+}
+
+impl<V: DictionaryValue + Default> FromIterator<String> for PathMapDictionaryChar<V> {
+    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
+        Self::from_terms(iter)
+    }
+}
+
+impl<'a, V: DictionaryValue + Default> FromIterator<&'a str> for PathMapDictionaryChar<V> {
+    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
+        Self::from_terms(iter)
+    }
+}
+
+impl<V: DictionaryValue + Default> FromIterator<Vec<char>> for PathMapDictionaryChar<V> {
+    fn from_iter<I: IntoIterator<Item = Vec<char>>>(iter: I) -> Self {
+        Self::from_char_entries(iter.into_iter().map(|key| (key, V::default())).collect())
+    }
+}
+
+impl<'a, V: DictionaryValue + Default> FromIterator<&'a [char]> for PathMapDictionaryChar<V> {
+    fn from_iter<I: IntoIterator<Item = &'a [char]>>(iter: I) -> Self {
+        iter.into_iter().map(<[char]>::to_vec).collect()
+    }
+}
+
+impl<V: DictionaryValue> FromIterator<(String, V)> for PathMapDictionaryChar<V> {
+    fn from_iter<I: IntoIterator<Item = (String, V)>>(iter: I) -> Self {
+        Self::from_terms_with_values(iter)
+    }
+}
+
+impl<'a, V: DictionaryValue> FromIterator<(&'a str, V)> for PathMapDictionaryChar<V> {
+    fn from_iter<I: IntoIterator<Item = (&'a str, V)>>(iter: I) -> Self {
+        Self::from_terms_with_values(iter)
+    }
+}
+
+impl<V: DictionaryValue> FromIterator<(Vec<char>, V)> for PathMapDictionaryChar<V> {
+    fn from_iter<I: IntoIterator<Item = (Vec<char>, V)>>(iter: I) -> Self {
+        Self::from_char_entries(iter.into_iter().collect())
+    }
+}
+
+impl<'a, V: DictionaryValue> FromIterator<(&'a [char], V)> for PathMapDictionaryChar<V> {
+    fn from_iter<I: IntoIterator<Item = (&'a [char], V)>>(iter: I) -> Self {
+        Self::from_char_entries(
+            iter.into_iter()
+                .map(|(key, value)| (key.to_vec(), value))
+                .collect(),
+        )
+    }
+}
+
+impl<V: DictionaryValue + Default> Extend<String> for PathMapDictionaryChar<V> {
+    fn extend<I: IntoIterator<Item = String>>(&mut self, iter: I) {
+        self.extend_char_entries(
+            iter.into_iter()
+                .map(|key| (key.chars().collect(), V::default()))
+                .collect(),
+        );
+    }
+}
+
+impl<'a, V: DictionaryValue + Default> Extend<&'a str> for PathMapDictionaryChar<V> {
+    fn extend<I: IntoIterator<Item = &'a str>>(&mut self, iter: I) {
+        self.extend(iter.into_iter().map(str::to_owned));
+    }
+}
+
+impl<V: DictionaryValue + Default> Extend<Vec<char>> for PathMapDictionaryChar<V> {
+    fn extend<I: IntoIterator<Item = Vec<char>>>(&mut self, iter: I) {
+        self.extend_char_entries(iter.into_iter().map(|key| (key, V::default())).collect());
+    }
+}
+
+impl<'a, V: DictionaryValue + Default> Extend<&'a [char]> for PathMapDictionaryChar<V> {
+    fn extend<I: IntoIterator<Item = &'a [char]>>(&mut self, iter: I) {
+        self.extend(iter.into_iter().map(<[char]>::to_vec));
+    }
+}
+
+impl<V: DictionaryValue> Extend<(String, V)> for PathMapDictionaryChar<V> {
+    fn extend<I: IntoIterator<Item = (String, V)>>(&mut self, iter: I) {
+        self.extend_char_entries(
+            iter.into_iter()
+                .map(|(key, value)| (key.chars().collect(), value))
+                .collect(),
+        );
+    }
+}
+
+impl<'a, V: DictionaryValue> Extend<(&'a str, V)> for PathMapDictionaryChar<V> {
+    fn extend<I: IntoIterator<Item = (&'a str, V)>>(&mut self, iter: I) {
+        self.extend(iter.into_iter().map(|(key, value)| (key.to_owned(), value)));
+    }
+}
+
+impl<V: DictionaryValue> Extend<(Vec<char>, V)> for PathMapDictionaryChar<V> {
+    fn extend<I: IntoIterator<Item = (Vec<char>, V)>>(&mut self, iter: I) {
+        self.extend_char_entries(iter.into_iter().collect());
+    }
+}
+
+impl<'a, V: DictionaryValue> Extend<(&'a [char], V)> for PathMapDictionaryChar<V> {
+    fn extend<I: IntoIterator<Item = (&'a [char], V)>>(&mut self, iter: I) {
+        self.extend_char_entries(
+            iter.into_iter()
+                .map(|(key, value)| (key.to_vec(), value))
+                .collect(),
+        );
     }
 }
 

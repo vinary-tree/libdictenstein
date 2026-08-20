@@ -77,6 +77,23 @@ Non-OK statuses raise `Failure` carrying the thread-local
 packaged liblevenshtein transducer retains it in constant time and keeps its
 query-start revision valid after `close`.
 
+## Ordered entry collections
+
+`with_entries_seq` scopes a lazy, native-lexicographic `Seq.t` to one immutable
+dictionary revision. Every native batch is validated, copied, and released
+before a sequence node reaches OCaml; `Fun.protect` closes the cursor on full
+drain, early return, or exception. `fold_entries` is the synchronous reducer.
+Keys are `Bytes`, UTF-8 `Unicode`, or raw-bit-pattern `U64` arrays, and values
+remain `int64 option`, so present-unvalued differs from `Some 0L`.
+
+The package benchmark supports `materialized`, `stream`, `stream-cancel`, and
+`reduce` and prints one `libdictenstein.host-collection-traversal.v1` record:
+
+```sh
+dune exec --root bindings/ocaml bin/collection_traversal_profile.exe -- \
+  --arm stream-cancel --entries 65536 --batch-size 64 --early-cancel 64
+```
+
 <!-- BEGIN GENERATED BINDING OPERATIONS; DO NOT EDIT -->
 
 ## Support and package contract
@@ -141,14 +158,15 @@ arbitrary octets. Token APIs preserve the full `u64` range. Optional dictionary
 values are represented separately from terminal membership, so `None` is not a
 sentinel and empty terms remain valid when supported.
 
-## Native collection idioms and planned parity
+## Native collection surface
 
-The current facade exposes lookup, length, mutation, and deterministic resource
-ownership, but does **not** yet claim the complete host collection protocol.
-The planned native shape for this runtime is Seq/fold adapters and a resource-scoped streaming fold. The
-ordinary collection view will own host data from one immutable revision, while
-the large-dictionary stream will retain one bounded native snapshot and require
-lexical cleanup. Membership remains a direct lookup, never an iteration scan.
+`with_entries_seq` supplies a scoped, repeatable `Seq.t`
+whose keys are `Bytes`, UTF-8 `Unicode`, or raw-bit-pattern `U64` arrays and
+whose values remain `int64 option`. `fold_entries` uses the native synchronous
+reducer. `Fun.protect` closes after full drain, early return, or exception, and
+the sequence cannot escape its owning callback; a finalizer only contains an
+abandoned custom cursor.
+
 
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk

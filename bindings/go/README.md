@@ -69,6 +69,22 @@ func main() {
 `Close` is idempotent and a finalizer frees any handle a caller forgets, so a
 double `Close` is safe.
 
+Materialize a stable revision with `SnapshotEntries`, or range over bounded
+copied batches with the Go 1.23 iterator helper:
+
+```go
+stream, err := dictionary.OpenEntryStream(ld.DefaultEntryBatchLimits)
+if err != nil { panic(err) }
+for entry, err := range stream.Seq2() {
+	if err != nil { panic(err) }
+	fmt.Println(entry.Text, entry.Value)
+	if entry.Text == "cot" { break } // releases and closes through defer
+}
+```
+
+Call `Next` with `defer stream.Close()` when manual pull iteration is more
+convenient. `Cancel` is the explicit early-exit spelling.
+
 ## Backends and capabilities
 
 | Constructor | Kind constant | Unit domains | Capabilities |
@@ -179,14 +195,25 @@ arbitrary octets. Token APIs preserve the full `u64` range. Optional dictionary
 values are represented separately from terminal membership, so `None` is not a
 sentinel and empty terms remain valid when supported.
 
-## Native collection idioms and planned parity
+## Native collection surface
 
-The current facade exposes lookup, length, mutation, and deterministic resource
-ownership, but does **not** yet claim the complete host collection protocol.
-The planned native shape for this runtime is range-compatible iterator functions and an explicit cancellable streaming form. The
-ordinary collection view will own host data from one immutable revision, while
-the large-dictionary stream will retain one bounded native snapshot and require
-lexical cleanup. Membership remains a direct lookup, never an iteration scan.
+`SnapshotEntries` and `Entries` materialize host-owned keys from one
+immutable revision. `OpenEntryStream` exposes bounded `Next`, `Cancel`, and
+`Close` operations plus Go 1.23 range-compatible `Seq` and `Seq2` helpers.
+Range exit closes automatically, including early `break` and panic; direct
+`Next` callers close explicitly. `SnapshotEntry` keeps byte keys as `[]byte`,
+Unicode-scalar keys as `string`, `u64` keys as `[]uint64`, and mapped values as
+`*uint64`, so nil, zero, and max remain distinct.
+
+The public-package benchmark keeps construction and warmup outside the timed
+drain and prints one JSON record. Run the 4,096-entry latency cell, the
+65,536-entry streaming cell, or the 64-entry cancellation cell with:
+
+```sh
+go run ./bindings/go/cmd/collection-traversal-profile --arm materialized --entries 4096
+go run ./bindings/go/cmd/collection-traversal-profile --arm stream --entries 65536 --batch-size 256
+go run ./bindings/go/cmd/collection-traversal-profile --arm stream-cancel --entries 65536 --batch-size 64 --early-cancel 64
+```
 
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk

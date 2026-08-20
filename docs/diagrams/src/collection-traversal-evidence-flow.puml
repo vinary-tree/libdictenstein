@@ -1,0 +1,47 @@
+@startuml
+' Color key:
+' green = immutable native snapshot/traversal
+' amber = stable batched ABI
+' blue = language-native facade
+' purple = measurement/evidence
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName "DejaVu Sans"
+skinparam ArrowColor #37474F
+skinparam rectangleBorderColor #37474F
+skinparam rectangleFontColor #263238
+skinparam wrapWidth 185
+
+title Collection traversal: implementation and evidence paths
+top to bottom direction
+
+rectangle "Deterministic corpus\nbyte · scalar · u64\nunit-only · mapped" as corpus #F1F1F1
+rectangle "O(1) immutable\nrevision capture" as snapshot #C8E6C9
+rectangle "Generic monomorphic\nSnapshotEntryTraversal\nstack + reusable path" as traversal #A5D6A7
+
+rectangle "Pure Rust collection surfaces\nowned Iterator · materialized Vec\nborrowed visitor/fold · lazy zippers" as rust #81C784
+rectangle "vt.dict.entry.v1\ndescriptors + bounded arenas\none live generation" as abi #FFF59D
+rectangle "Language-native protocols\nSet / Map / Sequence / Enumerable\nlexical streaming resource" as facade #BBDEFB
+
+rectangle "Correctness laws\norder · tri-state value · snapshot\nearly stopped consumption" as laws #E1BEE7
+rectangle "Performance evidence\nallocation census (separate process)\nadmitted paired timing · median/MAD/bootstrap CI\nheadless AMD uProf · perf · Heaptrack" as evidence #E1BEE7
+
+corpus --> snapshot : build outside timer
+snapshot --> traversal : retain once
+traversal --> rust : clone or borrow by API
+traversal --> abi : batch copy
+abi --> facade : validate · translate · close
+rust -[hidden]down-> abi
+
+rust --> laws
+abi --> laws
+facade --> laws
+laws --> evidence : semantics first
+
+legend bottom
+|<#C8E6C9>| immutable native path |
+|<#FFF59D>| stable ABI batching |
+|<#BBDEFB>| host-language idiom |
+|<#E1BEE7>| validation / performance evidence |
+endlegend
+@enduml

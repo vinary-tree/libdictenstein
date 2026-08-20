@@ -9,6 +9,39 @@ three states absent, present-without-value, and present-with-u64-value.
 Publish to Clojars with `lein deploy clojars`; credentials are read from
 `CLOJARS_USERNAME` and `CLOJARS_PASSWORD`.
 
+## Immutable and resource-scoped entry traversal
+
+`snapshot` (also exposed as `entries`) captures one dictionary revision and
+returns a persistent vector of `{:key ... :value ... :domain ...}` maps. It is
+safe to retain after later mutation or dictionary close and works directly with
+Clojure's sequence, reduction, transducer, and eduction APIs:
+
+```clojure
+(let [captured (d/snapshot dictionary)]
+  (sequence (map :key) captured)
+  (reduce conj [] captured)
+  (into [] (d/entry-eduction dictionary (map :key))))
+```
+
+For bounded-memory traversal, use `with-entry-stream` and consume `stream-seq`
+inside its lexical scope. `reduce-entries` and `transduce-entries` provide the
+same cleanup guarantee for folds, including reduced early return and
+exceptions. Entry maps are immutable host values; the native cursor itself is
+single-pass and closeable.
+
+## Collection benchmark entrypoint
+
+The package profile uses the shared deterministic corpus, wrapping checksum,
+and JSON schema. Corpus construction and warmup happen before the timed drain;
+the `materialized`, `stream`, `stream-cancel`, and `reduce` arms are selected
+explicitly:
+
+```sh
+cd bindings/clojure
+clojure -J-Djava.library.path=../../target/release -M:profile \
+  --arm stream --entries 4096 --batch-size 256
+```
+
 <!-- BEGIN GENERATED BINDING OPERATIONS; DO NOT EDIT -->
 
 ## Support and package contract
@@ -73,14 +106,16 @@ arbitrary octets. Token APIs preserve the full `u64` range. Optional dictionary
 values are represented separately from terminal membership, so `None` is not a
 sentinel and empty terms remain valid when supported.
 
-## Native collection idioms and planned parity
+## Native collection surface
 
-The current facade exposes lookup, length, mutation, and deterministic resource
-ownership, but does **not** yet claim the complete host collection protocol.
-The planned native shape for this runtime is reducible and sequence views whose resource-scoped forms use with-open. The
-ordinary collection view will own host data from one immutable revision, while
-the large-dictionary stream will retain one bounded native snapshot and require
-lexical cleanup. Membership remains a direct lookup, never an iteration scan.
+The shipped facade provides immutable `entries`, `keys`,
+`values`, and `entry-seq` snapshots plus reducible `entry-eduction` adapters.
+`with-entry-stream` scopes the native cursor for `reduce-entry-stream` and
+`transduce-entry-stream`, so reduced values and exceptions close promptly.
+Byte arrays and `long` arrays are copied losslessly, while ordinary Unicode
+terms remain strings. No lazy sequence is allowed to outlive its resource
+scope.
+
 
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk

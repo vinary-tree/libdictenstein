@@ -10,12 +10,17 @@ use std::cell::RefCell;
 use std::ffi::{c_char, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use vinary_tree_interop::VtResource;
+use vinary_tree_interop::{
+    dictionary_entries_info_flags, VtDictionaryEntriesCursor, VtDictionaryEntriesInfo,
+    VtDictionaryEntriesVTable, VtDictionaryEntry, VtDictionaryEntryBatchLimits,
+    VtDictionaryEntryBatchView, VtDictionaryEntryOrder, VtResource, VtStatus, VtUnitDomain,
+    VtValueDomain, VT_DICTIONARY_ENTRIES_INTERFACE_ID, VT_DICTIONARY_ENTRIES_INTERFACE_VERSION,
+};
 
 /// ABI version for the libdictenstein project API.
 pub const LDICT_ABI_VERSION: u32 = 1;
 /// Additive project API revision.
-pub const LDICT_API_REVISION: u32 = 4;
+pub const LDICT_API_REVISION: u32 = 5;
 
 /// DynamicDAWG backend identifier.
 pub const LDICT_KIND_DYNAMIC_DAWG: u32 = 1;
@@ -69,6 +74,10 @@ pub enum LdictStatus {
     DomainMismatch = 9,
     /// A configured resource bound was exceeded.
     LimitExceeded = 10,
+    /// The underlying resource provider failed without a more specific status.
+    ProviderError = 11,
+    /// A cursor operation requires the current borrowed batch to be released.
+    BatchInUse = 12,
 }
 
 /// Optional u64 used by CRUD requests and responses.
@@ -132,6 +141,33 @@ pub struct LdictU64Entry {
     pub len: usize,
     /// Optional mapped value.
     pub value: LdictOptionalU64,
+}
+
+/// One streamed entry descriptor into a leased batch's parallel arenas.
+pub type LdictEntry = VtDictionaryEntry;
+
+/// Hard upper bounds for one streamed entry batch.
+pub type LdictEntryBatchLimits = VtDictionaryEntryBatchLimits;
+
+/// Borrowed cursor-owned entry batch, valid until its generation is released.
+pub type LdictEntryBatch = VtDictionaryEntryBatchView;
+
+/// Immutable snapshot metadata captured when an entry cursor is opened.
+pub type LdictEntriesInfo = VtDictionaryEntriesInfo;
+
+/// Callback used by [`ldict_entry_cursor_reduce`].
+///
+/// The raw return value must encode one published [`LdictStatus`] discriminant.
+pub type LdictEntryReducer = unsafe extern "C" fn(
+    reducer_context: *mut std::ffi::c_void,
+    batch: *const LdictEntryBatch,
+) -> u32;
+
+/// Opaque owned cursor over one immutable dictionary revision.
+pub struct LdictEntryCursor {
+    raw: VtDictionaryEntriesCursor,
+    vtable: *const VtDictionaryEntriesVTable,
+    leased_generation: Option<u64>,
 }
 
 /// Opaque mutable dictionary handle.
@@ -413,6 +449,127 @@ fn domain(value: u32) -> Result<BindingUnitDomain, (LdictStatus, String)> {
             LdictStatus::InvalidArgument,
             format!("unknown dictionary unit domain {value}"),
         )),
+    }
+}
+
+fn ldict_status_from_raw(raw: u32) -> Option<LdictStatus> {
+    match raw {
+        0 => Some(LdictStatus::Ok),
+        1 => Some(LdictStatus::End),
+        2 => Some(LdictStatus::InvalidArgument),
+        3 => Some(LdictStatus::InvalidUtf8),
+        4 => Some(LdictStatus::NullPointer),
+        5 => Some(LdictStatus::Panic),
+        6 => Some(LdictStatus::Unsupported),
+        7 => Some(LdictStatus::IoError),
+        8 => Some(LdictStatus::Closed),
+        9 => Some(LdictStatus::DomainMismatch),
+        10 => Some(LdictStatus::LimitExceeded),
+        11 => Some(LdictStatus::ProviderError),
+        12 => Some(LdictStatus::BatchInUse),
+        _ => None,
+    }
+}
+
+fn provider_status(raw: u32, operation: &str) -> Result<VtStatus, (LdictStatus, String)> {
+    let Some(status) = VtStatus::from_raw(raw) else {
+        return Err((
+            LdictStatus::ProviderError,
+            format!("{operation} returned unknown provider status {raw}"),
+        ));
+    };
+    let mapped = match status {
+        VtStatus::Ok | VtStatus::End => return Ok(status),
+        VtStatus::InvalidArgument => LdictStatus::InvalidArgument,
+        VtStatus::NullPointer => LdictStatus::NullPointer,
+        VtStatus::Unsupported => LdictStatus::Unsupported,
+        VtStatus::IoError => LdictStatus::IoError,
+        VtStatus::Closed => LdictStatus::Closed,
+        VtStatus::LimitExceeded => LdictStatus::LimitExceeded,
+        VtStatus::ProviderError => LdictStatus::ProviderError,
+        VtStatus::BatchInUse => LdictStatus::BatchInUse,
+    };
+    Err((
+        mapped,
+        format!("{operation} failed with provider status {status:?}"),
+    ))
+}
+
+fn validate_entries_info(info: &LdictEntriesInfo) -> Result<(), (LdictStatus, String)> {
+    if !matches!(
+        info.unit_domain,
+        value if value == VtUnitDomain::Byte as u32
+            || value == VtUnitDomain::UnicodeScalar as u32
+            || value == VtUnitDomain::U64 as u32
+    ) {
+        return Err((
+            LdictStatus::ProviderError,
+            format!(
+                "entry provider returned unknown unit domain {}",
+                info.unit_domain
+            ),
+        ));
+    }
+    if info.value_domain != VtValueDomain::OptionalU64 as u32 {
+        return Err((
+            LdictStatus::ProviderError,
+            format!(
+                "entry provider returned unsupported value domain {}",
+                info.value_domain
+            ),
+        ));
+    }
+    if info.order != VtDictionaryEntryOrder::Lexicographic as u32 {
+        return Err((
+            LdictStatus::ProviderError,
+            format!("entry provider returned unknown order {}", info.order),
+        ));
+    }
+    let known_flags =
+        dictionary_entries_info_flags::EXACT_LEN | dictionary_entries_info_flags::SNAPSHOT_IDENTITY;
+    if info.reserved0 != 0 || info.flags & !known_flags != 0 || info.reserved != [0; 2] {
+        return Err((
+            LdictStatus::ProviderError,
+            "entry provider returned nonzero reserved metadata".into(),
+        ));
+    }
+    Ok(())
+}
+
+unsafe fn entry_cursor_mut<'a>(
+    cursor: *mut LdictEntryCursor,
+) -> Result<&'a mut LdictEntryCursor, (LdictStatus, String)> {
+    cursor
+        .as_mut()
+        .ok_or((LdictStatus::NullPointer, "entry cursor is null".into()))
+}
+
+struct EntryReducerContext {
+    reducer: LdictEntryReducer,
+    reducer_context: *mut std::ffi::c_void,
+    callback_error: Option<LdictStatus>,
+}
+
+unsafe extern "C" fn entry_reducer_trampoline(
+    context: *mut std::ffi::c_void,
+    batch: *const VtDictionaryEntryBatchView,
+) -> u32 {
+    if context.is_null() {
+        return VtStatus::NullPointer.to_raw();
+    }
+    let context = &mut *context.cast::<EntryReducerContext>();
+    let raw = (context.reducer)(context.reducer_context, batch);
+    match ldict_status_from_raw(raw) {
+        Some(LdictStatus::Ok) => VtStatus::Ok.to_raw(),
+        Some(LdictStatus::End) => VtStatus::End.to_raw(),
+        Some(status) => {
+            context.callback_error = Some(status);
+            VtStatus::ProviderError.to_raw()
+        }
+        None => {
+            context.callback_error = Some(LdictStatus::InvalidArgument);
+            VtStatus::ProviderError.to_raw()
+        }
     }
 }
 
@@ -753,6 +910,328 @@ pub unsafe extern "C" fn ldict_dictionary_resource(
             return Err((LdictStatus::NullPointer, "out_resource is null".into()));
         }
         out_resource.write(dictionary.resource.as_raw());
+        Ok(LdictStatus::Ok)
+    })
+}
+
+/// Open a bounded, lexicographic entry stream over one immutable revision.
+///
+/// The returned cursor owns its captured snapshot and may outlive `dictionary`.
+/// Each successful [`ldict_entry_cursor_next`] leases exactly one batch until
+/// its generation is passed to [`ldict_entry_cursor_release`].
+///
+/// # Safety
+/// `dictionary`, `out_cursor`, and `out_info` must be valid pointers.
+#[no_mangle]
+pub unsafe extern "C" fn ldict_dictionary_entries_open(
+    dictionary: *const LdictDictionary,
+    out_cursor: *mut *mut LdictEntryCursor,
+    out_info: *mut LdictEntriesInfo,
+) -> LdictStatus {
+    boundary(|| {
+        let dictionary = dictionary
+            .as_ref()
+            .ok_or((LdictStatus::NullPointer, "dictionary is null".into()))?;
+        if out_cursor.is_null() {
+            return Err((LdictStatus::NullPointer, "out_cursor is null".into()));
+        }
+        out_cursor.write(ptr::null_mut());
+        if out_info.is_null() {
+            return Err((LdictStatus::NullPointer, "out_info is null".into()));
+        }
+        out_info.write(LdictEntriesInfo::default());
+
+        let resource = dictionary.resource.as_raw();
+        let resource_vtable = resource
+            .vtable
+            .as_ref()
+            .ok_or((LdictStatus::ProviderError, "resource vtable is null".into()))?;
+        let query_interface = resource_vtable.query_interface.ok_or((
+            LdictStatus::Unsupported,
+            "resource does not support interface discovery".into(),
+        ))?;
+        let mut interface: *const std::ffi::c_void = ptr::null();
+        let status = provider_status(
+            query_interface(
+                resource.context,
+                &VT_DICTIONARY_ENTRIES_INTERFACE_ID,
+                VT_DICTIONARY_ENTRIES_INTERFACE_VERSION,
+                &mut interface,
+            ),
+            "entry interface discovery",
+        )?;
+        if status != VtStatus::Ok || interface.is_null() {
+            return Err((
+                LdictStatus::ProviderError,
+                "entry interface discovery returned no interface".into(),
+            ));
+        }
+
+        let vtable = interface.cast::<VtDictionaryEntriesVTable>();
+        let entries_vtable = vtable.as_ref().ok_or((
+            LdictStatus::ProviderError,
+            "entry interface vtable is null".into(),
+        ))?;
+        if entries_vtable.struct_size < std::mem::size_of::<VtDictionaryEntriesVTable>()
+            || entries_vtable.interface_version < VT_DICTIONARY_ENTRIES_INTERFACE_VERSION
+            || entries_vtable.reserved != 0
+            || entries_vtable.open.is_none()
+            || entries_vtable.next_batch.is_none()
+            || entries_vtable.release_batch.is_none()
+            || entries_vtable.reduce.is_none()
+            || entries_vtable.cancel.is_none()
+            || entries_vtable.close.is_none()
+        {
+            return Err((
+                LdictStatus::ProviderError,
+                "entry interface vtable is incomplete".into(),
+            ));
+        }
+
+        let mut cursor = Box::new(LdictEntryCursor {
+            raw: VtDictionaryEntriesCursor::NULL,
+            vtable,
+            leased_generation: None,
+        });
+        let mut info = LdictEntriesInfo::default();
+        let status = provider_status(
+            entries_vtable.open.expect("validated entry open")(
+                resource.context,
+                &mut cursor.raw,
+                &mut info,
+            ),
+            "entry cursor open",
+        )?;
+        if status != VtStatus::Ok || cursor.raw.is_null() {
+            return Err((
+                LdictStatus::ProviderError,
+                "entry cursor open returned no cursor".into(),
+            ));
+        }
+        if let Err(error) = validate_entries_info(&info) {
+            let _ = entries_vtable.close.expect("validated entry close")(&mut cursor.raw);
+            return Err(error);
+        }
+        out_info.write(info);
+        out_cursor.write(Box::into_raw(cursor));
+        Ok(LdictStatus::Ok)
+    })
+}
+
+/// Lease the next nonempty bounded entry batch.
+///
+/// # Safety
+/// All pointers must be valid. The returned pointers remain valid only until
+/// `batch.generation` is released or the cursor is freed.
+#[no_mangle]
+pub unsafe extern "C" fn ldict_entry_cursor_next(
+    cursor: *mut LdictEntryCursor,
+    limits: *const LdictEntryBatchLimits,
+    out_batch: *mut LdictEntryBatch,
+) -> LdictStatus {
+    boundary(|| {
+        if limits.is_null() {
+            return Err((LdictStatus::NullPointer, "limits is null".into()));
+        }
+        if out_batch.is_null() {
+            return Err((LdictStatus::NullPointer, "out_batch is null".into()));
+        }
+        out_batch.write(LdictEntryBatch::default());
+        let limits_value = *limits;
+        if limits_value.max_entries == 0 || limits_value.reserved != 0 {
+            return Err((
+                LdictStatus::InvalidArgument,
+                "max_entries must be nonzero and limits.reserved must be zero".into(),
+            ));
+        }
+        let cursor = entry_cursor_mut(cursor)?;
+        if cursor.leased_generation.is_some() {
+            return Err((
+                LdictStatus::BatchInUse,
+                "entry cursor already has a live batch lease".into(),
+            ));
+        }
+        let next = (*cursor.vtable).next_batch.ok_or((
+            LdictStatus::ProviderError,
+            "entry next callback is null".into(),
+        ))?;
+        let status = provider_status(next(&mut cursor.raw, limits, out_batch), "entry next")?;
+        match status {
+            VtStatus::Ok => {
+                let batch = &*out_batch;
+                if batch.entry_count == 0
+                    || batch.entry_count > limits_value.max_entries
+                    || batch.unit_count > limits_value.max_units
+                    || batch.value_count > limits_value.max_values
+                    || batch.generation == 0
+                    || batch.reserved != 0
+                    || (batch.entry_count != 0 && batch.entries.is_null())
+                    || (batch.unit_count != 0 && batch.units.is_null())
+                    || (batch.value_count != 0 && batch.values.is_null())
+                {
+                    let release = (*cursor.vtable)
+                        .release_batch
+                        .expect("validated entry release");
+                    if batch.generation != 0 {
+                        let _ = release(&mut cursor.raw, batch.generation);
+                    }
+                    out_batch.write(LdictEntryBatch::default());
+                    return Err((
+                        LdictStatus::ProviderError,
+                        "entry provider returned an invalid batch".into(),
+                    ));
+                }
+                cursor.leased_generation = Some(batch.generation);
+                Ok(LdictStatus::Ok)
+            }
+            VtStatus::End => Ok(LdictStatus::End),
+            _ => unreachable!("provider_status returns only success statuses"),
+        }
+    })
+}
+
+/// Release the live batch lease identified by `generation`.
+///
+/// # Safety
+/// `cursor` must point to a live entry cursor.
+#[no_mangle]
+pub unsafe extern "C" fn ldict_entry_cursor_release(
+    cursor: *mut LdictEntryCursor,
+    generation: u64,
+) -> LdictStatus {
+    boundary(|| {
+        let cursor = entry_cursor_mut(cursor)?;
+        if generation == 0 || cursor.leased_generation != Some(generation) {
+            return Err((
+                LdictStatus::InvalidArgument,
+                "entry batch generation is not the live lease".into(),
+            ));
+        }
+        let release = (*cursor.vtable).release_batch.ok_or((
+            LdictStatus::ProviderError,
+            "entry release callback is null".into(),
+        ))?;
+        let status = provider_status(release(&mut cursor.raw, generation), "entry batch release")?;
+        debug_assert_eq!(status, VtStatus::Ok);
+        cursor.leased_generation = None;
+        Ok(LdictStatus::Ok)
+    })
+}
+
+/// Drain bounded batches through `reducer` without exposing a long-lived lease.
+///
+/// Returning `LDICT_STATUS_END` from the reducer stops successfully. Other
+/// published statuses abort and propagate after the provider settles its lease.
+///
+/// # Safety
+/// All pointers and the callback must remain valid for this synchronous call.
+#[no_mangle]
+pub unsafe extern "C" fn ldict_entry_cursor_reduce(
+    cursor: *mut LdictEntryCursor,
+    limits: *const LdictEntryBatchLimits,
+    reducer: Option<LdictEntryReducer>,
+    reducer_context: *mut std::ffi::c_void,
+    out_count: *mut usize,
+) -> LdictStatus {
+    boundary(|| {
+        if limits.is_null() {
+            return Err((LdictStatus::NullPointer, "limits is null".into()));
+        }
+        if out_count.is_null() {
+            return Err((LdictStatus::NullPointer, "out_count is null".into()));
+        }
+        out_count.write(0);
+        let reducer = reducer.ok_or((LdictStatus::NullPointer, "reducer is null".into()))?;
+        let limits_value = *limits;
+        if limits_value.max_entries == 0 || limits_value.reserved != 0 {
+            return Err((
+                LdictStatus::InvalidArgument,
+                "max_entries must be nonzero and limits.reserved must be zero".into(),
+            ));
+        }
+        let cursor = entry_cursor_mut(cursor)?;
+        if cursor.leased_generation.is_some() {
+            return Err((
+                LdictStatus::BatchInUse,
+                "entry cursor already has a live batch lease".into(),
+            ));
+        }
+        let reduce = (*cursor.vtable).reduce.ok_or((
+            LdictStatus::ProviderError,
+            "entry reduce callback is null".into(),
+        ))?;
+        let mut context = EntryReducerContext {
+            reducer,
+            reducer_context,
+            callback_error: None,
+        };
+        let raw = reduce(
+            &mut cursor.raw,
+            limits,
+            Some(entry_reducer_trampoline),
+            (&mut context as *mut EntryReducerContext).cast(),
+            out_count,
+        );
+        if let Some(status) = context.callback_error {
+            return Err((status, format!("entry reducer returned {status:?}")));
+        }
+        let status = provider_status(raw, "entry reduce")?;
+        if status != VtStatus::Ok {
+            return Err((
+                LdictStatus::ProviderError,
+                "entry reduce unexpectedly returned end".into(),
+            ));
+        }
+        Ok(LdictStatus::Ok)
+    })
+}
+
+/// Request sticky exhaustion. Cancellation is idempotent and does not settle a
+/// currently leased batch.
+///
+/// # Safety
+/// `cursor` must point to a live entry cursor.
+#[no_mangle]
+pub unsafe extern "C" fn ldict_entry_cursor_cancel(cursor: *mut LdictEntryCursor) -> LdictStatus {
+    boundary(|| {
+        let cursor = entry_cursor_mut(cursor)?;
+        let cancel = (*cursor.vtable).cancel.ok_or((
+            LdictStatus::ProviderError,
+            "entry cancel callback is null".into(),
+        ))?;
+        let status = provider_status(cancel(&mut cursor.raw), "entry cancel")?;
+        debug_assert_eq!(status, VtStatus::Ok);
+        Ok(LdictStatus::Ok)
+    })
+}
+
+/// Close and free a lease-free entry cursor. Null is accepted as a no-op.
+///
+/// A live lease returns `LDICT_STATUS_BATCH_IN_USE`; release it and retry.
+///
+/// # Safety
+/// `cursor` must be null or the unique live pointer returned by
+/// [`ldict_dictionary_entries_open`]. On success it becomes invalid.
+#[no_mangle]
+pub unsafe extern "C" fn ldict_entry_cursor_free(cursor: *mut LdictEntryCursor) -> LdictStatus {
+    boundary(|| {
+        if cursor.is_null() {
+            return Ok(LdictStatus::Ok);
+        }
+        let cursor_ref = &mut *cursor;
+        if cursor_ref.leased_generation.is_some() {
+            return Err((
+                LdictStatus::BatchInUse,
+                "entry cursor still has a live batch lease".into(),
+            ));
+        }
+        let close = (*cursor_ref.vtable).close.ok_or((
+            LdictStatus::ProviderError,
+            "entry close callback is null".into(),
+        ))?;
+        let status = provider_status(close(&mut cursor_ref.raw), "entry cursor close")?;
+        debug_assert_eq!(status, VtStatus::Ok);
+        drop(Box::from_raw(cursor));
         Ok(LdictStatus::Ok)
     })
 }

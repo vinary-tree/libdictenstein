@@ -44,25 +44,148 @@ GUIDES = {
     "lua": Guide("Lua", "Lua 5.4+", "Tier 3", "LuaRocks `vinary-tree-libdictenstein`", "C userdata module over the ABI", "Use to-be-closed variables or `:close()`; `__gc` is fallback cleanup.", "Failures become Lua errors carrying the symbolic status and diagnostic.", "bindings/lua/src/libdictenstein_lua.c", "bindings/lua/test/conformance.lua", "lua bindings/lua/test/conformance.lua"),
 }
 
-COLLECTION_IDIOMS = {
-    "C": "a bounded entry-batch cursor plus callback reducer; C has no standard collection protocol",
-    "C++": "RAII snapshot ranges, input iterators, and sized ranges only when cardinality is exact",
-    "Python": "read-only collections.abc Set/Mapping views plus a context-managed streaming iterator",
-    "JVM": "Java Set/Map/Iterable/Spliterator/Stream views, Kotlin collections/Sequence, and Scala collections/Iterator",
-    "Clojure": "reducible and sequence views whose resource-scoped forms use with-open",
-    "JavaScript family": "iterable immutable views and an async iterator only for genuinely asynchronous runtimes",
-    ".NET": "IReadOnlySet/IReadOnlyDictionary/IEnumerable views and a using-scoped streaming enumerator",
-    "Go": "range-compatible iterator functions and an explicit cancellable streaming form",
-    "Swift": "Sequence views and a closeable streaming iterator",
-    "Ruby": "Enumerable with each, including deterministic cleanup after break",
-    "Fortran": "counted batches and callback/fold procedures with explicit status results",
-    "OCaml": "Seq/fold adapters and a resource-scoped streaming fold",
-    "Haskell": "Foldable-style materialized views and bracketed streaming folds",
-    "Lua": "pairs-style materialized iteration and an explicitly closeable stream",
-}
-
-
 def block(g: Guide) -> str:
+    benchmark_section = ""
+    if g.name == "C":
+        collection_section = """The shipped low-level collection surface is an opaque `LdictEntryCursor`
+over one immutable revision. Callers select hard descriptor/unit/value bounds,
+lease one `LdictEntryBatch` at a time, release its exact generation before the
+next call, and use `ldict_entry_cursor_reduce` when a synchronous callback fold
+is more natural. `cancel` is sticky and idempotent; `free` requires no live
+lease. Batch descriptors preserve byte, Unicode-scalar (`uint32_t`), and `u64`
+unit arenas plus valueless versus present-`u64` members without sentinels."""
+    elif g.name == "C++":
+        collection_section = """The shipped `dictionary::entries()` surface returns a move-only
+`entries_view` satisfying the C++20 input-range/view concepts. Each
+`entry_view` borrows byte, Unicode-scalar (`uint32_t`), or `u64` units and
+returns `std::optional<uint64_t>` for mapped values. The range owns its snapshot
+cursor; advancing releases completed batches, while destruction after `break`
+or exception cancels, releases the live generation, and closes the cursor."""
+    elif g.name == "Python":
+        collection_section = """`Dictionary.snapshot()` returns an immutable, repeatable
+`collections.abc.Mapping` copied from one native revision. `keys()`, `items()`,
+and `values()` are ordinary Python views; membership remains a direct native
+lookup. `stream_entries()` returns a context-managed iterator with exact length
+and snapshot identity metadata when advertised. Each yielded `bytes`, `str`, or
+`tuple[int, ...]` key owns its Python storage, and `with` closes promptly after
+exhaustion, `break`, or exception."""
+    elif g.name == "JVM":
+        collection_section = """`Dictionary.snapshot()` returns an immutable ordered
+`DictionarySnapshot` with `Collection`, `List`, `Set`, and `Map` views over
+value-semantic `DictionaryKey`/`DictionaryEntry` objects. The dictionary is
+repeatably `Iterable`; `openEntryStream` is a closeable `Iterator`/`Spliterator`,
+and `streamEntries` is a sequential Java `Stream`. Java uses
+try-with-resources, Kotlin uses collections/`asSequence()`/`use`, and Scala uses
+collection converters/`Using`; all share the same FFM cursor and never depend
+on garbage collection for native cleanup."""
+    elif g.name == "Clojure":
+        collection_section = """The shipped facade provides immutable `entries`, `keys`,
+`values`, and `entry-seq` snapshots plus reducible `entry-eduction` adapters.
+`with-entry-stream` scopes the native cursor for `reduce-entry-stream` and
+`transduce-entry-stream`, so reduced values and exceptions close promptly.
+Byte arrays and `long` arrays are copied losslessly, while ordinary Unicode
+terms remain strings. No lazy sequence is allowed to outlive its resource
+scope."""
+    elif g.name == "JavaScript family":
+        collection_section = """Dictionaries expose familiar `size`, `has`, `get`, `set`,
+`delete`, `entries`, `keys`, `values`, `forEach`, and `[Symbol.iterator]`
+operations. Ordinary iteration is backed by one host-owned immutable snapshot;
+`streamEntries()` is the explicit bounded native cursor and implements
+`return`, `close`, and `Symbol.dispose` for prompt cleanup after early exit.
+Native Node, browser-WASM, and WASI runtimes preserve the same synchronous
+contract; no fake async iterator or promise hop is introduced."""
+    elif g.name == ".NET":
+        collection_section = """`SnapshotEntries()` returns a repeatable immutable
+`IReadOnlyCollection<DictionaryEntry>` with ordered `IReadOnlySet<DictionaryKey>`
+and `IReadOnlyDictionary<DictionaryKey, ulong?>` views. `StreamEntries()` is an
+`IEnumerable<DictionaryEntry>`/`IEnumerator<DictionaryEntry>` whose native
+cursor implements `IDisposable`; `foreach` and LINQ work naturally, while
+early-stop code uses `using`. `DictionaryKey` has value equality across text,
+bytes, and unsigned `ulong` token sequences."""
+    elif g.name == "Go":
+        collection_section = """`SnapshotEntries` and `Entries` materialize host-owned keys from one
+immutable revision. `OpenEntryStream` exposes bounded `Next`, `Cancel`, and
+`Close` operations plus Go 1.23 range-compatible `Seq` and `Seq2` helpers.
+Range exit closes automatically, including early `break` and panic; direct
+`Next` callers close explicitly. `SnapshotEntry` keeps byte keys as `[]byte`,
+Unicode-scalar keys as `string`, `u64` keys as `[]uint64`, and mapped values as
+`*uint64`, so nil, zero, and max remain distinct."""
+        benchmark_section = """
+The public-package benchmark keeps construction and warmup outside the timed
+drain and prints one JSON record. Run the 4,096-entry latency cell, the
+65,536-entry streaming cell, or the 64-entry cancellation cell with:
+
+```sh
+go run ./bindings/go/cmd/collection-traversal-profile --arm materialized --entries 4096
+go run ./bindings/go/cmd/collection-traversal-profile --arm stream --entries 65536 --batch-size 256
+go run ./bindings/go/cmd/collection-traversal-profile --arm stream-cancel --entries 65536 --batch-size 64 --early-cancel 64
+```"""
+    elif g.name == "Swift":
+        collection_section = """`Dictionary.entries()` returns a host-owned `EntrySnapshot` that safely
+conforms to `RandomAccessCollection`. For bounded traversal, `entryStream()`
+returns a throwing `EntryStream` with explicit `next`, `cancel`, and `close`;
+native calls and arena copies use `withExtendedLifetime`, and `deinit` is a
+cleanup safety net. Domain-tagged keys preserve raw bytes, Unicode scalar
+values, and `UInt64` units while `UInt64?` preserves term-only membership."""
+        benchmark_section = """
+The SwiftPM executable keeps construction and warmup outside the timed drain
+and prints one JSON record. Its materialized, streaming, and early-cancel arms
+use the same 4,096/65,536-entry corpus as the Rust driver:
+
+```sh
+swift run --package-path bindings/swift/libdictenstein -c release libdictenstein-collection-profile --arm materialized --entries 4096
+swift run --package-path bindings/swift/libdictenstein -c release libdictenstein-collection-profile --arm stream --entries 65536 --batch-size 256
+swift run --package-path bindings/swift/libdictenstein -c release libdictenstein-collection-profile --arm stream-cancel --entries 65536 --batch-size 64 --early-cancel 64
+```"""
+    elif g.name == "Ruby":
+        collection_section = """Every dictionary includes `Enumerable`. `each` returns an `Enumerator`
+without a block and yields host-owned `Entry` records in lexical order; its
+`ensure` path closes the cursor after exhaustion, `break`, or exception.
+`entry_stream` also exposes explicit `next`, `cancel`, and `close`, while
+`entries`, `keys`, and `values` provide materialized snapshot idioms. Binary
+strings, UTF-8 strings, and `Array<Integer>` preserve the three unit domains;
+`nil` remains distinct from every mapped integer."""
+        benchmark_section = """
+The gem executable keeps construction and warmup outside the timed drain and
+prints one JSON record. Run its materialized, streaming, and early-cancel arms
+over the shared deterministic corpus with:
+
+```sh
+ruby bindings/ruby/bin/libdictenstein-collection-profile --arm materialized --entries 4096
+ruby bindings/ruby/bin/libdictenstein-collection-profile --arm stream --entries 65536 --batch-size 256
+ruby bindings/ruby/bin/libdictenstein-collection-profile --arm stream-cancel --entries 65536 --batch-size 64 --early-cancel 64
+```"""
+    elif g.name == "Fortran":
+        collection_section = """`dictionary%open_entries` returns a derived
+`dictionary_entry_cursor` with bounded `next_batch`, cancellation, and explicit
+`close`; copied batches preserve byte, Unicode-scalar, and full-range `int64`
+bit patterns plus optional values. `dictionary%fold_entries` is the natural
+synchronous reducer and settles every native lease before invoking subsequent
+Fortran code. Status values remain explicit, and finalization is only a
+last-resort cleanup path."""
+    elif g.name == "OCaml":
+        collection_section = """`with_entries_seq` supplies a scoped, repeatable `Seq.t`
+whose keys are `Bytes`, UTF-8 `Unicode`, or raw-bit-pattern `U64` arrays and
+whose values remain `int64 option`. `fold_entries` uses the native synchronous
+reducer. `Fun.protect` closes after full drain, early return, or exception, and
+the sequence cannot escape its owning callback; a finalizer only contains an
+abandoned custom cursor."""
+    elif g.name == "Haskell":
+        collection_section = """`materializeEntries` returns a host-owned `Foldable`
+snapshot. `withEntryStream` brackets a bounded cursor whose `nextEntry` values
+own their `ByteString`, `Text`, or `Vector Word64` keys, while `foldEntries`
+uses the native reducer without an intermediate list. Acquire/release is masked
+against asynchronous exceptions, and every callback restores the caller's
+masking state."""
+    elif g.name == "Lua":
+        collection_section = """`dictionary:entries()` materializes one immutable
+revision for ordinary table iteration, while `dictionary:entries_iter()`
+provides the idiomatic generic-for triple. `dictionary:entry_cursor(limits)`
+exposes explicit `:next()`, metadata, and idempotent `:close()` for bounded
+streaming. Lua 5.4 to-be-closed variables provide lexical cleanup and `__gc`
+only contains abandoned userdata."""
+    else:
+        raise AssertionError(f"collection documentation is missing for {g.name}")
     return f"""{MARKER}
 
 ## Support and package contract
@@ -127,14 +250,10 @@ arbitrary octets. Token APIs preserve the full `u64` range. Optional dictionary
 values are represented separately from terminal membership, so `None` is not a
 sentinel and empty terms remain valid when supported.
 
-## Native collection idioms and planned parity
+## Native collection surface
 
-The current facade exposes lookup, length, mutation, and deterministic resource
-ownership, but does **not** yet claim the complete host collection protocol.
-The planned native shape for this runtime is {COLLECTION_IDIOMS[g.name]}. The
-ordinary collection view will own host data from one immutable revision, while
-the large-dictionary stream will retain one bounded native snapshot and require
-lexical cleanup. Membership remains a direct lookup, never an iteration scan.
+{collection_section}
+{benchmark_section}
 
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk

@@ -4,7 +4,7 @@
 ' Source of truth: src/bindings.rs (four backend bindings, ResourceContext,
 ' TraversalSnapshot graph/fallback views, 'static vtables,
 ' OwnedDictionaryResource) and
-' src/ffi.rs (the 35-function ldict_* C ABI). Machine-readable model:
+' src/ffi.rs (the 41-function ldict_* C ABI). Machine-readable model:
 ' bindings/api.json.
 ' Color key (family palette + ABI concept colors):
 '   #D5F5E3 libdictenstein (producer)   #FADBD8 liblevenshtein / interop host
@@ -37,7 +37,7 @@ rectangle "**Trust boundary** — independently compiled consumers\nreach the pr
 
 package "libdictenstein cdylib — the producer" #D5F5E3 {
   package "C ABI — src/ffi.rs" {
-    component "ldict_* × 35 — catch_unwind → LdictStatus,\nthread-local last error" as ffi #FFFFFF
+    component "ldict_* × 41 — catch_unwind → LdictStatus,\nCRUD · lifecycle · entry snapshots/reduce" as ffi #FFFFFF
     component "LdictDictionary handle\n{ binding, resource }" as handle #FFFFFF
   }
 

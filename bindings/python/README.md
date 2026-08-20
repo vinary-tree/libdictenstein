@@ -72,14 +72,16 @@ arbitrary octets. Token APIs preserve the full `u64` range. Optional dictionary
 values are represented separately from terminal membership, so `None` is not a
 sentinel and empty terms remain valid when supported.
 
-## Native collection idioms and planned parity
+## Native collection surface
 
-The current facade exposes lookup, length, mutation, and deterministic resource
-ownership, but does **not** yet claim the complete host collection protocol.
-The planned native shape for this runtime is read-only collections.abc Set/Mapping views plus a context-managed streaming iterator. The
-ordinary collection view will own host data from one immutable revision, while
-the large-dictionary stream will retain one bounded native snapshot and require
-lexical cleanup. Membership remains a direct lookup, never an iteration scan.
+`Dictionary.snapshot()` returns an immutable, repeatable
+`collections.abc.Mapping` copied from one native revision. `keys()`, `items()`,
+and `values()` are ordinary Python views; membership remains a direct native
+lookup. `stream_entries()` returns a context-managed iterator with exact length
+and snapshot identity metadata when advertised. Each yielded `bytes`, `str`, or
+`tuple[int, ...]` key owns its Python storage, and `with` closes promptly after
+exhaustion, `break`, or exception.
+
 
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk

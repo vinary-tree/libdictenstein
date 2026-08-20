@@ -74,6 +74,16 @@ pub(crate) type DATSharedChar<V = ()> = super::core::shared::ValidatedDATCoreSha
 /// assert!(dict.contains("中文"));
 /// assert!(dict.contains("🎉"));
 /// ```
+///
+/// This static backend deliberately does not implement
+/// [`std::iter::Extend`]:
+///
+/// ```compile_fail
+/// use libdictenstein::double_array_trie::char::DoubleArrayTrieChar;
+///
+/// let mut dictionary = DoubleArrayTrieChar::from_terms(["built"]);
+/// std::iter::Extend::extend(&mut dictionary, ["later".to_owned()]);
+/// ```
 #[cfg_attr(feature = "serialization", derive(serde::Serialize))]
 #[cfg_attr(
     all(feature = "serialization", not(feature = "persistent-artrie")),
@@ -401,6 +411,11 @@ impl<V: DictionaryValue> DoubleArrayTrieChar<V> {
     /// Returns an iterator yielding `(Vec<char>, V)` tuples in depth-first order.
     /// This is more efficient than `iter()` as it avoids String allocation.
     ///
+    /// This legacy mapped-only iterator omits present terms whose value is
+    /// `None`. Use `(&dictionary).into_iter()` or
+    /// [`DictionaryEntries::entries`](crate::DictionaryEntries::entries) for
+    /// lossless [`DictionaryEntry`](crate::DictionaryEntry) snapshots.
+    ///
     /// # Examples
     ///
     /// ```rust
@@ -424,6 +439,7 @@ impl<V: DictionaryValue> DoubleArrayTrieChar<V> {
     ///
     /// Returns an iterator yielding `(String, V)` tuples in depth-first order.
     /// For better performance with raw characters, use `iter_chars()` instead.
+    /// Like `iter_chars()`, this legacy iterator omits term-only entries.
     ///
     /// # Examples
     ///
@@ -444,13 +460,83 @@ impl<V: DictionaryValue> DoubleArrayTrieChar<V> {
     }
 }
 
-impl<V: DictionaryValue> IntoIterator for &DoubleArrayTrieChar<V> {
-    type Item = (Vec<char>, V);
-    type IntoIter = DictionaryIterator<DoubleArrayTrieCharZipper<V>>;
+impl<V: DictionaryValue> std::iter::FromIterator<String> for DoubleArrayTrieChar<V> {
+    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
+        let mut builder = StaticDATBuilder::new();
+        for term in iter {
+            builder.insert(term.chars(), None);
+        }
+        Self::from_static_builder(builder)
+    }
+}
 
-    /// Creates an iterator over all `(term, value)` pairs as character vectors.
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter_chars()
+impl<'a, V: DictionaryValue> std::iter::FromIterator<&'a str> for DoubleArrayTrieChar<V> {
+    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
+        let mut builder = StaticDATBuilder::new();
+        for term in iter {
+            builder.insert(term.chars(), None);
+        }
+        Self::from_static_builder(builder)
+    }
+}
+
+impl<V: DictionaryValue> std::iter::FromIterator<Vec<char>> for DoubleArrayTrieChar<V> {
+    fn from_iter<I: IntoIterator<Item = Vec<char>>>(iter: I) -> Self {
+        let mut builder = StaticDATBuilder::new();
+        for key in iter {
+            builder.insert(key, None);
+        }
+        Self::from_static_builder(builder)
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::FromIterator<&'a [char]> for DoubleArrayTrieChar<V> {
+    fn from_iter<I: IntoIterator<Item = &'a [char]>>(iter: I) -> Self {
+        let mut builder = StaticDATBuilder::new();
+        for key in iter {
+            builder.insert(key.iter().copied(), None);
+        }
+        Self::from_static_builder(builder)
+    }
+}
+
+impl<V: DictionaryValue> std::iter::FromIterator<(String, V)> for DoubleArrayTrieChar<V> {
+    fn from_iter<I: IntoIterator<Item = (String, V)>>(iter: I) -> Self {
+        let mut builder = StaticDATBuilder::new();
+        for (term, value) in iter {
+            builder.insert(term.chars(), Some(value));
+        }
+        Self::from_static_builder(builder)
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::FromIterator<(&'a str, V)> for DoubleArrayTrieChar<V> {
+    fn from_iter<I: IntoIterator<Item = (&'a str, V)>>(iter: I) -> Self {
+        let mut builder = StaticDATBuilder::new();
+        for (term, value) in iter {
+            builder.insert(term.chars(), Some(value));
+        }
+        Self::from_static_builder(builder)
+    }
+}
+
+impl<V: DictionaryValue> std::iter::FromIterator<(Vec<char>, V)> for DoubleArrayTrieChar<V> {
+    fn from_iter<I: IntoIterator<Item = (Vec<char>, V)>>(iter: I) -> Self {
+        let mut builder = StaticDATBuilder::new();
+        for (key, value) in iter {
+            builder.insert(key, Some(value));
+        }
+        Self::from_static_builder(builder)
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::FromIterator<(&'a [char], V)> for DoubleArrayTrieChar<V> {
+    fn from_iter<I: IntoIterator<Item = (&'a [char], V)>>(iter: I) -> Self {
+        let mut builder = StaticDATBuilder::new();
+        for (key, value) in iter {
+            builder.insert(key.iter().copied(), Some(value));
+        }
+        Self::from_static_builder(builder)
     }
 }
 

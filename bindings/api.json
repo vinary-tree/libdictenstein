@@ -25,6 +25,8 @@
     "resourceLayout": ["context", "vtable"],
     "dictionaryInterfaceId": "vt.dictionary.v1",
     "dictionaryInterfaceVersion": 1,
+    "dictionaryEntriesInterfaceId": "vt.dict.entry.v1",
+    "dictionaryEntriesInterfaceVersion": 1,
     "recommendedEdgeBatch": 256
   },
   "packages": {
@@ -67,7 +69,7 @@
       "Installation and native loading",
       "Executable example and verification",
       "Public API, backends, and data domains",
-      "Native collection idioms and planned parity",
+      "Native collection surface",
       "Ownership, snapshots, and resource handoff",
       "Errors and failure containment",
       "Concurrency and reentrancy",
@@ -100,7 +102,7 @@
     "_source": "release pins in .github/workflows/release-bindings.yml; dev facade pins in bindings/go/go.mod, Package.swift, bindings/jvm/build.gradle.kts (test scope), bindings/clojure/project.clj (:test profile), bindings/javascript/package.json (@vinary-tree/vinary-tree umbrella). Recorded verbatim; tag existence is a release concern tracked in docs/bindings/FINDINGS_LEDGER.md (LDICT-B1)."
   },
   "abiVersion": 1,
-  "apiRevision": 4,
+  "apiRevision": 5,
   "cPrefix": "ldict_",
   "cHeader": "include/libdictenstein.h",
   "featureGates": {
@@ -117,6 +119,7 @@
   "marshalling": {
     "resourceHandoff": "O(1)-retained-two-word-resource",
     "nodeExpansion": "batched-contiguous-edges",
+    "entryTraversal": "bounded-leased-entry-batches",
     "crudBatching": "single-crossing-contiguous-descriptors",
     "errorChannel": "thread-local-last-error-message",
     "panicPolicy": "catch-unwind-to-status"
@@ -148,6 +151,24 @@
         {"name": "len", "type": "usize"},
         {"name": "value", "type": "LdictOptionalU64"}
       ]
+    },
+    "LdictEntry": {
+      "alias": "VtDictionaryEntry",
+      "valueSemantics": "value_len-zero-is-valueless-member; value_len-one-indexes-present-u64"
+    },
+    "LdictEntryBatchLimits": {
+      "alias": "VtDictionaryEntryBatchLimits",
+      "bounds": ["max_entries", "max_units", "max_values"]
+    },
+    "LdictEntryBatch": {
+      "alias": "VtDictionaryEntryBatchView",
+      "ownership": "cursor-owned-borrowed-until-generation-release"
+    },
+    "LdictEntriesInfo": {
+      "alias": "VtDictionaryEntriesInfo",
+      "unitDomains": ["BYTE", "UNICODE_SCALAR", "U64"],
+      "valueDomain": "OPTIONAL_U64",
+      "order": "LEXICOGRAPHIC"
     }
   },
   "enums": {
@@ -165,7 +186,9 @@
         "IO_ERROR": 7,
         "CLOSED": 8,
         "DOMAIN_MISMATCH": 9,
-        "LIMIT_EXCEEDED": 10
+        "LIMIT_EXCEEDED": 10,
+        "PROVIDER_ERROR": 11,
+        "BATCH_IN_USE": 12
       }
     }
   },
@@ -255,6 +278,12 @@
     {"name": "ldict_dictionary_capabilities", "group": "handle"},
     {"name": "ldict_dictionary_free", "group": "handle"},
     {"name": "ldict_dictionary_resource", "group": "handle"},
+    {"name": "ldict_dictionary_entries_open", "group": "collection"},
+    {"name": "ldict_entry_cursor_next", "group": "collection"},
+    {"name": "ldict_entry_cursor_release", "group": "collection"},
+    {"name": "ldict_entry_cursor_reduce", "group": "collection"},
+    {"name": "ldict_entry_cursor_cancel", "group": "collection"},
+    {"name": "ldict_entry_cursor_free", "group": "collection"},
     {"name": "ldict_dictionary_len", "group": "handle"},
     {"name": "ldict_dictionary_checkpoint", "group": "maintenance", "feature": "persistent-artrie"},
     {"name": "ldict_vocab_get_term", "group": "vocabulary", "feature": "persistent-artrie"},
@@ -322,7 +351,7 @@
     "go": {
       "root": "bindings/go",
       "parser": "cgo",
-      "importLayers": ["bindings/go/libdictenstein.go"],
+      "importLayers": ["bindings/go/libdictenstein.go", "bindings/go/entries.go"],
       "package": "goModule"
     },
     "haskell": {

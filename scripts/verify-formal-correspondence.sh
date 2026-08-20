@@ -382,6 +382,7 @@ if command -v tla2sany >/dev/null 2>&1; then
       LockFreeOverlayValueCas \
       ConcurrentCheckpointSerialization \
       AbiProducerSnapshot \
+      DictionaryEntryBatchLease \
       AbiSnapshotQuiescence
     do
       run_capped tla2sany "${module}.tla"
@@ -442,6 +443,7 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       LockFreeOverlayValueCas \
       ConcurrentCheckpointSerialization \
       AbiProducerSnapshot \
+      DictionaryEntryBatchLease \
       AbiSnapshotQuiescence
     do
       run_tlc_isolated "$module" -workers 1 -config "${module}.cfg" "${module}.tla"

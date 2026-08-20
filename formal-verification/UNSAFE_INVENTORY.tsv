@@ -10,6 +10,7 @@ src/bindings.rs	unsafe_block	assert_eq!(unsafe { context_strong_count(second.as_
 src/bindings.rs	unsafe_block	let (is_final, total) = unsafe {	1	abi-snapshot-cursor-validation
 src/bindings.rs	unsafe_block	let captured_context = unsafe { &*captured.raw.context.cast::<ResourceContext>() };	1	abi-test-context-probe
 src/bindings.rs	unsafe_block	let captured_observer = unsafe { context_weak_observer(captured) };	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	let context = unsafe { &*self.raw.context.cast::<ResourceContext>() };	1	abi-owned-resource-release-once
 src/bindings.rs	unsafe_block	let graph_vtable = unsafe { &*graph_vtable.cast::<VtDictionaryGraphVTable>() };	1	abi-test-context-probe
 src/bindings.rs	unsafe_block	let live = unsafe { &*dynamic_resource.raw.context.cast::<ResourceContext>() };	1	abi-test-context-probe
 src/bindings.rs	unsafe_block	let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };	11	abi-test-context-probe
@@ -52,6 +53,31 @@ src/bindings.rs	unsafe_fn	unsafe fn dictionary_transition_status(	1	abi-producer
 src/bindings.rs	unsafe_fn	unsafe fn dictionary_value_status(	1	abi-producer-callback-body
 src/bindings.rs	unsafe_fn	unsafe fn dictionary_visit_status(	1	abi-producer-callback-body
 src/bindings.rs	unsafe_fn	unsafe fn query_interface_status(	1	abi-producer-callback-body
+src/bindings/entries.rs	unsafe_block	Ok(unsafe { &mut *cursor.context.cast::<EntryCursorState>() })	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	let callback_raw = unsafe { reducer(reducer_context, &batch) };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	let cursor = unsafe { &mut *cursor };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	let handle = unsafe { &mut *cursor };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	let limits = unsafe { *limits };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	let release = unsafe { release_batch_status(cursor, batch.generation) };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	let resource = unsafe { &*resource_context.cast::<ResourceContext>() };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	let state = match unsafe { state_mut(cursor) } {	2	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	let state = unsafe { &mut *handle.context.cast::<EntryCursorState>() };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	match unsafe { next_batch_status(cursor, limits, &mut batch) } {	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	match unsafe { state_mut(cursor) } {	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	unsafe {	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	unsafe { drop(Box::from_raw(context.cast::<EntryCursorState>())) };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	unsafe { next_batch_status(cursor, limits, out_batch) }.to_raw()	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	unsafe { out_batch.write(VtDictionaryEntryBatchView::default()) };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	unsafe { out_batch.write(state.view(generation)) };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	unsafe { out_count.write(0) };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	unsafe { out_count.write(count) };	2	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	unsafe { release_batch_status(cursor, generation) }.to_raw()	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_fn	unsafe fn next_batch_status(	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_fn	unsafe fn release_batch_status(	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_fn	unsafe fn state_mut<'a>(	1	abi-entry-cursor-provider-ownership
+src/collection.rs	unsafe_block	let edges = unsafe { graph.edges_and_finality_unchecked(frame.cursor) };	1	snapshot-dense-cursor-contract
+src/collection.rs	unsafe_block	let is_final = unsafe {	1	snapshot-dense-cursor-contract
+src/collection.rs	unsafe_block	unsafe {	2	snapshot-dense-cursor-contract
 src/concurrent_slots.rs	unsafe_block	(unsafe { &*canonical }, installed)	1	concurrent-slots-raw-box-ownership
 src/concurrent_slots.rs	unsafe_block	current = unsafe { (*current).next.load(Ordering::Relaxed) };	1	concurrent-slots-raw-box-ownership
 src/concurrent_slots.rs	unsafe_block	let chunk = unsafe { &*current };	2	concurrent-slots-raw-box-ownership
@@ -66,7 +92,7 @@ src/concurrent_slots.rs	unsafe_block	unsafe { drop(Box::from_raw(pointer)) };	2	
 src/concurrent_slots.rs	unsafe_block	unsafe { self.pointer.load(Ordering::Acquire).as_ref() }	1	concurrent-slots-raw-box-ownership
 src/double_array_trie/ascii.rs	unsafe_block	let finality = unsafe {	2	snapshot-dat-sealed-layout
 src/double_array_trie/ascii.rs	unsafe_block	let materialized = unsafe { owner.snapshot_cursor_node(cursor) }.expect("valid node");	1	snapshot-dat-sealed-layout
-src/double_array_trie/ascii.rs	unsafe_block	let shared = unsafe { DATShared::from_builder_parts_unchecked(raw, term_count) };	3	snapshot-dat-sealed-layout
+src/double_array_trie/ascii.rs	unsafe_block	let shared = unsafe { DATShared::from_builder_parts_unchecked(raw, term_count) };	2	snapshot-dat-sealed-layout
 src/double_array_trie/ascii.rs	unsafe_block	let state = unsafe { self.shared.traversal_state(cursor) }?;	1	snapshot-dat-sealed-layout
 src/double_array_trie/ascii.rs	unsafe_block	unsafe {	2	snapshot-dat-sealed-layout
 src/double_array_trie/ascii.rs	unsafe_block	unsafe { owner.snapshot_cursor_key_units(cursor) },	1	snapshot-dat-sealed-layout
@@ -148,6 +174,7 @@ src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn filter_map_snapshot_cursor_edges_and
 src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn snapshot_cursor_node(&self, cursor: Self::SnapshotCursor) -> Option<Self> {	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn snapshot_cursor_value(	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn snapshot_graph_cursor_value(	1	snapshot-dawg-native-cursor-ownership
+src/ffi.rs	unsafe_fn	unsafe fn entry_cursor_mut<'a>(	1	ffi-entry-cursor-handle-ownership
 src/ffi.rs	unsafe_fn	unsafe fn persistent_open_or_create(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn persistent_path<'a>(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn slice<'a, T>(	1	ffi-caller-pointer-contracts

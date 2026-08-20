@@ -4,7 +4,13 @@ import PackageDescription
 let package = Package(
     name: "libdictenstein",
     platforms: [.macOS(.v13)],
-    products: [.library(name: "Libdictenstein", targets: ["Libdictenstein"])],
+    products: [
+        .library(name: "Libdictenstein", targets: ["Libdictenstein"]),
+        .executable(
+            name: "libdictenstein-collection-profile",
+            targets: ["CollectionTraversalProfile"]
+        ),
+    ],
     dependencies: [
         .package(path: "../../../../liblevenshtein-rust/vinary-tree-interop/bindings/swift/vinary-tree-interop"),
     ],
@@ -16,6 +22,10 @@ let package = Package(
                 "CLibdictenstein",
                 .product(name: "VinaryTreeInterop", package: "vinary-tree-interop"),
             ]
+        ),
+        .executableTarget(
+            name: "CollectionTraversalProfile",
+            dependencies: ["Libdictenstein"]
         ),
         .testTarget(
             name: "LibdictensteinTests",

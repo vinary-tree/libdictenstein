@@ -68,9 +68,9 @@ jobs:
         with: { go-version: "stable" }
       - uses: actions/download-artifact@v4
         with: { name: libdictenstein-so, path: target/release }
-      - name: Run the conformance sub-package
+      - name: Run conformance and public-package profile smoke tests
         working-directory: bindings/go
-        run: CGO_LDFLAGS="-L$GITHUB_WORKSPACE/target/release" LD_LIBRARY_PATH="$GITHUB_WORKSPACE/target/release" GOWORK=off go test ./conformance/
+        run: CGO_LDFLAGS="-L$GITHUB_WORKSPACE/target/release" LD_LIBRARY_PATH="$GITHUB_WORKSPACE/target/release" GOWORK=off go test ./conformance/ ./cmd/collection-traversal-profile/
 
   ruby:
     name: Ruby (C1-C10)
@@ -83,9 +83,36 @@ jobs:
       - uses: actions/download-artifact@v4
         with: { name: libdictenstein-so, path: target/release }
       - run: gem install minitest
-      - name: Run the conformance suite
+      - name: Run conformance and public-package profile smoke tests
         working-directory: bindings/ruby
-        run: LIBDICTENSTEIN_LIBRARY="$GITHUB_WORKSPACE/target/release/liblibdictenstein.so" ruby -Ilib -Itest test/test_conformance.rb
+        run: |
+          export LIBDICTENSTEIN_LIBRARY="$GITHUB_WORKSPACE/target/release/liblibdictenstein.so"
+          ruby -Ilib -Itest test/test_conformance.rb
+          ruby -Ilib -Itest test/test_collection_profile.rb
+          ruby -c bin/libdictenstein-collection-profile
+
+  c:
+    name: C entry cursor
+    needs: native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: libdictenstein-so, path: target/release }
+      - name: Compile conformance and public-package profile smoke tests
+        run: |
+          rel="$GITHUB_WORKSPACE/target/release"
+          cc -std=c17 -O2 -Wall -Wextra -Werror bindings/c/tests/entries.c \
+            -I include -L "$rel" -llibdictenstein -o /tmp/c_entries
+          LD_LIBRARY_PATH="$rel" /tmp/c_entries
+          cc -std=c17 -O2 -Wall -Wextra -Werror \
+            bindings/c/examples/collection_traversal_profile.c \
+            -I include -L "$rel" -llibdictenstein \
+            -o /tmp/c_collection_profile
+          LD_LIBRARY_PATH="$rel" /tmp/c_collection_profile \
+            --arm stream-cancel --entries 16 --batch-size 4 --early-cancel 5
+          LD_LIBRARY_PATH="$rel" /tmp/c_collection_profile \
+            --arm reduce --entries 16 --batch-size 4
 
   cpp:
     name: C++ (C1-C10)
@@ -96,7 +123,7 @@ jobs:
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: actions/download-artifact@v4
         with: { name: libdictenstein-so, path: target/release }
-      - name: Compile and run the conformance suite
+      - name: Compile conformance and public-header profile smoke tests
         run: |
           parent="$(dirname "$GITHUB_WORKSPACE")"
           rel="$GITHUB_WORKSPACE/target/release"
@@ -104,6 +131,12 @@ jobs:
             -I include -I "$parent/liblevenshtein-rust/vinary-tree-interop/include" \
             -L "$rel" -llibdictenstein -o /tmp/cpp_conformance
           LD_LIBRARY_PATH="$rel" /tmp/cpp_conformance bindings/canonical_fixture.json
+          c++ -std=c++20 -O2 -Wall -Wextra -Werror \
+            bindings/cpp/examples/collection_traversal_profile.cpp \
+            -I include -L "$rel" -llibdictenstein \
+            -o /tmp/cpp_collection_profile
+          LD_LIBRARY_PATH="$rel" /tmp/cpp_collection_profile \
+            --arm stream-cancel --entries 16 --batch-size 4 --early-cancel 5
 
   lua:
     name: Lua (C1-C10)
@@ -193,12 +226,19 @@ jobs:
         with: { swift-version: "6.0" }
       - uses: actions/download-artifact@v4
         with: { name: libdictenstein-so, path: target/release }
-      - name: Run the conformance test target
+      - name: Run conformance and compile the public-package profile
         run: |
           rel="$GITHUB_WORKSPACE/target/release"
           LIBRARY_PATH="$rel" LD_LIBRARY_PATH="$rel" \
+            swift build --package-path bindings/swift/libdictenstein \
+              --product libdictenstein-collection-profile
+          LIBRARY_PATH="$rel" LD_LIBRARY_PATH="$rel" \
             LDICT_FIXTURE="$GITHUB_WORKSPACE/bindings/canonical_fixture.json" \
             swift test --package-path bindings/swift/libdictenstein
+          LIBRARY_PATH="$rel" LD_LIBRARY_PATH="$rel" \
+            swift run --package-path bindings/swift/libdictenstein --skip-build \
+              libdictenstein-collection-profile --arm stream-cancel \
+              --entries 16 --batch-size 4 --early-cancel 5
 
   dotnet:
     name: .NET (C1-C10)
@@ -261,7 +301,7 @@ jobs:
         with: { cli: latest }
       - uses: actions/download-artifact@v4
         with: { name: libdictenstein-so, path: target/release }
-      - name: Compile the JVM facade classes and run the conformance runner
+      - name: Compile the JVM facade and run conformance and profile smokes
         run: |
           parent="$(dirname "$GITHUB_WORKSPACE")"
           rel="$GITHUB_WORKSPACE/target/release"
@@ -274,6 +314,12 @@ jobs:
             $(find bindings/jvm/src/main/java -name '*.java')
           cd bindings/clojure
           clojure -J-Djava.library.path="$rel" -M:conformance
+          clojure -J-Djava.library.path="$rel" -M:profile \
+            --arm stream-cancel --entries 16 --batch-size 4 --early-cancel 5 \
+            --passes 1 --warmup-passes 0
+          clojure -J-Djava.library.path="$rel" -M:profile \
+            --arm reduce --entries 16 --batch-size 4 \
+            --passes 1 --warmup-passes 0
 
   fortran:
     name: Fortran (C1-C10)

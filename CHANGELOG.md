@@ -9,8 +9,8 @@ Date format is ISO-8601 (YYYY-MM-DD).
 ### Added
 
 - **Binding contract gate.** `bindings/api.json` is the machine-readable model of the
-  35-function `ldict_*` C ABI (status/kind/capability/unit-domain pins, registry coordinates
-  for all 13 language facades, sibling pins), and `scripts/check-bindings.py` (stdlib-only,
+  41-function `ldict_*` C ABI (status/kind/capability/unit-domain pins, registry coordinates
+  for all 14 governed facades, sibling pins), and `scripts/check-bindings.py` (stdlib-only,
   `--json` capable) enforces it: model ↔ `src/ffi.rs` ↔ `include/libdictenstein.h` symbol and
   constant parity, per-facade referenced-symbol validity, coordinate/version coherence, the
   publishable-file identity guard, exact npm pins, and byte-equality of

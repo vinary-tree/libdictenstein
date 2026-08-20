@@ -108,6 +108,37 @@ pub struct Scdawg<V: DictionaryValue = ()> {
     inner: LockFreeScdawg<u8, V>,
 }
 
+/// Snapshot-owning iterator over exact byte SCDAWG terms and optional values.
+#[derive(Clone)]
+pub struct ScdawgEntryIterator<V: DictionaryValue = ()> {
+    inner: Arc<ScdawgInner<V>>,
+    index: usize,
+}
+
+impl<V: DictionaryValue> Iterator for ScdawgEntryIterator<V> {
+    type Item = (String, Option<V>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let term_index = *self.inner.sorted_term_indices.get(self.index)?;
+        let term = self.inner.terms.get(term_index)?.clone();
+        self.index += 1;
+        let value = self.inner.term_values.get(&term).cloned();
+        Some((term, value))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self
+            .inner
+            .sorted_term_indices
+            .len()
+            .saturating_sub(self.index);
+        (remaining, Some(remaining))
+    }
+}
+
+impl<V: DictionaryValue> ExactSizeIterator for ScdawgEntryIterator<V> {}
+impl<V: DictionaryValue> std::iter::FusedIterator for ScdawgEntryIterator<V> {}
+
 impl<V: DictionaryValue> Default for Scdawg<V> {
     fn default() -> Self {
         Self::new()
@@ -190,6 +221,33 @@ impl<V: DictionaryValue> Scdawg<V> {
         })
     }
 
+    fn extend_records(&self, records: Vec<(String, Option<V>)>) {
+        if records.is_empty() {
+            return;
+        }
+        self.inner.mutate(|inner| {
+            let mut added = false;
+            let mut changed = false;
+            for (term, value) in &records {
+                match value {
+                    Some(value) => {
+                        added |= inner.insert_with_value(term, value.clone());
+                        changed = true;
+                    }
+                    None => {
+                        let inserted = inner.insert(term);
+                        added |= inserted;
+                        changed |= inserted;
+                    }
+                }
+            }
+            if added {
+                inner.compute_left_edges();
+            }
+            ((), changed)
+        });
+    }
+
     /// Get the value associated with a term.
     ///
     /// Matches `ScdawgChar::get_value` (B3 parity backfill).
@@ -224,8 +282,15 @@ impl<V: DictionaryValue> Scdawg<V> {
 
     /// Iterate over all terms.
     pub fn iter(&self) -> impl Iterator<Item = String> {
-        let inner = self.inner.load();
-        inner.terms.clone().into_iter()
+        self.iter_entries().map(|(term, _)| term)
+    }
+
+    /// Iterate lazily over all exact terms and their optional values.
+    pub fn iter_entries(&self) -> ScdawgEntryIterator<V> {
+        ScdawgEntryIterator {
+            inner: self.inner.load(),
+            index: 0,
+        }
     }
 
     /// Get the number of terms in the SCDAWG.
@@ -244,6 +309,19 @@ impl<V: DictionaryValue> Scdawg<V> {
         let inner = self.inner.load();
         let term_count = inner.term_count();
         (ScdawgNodeHandle { inner, node_idx: 0 }, term_count)
+    }
+
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn root_with_term_count_and_entries(
+        &self,
+    ) -> (ScdawgNodeHandle<V>, usize, ScdawgEntryIterator<V>) {
+        let inner = self.inner.load();
+        let term_count = inner.term_count();
+        let entries = ScdawgEntryIterator {
+            inner: Arc::clone(&inner),
+            index: 0,
+        };
+        (ScdawgNodeHandle { inner, node_idx: 0 }, term_count, entries)
     }
 
     /// Get the number of nodes in the SCDAWG.
@@ -345,6 +423,62 @@ impl<V: DictionaryValue> Scdawg<V> {
             .inner
             .collect_term_positions(handle.node_idx, pattern_len, &mut results);
         results
+    }
+}
+
+impl<V: DictionaryValue> FromIterator<String> for Scdawg<V> {
+    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
+        Self::from_terms(iter)
+    }
+}
+
+impl<'a, V: DictionaryValue> FromIterator<&'a str> for Scdawg<V> {
+    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
+        Self::from_terms(iter)
+    }
+}
+
+impl<V: DictionaryValue> FromIterator<(String, V)> for Scdawg<V> {
+    fn from_iter<I: IntoIterator<Item = (String, V)>>(iter: I) -> Self {
+        Self::from_terms_with_values(iter)
+    }
+}
+
+impl<'a, V: DictionaryValue> FromIterator<(&'a str, V)> for Scdawg<V> {
+    fn from_iter<I: IntoIterator<Item = (&'a str, V)>>(iter: I) -> Self {
+        Self::from_terms_with_values(iter)
+    }
+}
+
+impl<V: DictionaryValue> Extend<String> for Scdawg<V> {
+    fn extend<I: IntoIterator<Item = String>>(&mut self, iter: I) {
+        self.extend_records(iter.into_iter().map(|term| (term, None)).collect());
+    }
+}
+
+impl<'a, V: DictionaryValue> Extend<&'a str> for Scdawg<V> {
+    fn extend<I: IntoIterator<Item = &'a str>>(&mut self, iter: I) {
+        <Self as Extend<String>>::extend(self, iter.into_iter().map(str::to_owned));
+    }
+}
+
+impl<V: DictionaryValue> Extend<(String, V)> for Scdawg<V> {
+    fn extend<I: IntoIterator<Item = (String, V)>>(&mut self, iter: I) {
+        self.extend_records(
+            iter.into_iter()
+                .map(|(term, value)| (term, Some(value)))
+                .collect(),
+        );
+    }
+}
+
+impl<'a, V: DictionaryValue> Extend<(&'a str, V)> for Scdawg<V> {
+    fn extend<I: IntoIterator<Item = (&'a str, V)>>(&mut self, iter: I) {
+        <Self as Extend<(String, V)>>::extend(
+            self,
+            iter.into_iter()
+                .map(|(term, value)| (term.to_owned(), value)),
+        );
     }
 }
 
@@ -688,8 +822,15 @@ impl<V: DictionaryValue> BidirectionalDictionaryNode for ScdawgNodeHandle<V> {
 // ============================================================================
 
 impl<V: DictionaryValue> SubstringDictionary for Scdawg<V> {
-    fn find_exact_substring(&self, pattern: &str) -> Vec<SubstringMatch<Self::Node>> {
-        let inner = self.inner.load();
+    fn find_exact_substring_in_snapshot(
+        snapshot_root: &Self::Node,
+        pattern: &str,
+    ) -> Vec<SubstringMatch<Self::Node>> {
+        debug_assert_eq!(
+            snapshot_root.node_idx, 0,
+            "substring snapshots start at root"
+        );
+        let inner = Arc::clone(&snapshot_root.inner);
         let occurrences = inner.find_exact_substring(pattern);
 
         occurrences

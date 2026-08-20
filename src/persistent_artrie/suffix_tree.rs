@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::iter::FusedIterator;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -165,6 +166,8 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> RawSuffixTreeNode<U, V> {
 struct NativeSuffixTreeGraph<U: PersistentSuffixTreeUnit, V: DictionaryValue> {
     nodes: Vec<CompactSuffixTreeNode<U, V>>,
     sources: Vec<TreeSourceRecord<V>>,
+    #[serde(skip)]
+    sorted_active_source_indices: Vec<usize>,
     explicit_values: BTreeMap<Vec<U>, V>,
     needs_compaction: bool,
 }
@@ -183,6 +186,7 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeGraph<U, V
         Self {
             nodes: vec![CompactSuffixTreeNode::new()],
             sources: Vec::new(),
+            sorted_active_source_indices: Vec::new(),
             explicit_values: BTreeMap::new(),
             needs_compaction: false,
         }
@@ -196,9 +200,11 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeGraph<U, V
         let mut graph = Self {
             nodes: Vec::new(),
             sources,
+            sorted_active_source_indices: Vec::new(),
             explicit_values,
             needs_compaction,
         };
+        graph.rebuild_record_index();
         graph.rebuild_nodes();
         graph
     }
@@ -212,7 +218,22 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeGraph<U, V
     }
 
     fn active_count(&self) -> usize {
-        self.sources.iter().filter(|record| record.active).count()
+        self.sorted_active_source_indices.len()
+    }
+
+    fn rebuild_record_index(&mut self) {
+        self.sorted_active_source_indices = self
+            .sources
+            .iter()
+            .enumerate()
+            .filter_map(|(index, record)| record.active.then_some(index))
+            .collect();
+        self.sorted_active_source_indices.sort_by(|&left, &right| {
+            self.sources[left]
+                .text
+                .cmp(&self.sources[right].text)
+                .then_with(|| self.sources[left].id.cmp(&self.sources[right].id))
+        });
     }
 
     fn source_texts(&self) -> Vec<String> {
@@ -246,6 +267,7 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeGraph<U, V
             value,
             active: true,
         });
+        self.rebuild_record_index();
         self.rebuild_nodes();
         true
     }
@@ -258,6 +280,7 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeGraph<U, V
         {
             record.active = false;
             self.needs_compaction = true;
+            self.rebuild_record_index();
             self.rebuild_nodes();
             return true;
         }
@@ -266,6 +289,7 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeGraph<U, V
 
     fn clear(&mut self) {
         self.sources.clear();
+        self.sorted_active_source_indices.clear();
         self.explicit_values.clear();
         self.needs_compaction = false;
         self.nodes = vec![CompactSuffixTreeNode::new()];
@@ -284,6 +308,7 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeGraph<U, V
             compacted.push(record);
         }
         self.sources = compacted;
+        self.rebuild_record_index();
         self.needs_compaction = false;
         self.rebuild_nodes();
         before.saturating_sub(self.sources.len())
@@ -1362,6 +1387,54 @@ fn char_match_start(term: &str, finish_byte: usize, pattern: &str) -> Option<usi
     Some(term[..start_byte].chars().count())
 }
 
+fn byte_locations_in_snapshot<V: DictionaryValue>(
+    graph: &NativeSuffixTreeGraph<u8, V>,
+    pattern: &str,
+) -> Vec<(String, usize)> {
+    if pattern.is_empty() {
+        return graph
+            .active_texts()
+            .into_iter()
+            .map(|text| (text, 0))
+            .collect();
+    }
+
+    let texts = graph.source_texts();
+    graph
+        .match_positions(pattern)
+        .into_iter()
+        .filter_map(|(source_id, finish_byte)| {
+            let text = texts.get(source_id)?;
+            let start = byte_match_start(finish_byte, pattern)?;
+            Some((text.clone(), start))
+        })
+        .collect()
+}
+
+fn char_locations_in_snapshot<V: DictionaryValue>(
+    graph: &NativeSuffixTreeGraph<char, V>,
+    pattern: &str,
+) -> Vec<(String, usize)> {
+    if pattern.is_empty() {
+        return graph
+            .active_texts()
+            .into_iter()
+            .map(|text| (text, 0))
+            .collect();
+    }
+
+    let texts = graph.source_texts();
+    graph
+        .match_positions(pattern)
+        .into_iter()
+        .filter_map(|(source_id, finish_byte)| {
+            let text = texts.get(source_id)?;
+            let start = char_match_start(text, finish_byte, pattern)?;
+            Some((text.clone(), start))
+        })
+        .collect()
+}
+
 /// Byte/u8 persistent suffix-tree-compatible substring index.
 pub struct PersistentSuffixTree<V: DictionaryValue = (), S: BlockStorage = MmapDiskManager> {
     index: NativeSuffixTreeIndex<u8, V>,
@@ -1373,6 +1446,52 @@ pub struct PersistentSuffixTreeChar<V: DictionaryValue = (), S: BlockStorage = M
     index: NativeSuffixTreeIndex<char, V>,
     _storage: PhantomData<S>,
 }
+
+/// Snapshot iterator over stored byte suffix-tree source records.
+pub struct PersistentSuffixTreeEntryIterator<V: DictionaryValue = ()> {
+    graph: Arc<NativeSuffixTreeGraph<u8, V>>,
+    index: usize,
+}
+
+/// Snapshot iterator over stored Unicode suffix-tree source records.
+pub struct PersistentSuffixTreeCharEntryIterator<V: DictionaryValue = ()> {
+    graph: Arc<NativeSuffixTreeGraph<char, V>>,
+    index: usize,
+}
+
+macro_rules! impl_suffix_tree_record_iterator {
+    ($iterator:ident) => {
+        impl<V: DictionaryValue> Iterator for $iterator<V> {
+            type Item = (String, Option<V>);
+
+            fn next(&mut self) -> Option<Self::Item> {
+                let record_index = *self.graph.sorted_active_source_indices.get(self.index)?;
+                self.index += 1;
+                let record = self
+                    .graph
+                    .sources
+                    .get(record_index)
+                    .expect("the revision record index references a source");
+                Some((record.text.clone(), record.value.clone()))
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                let remaining = self
+                    .graph
+                    .sorted_active_source_indices
+                    .len()
+                    .saturating_sub(self.index);
+                (remaining, Some(remaining))
+            }
+        }
+
+        impl<V: DictionaryValue> ExactSizeIterator for $iterator<V> {}
+        impl<V: DictionaryValue> FusedIterator for $iterator<V> {}
+    };
+}
+
+impl_suffix_tree_record_iterator!(PersistentSuffixTreeEntryIterator);
+impl_suffix_tree_record_iterator!(PersistentSuffixTreeCharEntryIterator);
 
 /// Byte-level persistent suffix tree node handle.
 #[derive(Clone)]
@@ -1561,6 +1680,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTree<V, S> {
         self.index.load().active_texts()
     }
 
+    /// Iterate over stored source records from one immutable revision.
+    pub fn iter_entries(&self) -> PersistentSuffixTreeEntryIterator<V> {
+        PersistentSuffixTreeEntryIterator {
+            graph: self.index.load(),
+            index: 0,
+        }
+    }
+
     pub fn graph_node_count(&self) -> usize {
         self.index.load().node_count()
     }
@@ -1602,26 +1729,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTree<V, S> {
 
     pub fn locations(&self, pattern: &str) -> Vec<(String, usize)> {
         let graph = self.index.load();
-        let texts = graph.source_texts();
-        if pattern.is_empty() {
-            return graph
-                .active_texts()
-                .into_iter()
-                .map(|text| (text, 0))
-                .collect();
-        }
-
-        let mut locations = Vec::new();
-        for (source_id, finish_byte) in graph.match_positions(pattern) {
-            let Some(text) = texts.get(source_id) else {
-                continue;
-            };
-            let Some(start) = byte_match_start(finish_byte, pattern) else {
-                continue;
-            };
-            locations.push((text.clone(), start));
-        }
-        locations
+        byte_locations_in_snapshot(&graph, pattern)
     }
 
     pub fn locations_at(
@@ -1803,6 +1911,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTreeChar<V, S> {
         self.index.load().active_texts()
     }
 
+    /// Iterate over stored source records from one immutable revision.
+    pub fn iter_entries(&self) -> PersistentSuffixTreeCharEntryIterator<V> {
+        PersistentSuffixTreeCharEntryIterator {
+            graph: self.index.load(),
+            index: 0,
+        }
+    }
+
     pub fn graph_node_count(&self) -> usize {
         self.index.load().node_count()
     }
@@ -1846,26 +1962,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTreeChar<V, S> {
 
     pub fn locations(&self, pattern: &str) -> Vec<(String, usize)> {
         let graph = self.index.load();
-        let texts = graph.source_texts();
-        if pattern.is_empty() {
-            return graph
-                .active_texts()
-                .into_iter()
-                .map(|text| (text, 0))
-                .collect();
-        }
-
-        let mut locations = Vec::new();
-        for (source_id, finish_byte) in graph.match_positions(pattern) {
-            let Some(text) = texts.get(source_id) else {
-                continue;
-            };
-            let Some(start) = char_match_start(text, finish_byte, pattern) else {
-                continue;
-            };
-            locations.push((text.clone(), start));
-        }
-        locations
+        char_locations_in_snapshot(&graph, pattern)
     }
 
     pub fn locations_at(
@@ -2177,11 +2274,21 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary for Persistent
 }
 
 impl<V: DictionaryValue, S: BlockStorage> SubstringDictionary for PersistentSuffixTree<V, S> {
-    fn find_exact_substring(&self, pattern: &str) -> Vec<SubstringMatch<Self::Node>> {
-        let Some(node) = self.find(pattern) else {
+    fn find_exact_substring_in_snapshot(
+        snapshot_root: &Self::Node,
+        pattern: &str,
+    ) -> Vec<SubstringMatch<Self::Node>> {
+        debug_assert!(snapshot_root.path.is_empty());
+        let graph = Arc::clone(&snapshot_root.graph);
+        let path = pattern.as_bytes().to_vec();
+        if !graph.contains_live_units(&path) {
             return Vec::new();
+        }
+        let node = PersistentSuffixTreeNode {
+            graph: Arc::clone(&graph),
+            path,
         };
-        self.locations(pattern)
+        byte_locations_in_snapshot(&graph, pattern)
             .into_iter()
             .map(|(term, position)| {
                 SubstringMatch::new(node.clone(), term, position, pattern.len())
@@ -2274,12 +2381,22 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary
 }
 
 impl<V: DictionaryValue, S: BlockStorage> SubstringDictionary for PersistentSuffixTreeChar<V, S> {
-    fn find_exact_substring(&self, pattern: &str) -> Vec<SubstringMatch<Self::Node>> {
-        let Some(node) = self.find(pattern) else {
+    fn find_exact_substring_in_snapshot(
+        snapshot_root: &Self::Node,
+        pattern: &str,
+    ) -> Vec<SubstringMatch<Self::Node>> {
+        debug_assert!(snapshot_root.path.is_empty());
+        let graph = Arc::clone(&snapshot_root.graph);
+        let path: Vec<char> = pattern.chars().collect();
+        if !graph.contains_live_units(&path) {
             return Vec::new();
+        }
+        let node = PersistentSuffixTreeCharNode {
+            graph: Arc::clone(&graph),
+            path,
         };
         let pattern_len = pattern.chars().count();
-        self.locations(pattern)
+        char_locations_in_snapshot(&graph, pattern)
             .into_iter()
             .map(|(term, position)| SubstringMatch::new(node.clone(), term, position, pattern_len))
             .collect()

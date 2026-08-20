@@ -9,6 +9,26 @@ Calls acquire only a short lifetime lease; operations on the same dictionary
 are not serialized. The project-owned native resource advertises parallel and
 reentrant access automatically.
 
+Every dictionary is an `Enumerable` over immutable-revision `Entry` records:
+
+```ruby
+dictionary = VinaryTree::Libdictenstein::DynamicDawg.new
+dictionary.put("cat", 0)
+dictionary.put("cut", nil)
+
+dictionary.each do |entry|
+  p [entry.key, entry.value]
+  break if entry.key == "cat" # ensure closes the native cursor
+end
+
+keys = dictionary.keys
+values = dictionary.values
+snapshot = dictionary.entries
+```
+
+`each` returns an `Enumerator` without a block. `entry_stream` exposes manual
+`next`, `cancel`, and `close` for pull-driven bounded traversal.
+
 <!-- BEGIN GENERATED BINDING OPERATIONS; DO NOT EDIT -->
 
 ## Support and package contract
@@ -73,14 +93,25 @@ arbitrary octets. Token APIs preserve the full `u64` range. Optional dictionary
 values are represented separately from terminal membership, so `None` is not a
 sentinel and empty terms remain valid when supported.
 
-## Native collection idioms and planned parity
+## Native collection surface
 
-The current facade exposes lookup, length, mutation, and deterministic resource
-ownership, but does **not** yet claim the complete host collection protocol.
-The planned native shape for this runtime is Enumerable with each, including deterministic cleanup after break. The
-ordinary collection view will own host data from one immutable revision, while
-the large-dictionary stream will retain one bounded native snapshot and require
-lexical cleanup. Membership remains a direct lookup, never an iteration scan.
+Every dictionary includes `Enumerable`. `each` returns an `Enumerator`
+without a block and yields host-owned `Entry` records in lexical order; its
+`ensure` path closes the cursor after exhaustion, `break`, or exception.
+`entry_stream` also exposes explicit `next`, `cancel`, and `close`, while
+`entries`, `keys`, and `values` provide materialized snapshot idioms. Binary
+strings, UTF-8 strings, and `Array<Integer>` preserve the three unit domains;
+`nil` remains distinct from every mapped integer.
+
+The gem executable keeps construction and warmup outside the timed drain and
+prints one JSON record. Run its materialized, streaming, and early-cancel arms
+over the shared deterministic corpus with:
+
+```sh
+ruby bindings/ruby/bin/libdictenstein-collection-profile --arm materialized --entries 4096
+ruby bindings/ruby/bin/libdictenstein-collection-profile --arm stream --entries 65536 --batch-size 256
+ruby bindings/ruby/bin/libdictenstein-collection-profile --arm stream-cancel --entries 65536 --batch-size 64 --early-cancel 64
+```
 
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk

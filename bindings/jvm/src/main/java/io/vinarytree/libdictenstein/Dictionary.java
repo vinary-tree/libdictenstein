@@ -5,6 +5,11 @@ import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 import io.vinarytree.interop.DictionaryResource;
+import io.vinarytree.interop.DictionaryBatchLimits;
+import io.vinarytree.interop.DictionaryEntry;
+import io.vinarytree.interop.DictionaryEntryIterator;
+import io.vinarytree.interop.DictionaryKey;
+import io.vinarytree.interop.DictionarySnapshot;
 import io.vinarytree.interop.InteropLayouts;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -14,9 +19,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalLong;
+import java.util.Iterator;
+import java.util.stream.Stream;
 
 /** Common read-only surface for project-owned native dictionaries. */
-public abstract class Dictionary implements DictionaryResource {
+public abstract class Dictionary implements DictionaryResource, Iterable<DictionaryEntry> {
     private static final Cleaner CLEANER = Cleaner.create();
 
     private static final class State implements Runnable {
@@ -127,6 +134,73 @@ public abstract class Dictionary implements DictionaryResource {
             Native.check(Native.len(handle(), output));
             return output.get(JAVA_LONG, 0);
         }
+    }
+
+    /**
+     * Materialize one immutable, repeatable lexicographic revision.
+     *
+     * <p>Every key is copied once out of its borrowed native batch. The returned collection owns
+     * all of its storage and remains valid after this dictionary is changed or closed.
+     */
+    public final DictionarySnapshot snapshot() { return entriesSnapshot(); }
+
+    /** Materialized immutable entry-list view of one captured revision. */
+    public final List<DictionaryEntry> entries() { return snapshot().orderedEntries(); }
+
+    /** Materialized immutable key-set view of one captured revision. */
+    public final java.util.Set<DictionaryKey> keys() { return snapshot().keys(); }
+
+    /** Materialized immutable value-collection view of one captured revision. */
+    public final java.util.Collection<java.util.Optional<io.vinarytree.interop.UnsignedLong>> values() {
+        return snapshot().entries().values();
+    }
+
+    /** Materialized immutable map view of one captured revision. */
+    public final Map<DictionaryKey, java.util.Optional<io.vinarytree.interop.UnsignedLong>> asMap() {
+        return snapshot().entries();
+    }
+
+    /** Open a single-pass native-backed cursor with a default batch bound of 256 entries. */
+    public final DictionaryEntryIterator openEntryStream() { return entryIterator(); }
+
+    /** Open a single-pass native-backed cursor with the requested positive entry batch bound. */
+    public final DictionaryEntryIterator openEntryStream(int batchSize) {
+        return entryIterator(batchLimits(batchSize));
+    }
+
+    /** Open a single-pass cursor with explicit native descriptor/arena limits. */
+    public final DictionaryEntryIterator openEntryStream(DictionaryBatchLimits limits) {
+        return entryIterator(Objects.requireNonNull(limits, "limits"));
+    }
+
+    /**
+     * Open a sequential Java stream over one captured revision.
+     *
+     * <p>Exhaustion closes the cursor automatically. Use try-with-resources when a pipeline may
+     * short-circuit so {@link Stream#close()} cancels the cursor promptly.
+     */
+    public final Stream<DictionaryEntry> streamEntries() { return entryStream(); }
+
+    /** Open a sequential Java stream with the requested positive entry batch bound. */
+    public final Stream<DictionaryEntry> streamEntries(int batchSize) {
+        return entryStream(batchLimits(batchSize));
+    }
+
+    /** Open a sequential Java stream with explicit native descriptor/arena limits. */
+    public final Stream<DictionaryEntry> streamEntries(DictionaryBatchLimits limits) {
+        return entryStream(Objects.requireNonNull(limits, "limits"));
+    }
+
+    /**
+     * Return a repeatable iterator backed by an owned materialized snapshot.
+     * Use {@link #openEntryStream(int)} for bounded-memory traversal.
+     */
+    @Override public final Iterator<DictionaryEntry> iterator() { return snapshot().iterator(); }
+
+    private static DictionaryBatchLimits batchLimits(int batchSize) {
+        if (batchSize <= 0) throw new IllegalArgumentException("batchSize must be positive");
+        long units = Math.max(65_536L, Math.multiplyExact((long) batchSize, 64L));
+        return new DictionaryBatchLimits(batchSize, units, batchSize);
     }
 
     /** Test a Unicode term. */

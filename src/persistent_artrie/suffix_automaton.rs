@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::iter::FusedIterator;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -155,6 +156,8 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixNode<U, V> {
 struct NativeSuffixGraph<U: PersistentSuffixUnit, V: DictionaryValue> {
     nodes: Vec<NativeSuffixNode<U, V>>,
     sources: Vec<SourceRecord<V>>,
+    #[serde(skip)]
+    sorted_active_source_indices: Vec<usize>,
     explicit_values: HashMap<Vec<U>, V>,
     needs_compaction: bool,
 }
@@ -164,6 +167,7 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixGraph<U, V> {
         Self {
             nodes: vec![NativeSuffixNode::new()],
             sources: Vec::new(),
+            sorted_active_source_indices: Vec::new(),
             explicit_values: HashMap::new(),
             needs_compaction: false,
         }
@@ -269,6 +273,7 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixGraph<U, V> {
             graph.insert_source_with_id(record.id, record.text.clone(), record.value.clone());
         }
         graph.sources = sources;
+        graph.rebuild_record_index();
         graph.explicit_values.clear();
         for (units, value) in explicit_values {
             graph.ensure_value_path(&units, value);
@@ -312,7 +317,22 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixGraph<U, V> {
     }
 
     fn active_count(&self) -> usize {
-        self.sources.iter().filter(|record| record.active).count()
+        self.sorted_active_source_indices.len()
+    }
+
+    fn rebuild_record_index(&mut self) {
+        self.sorted_active_source_indices = self
+            .sources
+            .iter()
+            .enumerate()
+            .filter_map(|(index, record)| record.active.then_some(index))
+            .collect();
+        self.sorted_active_source_indices.sort_by(|&left, &right| {
+            self.sources[left]
+                .text
+                .cmp(&self.sources[right].text)
+                .then_with(|| self.sources[left].id.cmp(&self.sources[right].id))
+        });
     }
 
     fn source_texts(&self) -> Vec<String> {
@@ -392,6 +412,7 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixGraph<U, V> {
     fn insert_source(&mut self, text: &str, value: Option<V>) -> bool {
         let source_id = self.next_source_id();
         self.insert_source_with_id(source_id, text.to_string(), value);
+        self.rebuild_record_index();
         true
     }
 
@@ -403,6 +424,7 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixGraph<U, V> {
         {
             record.active = false;
             self.needs_compaction = true;
+            self.rebuild_record_index();
             return true;
         }
         false
@@ -1059,8 +1081,10 @@ fn read_legacy_snapshot<U: PersistentSuffixUnit, V: DictionaryValue>(
             found: legacy.version,
         });
     }
+    let mut graph = legacy.graph;
+    graph.rebuild_record_index();
     Ok(LoadedSuffixSnapshot {
-        graph: legacy.graph,
+        graph,
         checkpoint_op_id: 0,
         folds_legacy_wal: false,
     })
@@ -1317,6 +1341,52 @@ pub struct PersistentSuffixAutomatonChar<V: DictionaryValue = (), S: BlockStorag
     _storage: PhantomData<S>,
 }
 
+/// Snapshot iterator over stored byte-suffix source records.
+pub struct PersistentSuffixAutomatonEntryIterator<V: DictionaryValue = ()> {
+    graph: Arc<NativeSuffixGraph<u8, V>>,
+    index: usize,
+}
+
+/// Snapshot iterator over stored Unicode-suffix source records.
+pub struct PersistentSuffixAutomatonCharEntryIterator<V: DictionaryValue = ()> {
+    graph: Arc<NativeSuffixGraph<char, V>>,
+    index: usize,
+}
+
+macro_rules! impl_suffix_record_iterator {
+    ($iterator:ident, $unit:ty) => {
+        impl<V: DictionaryValue> Iterator for $iterator<V> {
+            type Item = (String, Option<V>);
+
+            fn next(&mut self) -> Option<Self::Item> {
+                let record_index = *self.graph.sorted_active_source_indices.get(self.index)?;
+                self.index += 1;
+                let record = self
+                    .graph
+                    .sources
+                    .get(record_index)
+                    .expect("the revision record index references a source");
+                Some((record.text.clone(), record.value.clone()))
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                let remaining = self
+                    .graph
+                    .sorted_active_source_indices
+                    .len()
+                    .saturating_sub(self.index);
+                (remaining, Some(remaining))
+            }
+        }
+
+        impl<V: DictionaryValue> ExactSizeIterator for $iterator<V> {}
+        impl<V: DictionaryValue> FusedIterator for $iterator<V> {}
+    };
+}
+
+impl_suffix_record_iterator!(PersistentSuffixAutomatonEntryIterator, u8);
+impl_suffix_record_iterator!(PersistentSuffixAutomatonCharEntryIterator, char);
+
 /// Byte-level node handle for native persistent suffix traversal.
 #[derive(Clone)]
 pub struct PersistentSuffixAutomatonNode<V: DictionaryValue = ()> {
@@ -1506,6 +1576,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomaton<V, S> {
         self.index.load().source_texts()
     }
 
+    /// Iterate over stored source records from one immutable revision.
+    pub fn iter_entries(&self) -> PersistentSuffixAutomatonEntryIterator<V> {
+        PersistentSuffixAutomatonEntryIterator {
+            graph: self.index.load(),
+            index: 0,
+        }
+    }
+
     pub fn checkpoint(&self) -> Result<()> {
         self.index.checkpoint()
     }
@@ -1676,6 +1754,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomatonChar<V, S> {
 
     pub fn source_texts(&self) -> Vec<String> {
         self.index.load().source_texts()
+    }
+
+    /// Iterate over stored source records from one immutable revision.
+    pub fn iter_entries(&self) -> PersistentSuffixAutomatonCharEntryIterator<V> {
+        PersistentSuffixAutomatonCharEntryIterator {
+            graph: self.index.load(),
+            index: 0,
+        }
     }
 
     pub fn checkpoint(&self) -> Result<()> {

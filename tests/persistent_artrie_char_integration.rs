@@ -322,7 +322,7 @@ fn test_dictionary_node_trait_unicode() {
 #[test]
 fn test_from_iterator_unicode() {
     let terms = vec!["café", "naïve", "中文", "🎉"];
-    let trie: PersistentARTrieChar<()> = terms.into_iter().collect();
+    let trie = PersistentARTrieChar::<()>::try_from_iter(terms).unwrap();
 
     assert_eq!(trie.len(), 4);
     assert!(trie.contains("café"));
@@ -337,7 +337,7 @@ fn test_from_iterator_owned_strings() {
         "東京".to_string(),
         "🌍🌎🌏".to_string(),
     ];
-    let trie: PersistentARTrieChar<()> = terms.into_iter().collect();
+    let trie = PersistentARTrieChar::<()>::try_from_iter(terms).unwrap();
 
     assert_eq!(trie.len(), 3);
     assert!(trie.contains("résumé"));

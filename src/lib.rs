@@ -98,6 +98,7 @@ pub mod bijective;
 pub mod bindings;
 pub mod bloom_filter;
 pub mod char_unit;
+pub mod collection;
 pub mod factory;
 #[cfg(feature = "ffi")]
 pub mod ffi;
@@ -148,6 +149,12 @@ pub mod serialization;
 pub use bijective::{BijectiveDictionary, BijectiveMap, InsertError};
 pub use bloom_filter::BloomFilter;
 pub use char_unit::CharUnit;
+pub use collection::{
+    DictionaryEntries, DictionaryEntriesIter, DictionaryEntry, DictionaryKeys,
+    DictionaryLanguageEntries, DictionaryLanguageTerms, DictionaryTerms, DictionaryValues,
+    ExactSnapshotEntryIterator, SnapshotEntryIterator, SnapshotTermIterator,
+    ValuedZipperCollection, ZipperCollection, ZipperEntryIterator, ZipperTermIterator,
+};
 pub use dynamic_dawg::core::{DawgCore, DawgNode};
 pub use iterator::{DictionaryIterator, DictionaryTermIterator};
 pub use node_signature::NodeSignature;
@@ -1576,8 +1583,12 @@ pub trait MutableMappedDictionary: MappedDictionary {
 pub mod prelude {
     pub use crate::{
         BijectiveDictionary, BijectiveMap, CharUnit, CompactableDictionary, DictZipper, Dictionary,
-        DictionaryNode, DictionaryValue, InsertError, MappedDictionary, MappedDictionaryNode,
-        MutableDictionary, MutableMappedDictionary, SyncStrategy, ValuedDictZipper,
+        DictionaryEntries, DictionaryEntriesIter, DictionaryEntry, DictionaryKeys,
+        DictionaryLanguageEntries, DictionaryLanguageTerms, DictionaryNode, DictionaryTerms,
+        DictionaryValue, DictionaryValues, ExactSnapshotEntryIterator, InsertError,
+        MappedDictionary, MappedDictionaryNode, MutableDictionary, MutableMappedDictionary,
+        SnapshotEntryIterator, SnapshotTermIterator, SyncStrategy, ValuedDictZipper,
+        ValuedZipperCollection, ZipperCollection, ZipperEntryIterator, ZipperTermIterator,
     };
 
     // Re-export common dictionary types

@@ -13,7 +13,7 @@ def test_crud_batch_and_cross_project_query_snapshot() -> None:
         == 4
     )
     assert len(dictionary) == 4
-    assert dictionary.get("cot") == (True, 2)
+    assert dictionary.lookup("cot") == (True, 2)
 
     automaton = liblevenshtein.Transducer(dictionary)
     frozen = sorted(automaton.query("cat", 2), key=lambda item: str(item.term))

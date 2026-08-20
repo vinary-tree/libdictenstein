@@ -30,7 +30,7 @@ import Data.Char (chr, digitToInt, isDigit, isSpace)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (foldl', isPrefixOf)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Word (Word64)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -177,6 +177,7 @@ main = do
   c8 failures
   c9 failures
   c10 failures
+  entriesConformance failures
 
   count <- readIORef failures
   if count == 0
@@ -203,7 +204,7 @@ c1 failures = do
   abi <- abiVersion
   api <- apiRevision
   check failures (abi == 1) "abi version == 1"
-  check failures (api == 4) "api revision == 4"
+  check failures (api == 5) "api revision == 5"
   dawg <- dynamicDawg UnicodeScalar
   k <- dictionaryKind dawg
   check failures (k == 1) "dawg kind"
@@ -574,3 +575,66 @@ readersDuringWriter failures = do
   final <- getText dawg (T.pack "w2999")
   check failures (mappedValue final == Just 2999) "final write present"
   close dawg
+
+-- entries-v1 ---------------------------------------------------------------
+
+entriesConformance :: IORef Int -> IO ()
+entriesConformance failures = do
+  unicode <- dynamicDawg UnicodeScalar
+  _ <- putText unicode (T.pack "cat") Nothing
+  _ <- putText unicode (T.pack "caf\233") (Just maxBound)
+  _ <- putText unicode T.empty (Just 0)
+  captured <- withEntryStream unicode $ \stream -> do
+    let metadata = entryMetadata stream
+    check failures (entriesUnitDomain metadata == UnicodeScalar) "entries unicode domain"
+    check failures (entriesHaveOptionalValues metadata) "entries optional-u64 value domain"
+    check failures (entriesExactLength metadata == Just 3) "entries exact length"
+    check failures (isJust (entriesSnapshotIdentity metadata)) "entries snapshot identity"
+    _ <- putText unicode (T.pack "dog") (Just 4)
+    let pull reversed = nextEntry stream >>= maybe (pure (reverse reversed))
+          (\entry -> pull (entry : reversed))
+    pull []
+  check failures
+    (captured ==
+      [ DictionaryEntry (UnicodeKey T.empty) (Just 0)
+      , DictionaryEntry (UnicodeKey (T.pack "caf\233")) (Just maxBound)
+      , DictionaryEntry (UnicodeKey (T.pack "cat")) Nothing
+      ])
+    "entries immutable lexicographic Unicode snapshot"
+  current <- materializeEntries unicode
+  check failures (length (snapshotEntries current) == 4) "entries later revision sees mutation"
+  early <- try (withEntryStream unicode $ \stream -> do
+    _ <- nextEntry stream
+    ioError (userError "intentional early entries exit")) :: IO (Either SomeException ())
+  check failures (either (const True) (const False) early) "entries close after exception"
+  stillReadable <- containsText unicode (T.pack "cat")
+  check failures stillReadable "dictionary usable after early entries close"
+  close unicode
+
+  bytesDictionary <- dynamicDawg Byte
+  _ <- putBytes bytesDictionary BS.empty Nothing
+  _ <- putBytes bytesDictionary (BS.pack [0, 255]) (Just maxBound)
+  _ <- putBytes bytesDictionary (BS.pack [1]) (Just 1)
+  byteSnapshot <- materializeEntries bytesDictionary
+  check failures
+    (snapshotEntries byteSnapshot ==
+      [ DictionaryEntry (ByteKey BS.empty) Nothing
+      , DictionaryEntry (ByteKey (BS.pack [0, 255])) (Just maxBound)
+      , DictionaryEntry (ByteKey (BS.pack [1])) (Just 1)
+      ])
+    "entries preserve arbitrary bytes and byte order"
+  close bytesDictionary
+
+  u64Dictionary <- dynamicDawg U64
+  _ <- putU64 u64Dictionary [maxBound] (Just maxBound)
+  _ <- putU64 u64Dictionary [0] Nothing
+  _ <- putU64 u64Dictionary [maxBound `quot` 2 + 1] (Just 0)
+  u64Snapshot <- materializeEntries u64Dictionary
+  check failures
+    (snapshotEntries u64Snapshot ==
+      [ DictionaryEntry (U64Key [0]) Nothing
+      , DictionaryEntry (U64Key [maxBound `quot` 2 + 1]) (Just 0)
+      , DictionaryEntry (U64Key [maxBound]) (Just maxBound)
+      ])
+    "entries preserve full-width u64 keys and values"
+  close u64Dictionary

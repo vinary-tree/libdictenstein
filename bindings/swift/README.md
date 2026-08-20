@@ -38,6 +38,26 @@ assert(try suffixes.substringFrequency("t") == 2)
 Each dictionary is a class; `deinit` frees the native handle, and `close()` is
 an idempotent early release.
 
+`entries()` materializes one immutable revision as a `RandomAccessCollection`:
+
+```swift
+let snapshot = try dictionary.entries()
+for entry in snapshot {
+    print(entry.key, entry.value as Any)
+}
+
+let stream = try dictionary.entryStream(
+    limits: EntryBatchLimits(maxEntries: 64, maxUnits: 4096, maxValues: 64)
+)
+defer { try? stream.close() }
+while let entry = try stream.next() {
+    if entry.key.string == "cot" { try stream.cancel(); break }
+}
+```
+
+Both forms copy keys before releasing a native batch. Use `put(bytes:)` and
+`get(bytes:)` for arbitrary byte-domain terms.
+
 ## Backends
 
 | Class | Unit domains | Notes |
@@ -141,14 +161,24 @@ arbitrary octets. Token APIs preserve the full `u64` range. Optional dictionary
 values are represented separately from terminal membership, so `None` is not a
 sentinel and empty terms remain valid when supported.
 
-## Native collection idioms and planned parity
+## Native collection surface
 
-The current facade exposes lookup, length, mutation, and deterministic resource
-ownership, but does **not** yet claim the complete host collection protocol.
-The planned native shape for this runtime is Sequence views and a closeable streaming iterator. The
-ordinary collection view will own host data from one immutable revision, while
-the large-dictionary stream will retain one bounded native snapshot and require
-lexical cleanup. Membership remains a direct lookup, never an iteration scan.
+`Dictionary.entries()` returns a host-owned `EntrySnapshot` that safely
+conforms to `RandomAccessCollection`. For bounded traversal, `entryStream()`
+returns a throwing `EntryStream` with explicit `next`, `cancel`, and `close`;
+native calls and arena copies use `withExtendedLifetime`, and `deinit` is a
+cleanup safety net. Domain-tagged keys preserve raw bytes, Unicode scalar
+values, and `UInt64` units while `UInt64?` preserves term-only membership.
+
+The SwiftPM executable keeps construction and warmup outside the timed drain
+and prints one JSON record. Its materialized, streaming, and early-cancel arms
+use the same 4,096/65,536-entry corpus as the Rust driver:
+
+```sh
+swift run --package-path bindings/swift/libdictenstein -c release libdictenstein-collection-profile --arm materialized --entries 4096
+swift run --package-path bindings/swift/libdictenstein -c release libdictenstein-collection-profile --arm stream --entries 65536 --batch-size 256
+swift run --package-path bindings/swift/libdictenstein -c release libdictenstein-collection-profile --arm stream-cancel --entries 65536 --batch-size 64 --early-cancel 64
+```
 
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk
