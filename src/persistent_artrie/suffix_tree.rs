@@ -1893,6 +1893,16 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTreeChar<V, S> {
     }
 }
 
+// Intentionally retains the exact owned-node traversal fallback. The compact
+// suffix-tree graph stores path-compressed edges, while this public node surface
+// exposes every one-unit position, including positions *inside* a compact edge.
+// Finality and mapped-value visibility also depend on the complete source-aware
+// root-relative path. A dense native node index therefore cannot identify every
+// public traversal state. Supplying a direct cursor would require an expanded
+// path trie (potentially quadratic for all substring paths), defeating the native
+// representation rather than accelerating it. Byte and char variants consequently
+// keep `snapshot_root_cursor == None` until an exact compact `(edge, offset, path)`
+// capability is available.
 impl<V: DictionaryValue> DictionaryNode for PersistentSuffixTreeNode<V> {
     type Unit = u8;
     type SnapshotCursor = crate::SnapshotTraversalCursor;
@@ -2285,5 +2295,40 @@ impl<V: DictionaryValue> Default for PersistentSuffixTree<V> {
 impl<V: DictionaryValue> Default for PersistentSuffixTreeChar<V> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod snapshot_cursor_fallback_tests {
+    use super::*;
+
+    #[test]
+    fn compressed_suffix_tree_keeps_exact_path_aware_fallback() {
+        let bytes = PersistentSuffixTree::<u64>::new();
+        bytes.insert_with_value("banana", 7);
+        let byte_root = bytes.root();
+        assert!(byte_root.snapshot_root_cursor().is_none());
+        assert!(!byte_root.supports_snapshot_cursor_nodes());
+        assert!(!byte_root.supports_snapshot_cursor_key_units());
+        assert!(!byte_root.supports_snapshot_cursor_values());
+
+        let chars = PersistentSuffixTreeChar::<u64>::new();
+        chars.insert_with_value("雪豹", 11);
+        let char_root = chars.root();
+        assert!(char_root.snapshot_root_cursor().is_none());
+        assert!(!char_root.supports_snapshot_cursor_nodes());
+        assert!(!char_root.supports_snapshot_cursor_key_units());
+        assert!(!char_root.supports_snapshot_cursor_values());
+
+        // The fallback still represents implicit positions inside compressed
+        // edges exactly, one public unit at a time.
+        let ba = byte_root
+            .transition(b'b')
+            .and_then(|node| node.transition(b'a'));
+        assert!(ba.is_some());
+        let snow = char_root
+            .transition('雪')
+            .and_then(|node| node.transition('豹'));
+        assert!(snow.is_some());
     }
 }

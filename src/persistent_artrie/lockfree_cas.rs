@@ -53,11 +53,11 @@ use crate::persistent_artrie::core::overlay::durable_write::DurableOverlayWrite;
 use crate::persistent_artrie::core::overlay::evict::OverlayEvictable;
 use crate::value::DictionaryValue;
 
-/// Default bound on read/write fault-in install-CAS retries before falling back to a
-/// single read-only walk (the byte twin of char's `DEFAULT_MAX_FAULTIN_RETRIES`;
-/// design §3 liveness bound — the byte OE8-twin regression-guards termination).
-/// Generous: each retry rebases off a freshly-published root, so contention is the
-/// only reason to loop, and the fallback is correct (durable) anyway.
+/// Default bound on read/write fault-in install-CAS retries before returning the
+/// exact answer privately walked from the last loaded durable snapshot (the byte
+/// twin of char's `DEFAULT_MAX_FAULTIN_RETRIES`; the OE8 twin guards termination).
+/// Publication warms the resident overlay but is not required for read correctness:
+/// root-CAS contention cannot turn a loaded committed term into absence.
 pub(crate) const DEFAULT_MAX_FAULTIN_RETRIES: usize = 16;
 
 // The byte counter is now a full `u64` (matching char). Overflow is detected by

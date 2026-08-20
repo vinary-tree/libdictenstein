@@ -13,9 +13,13 @@
 //! - `char_node_to_node_type` — node-type discriminant helper
 
 use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::Arc;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::core::key_encoding::CharKey;
+use crate::persistent_artrie::core::overlay::checkpoint::{
+    publish_registry_to_captured_generation, CapturedEvictionRoute,
+};
 use crate::persistent_artrie::core::overlay::compressed_serialize::OverlayCompressedSerialize;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::eviction::DiskLocationRegistry;
@@ -70,6 +74,17 @@ pub(crate) struct CheckpointSnapshot {
     /// Freshly-built disk-location registry (only when eviction is enabled),
     /// published to the eviction coordinator after durability is verified.
     eviction_registry: Option<DiskLocationRegistry>,
+    /// Immutable capture-time eviction generation. `Arc` identity is the route
+    /// token: an older snapshot can never publish into a replacement coordinator.
+    eviction_coordinator_at_capture:
+        Option<Arc<crate::persistent_artrie::eviction::EvictionCoordinator>>,
+}
+
+impl CapturedEvictionRoute for CheckpointSnapshot {
+    #[inline]
+    fn captured_with_eviction(&self) -> bool {
+        self.eviction_coordinator_at_capture.is_some()
+    }
 }
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
@@ -162,10 +177,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// `checkpoint()` route-splits to this (`route_overlay()` is universally true) so the
     /// checkpoint captures the immutable overlay (the live data). Adds zero new `unsafe`.
     pub(crate) fn capture_snapshot_immutable(&self) -> Result<CheckpointSnapshot> {
-        let mut eviction_registry = self
+        let eviction_coordinator_at_capture = self
             .eviction_coordinator
             .lock()
             .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+            .map(Arc::clone);
+        let mut eviction_registry = eviction_coordinator_at_capture
             .as_ref()
             .map(|_| DiskLocationRegistry::new());
 
@@ -344,6 +362,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             // the WAL floor to it.
             commit_seq_at_capture: Some(commit_seq_at_capture),
             eviction_registry,
+            eviction_coordinator_at_capture,
         })
     }
 
@@ -404,10 +423,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // the registry to be `Clone` (it is not), so it is left to the
         // owner-gated flip's `publish_durable_and_reclaim`.
         debug_assert!(
-            snapshot.eviction_registry.is_none(),
+            snapshot.eviction_registry.is_none()
+                && snapshot.eviction_coordinator_at_capture.is_none(),
             "publish_immutable_snapshot_retaining_wal is the eviction-disabled soak \
-             publisher; an eviction registry here means it was called on an \
-             eviction-enabled trie, which must use publish_durable_and_reclaim"
+             publisher; a captured eviction generation or registry here means the \
+             immutable snapshot route was discarded before publication"
         );
 
         // The safe `checkpoint_lsn` is the watermark captured before the root load.
@@ -527,9 +547,25 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// `publish_immutable_snapshot_retaining_wal`). Inert until the S5-12 flip.
     pub(crate) fn publish_immutable_snapshot_retaining_wal_with_eviction(
         &self,
-        snapshot: CheckpointSnapshot,
+        mut snapshot: CheckpointSnapshot,
     ) -> Result<()> {
         use std::time::{SystemTime, UNIX_EPOCH};
+
+        let captured_coordinator = snapshot
+            .eviction_coordinator_at_capture
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or_else(|| {
+                PersistentARTrieError::internal(
+                    "eviction-aware snapshot publication requires the immutable \
+                     coordinator generation retained at capture",
+                )
+            })?;
+        if snapshot.eviction_registry.is_none() {
+            return Err(PersistentARTrieError::internal(
+                "eviction-aware snapshot publication requires the registry built at capture",
+            ));
+        }
 
         // The safe `checkpoint_lsn` is the committed watermark captured BEFORE the
         // root load (the data-loss-critical invariant); an owned-tree snapshot
@@ -557,16 +593,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         //     registry CONSUMES (moves) here; `update_disk_registry` is an in-memory
         //     `RwLock::write` swap with ZERO fsync (no per-checkpoint fsync-count
         //     asymmetry vs the eviction-OFF publisher).
-        if let Some(registry) = snapshot.eviction_registry {
-            if let Some(coordinator) = self
-                .eviction_coordinator
-                .lock()
-                .expect("eviction_coordinator mutex poisoned")
-                .as_ref()
-            {
-                coordinator.update_disk_registry(registry);
-            }
-        }
+        let published_eviction_generation = publish_registry_to_captured_generation(
+            &self.eviction_coordinator,
+            &captured_coordinator,
+            snapshot
+                .eviction_registry
+                .take()
+                .expect("registry presence validated before durable publish"),
+        );
 
         // (3) Record `checkpoint_lsn = watermark` so recovery skips deltas ≤ it
         //     (already in the image), then sync — but RETAIN the WAL (NO rotate).
@@ -627,13 +661,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         //     bookkeeping, and an `if let Some(c) = self.eviction_coordinator.lock()…`
         //     would hold the guard across the callback (if-let temporary lifetime) =
         //     a self-deadlock.
-        let coordinator = self
-            .eviction_coordinator
-            .lock()
-            .expect("eviction_coordinator mutex poisoned")
-            .as_ref()
-            .map(std::sync::Arc::clone);
-        if let Some(coordinator) = coordinator {
+        if let Some(coordinator) = published_eviction_generation {
             if let Some(budget) = coordinator.resident_budget_bytes() {
                 let resident = coordinator.char_resident_estimate_bytes();
                 if resident > budget {
@@ -2098,6 +2126,8 @@ mod immutable_eviction_checkpoint_correspondence {
     // F4: the `.read()/.write()` compat shim on the collapsed handle.
     use crate::persistent_artrie::char::{PersistentARTrieChar, SharedCharARTrie};
     use crate::persistent_artrie::core::durability::DurabilityPolicy;
+    use crate::persistent_artrie::core::key_encoding::CharKey;
+    use crate::persistent_artrie::core::overlay::checkpoint::OverlayCheckpoint;
     use crate::persistent_artrie::core::shared_access::SharedTrieAccess;
     use crate::Dictionary;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -2110,6 +2140,116 @@ mod immutable_eviction_checkpoint_correspondence {
             .prefix(prefix)
             .tempdir_in("target/test-tmp")
             .expect("scratch tempdir under target/test-tmp")
+    }
+
+    /// LDICT-B7: capture owns its eviction route. Disable/re-enable after capture
+    /// must neither send generation A's registry to generation B nor select the
+    /// eviction-off publisher for an eviction-on snapshot. The inverse transition
+    /// (capture off, enable before publish) must remain on the off route as well.
+    #[test]
+    fn captured_eviction_generation_survives_disable_reenable_races() {
+        type Trie = PersistentARTrieChar<()>;
+        type Store = crate::persistent_artrie::disk_manager::MmapDiskManager;
+
+        let dir = scratch("imm-evict-route-generation");
+        let path = dir.path().join("t.artc");
+        let mut owned = Trie::create(&path).expect("create route-race trie");
+        owned.set_durability_policy(DurabilityPolicy::Immediate);
+        owned.install_overlay();
+        let shared: SharedCharARTrie<()> = Arc::new(owned);
+        for term in ["alpha", "alphabet", "beta", "日本"] {
+            assert!(
+                shared
+                    .read()
+                    .insert_cas_durable(term)
+                    .expect("durable insert"),
+                "test term should be newly inserted"
+            );
+        }
+
+        shared
+            .enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable generation A");
+        let phase = Arc::new(Barrier::new(2));
+        let checkpoint = {
+            let shared = Arc::clone(&shared);
+            let phase = Arc::clone(&phase);
+            thread::spawn(move || {
+                let snapshot = shared
+                    .read()
+                    .capture_snapshot_immutable()
+                    .expect("capture with generation A");
+                let captured = snapshot
+                    .eviction_coordinator_at_capture
+                    .as_ref()
+                    .map(Arc::clone)
+                    .expect("capture retains generation A");
+                assert!(snapshot.eviction_registry.is_some());
+                phase.wait();
+                phase.wait();
+                <Trie as OverlayCheckpoint<CharKey, (), Store>>::publish_captured_overlay_snapshot(
+                    shared.as_ref(),
+                    snapshot,
+                )
+                .expect("publish generation-A snapshot after replacement");
+                captured
+            })
+        };
+
+        // The checkpoint thread is paused exactly between capture and publication.
+        phase.wait();
+        shared.disable_eviction().expect("disable generation A");
+        shared
+            .enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable generation B");
+        let generation_b = shared
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+            .map(Arc::clone)
+            .expect("generation B installed");
+        phase.wait();
+        let generation_a = checkpoint.join().expect("checkpoint thread");
+        assert!(!Arc::ptr_eq(&generation_a, &generation_b));
+        assert_eq!(
+            generation_b.disk_registry_char_len(),
+            0,
+            "a replacement coordinator must not inherit the captured generation's registry"
+        );
+
+        // Inverse race: capture while disabled, then enable before publication.
+        // The immutable route remains eviction-off and leaves generation C empty.
+        shared.disable_eviction().expect("disable generation B");
+        let snapshot_off = shared
+            .read()
+            .capture_snapshot_immutable()
+            .expect("capture with eviction disabled");
+        assert!(snapshot_off.eviction_coordinator_at_capture.is_none());
+        assert!(snapshot_off.eviction_registry.is_none());
+        shared
+            .enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable generation C");
+        let generation_c = shared
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+            .map(Arc::clone)
+            .expect("generation C installed");
+        <Trie as OverlayCheckpoint<CharKey, (), Store>>::publish_captured_overlay_snapshot(
+            shared.as_ref(),
+            snapshot_off,
+        )
+        .expect("publish eviction-off snapshot after enable");
+        assert_eq!(generation_c.disk_registry_char_len(), 0);
+        shared.disable_eviction().expect("disable generation C");
+
+        drop(shared);
+        let reopened = Trie::open(&path).expect("reopen route-race trie");
+        for term in ["alpha", "alphabet", "beta", "日本"] {
+            assert!(reopened.contains(term), "reopen lost {term:?}");
+        }
     }
 
     /// **T1** — eviction-enabled overlay membership trie, `Immediate`,

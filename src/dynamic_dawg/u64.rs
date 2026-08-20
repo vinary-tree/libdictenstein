@@ -36,6 +36,8 @@
 //!   compaction, with retry if another writer publishes first.
 //! - **Memory**: Arc-based with automatic reclamation via arc-swap
 
+#[cfg(feature = "bindings-core")]
+use super::lockfree::PublishIfEmpty;
 use super::lockfree::{LockFreeDawg, LockFreeDawgNode};
 use super::u64_zipper::DynamicDawgU64Zipper;
 use crate::value::DictionaryValue;
@@ -366,6 +368,22 @@ impl<V: DictionaryValue> DynamicDawgU64<V> {
     pub fn root_with_term_count(&self) -> (DynamicDawgU64Node<V>, usize) {
         let (root, term_count) = self.core.root_arc_with_term_count();
         (DynamicDawgU64Node { node: root }, term_count)
+    }
+
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn root_with_term_count_revision(&self) -> (DynamicDawgU64Node<V>, usize, u64) {
+        let (root, term_count, revision) = self.core.root_arc_with_term_count_revision();
+        (DynamicDawgU64Node { node: root }, term_count, revision)
+    }
+
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn clear_graph(&self) -> bool {
+        self.core.clear()
+    }
+
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn try_publish_if_empty(&self, frozen: &Self) -> PublishIfEmpty {
+        self.core.try_publish_if_empty(&frozen.core)
     }
 
     /// Get the number of nodes in the DAWG.

@@ -24,7 +24,7 @@ skinparam packageBorderColor #37474F
 skinparam noteBackgroundColor #ECEFF1
 skinparam noteBorderColor #90A4AE
 skinparam defaultFontSize 12
-skinparam nodesep 10
+skinparam nodesep 6
 skinparam ranksep 24
 
 title libdictenstein producer stack\nbackends → bindings → 'static vtables → exported VtResource
@@ -42,7 +42,7 @@ package "libdictenstein cdylib — the producer" #D5F5E3 {
   }
 
   package "Producer bindings — src/bindings.rs" {
-    component "DynamicDawgBinding\nRwLock(DynamicBackend)\n→ DynamicDawg u8·char·u64" as dynb #FFFFFF
+    component "DynamicDawgBinding\nDynamicBackend (fixed domain)\n→ inner GraphVersion CAS u8·char·u64" as dynb #FFFFFF
     component "DoubleArrayTrieBinding\nArc(SecondaryBackend)\n→ DoubleArrayTrie u8·char" as datb #FFFFFF
     component "ScdawgBinding\nArc(SecondaryBackend)\n→ SCDAWG u8·char" as scdb #FFFFFF
     component "PersistentARTrieBinding\nArc(PersistentBackend)\n→ PersistentARTrie + WAL\nu8·char·u64·vocab" as perb #FFFFFF
@@ -64,6 +64,14 @@ package "vinary-tree-interop — the family contract\n(no_std crate hosted in li
 dynb -[hidden]right- datb
 scdb -[hidden]right- perb
 dynb -[hidden]down- scdb
+
+' Stack the family-contract components instead of allowing PlantUML to place
+' all four on one rank.  This keeps the rendered figure legible in the
+' documentation column without changing the dependency flow.
+vtres -[hidden]down- vtdict
+vtdict -[hidden]down- vtgraph
+vtgraph -[hidden]down- vtoptional
+statics -[hidden]down- vtres
 
 llev -down-> ffi : ldict_* calls
 dual -down-> ffi : ldict_* calls
@@ -87,20 +95,16 @@ statics .down.> vtgraph : optional immutable\nDynamicDAWG graph path
 statics .down.> vtoptional : optional capabilities
 vtres .right.> vtdict : vtable points at\none 'static instance
 
-consumers -down-> vtres : retain · release · query_interface · node walks
+note bottom of vtoptional
+  **Publication and lifetime invariants**
 
-note right of snap
-  DynamicDAWG snapshots publish one dense
-  immutable graph per revision. Other
-  backends use leased ABI-local ids whose
-  warmed reads are lock-free; only rare
-  chunk-directory growth takes a mutex.
-end note
+  DynamicDAWG snapshots publish one dense immutable
+  graph per revision. Other backends use leased
+  ABI-local ids whose warmed reads and chunk-directory
+  growth use lock-free publication.
 
-note right of statics
-  'static and immutable — vtable
-  pointers stay valid for the process
-  lifetime, so a stale vtable pointer
-  can never dangle.
+  The vtables are 'static and immutable: their pointers
+  remain valid for the process lifetime, so a stale
+  vtable pointer can never dangle.
 end note
 @enduml

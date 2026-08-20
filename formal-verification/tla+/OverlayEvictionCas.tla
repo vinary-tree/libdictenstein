@@ -217,7 +217,8 @@ EvictCasSucceed(n) ==
 \*     root version is published. `durable` is UNCHANGED (fault-in writes nothing
 \*     to disk, advances no watermark — design §5 no-lost-write preserved).
 \*   * LOSE: a concurrent CAS advanced `root` -> CAS fails (modelled as stutter);
-\*     the faulter drops its loaded Arc (refcount) and rebases (idempotent: two
+\*     the faulter retains its loaded Arc long enough to answer the captured read
+\*     exactly, then rebases only for best-effort publication (idempotent: two
 \*     faulters each load their own Arc, exactly one CAS wins).
 \*
 \* Gated by USE_FAULT_IN: the `_Unsafe` control sets it FALSE so fault-in NEVER

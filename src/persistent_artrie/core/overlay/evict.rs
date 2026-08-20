@@ -57,8 +57,9 @@ use crate::value::DictionaryValue;
 /// ([`OverlayEvictable::find_leaf_faulting`]) used by
 /// `LockFreeOverlay::overlay_value_get`. Equals both variants' per-variant
 /// `lockfree_cas::DEFAULT_MAX_FAULTIN_RETRIES` (`16`): after this many loser-safe
-/// install-CAS rebases, ONE final read-only walk answers (a still-`OnDisk` slot
-/// reads absent — durable; a later read faults it — never spins).
+/// install-CAS rebases, the read answers from the last privately faulted captured
+/// snapshot. Publication is only a cache optimization: root-CAS contention can
+/// never turn a successfully loaded committed node into an absent result.
 pub(crate) const DEFAULT_MAX_FAULTIN_RETRIES: usize = 16;
 
 /// Outcome of an attempt to evict ONE overlay node to an on-disk reference. The
@@ -264,9 +265,10 @@ pub(crate) trait OverlayEvictable<K: KeyEncoding, V: DictionaryValue, S>:
     /// root, walk `key` top-down; `None` edge ⇒ absent (`Ok(None)`); `InMem` ⇒
     /// descend; **`OnDisk` ⇒ fault** (`fault_overlay_slot`, rebuild the spine
     /// bottom-up splicing `Child::InMem(loaded)`, then loser-safe install-CAS), then
-    /// rebase to a fresh root load. On retry exhaustion ONE final read-only walk —
-    /// a still-`OnDisk` slot reads absent (durable; a later read retries), never
-    /// spins.
+    /// rebase to a fresh root load. Independently of that best-effort publication,
+    /// the loaded child remains owned by this read and is walked privately through
+    /// the rest of `key`. On retry exhaustion that captured answer is returned, so
+    /// contention can never masquerade as absence.
     ///
     /// **Idempotent / loser-safe:** two faulters each load their own `Arc`; exactly
     /// one install CAS wins, the loser drops + re-reads the now-`InMem` child.
@@ -285,8 +287,8 @@ pub(crate) trait OverlayEvictable<K: KeyEncoding, V: DictionaryValue, S>:
         max_faultin_retries: usize,
     ) -> crate::persistent_artrie::core::error::Result<Option<Arc<OverlayNode<K, V>>>> {
         // One read-only walk of `root` (no faulting): used for the empty-key leaf
-        // and the post-exhaustion liveness fallback. A still-OnDisk slot reads
-        // absent (durable; a later call retries) — never spins.
+        // and only when no OnDisk child was successfully loaded. Once a durable
+        // child has been loaded, its captured answer is the exact fallback below.
         fn walk_no_fault<K: KeyEncoding, V: DictionaryValue>(
             root: &Arc<OverlayNode<K, V>>,
             key: &[K::Unit],
@@ -305,8 +307,13 @@ pub(crate) trait OverlayEvictable<K: KeyEncoding, V: DictionaryValue, S>:
             }
         }
 
-        // +1 so we always get at least one fresh-root liveness walk even when
-        // `max_faultin_retries == 0`.
+        // The answer obtained by privately walking the most recently loaded durable
+        // child. `Some(None)` is distinct from "no captured answer": it proves the
+        // key was absent in that captured root even though the path was faulted.
+        let mut captured_answer: Option<Option<Arc<OverlayNode<K, V>>>> = None;
+
+        // +1 so even `max_faultin_retries == 0` performs one load + best-effort
+        // publication attempt before returning the exact captured answer.
         for _attempt in 0..=max_faultin_retries {
             let _epoch = self.overlay_epoch_manager().enter_read();
 
@@ -347,6 +354,41 @@ pub(crate) trait OverlayEvictable<K: KeyEncoding, V: DictionaryValue, S>:
                             None => return Ok(None),
                         };
 
+                        // Logical reads do not depend on publishing the faulted node.
+                        // Finish the remainder of THIS captured snapshot using the
+                        // owned loaded Arc. Nested OnDisk children are loaded privately
+                        // in the same way. This answer remains valid even if the root
+                        // install CAS below loses to a concurrent sibling publication.
+                        let mut captured_current = Arc::clone(&loaded);
+                        let mut captured_idx = idx + 1;
+                        let answer = loop {
+                            if captured_idx == key.len() {
+                                break if captured_current.is_final() {
+                                    Some(captured_current)
+                                } else {
+                                    None
+                                };
+                            }
+
+                            let captured_edge = key[captured_idx];
+                            let Some(captured_child) = captured_current.find_child(captured_edge)
+                            else {
+                                break None;
+                            };
+                            captured_current = match captured_child {
+                                Child::InMem(child_arc) => Arc::clone(child_arc),
+                                Child::OnDisk(nested_ptr) if !nested_ptr.is_null() => {
+                                    match self.fault_overlay_slot(nested_ptr) {
+                                        Some(node) => node,
+                                        None => break None,
+                                    }
+                                }
+                                Child::OnDisk(_) => break None,
+                            };
+                            captured_idx += 1;
+                        };
+                        captured_answer = Some(answer);
+
                         // The deepest rebuilt node is `current` with its `edge` child
                         // replaced by InMem(loaded); each shallower ancestor in
                         // `spine` is re-linked InMem around the rebuilt child.
@@ -386,13 +428,166 @@ pub(crate) trait OverlayEvictable<K: KeyEncoding, V: DictionaryValue, S>:
             });
         }
 
-        // Retry budget exhausted: ONE final read-only walk of the freshest root.
-        // A still-OnDisk slot reads absent (liveness-only; durable, a later read
-        // faults it). Never spins.
+        // Retry budget exhausted. A successfully loaded committed path remains a
+        // valid snapshot even though every best-effort install CAS lost. Returning
+        // it is both linearizable (at the captured root load) and exact; contention
+        // must never be translated into absence.
+        if let Some(answer) = captured_answer {
+            return Ok(answer);
+        }
+
+        // No durable child was loaded (e.g. an empty key): one final read-only walk
+        // of the freshest root preserves the original bounded-liveness behavior.
         let final_root = match root_slot.load() {
             Some(r) => r,
             None => return Ok(None),
         };
         Ok(walk_no_fault(&final_root, key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persistent_artrie::core::key_encoding::{ByteKey, CharKey};
+    use crate::persistent_artrie::core::swizzled_ptr::NodeType;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Barrier;
+    use std::thread;
+
+    /// A deterministic two-thread fixture that advances the published root while
+    /// the reader is blocked inside the disk loader. The reader's subsequent
+    /// install CAS must lose, exactly modeling a concurrent sibling publication.
+    struct ForcedPublicationLoss<K: KeyEncoding> {
+        root: AtomicNodePtr<K, ()>,
+        epoch: EpochManager,
+        loaded: Arc<OverlayNode<K, ()>>,
+        loader_entered: Barrier,
+        writer_published: Barrier,
+        sibling: K::Unit,
+        cas_attempts: AtomicUsize,
+    }
+
+    impl<K: KeyEncoding> OverlayFaulter<K, ()> for ForcedPublicationLoss<K> {
+        fn fault_overlay_slot(&self, _slot: &SwizzledPtr) -> Option<Arc<OverlayNode<K, ()>>> {
+            self.loader_entered.wait();
+            self.writer_published.wait();
+            Some(Arc::clone(&self.loaded))
+        }
+    }
+
+    impl<K: KeyEncoding> OverlayEvictable<K, (), ()> for ForcedPublicationLoss<K> {
+        fn overlay_root_slot(&self) -> Option<&AtomicNodePtr<K, ()>> {
+            Some(&self.root)
+        }
+
+        fn overlay_epoch_manager(&self) -> &EpochManager {
+            &self.epoch
+        }
+
+        fn overlay_eviction_coordinator(&self) -> Option<Arc<EvictionCoordinator>> {
+            None
+        }
+
+        fn note_faultin_cas(&self) {
+            self.cas_attempts.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn assert_publication_loss_preserves_committed_read<K: KeyEncoding>(
+        first: K::Unit,
+        second: K::Unit,
+        sibling: K::Unit,
+        node_type: NodeType,
+    ) {
+        let disk_child = SwizzledPtr::on_disk(7, 11, node_type);
+        let root =
+            Arc::new(OverlayNode::<K, ()>::new().with_child(first, Child::OnDisk(disk_child)));
+        let committed_leaf = Arc::new(OverlayNode::<K, ()>::new().as_final());
+        let loaded =
+            Arc::new(OverlayNode::<K, ()>::new().with_child(second, Child::InMem(committed_leaf)));
+        let fixture = Arc::new(ForcedPublicationLoss {
+            root: AtomicNodePtr::new(root),
+            epoch: EpochManager::new(),
+            loaded,
+            loader_entered: Barrier::new(2),
+            writer_published: Barrier::new(2),
+            sibling,
+            cas_attempts: AtomicUsize::new(0),
+        });
+        let max_retries = DEFAULT_MAX_FAULTIN_RETRIES;
+
+        let reader = {
+            let fixture = Arc::clone(&fixture);
+            thread::spawn(move || {
+                <ForcedPublicationLoss<K> as OverlayEvictable<K, (), ()>>::find_leaf_faulting(
+                    &fixture,
+                    &fixture.root,
+                    &[first, second],
+                    max_retries,
+                )
+                .expect("faulting read")
+            })
+        };
+        let writer = {
+            let fixture = Arc::clone(&fixture);
+            thread::spawn(move || {
+                // Advance the root once per permitted reader attempt. Reusable
+                // barriers force every install CAS to compare against a stale Arc.
+                for _ in 0..=max_retries {
+                    fixture.loader_entered.wait();
+                    let old_root = fixture.root.load().expect("published root");
+                    let sibling_leaf = Arc::new(OverlayNode::<K, ()>::new().as_final());
+                    let advanced =
+                        Arc::new(old_root.with_child(fixture.sibling, Child::InMem(sibling_leaf)));
+                    fixture.root.store(advanced);
+                    fixture.writer_published.wait();
+                }
+            })
+        };
+
+        let found = reader.join().expect("reader thread");
+        writer.join().expect("writer thread");
+        assert!(
+            found.is_some_and(|leaf| leaf.is_final()),
+            "a root-CAS loss must not turn the loaded committed term into absence"
+        );
+        assert_eq!(
+            fixture.cas_attempts.load(Ordering::Relaxed),
+            max_retries + 1,
+            "the test must force every bounded install-CAS attempt to lose"
+        );
+
+        // Prove the intended interleaving occurred: the writer's sibling is live,
+        // while the queried child is still OnDisk because the reader's CAS lost.
+        let published = fixture.root.load().expect("final published root");
+        assert!(matches!(
+            published.find_child(first),
+            Some(Child::OnDisk(_))
+        ));
+        assert!(matches!(
+            published.find_child(sibling),
+            Some(Child::InMem(_))
+        ));
+    }
+
+    #[test]
+    fn byte_read_never_misses_committed_after_forced_faultin_publication_loss() {
+        assert_publication_loss_preserves_committed_read::<ByteKey>(
+            b'a',
+            b'b',
+            b'z',
+            NodeType::Node4,
+        );
+    }
+
+    #[test]
+    fn char_read_never_misses_committed_after_forced_faultin_publication_loss() {
+        assert_publication_loss_preserves_committed_read::<CharKey>(
+            'λ' as u32,
+            '雪' as u32,
+            '☃' as u32,
+            NodeType::CharNode4,
+        );
     }
 }

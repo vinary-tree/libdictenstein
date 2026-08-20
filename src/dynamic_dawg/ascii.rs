@@ -3,6 +3,8 @@
 //! This implementation supports incremental updates on a lock-free node graph.
 //! Perfect minimality can be restored via explicit compaction.
 
+#[cfg(feature = "bindings-core")]
+use super::lockfree::PublishIfEmpty;
 use super::lockfree::{LockFreeDawg, LockFreeDawgNode};
 use super::zipper::DynamicDawgZipper;
 use crate::iterator::DictionaryIterator;
@@ -478,6 +480,22 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     pub fn root_with_term_count(&self) -> (DynamicDawgNode<V>, usize) {
         let (root, term_count) = self.inner.root_arc_with_term_count();
         (DynamicDawgNode { node: root }, term_count)
+    }
+
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn root_with_term_count_revision(&self) -> (DynamicDawgNode<V>, usize, u64) {
+        let (root, term_count, revision) = self.inner.root_arc_with_term_count_revision();
+        (DynamicDawgNode { node: root }, term_count, revision)
+    }
+
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn clear_graph(&self) -> bool {
+        self.inner.clear()
+    }
+
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn try_publish_if_empty(&self, frozen: &Self) -> PublishIfEmpty {
+        self.inner.try_publish_if_empty(&frozen.inner)
     }
 
     /// Get the number of nodes in the DAWG.

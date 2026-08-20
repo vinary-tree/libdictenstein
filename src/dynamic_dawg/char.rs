@@ -14,6 +14,8 @@
 //! - **Correctness**: Proper Unicode semantics (e.g., "" → "¡" = distance 1, not 2)
 
 use super::char_zipper::DynamicDawgCharZipper;
+#[cfg(feature = "bindings-core")]
+use super::lockfree::PublishIfEmpty;
 use super::lockfree::{LockFreeDawg, LockFreeDawgNode};
 use crate::iterator::DictionaryIterator;
 use crate::value::DictionaryValue;
@@ -489,6 +491,22 @@ impl<V: DictionaryValue> DynamicDawgChar<V> {
     pub fn root_with_term_count(&self) -> (DynamicDawgCharNode<V>, usize) {
         let (root, term_count) = self.inner.root_arc_with_term_count();
         (DynamicDawgCharNode { node: root }, term_count)
+    }
+
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn root_with_term_count_revision(&self) -> (DynamicDawgCharNode<V>, usize, u64) {
+        let (root, term_count, revision) = self.inner.root_arc_with_term_count_revision();
+        (DynamicDawgCharNode { node: root }, term_count, revision)
+    }
+
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn clear_graph(&self) -> bool {
+        self.inner.clear()
+    }
+
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn try_publish_if_empty(&self, frozen: &Self) -> PublishIfEmpty {
+        self.inner.try_publish_if_empty(&frozen.inner)
     }
 
     /// Get the number of nodes in the DAWG.

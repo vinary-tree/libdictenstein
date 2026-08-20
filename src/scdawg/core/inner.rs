@@ -20,7 +20,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::node::{ScdawgNode, NIL};
 use crate::value::DictionaryValue;
-use crate::CharUnit;
+use crate::{CharUnit, SnapshotTraversalCursor};
 
 /// Inner mutable state of the SCDAWG, generic over the edge-label type.
 ///
@@ -349,6 +349,106 @@ impl<U: CharUnit, V: DictionaryValue> ScdawgCoreInner<U, V> {
         for &(_, target) in &self.nodes[node].left_edges {
             self.count_occurrences(target, count);
         }
+    }
+
+    /// Return the dense traversal cursor for one node in this immutable
+    /// revision.
+    #[inline]
+    pub(crate) fn snapshot_cursor(&self, node: usize) -> Option<SnapshotTraversalCursor> {
+        (node < self.nodes.len())
+            .then(|| SnapshotTraversalCursor::from_index(node))
+            .flatten()
+    }
+
+    /// Validate a dense cursor against this exact immutable revision.
+    #[inline]
+    pub(crate) fn contains_snapshot_cursor(&self, cursor: SnapshotTraversalCursor) -> bool {
+        cursor.index() < self.nodes.len()
+    }
+
+    /// Project one cursor node's borrowed forward edges without constructing
+    /// owned node handles for accepted children.
+    #[inline]
+    pub(crate) fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(
+        &self,
+        cursor: SnapshotTraversalCursor,
+        mut project: P,
+        mut visitor: F,
+    ) -> Option<bool>
+    where
+        P: FnMut(U) -> Option<T>,
+        F: FnMut(U, SnapshotTraversalCursor, T),
+    {
+        let node = self.nodes.get(cursor.index())?;
+        for &(label, target) in &node.forward_edges {
+            if let Some(projected) = project(label) {
+                let target = self
+                    .snapshot_cursor(target)
+                    .expect("an SCDAWG edge targets this immutable revision");
+                visitor(label, target, projected);
+            }
+        }
+        Some(node.is_final)
+    }
+
+    /// Read finality through a validated dense cursor.
+    #[inline]
+    pub(crate) fn snapshot_cursor_is_final(&self, cursor: SnapshotTraversalCursor) -> Option<bool> {
+        self.nodes.get(cursor.index()).map(|node| node.is_final)
+    }
+
+    /// Follow one forward edge through a validated dense cursor.
+    #[inline]
+    pub(crate) fn snapshot_cursor_transition(
+        &self,
+        cursor: SnapshotTraversalCursor,
+        label: U,
+    ) -> Option<Option<SnapshotTraversalCursor>> {
+        let node = self.nodes.get(cursor.index())?;
+        Some(node.get_edge(label).map(|target| {
+            self.snapshot_cursor(target)
+                .expect("an SCDAWG edge targets this immutable revision")
+        }))
+    }
+
+    /// Visit one directly sliced page of borrowed forward edges.
+    #[inline]
+    pub(crate) fn visit_snapshot_cursor_edge_page<F>(
+        &self,
+        cursor: SnapshotTraversalCursor,
+        start: usize,
+        capacity: usize,
+        mut visitor: F,
+    ) -> Option<(bool, usize)>
+    where
+        F: FnMut(U, SnapshotTraversalCursor),
+    {
+        let node = self.nodes.get(cursor.index())?;
+        let total = node.forward_edges.len();
+        let start = start.min(total);
+        let end = start.saturating_add(capacity).min(total);
+        for &(label, target) in &node.forward_edges[start..end] {
+            let target = self
+                .snapshot_cursor(target)
+                .expect("an SCDAWG edge targets this immutable revision");
+            visitor(label, target);
+        }
+        Some((node.is_final, total))
+    }
+
+    /// Read the optional mapped value through a validated dense cursor.
+    #[inline]
+    pub(crate) fn snapshot_cursor_value(
+        &self,
+        cursor: SnapshotTraversalCursor,
+    ) -> Option<Option<V>> {
+        self.nodes.get(cursor.index()).map(|node| {
+            if node.is_final {
+                node.value.clone()
+            } else {
+                None
+            }
+        })
     }
 }
 

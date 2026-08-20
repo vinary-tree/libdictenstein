@@ -713,6 +713,18 @@ pub trait DictionaryNode: Clone + Send + Sync {
         None
     }
 
+    /// Whether obtaining the first snapshot cursor constructs a dense
+    /// projection of the complete reachable dictionary revision.
+    ///
+    /// Query engines use this capability to avoid paying an O(dictionary)
+    /// capture cost for every independent lookup. Resource producers that
+    /// amortize one immutable projection across many consumers may still call
+    /// [`snapshot_root_cursor`](Self::snapshot_root_cursor) deliberately.
+    #[inline]
+    fn snapshot_cursor_requires_full_projection(&self) -> bool {
+        false
+    }
+
     /// Validate an externally supplied cursor against this retained revision.
     ///
     /// Returning `true` certifies that `cursor` may safely be passed to this
@@ -999,6 +1011,70 @@ pub trait DictionaryNode: Clone + Send + Sync {
         let is_final = self.is_final();
         self.filter_map_edges(project, visitor);
         is_final
+    }
+
+    /// Whether [`visit_edge_page_and_finality`](Self::visit_edge_page_and_finality)
+    /// can address one bounded edge window without first materializing or
+    /// re-enumerating the complete node.
+    ///
+    /// The compatibility implementation below performs a complete visit for
+    /// every requested page. Consumers must therefore retain their eager
+    /// fallback unless a node explicitly advertises efficient paging here.
+    #[inline]
+    fn supports_efficient_edge_paging(&self) -> bool {
+        false
+    }
+
+    /// Visit one bounded page of owned child nodes and return
+    /// `(is_final, total_edge_count)`.
+    ///
+    /// Edges must retain the same order as [`for_each_edge`](Self::for_each_edge).
+    /// `capacity == 0` is a metadata-only request and must not construct a
+    /// child node. Implementations that advertise efficient paging must keep
+    /// work and temporary storage proportional to `capacity`, not total
+    /// out-degree.
+    ///
+    /// The default is exact but deliberately not advertised as efficient: it
+    /// visits the complete node and forwards only the requested window.
+    #[inline]
+    fn visit_edge_page_and_finality<F>(
+        &self,
+        start: usize,
+        capacity: usize,
+        mut visitor: F,
+    ) -> (bool, usize)
+    where
+        Self: Sized,
+        F: FnMut(Self::Unit, Self),
+    {
+        let end = start.saturating_add(capacity);
+        let mut total = 0usize;
+        let is_final = self.visit_edges_and_finality(|label, child| {
+            if total >= start && total < end {
+                visitor(label, child);
+            }
+            total = total
+                .checked_add(1)
+                .expect("a dictionary node's out-degree fits in usize");
+        });
+        (is_final, total)
+    }
+
+    /// Visit one bounded page after finality has already been captured.
+    ///
+    /// The return value is the stable total edge count for this retained node
+    /// revision. The default delegates to
+    /// [`visit_edge_page_and_finality`](Self::visit_edge_page_and_finality).
+    /// Providers whose finality and edge callbacks are independent should
+    /// override this seam so page refills do not re-read finality.
+    #[inline]
+    fn visit_edge_page<F>(&self, start: usize, capacity: usize, visitor: F) -> usize
+    where
+        Self: Sized,
+        F: FnMut(Self::Unit, Self),
+    {
+        self.visit_edge_page_and_finality(start, capacity, visitor)
+            .1
     }
 
     /// Check if a specific edge exists

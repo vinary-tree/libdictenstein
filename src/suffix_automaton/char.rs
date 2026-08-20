@@ -1047,6 +1047,48 @@ impl<V: DictionaryValue> DictionaryNode for SuffixNodeCharHandle<V> {
         }
     }
 
+    #[inline]
+    fn supports_efficient_edge_paging(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    fn visit_edge_page_and_finality<F>(
+        &self,
+        start: usize,
+        capacity: usize,
+        visitor: F,
+    ) -> (bool, usize)
+    where
+        F: FnMut(char, Self),
+    {
+        let is_final = self.is_final();
+        let total = self.visit_edge_page(start, capacity, visitor);
+        (is_final, total)
+    }
+
+    #[inline]
+    fn visit_edge_page<F>(&self, start: usize, capacity: usize, mut visitor: F) -> usize
+    where
+        F: FnMut(char, Self),
+    {
+        let Some(node) = self.automaton.nodes.get(self.state_id) else {
+            return 0;
+        };
+        let total = node.edges.len();
+        let end = start.saturating_add(capacity).min(total);
+        for &(label, target) in node.edges.get(start.min(total)..end).unwrap_or_default() {
+            visitor(
+                label,
+                Self {
+                    automaton: Arc::clone(&self.automaton),
+                    state_id: target,
+                },
+            );
+        }
+        total
+    }
+
     fn has_edge(&self, label: char) -> bool {
         self.automaton
             .nodes

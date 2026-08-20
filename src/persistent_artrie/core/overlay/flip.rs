@@ -257,9 +257,10 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// brings the arbitrary-`V` arm to the SAME faulting walk via the shared
     /// [`OverlayEvictable::find_leaf_faulting`] (the supertrait), making byte + char
     /// IDENTICAL here. `find_leaf_faulting` is infallible-in-practice — every branch
-    /// returns `Ok` (it does its own bounded loser-safe install-CAS rebases + a final
-    /// read-only liveness walk; a loader I/O error degrades to `Ok(None)`), so the
-    /// `Err`-arm fallback is currently unreachable, preserving char's exact prior
+    /// returns `Ok` (it does bounded loser-safe install-CAS rebases, then returns the
+    /// exact privately walked durable snapshot; a loader I/O error degrades to
+    /// `Ok(None)`), so the `Err`-arm fallback is currently unreachable, preserving
+    /// char's exact prior
     /// behavior while ALSO fixing byte's latent #46 (byte arbitrary-`V` value reads
     /// were non-faulting; no byte test asserted that — this is a strict improvement).
     ///

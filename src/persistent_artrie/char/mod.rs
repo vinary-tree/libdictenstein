@@ -1238,16 +1238,11 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
         // (lock-free — reads the atomic overlay root; CK serializes the descriptor/arena
         // publish) and publish it while RETAINING the WAL.
         let snapshot = self.capture_snapshot_immutable()?;
-        if self
-            .eviction_coordinator
-            .lock()
-            .expect("eviction_coordinator mutex poisoned")
-            .is_some()
-        {
-            self.publish_immutable_snapshot_retaining_wal_with_eviction(snapshot)
-        } else {
-            self.publish_immutable_snapshot_retaining_wal(&snapshot)
-        }
+        <PersistentARTrieChar<V> as crate::persistent_artrie::core::overlay::checkpoint::OverlayCheckpoint<
+            crate::persistent_artrie::core::key_encoding::CharKey,
+            V,
+            crate::persistent_artrie::disk_manager::MmapDiskManager,
+        >>::publish_captured_overlay_snapshot(self, snapshot)
     }
 
     fn is_dirty(&self) -> bool {

@@ -313,6 +313,44 @@ impl<V: DictionaryValue, R: TrieRefLike<V>> DictionaryNode for TrieRefNode<V, R>
     }
 
     #[inline]
+    fn supports_efficient_edge_paging(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    fn visit_edge_page_and_finality<F>(
+        &self,
+        start: usize,
+        capacity: usize,
+        visitor: F,
+    ) -> (bool, usize)
+    where
+        F: FnMut(u8, Self),
+    {
+        let is_final = self.is_final();
+        let total = self.visit_edge_page(start, capacity, visitor);
+        (is_final, total)
+    }
+
+    #[inline]
+    fn visit_edge_page<F>(&self, start: usize, capacity: usize, mut visitor: F) -> usize
+    where
+        F: FnMut(u8, Self),
+    {
+        let mask = self.r.child_mask();
+        for offset in 0..capacity {
+            let Some(index) = start.checked_add(offset) else {
+                break;
+            };
+            let Some(label) = mask.indexed_bit::<true>(index) else {
+                break;
+            };
+            visitor(label, Self::new(self.r.descend_bytes(&[label])));
+        }
+        self.r.child_count()
+    }
+
+    #[inline]
     fn edge_count(&self) -> Option<usize> {
         Some(self.r.child_count())
     }
