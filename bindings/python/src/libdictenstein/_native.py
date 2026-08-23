@@ -6,6 +6,7 @@ import ctypes
 import ctypes.util
 import os
 import platform
+import sys
 from collections.abc import (
     ItemsView,
     Iterable,
@@ -19,7 +20,11 @@ from collections.abc import (
 from contextlib import suppress
 from pathlib import Path
 from types import MappingProxyType
-from typing import Self
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 from vinary_tree_interop import UnitDomain, VtResource
 

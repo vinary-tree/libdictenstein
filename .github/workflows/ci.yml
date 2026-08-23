@@ -222,6 +222,12 @@ jobs:
           # gxhash's portable x86 requirements while adding the sanitizer.
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -Z sanitizer=${{ matrix.sanitizer }}"
           RUSTDOCFLAGS: "-C target-feature=+aes,+sse2 -Z sanitizer=${{ matrix.sanitizer }}"
+          # The correspondence suite deliberately uses mem::forget to model
+          # process crashes while durable files remain open. LeakSanitizer
+          # cannot distinguish those fixtures from product leaks, so the ASan
+          # lane checks bounds/UAF while binding-specific lifecycle suites keep
+          # enforcing leak behavior.
+          ASAN_OPTIONS: "detect_leaks=0"
         run: |
           cargo +nightly test -Zbuild-std \
             --target x86_64-unknown-linux-gnu \

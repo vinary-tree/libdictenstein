@@ -10,7 +10,10 @@ requires-python = ">=3.10"
 license = "Apache-2.0"
 readme = "README.md"
 authors = [{ name = "Dylon Edwards", email = "dylon.devo@gmail.com" }]
-dependencies = ["vinary-tree-interop==4.0.0rc1"]
+dependencies = [
+  "typing-extensions>=4.0.0; python_version < '3.11'",
+  "vinary-tree-interop==4.0.0rc1",
+]
 classifiers = [
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.10",

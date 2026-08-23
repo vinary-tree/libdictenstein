@@ -33,3 +33,29 @@ Proof.
     + reflexivity.
     + simpl. apply IH.
 Qed.
+
+(** Coq 8.18 does not export [NoDup_app] under the name used by Rocq 9.1.
+    This one-way form is exactly what the HotStuff quorum proof needs and is
+    deliberately proved from the constructors shared by both releases. *)
+Lemma NoDup_app_portable :
+  forall (A : Type) (left right : list A),
+    NoDup left ->
+    NoDup right ->
+    (forall item, In item left -> ~ In item right) ->
+    NoDup (left ++ right).
+Proof.
+  intros A left right Hleft.
+  induction Hleft as [| item left Hitem Hleft IH];
+    intros Hright Hdisjoint.
+  - simpl. exact Hright.
+  - simpl. constructor.
+    + intro Hin.
+      apply in_app_or in Hin.
+      destruct Hin as [Hin | Hin].
+      * exact (Hitem Hin).
+      * exact (Hdisjoint item (or_introl eq_refl) Hin).
+    + apply IH.
+      * exact Hright.
+      * intros other Hin_left Hin_right.
+        exact (Hdisjoint other (or_intror Hin_left) Hin_right).
+Qed.

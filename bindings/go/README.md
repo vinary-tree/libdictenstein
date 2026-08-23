@@ -1,7 +1,7 @@
 # Vinary Tree libdictenstein for Go
 
 A cgo facade over libdictenstein's stable `ldict_*` C ABI. The module is
-`github.com/vinary-tree/libdictenstein/bindings/go`. It exposes DynamicDAWG
+`github.com/vinary-tree/libdictenstein/bindings/go/v4`. It exposes DynamicDAWG
 CRUD and batch insertion, immutable DoubleArrayTrie construction, SCDAWG
 substring search, persistent ARTrie CRUD/checkpoint/reopen, and persistent
 vocabulary reverse lookup, and lends each dictionary's retained resource to an
@@ -34,7 +34,7 @@ package main
 import (
 	"fmt"
 
-	ld "github.com/vinary-tree/libdictenstein/bindings/go"
+	ld "github.com/vinary-tree/libdictenstein/bindings/go/v4"
 )
 
 // A mapped u64 value is a *uint64, so nil and 0 stay distinct.
@@ -140,7 +140,7 @@ with `CGO_LDFLAGS` and `LD_LIBRARY_PATH` set as above. See
 | Binding | Go |
 | Languages/runtime | Go 1.25+ with cgo |
 | Support tier | Tier 2 |
-| Distribution | Go module `github.com/vinary-tree/libdictenstein/bindings/go` |
+| Distribution | Go module `github.com/vinary-tree/libdictenstein/bindings/go/v4` |
 | Native boundary | cgo over `ldict_*` |
 | Canonical facade source | [`bindings/go/libdictenstein.go`](../../bindings/go/libdictenstein.go) |
 

@@ -1,6 +1,7 @@
 Require Import Coq.Arith.Arith.
 Require Import Coq.Lists.List.
 Require Import Coq.micromega.Lia.
+Require Import ARTrie.Model.ListCompat.
 
 Import ListNotations.
 
@@ -112,7 +113,7 @@ Proof.
   destruct Hq2 as [Hq2_nodup [Hq2_incl Hq2_len]].
   assert (NoDup (q1 ++ q2)) as Happend_nodup.
   {
-    apply NoDup_app; repeat split; auto.
+    apply NoDup_app_portable; auto.
   }
   assert (incl (q1 ++ q2) universe) as Happend_incl.
   {
