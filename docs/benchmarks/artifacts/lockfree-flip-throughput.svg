@@ -160,7 +160,7 @@
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<path stroke='black'  d='M548.76,107.26 L548.76,74.26 L849.23,74.26 L849.23,107.26 L548.76,107.26 Z  '/></g>
-	<g id="gnuplot_plot_1" ><title>CONTROL (Arc&lt;RwLock&gt; owned tree)</title>
+	<g id="gnuplot_plot_1" ><title>CONTROL (ArcArc&lt;RwLock>lt;RwLock&gt; owned tree)</title>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g stroke='none' shape-rendering='crispEdges'>
 		<polygon fill = 'rgb(198,  40,  40)' fill-opacity = '0.920000' points = '157.52,447.20 190.75,447.20 190.75,364.41 157.52,364.41 '/>
@@ -233,10 +233,10 @@
 	</g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<path stroke='black'  d='M548.76,107.26 L548.76,74.26 L849.23,74.26 L849.23,107.26 L548.76,107.26 Z  '/></g>
-	<g id="gnuplot_plot_1" ><title>CONTROL (Arc&lt;RwLock&gt; owned tree)</title>
+	<g id="gnuplot_plot_1" ><title>CONTROL (ArcArc&lt;RwLock>lt;RwLock&gt; owned tree)</title>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g transform="translate(794.84,86.09)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="end">
-		<text><tspan font-family="DejaVu Sans" >CONTROL (Arc&lt;RwLock&gt; owned tree)</tspan></text>
+		<text><tspan font-family="DejaVu Sans" >CONTROL (ArcArc&lt;RwLock>lt;RwLock&gt; owned tree)</tspan></text>
 	</g>
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
@@ -281,7 +281,7 @@
 </g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g transform="translate(469.39,28.34)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="middle">
-		<text><tspan font-family="DejaVu Sans" >Lock-free overlay checkpoint beats Arc&lt;RwLock&gt; owned tree on write throughput (3-6.5x)</tspan></text>
+		<text><tspan font-family="DejaVu Sans" >Lock-free overlay checkpoint beats ArcArc&lt;RwLock>lt;RwLock&gt; owned tree on write throughput (3-6.5x)</tspan></text>
 	</g>
 	<g transform="translate(469.39,44.84)" stroke="none" fill="black" font-family="DejaVu Sans" font-size="11.00"  text-anchor="middle">
 		<text><tspan font-family="DejaVu Sans"  font-size="8.8">Source: lockfree-flip-benchmark-ledger.md, K=30/arm, Immediate durability (2026-06-02, HEAD 549957a)</tspan></text>
