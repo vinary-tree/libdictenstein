@@ -1,3 +1,5 @@
+/// <reference lib="esnext.disposable" />
+
 import type { RuntimeIdentity, UnitDomain } from "@vinary-tree/interop";
 
 export type DictionaryValue = bigint | null;

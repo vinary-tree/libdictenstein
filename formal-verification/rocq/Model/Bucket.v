@@ -892,7 +892,7 @@ Proof.
       rewrite map_skipn. apply NoDup_skipn. exact Huniq.
     + split.
       * unfold bucket_count_valid. cbn. unfold right_entries.
-        rewrite length_skipn. lia.
+        rewrite skipn_length_portable. lia.
       * split.
         -- change (right_size <= BUCKET_PAGE_SIZE /\
                    BUCKET_PAGE_SIZE - right_size = BUCKET_PAGE_SIZE - right_size).

@@ -16,8 +16,20 @@ Lemma firstn_length_portable :
 Proof.
   intros A count.
   induction count as [| count IH]; intros items.
-  - reflexivity.
+  - destruct items; reflexivity.
   - destruct items as [| item items].
     + reflexivity.
     + simpl. rewrite IH. reflexivity.
+Qed.
+
+Lemma skipn_length_portable :
+  forall (A : Type) (count : nat) (items : list A),
+    length (skipn count items) = length items - count.
+Proof.
+  intros A count.
+  induction count as [| count IH]; intros items.
+  - destruct items; reflexivity.
+  - destruct items as [| item items].
+    + reflexivity.
+    + simpl. apply IH.
 Qed.

@@ -221,8 +221,9 @@ jobs:
           # Step-level RUSTFLAGS replaces the workflow-level value, so retain
           # gxhash's portable x86 requirements while adding the sanitizer.
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -Z sanitizer=${{ matrix.sanitizer }}"
+          RUSTDOCFLAGS: "-C target-feature=+aes,+sse2 -Z sanitizer=${{ matrix.sanitizer }}"
         run: |
-          cargo +nightly test \
+          cargo +nightly test -Zbuild-std \
             --target x86_64-unknown-linux-gnu \
             --all-features \
             --no-fail-fast
@@ -387,23 +388,48 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PLANTUML_VERSION: "1.2026.5"
+      PLANTUML_SHA256: "de65ffc34b5c7fdad4e86309ce2dcceff98778799ae17b93a8f492d7a69080e1"
+      PLANTUML_MATH_PACKAGE: "20171116-4"
+      PLANTUML_MATH_SHA256: "50a7172715a94d65b89b6e7745c59ad715bc9f7d2959664e175d20338fed3b85"
+      JAVA_VERSION: "26"
       D2_VERSION: "0.7.1"
       BYTEFIELD_SVG_VERSION: "1.11.0"
       SVGBOB_VERSION: "0.7.6"
     steps:
       - uses: actions/checkout@v6
-      - name: Install system renderers (graphviz, gnuplot, java)
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+      - name: Install system renderers (graphviz, gnuplot)
         run: |
           sudo apt-get update
-          sudo apt-get install -y graphviz gnuplot default-jre-headless
-      - name: Install PlantUML (pinned jar)
+          sudo apt-get install -y graphviz gnuplot zstd
+      - name: Install PlantUML and its math renderer (pinned artifacts)
         run: |
+          sudo mkdir -p /opt/plantuml
           curl -fsSL \
             "https://github.com/plantuml/plantuml/releases/download/v${PLANTUML_VERSION}/plantuml-${PLANTUML_VERSION}.jar" \
-            -o /opt/plantuml.jar
+            -o /tmp/plantuml.jar
+          echo "${PLANTUML_SHA256}  /tmp/plantuml.jar" | sha256sum --check --strict
+          sudo install -m 0644 /tmp/plantuml.jar /opt/plantuml/plantuml.jar
+
+          # PlantUML deliberately ships JLaTeXMath separately.  Without these
+          # four companion jars, <latex> nodes degrade to fallback text while
+          # the renderer still exits successfully.  The versioned Arch package
+          # is an immutable distribution of PlantUML's official companion zip;
+          # pinning its digest makes the generated formula SVGs reproducible.
+          curl -fsSL \
+            "https://geo.mirror.pkgbuild.com/extra/os/x86_64/plantuml-ascii-math-${PLANTUML_MATH_PACKAGE}-any.pkg.tar.zst" \
+            -o /tmp/plantuml-ascii-math.pkg.tar.zst
+          echo "${PLANTUML_MATH_SHA256}  /tmp/plantuml-ascii-math.pkg.tar.zst" | sha256sum --check --strict
+          mkdir -p /tmp/plantuml-ascii-math
+          tar --zstd -xf /tmp/plantuml-ascii-math.pkg.tar.zst -C /tmp/plantuml-ascii-math
+          sudo install -m 0644 /tmp/plantuml-ascii-math/usr/share/java/plantuml/*.jar /opt/plantuml/
+
           sudo tee /usr/local/bin/plantuml >/dev/null <<'EOF'
           #!/usr/bin/env bash
-          exec java -jar /opt/plantuml.jar "$@"
+          exec java -Djava.awt.headless=true -jar /opt/plantuml/plantuml.jar "$@"
           EOF
           sudo chmod +x /usr/local/bin/plantuml
       - name: Install D2 (pinned release)
