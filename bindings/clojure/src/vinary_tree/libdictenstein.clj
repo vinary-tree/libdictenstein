@@ -3,12 +3,14 @@
   (:refer-clojure :exclude [contains? get remove])
   (:import
    (io.vinarytree.libdictenstein
-    Dictionary Dictionary$Lookup DictionaryEntry DictionaryKey
-    DictionarySnapshot DoubleArrayTrie DynamicDawg EntryStream
+    Dictionary Dictionary$Lookup DoubleArrayTrie DynamicDawg
     PersistentARTrie PersistentVocabulary Scdawg UnitDomain)
+   (io.vinarytree.interop
+    DictionaryEntry DictionaryEntryIterator DictionaryKey DictionarySnapshot
+    DictionaryUnitDomain UnsignedLong)
    (java.lang AutoCloseable Long)
    (java.nio.file Path)
-   (java.util HashMap OptionalLong)))
+   (java.util HashMap Optional OptionalLong)))
 
 (def ^:private domains
   {:bytes UnitDomain/BYTE
@@ -35,6 +37,10 @@
 (defn- unsigned [^OptionalLong value]
   (when (.isPresent value)
     (bigint (Long/toUnsignedString (.getAsLong value)))))
+
+(defn- unsigned-entry-value [^Optional value]
+  (when (.isPresent value)
+    (bigint (.toString ^UnsignedLong (.get value)))))
 
 (defn- u64-array [tokens]
   (long-array (map unsigned-long tokens)))
@@ -146,14 +152,14 @@
 (defn- clojure-key [^DictionaryKey key]
   (let [unit-domain (.domain key)]
     (cond
-      (= unit-domain UnitDomain/BYTE)
+      (= unit-domain DictionaryUnitDomain/BYTE)
       (mapv #(bit-and (long %) 0xff) (.bytes key))
 
-      (= unit-domain UnitDomain/UNICODE_SCALAR)
-      (.text key)
+      (= unit-domain DictionaryUnitDomain/UNICODE_SCALAR)
+      (.unicode key)
 
-      (= unit-domain UnitDomain/U64)
-      (mapv #(bigint (Long/toUnsignedString (long %))) (.tokens key))
+      (= unit-domain DictionaryUnitDomain/U64)
+      (mapv #(bigint (Long/toUnsignedString (long %))) (.u64 key))
 
       :else
       (throw (IllegalStateException. (str "unknown entry unit domain: " unit-domain))))))
@@ -162,11 +168,11 @@
   (let [^DictionaryKey key (.key entry)
         unit-domain (.domain key)]
     {:key (clojure-key key)
-     :value (unsigned (.value entry))
+     :value (unsigned-entry-value (.value entry))
      :domain (cond
-               (= unit-domain UnitDomain/BYTE) :bytes
-               (= unit-domain UnitDomain/UNICODE_SCALAR) :unicode-scalar
-               (= unit-domain UnitDomain/U64) :u64
+               (= unit-domain DictionaryUnitDomain/BYTE) :bytes
+               (= unit-domain DictionaryUnitDomain/UNICODE_SCALAR) :unicode-scalar
+               (= unit-domain DictionaryUnitDomain/U64) :u64
                :else
                (throw (IllegalStateException.
                        (str "unknown entry unit domain: " unit-domain))))}))
@@ -178,7 +184,7 @@
   seq, reduce, transduce, and repeated traversal after the dictionary closes."
   [^Dictionary dictionary]
   (let [^DictionarySnapshot captured (.snapshot dictionary)]
-    (mapv clojure-entry (.entries captured))))
+    (mapv clojure-entry (.orderedEntries captured))))
 
 (def entries
   "Alias for snapshot; returns an immutable persistent vector."
@@ -208,7 +214,7 @@
 
   Consume the result inside with-open; abandoning a lazy seq does not itself
   close its native cursor."
-  [^EntryStream stream]
+  [^DictionaryEntryIterator stream]
   (map clojure-entry (iterator-seq stream)))
 
 (defmacro with-entry-stream

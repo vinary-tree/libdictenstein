@@ -56,5 +56,5 @@ test-suite conformance
     bytestring >=0.11 && <0.13,
     containers >=0.6 && <0.9,
     text >=2.0 && <2.2,
-    vinary-tree-interop >=4 && <5
+    vinary-tree-interop >=4 && <5,
     vinary-tree-libdictenstein
