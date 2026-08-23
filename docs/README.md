@@ -34,6 +34,7 @@ data-structure foundations) → **algorithms** (per-backend implementation and u
 | ✅ **Formal verification** | [`../formal-verification/`](../formal-verification/) | Rocq theorems + TLA⁺ models + the CI-gated `unsafe` contract inventory. |
 | 🔒 **Security** | [`security/`](security/README.md) | Threat model, untrusted-input / DoS analysis, deserialization safety, and the `unsafe`-contract map. |
 | 🛠️ **Engineering** | [`engineering/`](engineering/testing-strategy.md) | Testing strategy, benchmarking methodology, and the feature-flag reference. |
+| 🚢 **Release engineering** | [`releasing.md`](releasing.md) | Immutable-tag validation, one-registry dispatch, artifact evidence, npm promotion, and failure recovery. |
 | 🎨 **Diagrams** | [`diagrams/`](diagrams/) | Diagrams-as-code sources and rendered SVGs; see [`diagrams/README.md`](diagrams/README.md) for the rendering pipeline. |
 
 ---
