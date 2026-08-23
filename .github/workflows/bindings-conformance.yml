@@ -212,13 +212,17 @@ jobs:
             echo 'includedir=${prefix}/include'
             echo
             echo "Name: libdictenstein"
-            echo "Version: 0.2.1"
+            echo "Description: Native libdictenstein release-candidate ABI"
+            echo "Version: 4.0.0"
             echo 'Libs: -L${libdir} -llibdictenstein'
             echo 'Cflags: -I${includedir}'
           } > /tmp/hs-pc/libdictenstein.pc
           cd bindings/haskell
-          PKG_CONFIG_PATH=/tmp/hs-pc LIBRARY_PATH="$rel" LD_LIBRARY_PATH="$rel" \
-            cabal test --project-file=cabal.project conformance \
+          export PKG_CONFIG_PATH=/tmp/hs-pc
+          export LIBRARY_PATH="$rel"
+          export LD_LIBRARY_PATH="$rel"
+          test "$(pkg-config --modversion libdictenstein)" = "4.0.0"
+          cabal test --project-file=cabal.project conformance \
               --extra-lib-dirs="$rel" \
               --extra-include-dirs="$GITHUB_WORKSPACE/include" \
               --test-show-details=direct \
