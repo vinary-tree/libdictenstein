@@ -14,6 +14,7 @@ Require Import Coq.Lists.List.
 Require Import Coq.Arith.Arith.
 Require Import Coq.Bool.Bool.
 Require Import Coq.micromega.Lia.
+Require Import ARTrie.Model.ListCompat.
 Require Import ARTrie.Model.Key.
 Require Import ARTrie.Model.NodeTypes.
 Import ListNotations.
@@ -74,7 +75,7 @@ Proof.
     (nth pos bytes zero_byte)
     (mkPrefix after (length after) eq_refl _)).
   - subst before bytes.
-    rewrite length_firstn.
+    rewrite firstn_length_portable.
     pose proof (prefix_len_bound prefix).
     pose proof (prefix_len_valid prefix).
     lia.
@@ -95,7 +96,7 @@ Proof.
   pose (truncated := firstn MAX_PREFIX_LEN combined).
   refine (mkPrefix truncated (length truncated) eq_refl _).
   subst truncated combined.
-  rewrite length_firstn.
+  rewrite firstn_length_portable.
   lia.
 Defined.
 
@@ -104,7 +105,7 @@ Definition truncate_prefix (prefix : CompressedPrefix) (new_len : nat)
   (H : new_len <= prefix_len prefix) : CompressedPrefix.
 Proof.
   refine (mkPrefix (firstn new_len (prefix_bytes prefix)) new_len _ _).
-  - rewrite length_firstn.
+  - rewrite firstn_length_portable.
     pose proof (prefix_len_valid prefix).
     lia.
   - pose proof (prefix_len_bound prefix).
@@ -148,7 +149,7 @@ Proof.
   pose (truncated := firstn MAX_PREFIX_LEN common).
   refine (mkPrefix truncated (length truncated) eq_refl _).
   subst truncated common.
-  rewrite length_firstn.
+  rewrite firstn_length_portable.
   lia.
 Defined.
 

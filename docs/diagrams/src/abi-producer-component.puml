@@ -1,4 +1,5 @@
 @startuml abi-producer-component
+!pragma layout smetana
 ' ============================================================================
 ' libdictenstein as the vt.dictionary.v1 PRODUCER — component view.
 ' Source of truth: src/bindings.rs (four backend bindings, ResourceContext,
@@ -53,7 +54,7 @@ package "libdictenstein cdylib — the producer" #D5F5E3 {
   }
 }
 
-package "vinary-tree-interop — the family contract\n(no_std crate hosted in liblevenshtein-rust)" #FADBD8 {
+package "vinary-tree-interop — the family contract\n(standalone no_std crate)" #FADBD8 {
   component "VtResource\n{ context, vtable }" as vtres #DCEDC8
   component "VtDictionaryVTable\nsnapshot · root · len ·\nnode_is_final · node_value_u64 ·\nnode_transition · node_edges" as vtdict #FFFFFF
   component "VtDictionaryGraphVTable\ngraph · node_value_u64" as vtgraph #FFECB3

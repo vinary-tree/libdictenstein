@@ -24,6 +24,7 @@
 From Stdlib Require Import List.
 From Stdlib Require Import Arith.
 From Stdlib Require Import Lia.
+Require Import ARTrie.Model.ListCompat.
 Import ListNotations.
 
 Section Paging.
@@ -51,7 +52,7 @@ Theorem page_within_remaining :
     length (page edges start capacity) <= total edges - start.
 Proof.
   intros. unfold page, total.
-  rewrite length_firstn, length_skipn. lia.
+  rewrite firstn_length_portable, length_skipn. lia.
 Qed.
 
 (** A full-capacity page exists exactly while pages remain. *)
@@ -61,7 +62,7 @@ Theorem page_exact_while_remaining :
     length (page edges start capacity) = capacity.
 Proof.
   intros edges start capacity Hle. unfold page, total in *.
-  rewrite length_firstn, length_skipn. lia.
+  rewrite firstn_length_portable, length_skipn. lia.
 Qed.
 
 (** Past-the-end starts yield the empty page (the End condition). *)

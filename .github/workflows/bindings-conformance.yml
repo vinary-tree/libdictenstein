@@ -27,12 +27,12 @@ jobs:
     name: Build cdylib
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
       - name: Build the producer ABI cdylib
         run: cargo build --release --no-default-features --features ffi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: libdictenstein-so
           path: target/release/liblibdictenstein.so
@@ -43,17 +43,17 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.13" }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - run: python -m pip install pytest
       - name: Run the conformance suite
         run: |
           parent="$(dirname "$GITHUB_WORKSPACE")"
-          export PYTHONPATH="$GITHUB_WORKSPACE/bindings/python/src:$parent/liblevenshtein-rust/vinary-tree-interop/bindings/python/src"
+          export PYTHONPATH="$GITHUB_WORKSPACE/bindings/python/src:$parent/vinary-tree-interop/bindings/python/src"
           export LIBDICTENSTEIN_LIBRARY="$GITHUB_WORKSPACE/target/release/liblibdictenstein.so"
           python -m pytest -q bindings/python/tests/test_conformance.py bindings/python/tests/test_backends.py
 
@@ -62,11 +62,11 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with: { go-version: "stable" }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - name: Run conformance and public-package profile smoke tests
         working-directory: bindings/go
@@ -77,10 +77,10 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ruby/setup-ruby@v1
         with: { ruby-version: "3.4" }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - run: gem install minitest
       - name: Run conformance and public-package profile smoke tests
@@ -96,8 +96,8 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - name: Compile conformance and public-package profile smoke tests
         run: |
@@ -119,16 +119,16 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - name: Compile conformance and public-header profile smoke tests
         run: |
           parent="$(dirname "$GITHUB_WORKSPACE")"
           rel="$GITHUB_WORKSPACE/target/release"
           c++ -std=c++20 -O2 -Wall -Wextra bindings/cpp/tests/conformance.cpp \
-            -I include -I "$parent/liblevenshtein-rust/vinary-tree-interop/include" \
+            -I include -I "$parent/vinary-tree-interop/include" \
             -L "$rel" -llibdictenstein -o /tmp/cpp_conformance
           LD_LIBRARY_PATH="$rel" /tmp/cpp_conformance bindings/canonical_fixture.json
           c++ -std=c++20 -O2 -Wall -Wextra -Werror \
@@ -143,9 +143,9 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - run: sudo apt-get update && sudo apt-get install -y lua5.4 liblua5.4-dev
       - name: Build the C module and run the conformance suite
@@ -155,7 +155,7 @@ jobs:
           mkdir -p /tmp/luacpath/vinary_tree
           cc -shared -fPIC -O2 -std=c11 -I/usr/include/lua5.4 \
             -I include -I bindings/lua/include \
-            -I "$parent/liblevenshtein-rust/vinary-tree-interop/include" \
+            -I "$parent/vinary-tree-interop/include" \
             bindings/lua/src/libdictenstein_lua.c \
             -L "$rel" -llibdictenstein -o /tmp/luacpath/vinary_tree/libdictenstein.so
           LUA_CPATH="/tmp/luacpath/?.so" LD_LIBRARY_PATH="$rel" \
@@ -166,17 +166,17 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: ocaml/setup-ocaml@v3
         with: { ocaml-compiler: "5.2" }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - name: Install deps and run the conformance suite
         run: |
           parent="$(dirname "$GITHUB_WORKSPACE")"
           rel="$GITHUB_WORKSPACE/target/release"
-          opam pin add --yes --no-action vinary-tree-interop "$parent/liblevenshtein-rust/vinary-tree-interop/bindings/ocaml"
+          opam pin add --yes --no-action vinary-tree-interop "$parent/vinary-tree-interop/bindings/ocaml"
           opam install --yes vinary-tree-interop yojson
           cd bindings/ocaml
           eval "$(opam env)"
@@ -188,11 +188,11 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: haskell-actions/setup@v2
         with: { ghc-version: "9.12.2", cabal-version: latest }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - name: Build and run the conformance test-suite
         run: |
@@ -220,11 +220,11 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
-      - uses: swift-actions/setup-swift@v2
-        with: { swift-version: "6.0" }
-      - uses: actions/download-artifact@v4
+      - name: Report the GitHub runner Swift toolchain
+        run: swift --version
+      - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - name: Run conformance and compile the public-package profile
         run: |
@@ -245,11 +245,11 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with: { dotnet-version: "10.0.x" }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - name: Run the conformance runner
         run: |
@@ -263,17 +263,17 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "25" }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - name: Compile the facade and run the JUnit suite
         run: |
           parent="$(dirname "$GITHUB_WORKSPACE")"
           rel="$GITHUB_WORKSPACE/target/release"
-          interop_src="$parent/liblevenshtein-rust/vinary-tree-interop/bindings/jvm/src/main/java"
+          interop_src="$parent/vinary-tree-interop/bindings/jvm/src/main/java"
           mkdir -p /tmp/jvm-classes
           javac -d /tmp/jvm-classes $(find "$interop_src" -name '*.java')
           javac -d /tmp/jvm-classes -cp /tmp/jvm-classes \
@@ -293,20 +293,20 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "25" }
       - uses: DeLaGuardo/setup-clojure@13
         with: { cli: latest }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - name: Compile the JVM facade and run conformance and profile smokes
         run: |
           parent="$(dirname "$GITHUB_WORKSPACE")"
           rel="$GITHUB_WORKSPACE/target/release"
-          interop_src="$parent/liblevenshtein-rust/vinary-tree-interop/bindings/jvm/src/main/java"
-          interop_out="$parent/liblevenshtein-rust/vinary-tree-interop/bindings/jvm/build/classes/java/main"
+          interop_src="$parent/vinary-tree-interop/bindings/jvm/src/main/java"
+          interop_out="$parent/vinary-tree-interop/bindings/jvm/build/classes/java/main"
           mkdir -p "$interop_out"
           javac -d "$interop_out" $(find "$interop_src" -name '*.java')
           mkdir -p bindings/jvm/build/classes/java/main
@@ -326,10 +326,10 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: fortran-lang/setup-fpm@v10
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - name: Run the fpm conformance test
         working-directory: bindings/fortran

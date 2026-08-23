@@ -16,6 +16,7 @@ Require Import Coq.Arith.Arith.
 Require Import Coq.Bool.Bool.
 Require Import Coq.Sorting.Sorted.
 Require Import Coq.micromega.Lia.
+Require Import ARTrie.Model.ListCompat.
 Require Import ARTrie.Model.Key.
 Import ListNotations.
 
@@ -873,7 +874,7 @@ Proof.
       rewrite map_firstn. apply NoDup_firstn. exact Huniq.
     + split.
       * unfold bucket_count_valid. cbn. unfold left_entries.
-        rewrite length_firstn.
+        rewrite firstn_length_portable.
         eapply Nat.le_trans; [apply Nat.le_min_r|exact Hcount].
       * split.
         -- change (left_size <= BUCKET_PAGE_SIZE /\
