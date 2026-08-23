@@ -265,7 +265,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/checkout-dev-siblings
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "25" }
       - uses: actions/download-artifact@v4
         with: { name: libdictenstein-so, path: target/release }
@@ -295,7 +295,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/checkout-dev-siblings
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "25" }
       - uses: DeLaGuardo/setup-clojure@13
         with: { cli: latest }
