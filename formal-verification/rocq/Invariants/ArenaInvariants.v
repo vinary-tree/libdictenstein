@@ -12,6 +12,7 @@ From Coq Require Import Arith.Arith.
 From Coq Require Import micromega.Lia.
 From Coq Require Import Bool.Bool.
 Require Import ARTrie.Model.ArenaManager.
+Require Import ARTrie.Model.ListCompat.
 Import ListNotations.
 
 (** ** Inductive Invariant Property *)
@@ -138,7 +139,7 @@ Lemma load_arena_increases_count : forall mgr a,
 Proof.
   intros mgr a.
   unfold load_arena. simpl.
-  rewrite length_app. simpl. lia.
+  rewrite app_length_portable. simpl. lia.
 Qed.
 
 (** ** Defensive Programming Theorems *)

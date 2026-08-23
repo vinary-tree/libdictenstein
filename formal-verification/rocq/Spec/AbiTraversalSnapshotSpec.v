@@ -36,6 +36,7 @@ From Coq Require Import Lists.List.
 From Coq Require Import Arith.Arith.
 From Coq Require Import micromega.Lia.
 From Coq Require Import Bool.Bool.
+Require Import ARTrie.Model.ListCompat.
 Import ListNotations.
 
 (** ** Arena model *)
@@ -257,7 +258,7 @@ Proof.
   destruct (find_index arena node) as [found |] eqn:Hfind;
     injection Hassign as <- <-.
   - left. reflexivity.
-  - right. rewrite length_app. simpl. lia.
+  - right. rewrite app_length_portable. simpl. lia.
 Qed.
 
 (** The returned index is always in bounds of the resulting arena. *)
@@ -271,7 +272,7 @@ Proof.
   destruct (find_index arena node) as [found |] eqn:Hfind;
     injection Hassign as <- <-.
   - eapply find_index_bounds; eauto.
-  - rewrite length_app. simpl. lia.
+  - rewrite app_length_portable. simpl. lia.
 Qed.
 
 (** The returned index exposes exactly the requested provider node. *)
@@ -419,7 +420,7 @@ Lemma edge_children_bounded_extend_fresh :
     edge_children_bounded (arena ++ [mkArenaEntry node None]).
 Proof.
   intros arena node Hbounded entry edges edge Hin Hedges Hedge.
-  rewrite length_app. simpl.
+  rewrite app_length_portable. simpl.
   apply in_app_or in Hin as [Hin | [Heq | []]].
   - specialize (Hbounded _ _ _ Hin Hedges Hedge). lia.
   - subst entry. discriminate.

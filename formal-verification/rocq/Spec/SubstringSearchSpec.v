@@ -9,6 +9,7 @@
 Require Import Coq.Lists.List.
 Require Import Coq.Arith.PeanoNat.
 Require Import Coq.micromega.Lia.
+Require Import ARTrie.Model.ListCompat.
 Require Import ARTrie.Spec.MapSpec.
 Import ListNotations.
 
@@ -221,7 +222,7 @@ Proof.
   destruct (find_sound laws pattern occ Hin) as [_ [Hlen Hoccurs]].
   destruct Hoccurs as [prefix [suffix [Hterm Hpos]]].
   rewrite Hterm, Hpos, Hlen.
-  repeat rewrite app_length.
+  repeat rewrite app_length_portable.
   simpl.
   lia.
 Qed.
@@ -262,7 +263,7 @@ Theorem limited_length_bound : forall pattern limit,
 Proof.
   intros pattern limit.
   unfold limited_results.
-  rewrite firstn_length.
+  rewrite firstn_length_portable.
   lia.
 Qed.
 
@@ -271,7 +272,7 @@ Theorem limited_length_source_bound : forall pattern limit,
 Proof.
   intros pattern limit.
   unfold limited_results.
-  rewrite firstn_length.
+  rewrite firstn_length_portable.
   lia.
 Qed.
 
@@ -310,7 +311,7 @@ Proof.
   intros terms pattern occ [_ [Hlen Hoccurs]].
   destruct Hoccurs as [prefix [suffix [Hterm Hpos]]].
   rewrite Hterm, Hpos, Hlen.
-  repeat rewrite app_length.
+  repeat rewrite app_length_portable.
   simpl.
   lia.
 Qed.

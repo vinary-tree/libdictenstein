@@ -80,7 +80,7 @@ Proof.
     pose proof (prefix_len_valid prefix).
     lia.
   - subst after bytes.
-    rewrite length_skipn.
+    rewrite skipn_length_portable.
     pose proof (prefix_len_bound prefix).
     pose proof (prefix_len_valid prefix).
     lia.
@@ -122,7 +122,7 @@ Proof.
   - pose (remaining := skipn n (prefix_bytes prefix)).
     refine (mkPrefix remaining (length remaining) eq_refl _).
     subst remaining.
-    rewrite length_skipn.
+    rewrite skipn_length_portable.
     pose proof (prefix_len_bound prefix).
     pose proof (prefix_len_valid prefix).
     lia.
@@ -268,7 +268,7 @@ Proof.
   exists [].
   unfold extend_prefix. cbn [prefix_bytes].
   rewrite firstn_all2; [rewrite app_nil_r; reflexivity|].
-  repeat rewrite length_app. simpl.
+  repeat rewrite app_length_portable. simpl.
   pose proof (prefix_len_valid base).
   lia.
 Qed.

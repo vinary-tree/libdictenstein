@@ -15,6 +15,7 @@
 Require Import Coq.Lists.List.
 Require Import Coq.Arith.PeanoNat.
 Require Import Coq.micromega.Lia.
+Require Import ARTrie.Model.ListCompat.
 Require Import ARTrie.Spec.SubstringSearchSpec.
 Import ListNotations.
 
@@ -111,7 +112,7 @@ Proof.
     }
     pose proof (@NoDup_incl_length nat (seq 0 (S budget)) damaged
       (seq_NoDup (S budget) 0) Hincl) as Hseq_length.
-    rewrite length_seq in Hseq_length.
+    rewrite seq_length_portable in Hseq_length.
     lia.
   - exact Hmissing.
 Qed.
@@ -170,7 +171,7 @@ Proof.
     + simpl.
       pose proof (IH Hrest_nonempty) as Hrest_bound.
       unfold partition_units, partition_patterns in Hrest_bound.
-      rewrite length_app.
+      rewrite app_length_portable.
       simpl.
       lia.
 Qed.

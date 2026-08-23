@@ -34,6 +34,26 @@ Proof.
     + simpl. apply IH.
 Qed.
 
+Lemma app_length_portable :
+  forall (A : Type) (left right : list A),
+    length (left ++ right) = length left + length right.
+Proof.
+  intros A left.
+  induction left as [| item left IH]; intros right.
+  - reflexivity.
+  - simpl. rewrite IH. reflexivity.
+Qed.
+
+Lemma seq_length_portable :
+  forall start count, length (seq start count) = count.
+Proof.
+  intros start count.
+  revert start.
+  induction count as [| count IH]; intros start.
+  - reflexivity.
+  - simpl. rewrite IH. reflexivity.
+Qed.
+
 (** Coq 8.18 does not export [NoDup_app] under the name used by Rocq 9.1.
     This one-way form is exactly what the HotStuff quorum proof needs and is
     deliberately proved from the constructors shared by both releases. *)

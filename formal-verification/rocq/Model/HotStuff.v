@@ -122,7 +122,7 @@ Proof.
     destruct Hr as [Hr | Hr]; [apply Hq1_incl | apply Hq2_incl]; exact Hr.
   }
   pose proof (NoDup_incl_length Happend_nodup Happend_incl) as Happend_len.
-  rewrite length_app in Happend_len.
+  rewrite app_length_portable in Happend_len.
   pose proof (quorum_overlap_numeric faults) as Hoverlap.
   lia.
 Qed.
