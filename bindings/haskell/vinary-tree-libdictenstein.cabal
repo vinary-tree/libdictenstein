@@ -1,6 +1,7 @@
 cabal-version: 3.0
 name: vinary-tree-libdictenstein
-version: 0.2.1
+version: 4.0.0
+x-release-candidate: rc.1
 synopsis: Fast libdictenstein dictionaries for Haskell
 description: Snapshot-retaining dictionary resources for modular Vinary Tree bindings.
 category: Data
@@ -28,7 +29,7 @@ library
     base >=4.18 && <5,
     bytestring >=0.11 && <0.13,
     text >=2.0 && <2.2,
-    vinary-tree-interop >=0.1 && <0.2
+    vinary-tree-interop >=4 && <5
 
 executable libdictenstein-collection-profile
   main-is: CollectionTraversalProfile.hs
@@ -55,5 +56,5 @@ test-suite conformance
     bytestring >=0.11 && <0.13,
     containers >=0.6 && <0.9,
     text >=2.0 && <2.2,
-    vinary-tree-interop >=0.1 && <0.2,
+    vinary-tree-interop >=4 && <5
     vinary-tree-libdictenstein

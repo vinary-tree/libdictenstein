@@ -232,7 +232,7 @@ Treat paths, terms, values, page offsets, serialized files, and foreign callers
 as untrusted. Validate lengths before allocation, contain panics at the ABI,
 bound diagnostics and batches, prevent path traversal, and reject unknown enum
 values. See the [FFI boundary analysis](../../docs/security/ffi-boundary.md) and
-[family security model](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/security-model.md).
+[family security model](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/security-model.md).
 
 ## Compatibility and troubleshooting
 

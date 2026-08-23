@@ -21,8 +21,11 @@
     "npm": "@vinary-tree/interop",
     "maven": "io.vinarytree:vinary-tree-interop",
     "javaPackage": "io.vinarytree.interop",
-    "version": "0.1.0",
-    "resourceLayout": ["context", "vtable"],
+    "version": "4.0.0-rc.1",
+    "resourceLayout": [
+      "context",
+      "vtable"
+    ],
     "dictionaryInterfaceId": "vt.dictionary.v1",
     "dictionaryInterfaceVersion": 1,
     "dictionaryEntriesInterfaceId": "vt.dict.entry.v1",
@@ -54,7 +57,7 @@
       "fpm": "bindings/fortran/fpm.toml + fpm.publish.toml name",
       "opam": "bindings/ocaml/dune-project (package (name ...))",
       "hackage": "bindings/haskell/vinary-tree-libdictenstein.cabal name",
-      "luarocks": "bindings/lua/vinary-tree-libdictenstein-0.2.1-1.rockspec package"
+      "luarocks": "bindings/lua/vinary-tree-libdictenstein-4.0.0-rc.1-1.rockspec package"
     }
   },
   "documentation": {
@@ -79,25 +82,114 @@
       "Maintainer checklist"
     ],
     "facades": {
-      "c": {"languages": ["C"], "guide": "bindings/c/README.md", "example": "bindings/c/examples/snapshot_walk.c"},
-      "cpp": {"languages": ["C++"], "guide": "bindings/cpp/README.md", "example": "bindings/cpp/tests/conformance.cpp"},
-      "python": {"languages": ["Python"], "guide": "bindings/python/README.md", "example": "bindings/python/tests/test_backends.py"},
-      "jvm": {"languages": ["Java", "Kotlin", "Scala"], "guide": "bindings/jvm/README.md", "example": "bindings/jvm/src/test/java/io/vinarytree/libdictenstein/BackendIntegrationTest.java"},
-      "clojure": {"languages": ["Clojure"], "guide": "bindings/clojure/README.md", "example": "bindings/clojure/test/vinary_tree/libdictenstein_test.clj"},
-      "javascript": {"languages": ["JavaScript", "TypeScript", "ClojureScript"], "guide": "bindings/javascript/README.md", "example": "bindings/javascript/test/facades.test.mjs"},
-      "dotnet": {"languages": ["C#"], "guide": "bindings/dotnet/README.md", "example": "bindings/dotnet/tests/VinaryTree.Libdictenstein.Tests/Program.cs"},
-      "go": {"languages": ["Go"], "guide": "bindings/go/README.md", "example": "bindings/go/libdictenstein_test.go"},
-      "swift": {"languages": ["Swift"], "guide": "bindings/swift/README.md", "example": "bindings/swift/libdictenstein/Tests/LibdictensteinTests/ConformanceTests.swift"},
-      "ruby": {"languages": ["Ruby"], "guide": "bindings/ruby/README.md", "example": "bindings/ruby/test/test_conformance.rb"},
-      "fortran": {"languages": ["Fortran"], "guide": "bindings/fortran/README.md", "example": "bindings/fortran/test/conformance.f90"},
-      "ocaml": {"languages": ["OCaml"], "guide": "bindings/ocaml/README.md", "example": "bindings/ocaml/test/conformance.ml"},
-      "haskell": {"languages": ["Haskell"], "guide": "bindings/haskell/README.md", "example": "bindings/haskell/test/Conformance.hs"},
-      "lua": {"languages": ["Lua"], "guide": "bindings/lua/README.md", "example": "bindings/lua/test/conformance.lua"}
+      "c": {
+        "languages": [
+          "C"
+        ],
+        "guide": "bindings/c/README.md",
+        "example": "bindings/c/examples/snapshot_walk.c"
+      },
+      "cpp": {
+        "languages": [
+          "C++"
+        ],
+        "guide": "bindings/cpp/README.md",
+        "example": "bindings/cpp/tests/conformance.cpp"
+      },
+      "python": {
+        "languages": [
+          "Python"
+        ],
+        "guide": "bindings/python/README.md",
+        "example": "bindings/python/tests/test_backends.py"
+      },
+      "jvm": {
+        "languages": [
+          "Java",
+          "Kotlin",
+          "Scala"
+        ],
+        "guide": "bindings/jvm/README.md",
+        "example": "bindings/jvm/src/test/java/io/vinarytree/libdictenstein/BackendIntegrationTest.java"
+      },
+      "clojure": {
+        "languages": [
+          "Clojure"
+        ],
+        "guide": "bindings/clojure/README.md",
+        "example": "bindings/clojure/test/vinary_tree/libdictenstein_test.clj"
+      },
+      "javascript": {
+        "languages": [
+          "JavaScript",
+          "TypeScript",
+          "ClojureScript"
+        ],
+        "guide": "bindings/javascript/README.md",
+        "example": "bindings/javascript/test/facades.test.mjs"
+      },
+      "dotnet": {
+        "languages": [
+          "C#"
+        ],
+        "guide": "bindings/dotnet/README.md",
+        "example": "bindings/dotnet/tests/VinaryTree.Libdictenstein.Tests/Program.cs"
+      },
+      "go": {
+        "languages": [
+          "Go"
+        ],
+        "guide": "bindings/go/README.md",
+        "example": "bindings/go/libdictenstein_test.go"
+      },
+      "swift": {
+        "languages": [
+          "Swift"
+        ],
+        "guide": "bindings/swift/README.md",
+        "example": "bindings/swift/libdictenstein/Tests/LibdictensteinTests/ConformanceTests.swift"
+      },
+      "ruby": {
+        "languages": [
+          "Ruby"
+        ],
+        "guide": "bindings/ruby/README.md",
+        "example": "bindings/ruby/test/test_conformance.rb"
+      },
+      "fortran": {
+        "languages": [
+          "Fortran"
+        ],
+        "guide": "bindings/fortran/README.md",
+        "example": "bindings/fortran/test/conformance.f90"
+      },
+      "ocaml": {
+        "languages": [
+          "OCaml"
+        ],
+        "guide": "bindings/ocaml/README.md",
+        "example": "bindings/ocaml/test/conformance.ml"
+      },
+      "haskell": {
+        "languages": [
+          "Haskell"
+        ],
+        "guide": "bindings/haskell/README.md",
+        "example": "bindings/haskell/test/Conformance.hs"
+      },
+      "lua": {
+        "languages": [
+          "Lua"
+        ],
+        "guide": "bindings/lua/README.md",
+        "example": "bindings/lua/test/conformance.lua",
+        "package": "bindings/lua/vinary-tree-libdictenstein-4.0.0-rc.1-1.rockspec package"
+      }
     }
   },
-  "packageVersion": "0.2.1",
+  "packageVersion": "4.0.0-rc.1",
   "siblingPins": {
-    "liblevenshtein": "0.10.0",
+    "liblevenshtein": "4.0.0-rc.1",
     "llattice": "0.1.0",
     "_source": "release pins in .github/workflows/release-bindings.yml; dev facade pins in bindings/go/go.mod, Package.swift, bindings/jvm/build.gradle.kts (test scope), bindings/clojure/project.clj (:test profile), bindings/javascript/package.json (@vinary-tree/vinary-tree umbrella). Recorded verbatim; tag existence is a release concern tracked in docs/bindings/FINDINGS_LEDGER.md (LDICT-B1)."
   },
@@ -106,7 +198,10 @@
   "cPrefix": "ldict_",
   "cHeader": "include/libdictenstein.h",
   "featureGates": {
-    "ffi": ["bindings-core", "persistent-artrie"],
+    "ffi": [
+      "bindings-core",
+      "persistent-artrie"
+    ],
     "_source": "Cargo.toml [features]: the ffi feature always enables persistent-artrie so the exported ldict_* symbol set is invariant across FFI builds"
   },
   "snapshot": {
@@ -133,23 +228,51 @@
   "structs": {
     "LdictOptionalU64": {
       "fields": [
-        {"name": "value", "type": "u64"},
-        {"name": "has_value", "type": "u8"},
-        {"name": "reserved", "type": "[u8; 7]", "mustBeZero": true}
+        {
+          "name": "value",
+          "type": "u64"
+        },
+        {
+          "name": "has_value",
+          "type": "u8"
+        },
+        {
+          "name": "reserved",
+          "type": "[u8; 7]",
+          "mustBeZero": true
+        }
       ]
     },
     "LdictTextEntry": {
       "fields": [
-        {"name": "data", "type": "*const u8"},
-        {"name": "len", "type": "usize"},
-        {"name": "value", "type": "LdictOptionalU64"}
+        {
+          "name": "data",
+          "type": "*const u8"
+        },
+        {
+          "name": "len",
+          "type": "usize"
+        },
+        {
+          "name": "value",
+          "type": "LdictOptionalU64"
+        }
       ]
     },
     "LdictU64Entry": {
       "fields": [
-        {"name": "data", "type": "*const u64"},
-        {"name": "len", "type": "usize"},
-        {"name": "value", "type": "LdictOptionalU64"}
+        {
+          "name": "data",
+          "type": "*const u64"
+        },
+        {
+          "name": "len",
+          "type": "usize"
+        },
+        {
+          "name": "value",
+          "type": "LdictOptionalU64"
+        }
       ]
     },
     "LdictEntry": {
@@ -158,7 +281,11 @@
     },
     "LdictEntryBatchLimits": {
       "alias": "VtDictionaryEntryBatchLimits",
-      "bounds": ["max_entries", "max_units", "max_values"]
+      "bounds": [
+        "max_entries",
+        "max_units",
+        "max_values"
+      ]
     },
     "LdictEntryBatch": {
       "alias": "VtDictionaryEntryBatchView",
@@ -166,7 +293,11 @@
     },
     "LdictEntriesInfo": {
       "alias": "VtDictionaryEntriesInfo",
-      "unitDomains": ["BYTE", "UNICODE_SCALAR", "U64"],
+      "unitDomains": [
+        "BYTE",
+        "UNICODE_SCALAR",
+        "U64"
+      ],
       "valueDomain": "OPTIONAL_U64",
       "order": "LEXICOGRAPHIC"
     }
@@ -219,43 +350,92 @@
     {
       "kind": "DYNAMIC_DAWG",
       "producer": "DynamicDawgBinding",
-      "unitDomains": ["BYTE", "UNICODE_SCALAR", "U64"],
-      "capabilities": ["READ", "INSERT", "REMOVE", "CLEAR", "COMPACT"]
+      "unitDomains": [
+        "BYTE",
+        "UNICODE_SCALAR",
+        "U64"
+      ],
+      "capabilities": [
+        "READ",
+        "INSERT",
+        "REMOVE",
+        "CLEAR",
+        "COMPACT"
+      ]
     },
     {
       "kind": "DOUBLE_ARRAY_TRIE",
       "producer": "DoubleArrayTrieBinding",
-      "unitDomains": ["BYTE", "UNICODE_SCALAR"],
-      "capabilities": ["READ"]
+      "unitDomains": [
+        "BYTE",
+        "UNICODE_SCALAR"
+      ],
+      "capabilities": [
+        "READ"
+      ]
     },
     {
       "kind": "SCDAWG",
       "producer": "ScdawgBinding",
-      "unitDomains": ["BYTE", "UNICODE_SCALAR"],
-      "capabilities": ["READ", "INSERT", "SUBSTRING"]
+      "unitDomains": [
+        "BYTE",
+        "UNICODE_SCALAR"
+      ],
+      "capabilities": [
+        "READ",
+        "INSERT",
+        "SUBSTRING"
+      ]
     },
     {
       "kind": "PERSISTENT_ARTRIE",
       "producer": "PersistentARTrieBinding",
       "feature": "persistent-artrie",
-      "unitDomains": ["BYTE", "UNICODE_SCALAR", "U64"],
-      "capabilities": ["READ", "INSERT", "REMOVE", "CHECKPOINT"]
+      "unitDomains": [
+        "BYTE",
+        "UNICODE_SCALAR",
+        "U64"
+      ],
+      "capabilities": [
+        "READ",
+        "INSERT",
+        "REMOVE",
+        "CHECKPOINT"
+      ]
     },
     {
       "kind": "PERSISTENT_VOCAB_ARTRIE",
       "producer": "PersistentARTrieBinding",
       "feature": "persistent-artrie",
-      "unitDomains": ["UNICODE_SCALAR"],
-      "capabilities": ["READ", "INSERT", "CHECKPOINT"]
+      "unitDomains": [
+        "UNICODE_SCALAR"
+      ],
+      "capabilities": [
+        "READ",
+        "INSERT",
+        "CHECKPOINT"
+      ]
     }
   ],
   "producers": {
-    "DynamicDawgBinding": {"module": "src/bindings.rs", "kind": "DYNAMIC_DAWG"},
-    "DoubleArrayTrieBinding": {"module": "src/bindings.rs", "kind": "DOUBLE_ARRAY_TRIE"},
-    "ScdawgBinding": {"module": "src/bindings.rs", "kind": "SCDAWG"},
+    "DynamicDawgBinding": {
+      "module": "src/bindings.rs",
+      "kind": "DYNAMIC_DAWG"
+    },
+    "DoubleArrayTrieBinding": {
+      "module": "src/bindings.rs",
+      "kind": "DOUBLE_ARRAY_TRIE"
+    },
+    "ScdawgBinding": {
+      "module": "src/bindings.rs",
+      "kind": "SCDAWG"
+    },
     "PersistentARTrieBinding": {
       "module": "src/bindings.rs",
-      "kinds": ["PERSISTENT_ARTRIE", "PERSISTENT_VOCAB_ARTRIE"],
+      "kinds": [
+        "PERSISTENT_ARTRIE",
+        "PERSISTENT_VOCAB_ARTRIE"
+      ],
       "feature": "persistent-artrie"
     },
     "OwnedDictionaryResource": {
@@ -264,144 +444,318 @@
     }
   },
   "cFunctions": [
-    {"name": "ldict_abi_version", "group": "meta"},
-    {"name": "ldict_api_revision", "group": "meta"},
-    {"name": "ldict_last_error_message", "group": "meta"},
-    {"name": "ldict_dynamic_dawg_new", "group": "constructor"},
-    {"name": "ldict_double_array_trie_new", "group": "constructor"},
-    {"name": "ldict_scdawg_new", "group": "constructor"},
-    {"name": "ldict_persistent_artrie_create", "group": "constructor", "feature": "persistent-artrie"},
-    {"name": "ldict_persistent_artrie_open", "group": "constructor", "feature": "persistent-artrie"},
-    {"name": "ldict_persistent_vocab_create", "group": "constructor", "feature": "persistent-artrie"},
-    {"name": "ldict_persistent_vocab_open", "group": "constructor", "feature": "persistent-artrie"},
-    {"name": "ldict_dictionary_kind", "group": "handle"},
-    {"name": "ldict_dictionary_capabilities", "group": "handle"},
-    {"name": "ldict_dictionary_free", "group": "handle"},
-    {"name": "ldict_dictionary_resource", "group": "handle"},
-    {"name": "ldict_dictionary_entries_open", "group": "collection"},
-    {"name": "ldict_entry_cursor_next", "group": "collection"},
-    {"name": "ldict_entry_cursor_release", "group": "collection"},
-    {"name": "ldict_entry_cursor_reduce", "group": "collection"},
-    {"name": "ldict_entry_cursor_cancel", "group": "collection"},
-    {"name": "ldict_entry_cursor_free", "group": "collection"},
-    {"name": "ldict_dictionary_len", "group": "handle"},
-    {"name": "ldict_dictionary_checkpoint", "group": "maintenance", "feature": "persistent-artrie"},
-    {"name": "ldict_vocab_get_term", "group": "vocabulary", "feature": "persistent-artrie"},
-    {"name": "ldict_dictionary_clear", "group": "maintenance"},
-    {"name": "ldict_dictionary_compact", "group": "maintenance"},
-    {"name": "ldict_dictionary_insert_text", "group": "crud-text"},
-    {"name": "ldict_dictionary_insert_text_value", "group": "crud-text"},
-    {"name": "ldict_dictionary_remove_text", "group": "crud-text"},
-    {"name": "ldict_dictionary_contains_text", "group": "crud-text"},
-    {"name": "ldict_dictionary_get_text", "group": "crud-text"},
-    {"name": "ldict_dictionary_get_text_value", "group": "crud-text"},
-    {"name": "ldict_dictionary_insert_u64", "group": "crud-u64"},
-    {"name": "ldict_dictionary_insert_u64_value", "group": "crud-u64"},
-    {"name": "ldict_dictionary_remove_u64", "group": "crud-u64"},
-    {"name": "ldict_dictionary_contains_u64", "group": "crud-u64"},
-    {"name": "ldict_dictionary_get_u64", "group": "crud-u64"},
-    {"name": "ldict_dictionary_get_u64_value", "group": "crud-u64"},
-    {"name": "ldict_scdawg_contains_substring", "group": "substring"},
-    {"name": "ldict_scdawg_substring_frequency", "group": "substring"},
-    {"name": "ldict_dictionary_insert_text_batch", "group": "batch"},
-    {"name": "ldict_dictionary_insert_u64_batch", "group": "batch"}
+    {
+      "name": "ldict_abi_version",
+      "group": "meta"
+    },
+    {
+      "name": "ldict_api_revision",
+      "group": "meta"
+    },
+    {
+      "name": "ldict_last_error_message",
+      "group": "meta"
+    },
+    {
+      "name": "ldict_dynamic_dawg_new",
+      "group": "constructor"
+    },
+    {
+      "name": "ldict_double_array_trie_new",
+      "group": "constructor"
+    },
+    {
+      "name": "ldict_scdawg_new",
+      "group": "constructor"
+    },
+    {
+      "name": "ldict_persistent_artrie_create",
+      "group": "constructor",
+      "feature": "persistent-artrie"
+    },
+    {
+      "name": "ldict_persistent_artrie_open",
+      "group": "constructor",
+      "feature": "persistent-artrie"
+    },
+    {
+      "name": "ldict_persistent_vocab_create",
+      "group": "constructor",
+      "feature": "persistent-artrie"
+    },
+    {
+      "name": "ldict_persistent_vocab_open",
+      "group": "constructor",
+      "feature": "persistent-artrie"
+    },
+    {
+      "name": "ldict_dictionary_kind",
+      "group": "handle"
+    },
+    {
+      "name": "ldict_dictionary_capabilities",
+      "group": "handle"
+    },
+    {
+      "name": "ldict_dictionary_free",
+      "group": "handle"
+    },
+    {
+      "name": "ldict_dictionary_resource",
+      "group": "handle"
+    },
+    {
+      "name": "ldict_dictionary_entries_open",
+      "group": "collection"
+    },
+    {
+      "name": "ldict_entry_cursor_next",
+      "group": "collection"
+    },
+    {
+      "name": "ldict_entry_cursor_release",
+      "group": "collection"
+    },
+    {
+      "name": "ldict_entry_cursor_reduce",
+      "group": "collection"
+    },
+    {
+      "name": "ldict_entry_cursor_cancel",
+      "group": "collection"
+    },
+    {
+      "name": "ldict_entry_cursor_free",
+      "group": "collection"
+    },
+    {
+      "name": "ldict_dictionary_len",
+      "group": "handle"
+    },
+    {
+      "name": "ldict_dictionary_checkpoint",
+      "group": "maintenance",
+      "feature": "persistent-artrie"
+    },
+    {
+      "name": "ldict_vocab_get_term",
+      "group": "vocabulary",
+      "feature": "persistent-artrie"
+    },
+    {
+      "name": "ldict_dictionary_clear",
+      "group": "maintenance"
+    },
+    {
+      "name": "ldict_dictionary_compact",
+      "group": "maintenance"
+    },
+    {
+      "name": "ldict_dictionary_insert_text",
+      "group": "crud-text"
+    },
+    {
+      "name": "ldict_dictionary_insert_text_value",
+      "group": "crud-text"
+    },
+    {
+      "name": "ldict_dictionary_remove_text",
+      "group": "crud-text"
+    },
+    {
+      "name": "ldict_dictionary_contains_text",
+      "group": "crud-text"
+    },
+    {
+      "name": "ldict_dictionary_get_text",
+      "group": "crud-text"
+    },
+    {
+      "name": "ldict_dictionary_get_text_value",
+      "group": "crud-text"
+    },
+    {
+      "name": "ldict_dictionary_insert_u64",
+      "group": "crud-u64"
+    },
+    {
+      "name": "ldict_dictionary_insert_u64_value",
+      "group": "crud-u64"
+    },
+    {
+      "name": "ldict_dictionary_remove_u64",
+      "group": "crud-u64"
+    },
+    {
+      "name": "ldict_dictionary_contains_u64",
+      "group": "crud-u64"
+    },
+    {
+      "name": "ldict_dictionary_get_u64",
+      "group": "crud-u64"
+    },
+    {
+      "name": "ldict_dictionary_get_u64_value",
+      "group": "crud-u64"
+    },
+    {
+      "name": "ldict_scdawg_contains_substring",
+      "group": "substring"
+    },
+    {
+      "name": "ldict_scdawg_substring_frequency",
+      "group": "substring"
+    },
+    {
+      "name": "ldict_dictionary_insert_text_batch",
+      "group": "batch"
+    },
+    {
+      "name": "ldict_dictionary_insert_u64_batch",
+      "group": "batch"
+    }
   ],
   "facades": {
     "c": {
       "root": "bindings/c",
       "parser": "c-header-declarations",
-      "importLayers": ["include/libdictenstein.h"],
+      "importLayers": [
+        "include/libdictenstein.h"
+      ],
       "package": null,
       "_source": "canonical native C ABI distributed through the CMake/pkg-config package"
     },
     "clojure": {
       "root": "bindings/clojure",
       "parser": "clojure-defs",
-      "importLayers": ["bindings/clojure/src/vinary_tree/libdictenstein.clj"],
+      "importLayers": [
+        "bindings/clojure/src/vinary_tree/libdictenstein.clj"
+      ],
       "package": "clojars",
       "symbolAccess": "mediated (calls through the JVM facade io.vinarytree/libdictenstein)",
       "requiredDefs": [
-        "dynamic-dawg", "double-array-trie", "scdawg",
-        "create-persistent-artrie", "open-persistent-artrie",
-        "create-persistent-vocabulary", "open-persistent-vocabulary",
-        "size", "contains?", "get", "put!", "put-all!", "remove!",
-        "clear!", "compact!", "checkpoint!",
-        "contains-substring?", "frequency", "vocabulary-term", "close!"
+        "dynamic-dawg",
+        "double-array-trie",
+        "scdawg",
+        "create-persistent-artrie",
+        "open-persistent-artrie",
+        "create-persistent-vocabulary",
+        "open-persistent-vocabulary",
+        "size",
+        "contains?",
+        "get",
+        "put!",
+        "put-all!",
+        "remove!",
+        "clear!",
+        "compact!",
+        "checkpoint!",
+        "contains-substring?",
+        "frequency",
+        "vocabulary-term",
+        "close!"
       ]
     },
     "cpp": {
       "root": "include",
       "parser": "c-source",
-      "importLayers": ["include/libdictenstein.hpp"],
+      "importLayers": [
+        "include/libdictenstein.hpp"
+      ],
       "package": null,
       "_source": "header-only RAII facade over include/libdictenstein.h; distributed with the native package via cmake/ and pkgconfig/, no separate registry coordinate"
     },
     "dotnet": {
       "root": "bindings/dotnet",
       "parser": "dotnet-entrypoints",
-      "importLayers": ["bindings/dotnet/src/VinaryTree.Libdictenstein/Native.cs"],
+      "importLayers": [
+        "bindings/dotnet/src/VinaryTree.Libdictenstein/Native.cs"
+      ],
       "package": "nuget"
     },
     "fortran": {
       "root": "bindings/fortran",
       "parser": "fortran-bindc",
-      "importLayers": ["bindings/fortran/src/vinary_tree_libdictenstein.f90"],
+      "importLayers": [
+        "bindings/fortran/src/vinary_tree_libdictenstein.f90"
+      ],
       "package": "fpm"
     },
     "go": {
       "root": "bindings/go",
       "parser": "cgo",
-      "importLayers": ["bindings/go/libdictenstein.go", "bindings/go/entries.go"],
+      "importLayers": [
+        "bindings/go/libdictenstein.go",
+        "bindings/go/entries.go"
+      ],
       "package": "goModule"
     },
     "haskell": {
       "root": "bindings/haskell",
       "parser": "haskell-foreign",
-      "importLayers": ["bindings/haskell/src/VinaryTree/Libdictenstein.hs"],
-      "shimLayers": ["bindings/haskell/cbits/libdictenstein_hs.c"],
+      "importLayers": [
+        "bindings/haskell/src/VinaryTree/Libdictenstein.hs"
+      ],
+      "shimLayers": [
+        "bindings/haskell/cbits/libdictenstein_hs.c"
+      ],
       "package": "hackage"
     },
     "javascript": {
       "root": "bindings/javascript",
       "parser": "javascript-exports",
-      "importLayers": ["bindings/javascript/package.json"],
+      "importLayers": [
+        "bindings/javascript/package.json"
+      ],
       "package": "npm",
       "symbolAccess": "mediated (runtime object exported by the @vinary-tree/vinary-tree umbrella)"
     },
     "jvm": {
       "root": "bindings/jvm",
       "parser": "java-downcalls",
-      "importLayers": ["bindings/jvm/src/main/java/io/vinarytree/libdictenstein/Native.java"],
+      "importLayers": [
+        "bindings/jvm/src/main/java/io/vinarytree/libdictenstein/Native.java"
+      ],
       "package": "maven"
     },
     "lua": {
       "root": "bindings/lua",
       "parser": "c-source",
-      "importLayers": ["bindings/lua/src/libdictenstein_lua.c"],
+      "importLayers": [
+        "bindings/lua/src/libdictenstein_lua.c"
+      ],
       "package": "luarocks"
     },
     "ocaml": {
       "root": "bindings/ocaml",
       "parser": "c-source",
-      "importLayers": ["bindings/ocaml/libdictenstein_stubs.c"],
+      "importLayers": [
+        "bindings/ocaml/libdictenstein_stubs.c"
+      ],
       "package": "opam"
     },
     "python": {
       "root": "bindings/python",
       "parser": "python-ctypes",
-      "importLayers": ["bindings/python/src/libdictenstein/_native.py"],
+      "importLayers": [
+        "bindings/python/src/libdictenstein/_native.py"
+      ],
       "package": "pypi"
     },
     "ruby": {
       "root": "bindings/ruby",
       "parser": "ruby-fiddle",
-      "importLayers": ["bindings/ruby/lib/vinary_tree/libdictenstein/native.rb"],
+      "importLayers": [
+        "bindings/ruby/lib/vinary_tree/libdictenstein/native.rb"
+      ],
       "package": "rubygems"
     },
     "swift": {
       "root": "bindings/swift/libdictenstein",
       "parser": "swift",
-      "importLayers": ["bindings/swift/libdictenstein/Sources/Libdictenstein/Libdictenstein.swift"],
+      "importLayers": [
+        "bindings/swift/libdictenstein/Sources/Libdictenstein/Libdictenstein.swift"
+      ],
       "modulemap": "bindings/swift/libdictenstein/Sources/CLibdictenstein/module.modulemap",
       "shimHeader": "bindings/swift/libdictenstein/Sources/CLibdictenstein/CLibdictenstein.h",
       "package": "swift"
@@ -409,11 +763,38 @@
   },
   "wasm": {
     "umbrellaPackage": "@vinary-tree/vinary-tree",
-    "umbrellaVersion": "0.10.0",
+    "umbrellaVersion": "4.0.0-rc.1",
     "projectPackage": "@vinary-tree/libdictenstein",
     "interopPackage": "@vinary-tree/interop",
-    "exports": [".", "./typescript", "./clojurescript", "./wasm", "./wasi"],
+    "exports": [
+      ".",
+      "./typescript",
+      "./clojurescript",
+      "./wasm",
+      "./wasi"
+    ],
     "runtimeMediated": true,
     "_source": "bindings/javascript/package.json"
+  },
+  "release": {
+    "canonical": "4.0.0-rc.1",
+    "registries": {
+      "cargo": "4.0.0-rc.1",
+      "clojars": "4.0.0-rc.1",
+      "cmake": "4.0.0-rc.1",
+      "fpm": "4.0.0",
+      "goTag": "v4.0.0-rc.1",
+      "hackage": "4.0.0",
+      "luaRocks": "4.0.0-rc.1-1",
+      "maven": "4.0.0-rc.1",
+      "npm": "4.0.0-rc.1",
+      "nuget": "4.0.0-rc.1",
+      "opam": "4.0.0~rc1",
+      "pkgConfig": "4.0.0-rc.1",
+      "pypi": "4.0.0rc1",
+      "rubygems": "4.0.0.rc.1",
+      "swiftTag": "4.0.0-rc.1"
+    },
+    "distTag": "next"
   }
 }

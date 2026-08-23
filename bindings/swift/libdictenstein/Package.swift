@@ -12,7 +12,10 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(path: "../../../../liblevenshtein-rust/vinary-tree-interop/bindings/swift/vinary-tree-interop"),
+        .package(
+            url: "https://github.com/vinary-tree/vinary-tree-interop.git",
+            exact: "4.0.0-rc.1"
+        ),
     ],
     targets: [
         .systemLibrary(name: "CLibdictenstein"),

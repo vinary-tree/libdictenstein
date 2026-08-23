@@ -25,7 +25,8 @@ jobs:
         run: |
           parent=$(dirname "$GITHUB_WORKSPACE")
           git clone --depth 1 --branch v0.1.0 https://github.com/vinary-tree/llattice.git "$parent/llattice"
-          git clone --depth 1 --branch v0.10.0 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
+          git clone --depth 1 --branch v4.0.0-rc.1 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
+          git clone --depth 1 --branch v4.0.0-rc.1 https://github.com/vinary-tree/vinary-tree-interop.git "$parent/vinary-tree-interop"
       - uses: dtolnay/rust-toolchain@1.95
       - name: Verify tag, ABI, CRUD, and one long-lived snapshot
         shell: bash
@@ -82,7 +83,8 @@ jobs:
         run: |
           parent=$(dirname "$GITHUB_WORKSPACE")
           git clone --depth 1 --branch v0.1.0 https://github.com/vinary-tree/llattice.git "$parent/llattice"
-          git clone --depth 1 --branch v0.10.0 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
+          git clone --depth 1 --branch v4.0.0-rc.1 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
+          git clone --depth 1 --branch v4.0.0-rc.1 https://github.com/vinary-tree/vinary-tree-interop.git "$parent/vinary-tree-interop"
       - uses: dtolnay/rust-toolchain@1.95
         with: { targets: "${{ matrix.target }}" }
       - run: cargo build --release --target "${{ matrix.target }}" --features ffi
@@ -156,7 +158,7 @@ jobs:
           path = Path("Cargo.toml")
           source = path.read_text()
           source = source.replace('llattice = { path = "../llattice", version = "0.1" }', 'llattice = "0.1"')
-          source = source.replace('vinary-tree-interop = { path = "../liblevenshtein-rust/vinary-tree-interop", version = "0.1.0", optional = true }', 'vinary-tree-interop = { version = "0.1.0", optional = true }')
+          source = source.replace('vinary-tree-interop = { path = "../vinary-tree-interop", version = "=4.0.0-rc.1", optional = true }', 'vinary-tree-interop = { version = "=4.0.0-rc.1", optional = true }')
           path.write_text(source)
           PY
       - name: Build and test platform wheel
@@ -169,7 +171,7 @@ jobs:
           CIBW_ARCHS: ${{ matrix.arch }}
           CIBW_BUILD_VERBOSITY: "1"
           CIBW_TEST_REQUIRES: pytest
-          CIBW_BEFORE_TEST: python -m pip install vinary-tree-interop==0.1.0
+          CIBW_BEFORE_TEST: python -m pip install vinary-tree-interop==4.0.0rc1
           CIBW_TEST_COMMAND: python -m pytest -q {project}/bindings/python/tests/test_backends.py
           CIBW_BEFORE_ALL_LINUX: >-
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
@@ -193,7 +195,8 @@ jobs:
         run: |
           parent=$(dirname "$GITHUB_WORKSPACE")
           git clone --depth 1 --branch v0.1.0 https://github.com/vinary-tree/llattice.git "$parent/llattice"
-          git clone --depth 1 --branch v0.10.0 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
+          git clone --depth 1 --branch v4.0.0-rc.1 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
+          git clone --depth 1 --branch v4.0.0-rc.1 https://github.com/vinary-tree/vinary-tree-interop.git "$parent/vinary-tree-interop"
       - uses: dtolnay/rust-toolchain@1.95
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "25", cache: gradle }
@@ -233,7 +236,8 @@ jobs:
         run: |
           parent=$(dirname "$GITHUB_WORKSPACE")
           git clone --depth 1 --branch v0.1.0 https://github.com/vinary-tree/llattice.git "$parent/llattice"
-          git clone --depth 1 --branch v0.10.0 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
+          git clone --depth 1 --branch v4.0.0-rc.1 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
+          git clone --depth 1 --branch v4.0.0-rc.1 https://github.com/vinary-tree/vinary-tree-interop.git "$parent/vinary-tree-interop"
       - uses: dtolnay/rust-toolchain@1.95
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "25" }
@@ -250,7 +254,7 @@ jobs:
           cp ../liblevenshtein-rust/target/debug/libliblevenshtein.so \
             ../liblevenshtein-rust/bindings/jvm/build/native-resources/META-INF/native/linux-x86_64/
           ../liblevenshtein-rust/bindings/jvm/gradlew --no-daemon \
-            -p ../liblevenshtein-rust/vinary-tree-interop/bindings/jvm \
+            -p ../vinary-tree-interop/bindings/jvm \
             publishMavenJavaPublicationToStagingRepository \
             "-PstagingRepository=$RUNNER_TEMP/maven-local"
           ../liblevenshtein-rust/bindings/jvm/gradlew --no-daemon \
@@ -307,7 +311,7 @@ jobs:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
       - name: Checkout exact shared .NET resource package
-        run: git clone --depth 1 --branch v0.10.0 https://github.com/vinary-tree/liblevenshtein-rust.git ../liblevenshtein-rust
+        run: git clone --depth 1 --branch v4.0.0-rc.1 https://github.com/vinary-tree/liblevenshtein-rust.git ../liblevenshtein-rust
       - uses: actions/setup-dotnet@v5
         with: { dotnet-version: 10.0.x }
       - uses: actions/download-artifact@v7
@@ -365,7 +369,7 @@ jobs:
           if-no-files-found: error
 
   hackage-package:
-    name: Hackage source package
+    name: Hackage final-version candidate (never published for RC)
     needs: contract
     runs-on: ubuntu-24.04
     steps:
@@ -385,30 +389,21 @@ jobs:
           if-no-files-found: error
 
   fpm-package:
-    name: fpm registry package
+    name: fpm final-version candidate (never published for RC)
     needs: contract
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
-      - run: git clone --depth 1 --branch v0.10.0 https://github.com/vinary-tree/liblevenshtein-rust.git ../liblevenshtein-rust
+      - run: git clone --depth 1 --branch v4.0.0-rc.1 https://github.com/vinary-tree/vinary-tree-interop.git ../vinary-tree-interop
       - uses: fortran-lang/setup-fpm@v10
-      - name: Validate against an exact local interop registry
+      - name: Validate the numeric 4.0.0 candidates without publication
         shell: bash
         run: |
-          ../liblevenshtein-rust/scripts/stage-fpm-package.sh interop "$RUNNER_TEMP/fpm-interop"
+          fpm build -C ../vinary-tree-interop/bindings/fortran --dump fpm_model.json
+          fpm build -C bindings/fortran --dump fpm_model.json
           scripts/stage-fpm-package.sh "$RUNNER_TEMP/fpm-libdictenstein"
-          pushd "$RUNNER_TEMP/fpm-interop"
-          fpm build --dump fpm_model.json
-          popd
-          mkdir -p "$RUNNER_TEMP/registry/vinary-tree/vinary-tree-interop/0.1.0"
-          cp -R "$RUNNER_TEMP/fpm-interop/src" "$RUNNER_TEMP/registry/vinary-tree/vinary-tree-interop/0.1.0/src"
-          cp "$RUNNER_TEMP/fpm-interop/fpm.toml" "$RUNNER_TEMP/registry/vinary-tree/vinary-tree-interop/0.1.0/fpm.toml"
-          printf '[registry]\npath = "%s"\n' "$RUNNER_TEMP/registry" > "$RUNNER_TEMP/fpm-registry.toml"
-          pushd "$RUNNER_TEMP/fpm-libdictenstein"
-          fpm build --dump fpm_model.json --config-file "$RUNNER_TEMP/fpm-registry.toml"
-          fpm publish --token validation --dry-run --config-file "$RUNNER_TEMP/fpm-registry.toml"
-          popd
+          test "$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$RUNNER_TEMP/fpm-libdictenstein/fpm.toml")" = 4.0.0
 
   opam-package:
     name: opam source package
@@ -417,20 +412,20 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
-      - run: git clone --depth 1 --branch v0.10.0 https://github.com/vinary-tree/liblevenshtein-rust.git ../liblevenshtein-rust
+      - run: git clone --depth 1 --branch v4.0.0-rc.1 https://github.com/vinary-tree/liblevenshtein-rust.git ../liblevenshtein-rust
       - uses: ocaml/setup-ocaml@v3
         with: { ocaml-compiler: "5.4.0" }
       - name: Stage and lint standalone source
         run: |
           scripts/stage-ocaml-package.sh "$RUNNER_TEMP/opam-package"
           opam lint "$RUNNER_TEMP/opam-package/opam"
-          tar -tjf "$RUNNER_TEMP/opam-package/vinary-tree-libdictenstein-0.2.1.tbz"
+          tar -tjf "$RUNNER_TEMP/opam-package/vinary-tree-libdictenstein-4.0.0-rc.1.tbz"
       - uses: actions/upload-artifact@v7
         with:
           name: opam-package
           path: |
             ${{ runner.temp }}/opam-package/opam
-            ${{ runner.temp }}/opam-package/vinary-tree-libdictenstein-0.2.1.tbz
+            ${{ runner.temp }}/opam-package/vinary-tree-libdictenstein-4.0.0-rc.1.tbz
           if-no-files-found: error
 
   luarocks-package:
@@ -441,7 +436,7 @@ jobs:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
       - run: sudo apt-get update && sudo apt-get install -y luarocks
-      - run: luarocks lint bindings/lua/vinary-tree-libdictenstein-0.2.1-1.rockspec
+      - run: luarocks lint bindings/lua/vinary-tree-libdictenstein-4.0.0-rc.1-1.rockspec
       - uses: actions/upload-artifact@v7
         with:
           name: luarocks-package
@@ -462,13 +457,14 @@ jobs:
         run: |
           parent=$(dirname "$GITHUB_WORKSPACE")
           git clone --depth 1 --branch v0.1.0 https://github.com/vinary-tree/llattice.git "$parent/llattice"
-          git clone --depth 1 --branch v0.10.0 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
+          git clone --depth 1 --branch v4.0.0-rc.1 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
+          git clone --depth 1 --branch v4.0.0-rc.1 https://github.com/vinary-tree/vinary-tree-interop.git "$parent/vinary-tree-interop"
           python3 - <<'PY'
           from pathlib import Path
           path = Path("Cargo.toml")
           source = path.read_text()
           source = source.replace('llattice = { path = "../llattice", version = "0.1" }', 'llattice = "0.1"')
-          source = source.replace('vinary-tree-interop = { path = "../liblevenshtein-rust/vinary-tree-interop", version = "0.1.0", optional = true }', 'vinary-tree-interop = { version = "0.1.0", optional = true }')
+          source = source.replace('vinary-tree-interop = { path = "../vinary-tree-interop", version = "=4.0.0-rc.1", optional = true }', 'vinary-tree-interop = { version = "=4.0.0-rc.1", optional = true }')
           path.write_text(source)
           PY
       - uses: dtolnay/rust-toolchain@1.95
@@ -542,7 +538,7 @@ jobs:
         with: { node-version: "24", registry-url: "https://registry.npmjs.org", package-manager-cache: false }
       - uses: actions/download-artifact@v7
         with: { name: npm-package, path: dist }
-      - run: npm publish --access public --provenance dist/*.tgz
+      - run: npm publish --access public --provenance --tag next dist/*.tgz
 
   nuget:
     name: Publish NuGet package
@@ -574,40 +570,6 @@ jobs:
       - run: gem push dist/*.gem
         env: { GEM_HOST_API_KEY: "${{ secrets.RUBYGEMS_API_KEY }}" }
 
-  hackage:
-    name: Publish Hackage package
-    needs: hackage-package
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-24.04
-    environment: hackage
-    steps:
-      - uses: haskell-actions/setup@v2
-        with: { ghc-version: "9.14.1", cabal-version: latest }
-      - uses: actions/download-artifact@v7
-        with: { name: hackage-package, path: dist }
-      - run: >-
-          cabal upload --publish --username="$HACKAGE_USERNAME"
-          --password="$HACKAGE_PASSWORD" dist/*.tar.gz
-        env:
-          HACKAGE_USERNAME: ${{ secrets.HACKAGE_USERNAME }}
-          HACKAGE_PASSWORD: ${{ secrets.HACKAGE_PASSWORD }}
-
-  fpm:
-    name: Publish fpm package
-    needs: fpm-package
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-24.04
-    environment: fpm
-    steps:
-      - uses: actions/checkout@v6
-        with: { persist-credentials: false }
-      - uses: fortran-lang/setup-fpm@v10
-      - run: |
-          scripts/stage-fpm-package.sh "$RUNNER_TEMP/fpm-package"
-          fpm build -C "$RUNNER_TEMP/fpm-package" --dump fpm_model.json
-          fpm publish -C "$RUNNER_TEMP/fpm-package" --token "$FPM_REGISTRY_TOKEN"
-        env: { FPM_REGISTRY_TOKEN: "${{ secrets.FPM_REGISTRY_TOKEN }}" }
-
   go-module:
     name: Publish Go module tag
     needs: contract
@@ -625,8 +587,8 @@ jobs:
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           for module in \
-            github.com/vinary-tree/liblevenshtein-rust/vinary-tree-interop/bindings/go@v0.1.0 \
-            github.com/vinary-tree/liblevenshtein-rust/bindings/go@v0.10.0; do
+            github.com/vinary-tree/vinary-tree-interop/bindings/go@v0.1.0 \
+            github.com/vinary-tree/liblevenshtein-rust/bindings/go@v4.0.0-rc.1; do
             for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
               if GOWORK=off GOPROXY=https://proxy.golang.org go list -m "$module" >/dev/null; then
                 break

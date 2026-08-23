@@ -13,7 +13,7 @@ shared library `libdictenstein`. Build the native library first:
 
 ```sh
 cargo build --release --no-default-features --features ffi
-luarocks make bindings/lua/vinary-tree-libdictenstein-0.2.1-1.rockspec
+luarocks make bindings/lua/vinary-tree-libdictenstein-4.0.0-rc.1-1.rockspec
 export LD_LIBRARY_PATH="$PWD/target/release:$LD_LIBRARY_PATH"
 ```
 
@@ -231,7 +231,7 @@ Treat paths, terms, values, page offsets, serialized files, and foreign callers
 as untrusted. Validate lengths before allocation, contain panics at the ABI,
 bound diagnostics and batches, prevent path traversal, and reject unknown enum
 values. See the [FFI boundary analysis](../../docs/security/ffi-boundary.md) and
-[family security model](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/security-model.md).
+[family security model](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/security-model.md).
 
 ## Compatibility and troubleshooting
 

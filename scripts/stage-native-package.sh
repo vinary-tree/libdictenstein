@@ -10,17 +10,11 @@ target=$1
 release_dir=$2
 output_dir=$3
 version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
-interop_root=../liblevenshtein-rust
 
 if [ -z "$version" ]; then
   echo "could not read package version from Cargo.toml" >&2
   exit 1
 fi
-if [ ! -f "$interop_root/vinary-tree-interop/include/vinary_tree_interop.h" ]; then
-  echo "missing exact vinary-tree-interop checkout at $interop_root" >&2
-  exit 1
-fi
-
 package_name="libdictenstein-${version}-${target}"
 prefix="${output_dir}/${package_name}"
 
@@ -28,19 +22,12 @@ mkdir -p \
   "${prefix}/bin" \
   "${prefix}/include" \
   "${prefix}/lib/cmake/libdictenstein" \
-  "${prefix}/lib/cmake/vinary-tree-interop" \
   "${prefix}/lib/pkgconfig"
 
 cp include/libdictenstein.h include/libdictenstein.hpp "${prefix}/include/"
-cp "$interop_root/vinary-tree-interop/include/vinary_tree_interop.h" \
-  "${prefix}/include/"
 cp cmake/libdictensteinConfig.cmake cmake/libdictensteinConfigVersion.cmake \
   "${prefix}/lib/cmake/libdictenstein/"
-cp "$interop_root/cmake/vinary-tree-interopConfig.cmake" \
-  "$interop_root/cmake/vinary-tree-interopConfigVersion.cmake" \
-  "${prefix}/lib/cmake/vinary-tree-interop/"
-cp pkgconfig/libdictenstein.pc "$interop_root/pkgconfig/vinary-tree-interop.pc" \
-  "${prefix}/lib/pkgconfig/"
+cp pkgconfig/libdictenstein.pc "${prefix}/lib/pkgconfig/"
 cp LICENSE README.md "${prefix}/"
 
 case "$target" in

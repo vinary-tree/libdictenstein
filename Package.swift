@@ -13,8 +13,8 @@ let package = Package(
     ],
     dependencies: [
         .package(
-            url: "https://github.com/vinary-tree/liblevenshtein-rust.git",
-            from: "0.10.0"
+            url: "https://github.com/vinary-tree/vinary-tree-interop.git",
+            exact: "4.0.0-rc.1"
         ),
     ],
     targets: [
@@ -26,7 +26,7 @@ let package = Package(
             name: "Libdictenstein",
             dependencies: [
                 "CLibdictenstein",
-                .product(name: "VinaryTreeInterop", package: "liblevenshtein-rust"),
+                .product(name: "VinaryTreeInterop", package: "vinary-tree-interop"),
             ],
             path: "bindings/swift/libdictenstein/Sources/Libdictenstein"
         ),

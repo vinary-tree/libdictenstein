@@ -18,7 +18,7 @@
 //
 // Build (from the repository root), e.g.:
 //   c++ -std=c++20 -O2 bindings/cpp/tests/conformance.cpp
-//       -I include -I ../liblevenshtein-rust/vinary-tree-interop/include
+//       -I include -I ../vinary-tree-interop/include
 //       -L target/release -llibdictenstein -o /tmp/cpp_conformance
 //   LD_LIBRARY_PATH=target/release /tmp/cpp_conformance bindings/canonical_fixture.json
 

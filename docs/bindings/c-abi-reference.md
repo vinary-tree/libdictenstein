@@ -51,7 +51,7 @@ how the two connect at [`ldict_dictionary_resource`](#ldict_dictionary_resource)
 
 The project ABI carries two counters, following the family's four-counter
 evolution model (see the canonical
-[ABI evolution policy](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/abi-evolution.md)):
+[ABI evolution policy](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/abi-evolution.md)):
 
 | Constant | Value | Meaning | Caller check |
 |---|---|---|---|
@@ -1439,7 +1439,7 @@ Canonical family-level specifications live with the interop crate in
 liblevenshtein-rust (linked absolutely — cross-repo relative paths do not
 survive packaging):
 
-- [ABI reference — `vinary_tree_interop.h`, annotated](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/abi-reference.md)
-- [ABI evolution policy — the four version counters](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/abi-evolution.md)
-- [Family security model — trust zones and validation duties](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/security-model.md)
+- [ABI reference — `vinary_tree_interop.h`, annotated](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/abi-reference.md)
+- [ABI evolution policy — the four version counters](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/abi-evolution.md)
+- [Family security model — trust zones and validation duties](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/security-model.md)
 - [liblevenshtein language-binding architecture (the consumer side)](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/docs/language-bindings.md)

@@ -486,7 +486,7 @@ The checklist, in dependency order — "done" means every gate below is green:
    `include/libdictenstein.h`; new capability bits only for genuinely new
    operation families. New `ldict_*` functions (if any) bump
    `LDICT_API_REVISION` — additive only, per the
-   [evolution policy](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/abi-evolution.md).
+   [evolution policy](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/abi-evolution.md).
 5. **Flags honesty.** Claim `PARALLEL_REENTRANT` only if every path is
    internally synchronized; set `SUFFIX_BASED` for substring semantics; extend
    the `dictionary_vtable()` dispatch (new `'static` vtables) if a new
@@ -558,7 +558,7 @@ SCDAWG) are kept with the per-backend sections of the
 
 ## Family documents
 
-- [ABI reference — `vinary_tree_interop.h`, annotated](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/abi-reference.md)
-- [ABI evolution policy — the four version counters](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/abi-evolution.md)
-- [Family security model — trust zones and validation duties](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/security-model.md)
+- [ABI reference — `vinary_tree_interop.h`, annotated](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/abi-reference.md)
+- [ABI evolution policy — the four version counters](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/abi-evolution.md)
+- [Family security model — trust zones and validation duties](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/security-model.md)
 - [liblevenshtein language-binding architecture (the consumer side)](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/docs/language-bindings.md)

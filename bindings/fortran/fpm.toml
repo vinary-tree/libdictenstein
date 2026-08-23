@@ -1,5 +1,5 @@
 name = "vinary-tree-libdictenstein"
-version = "0.2.1"
+version = "4.0.0"
 license = "Apache-2.0"
 author = "Dylon Edwards"
 maintainer = "Dylon Edwards <dylon.devo@gmail.com>"
@@ -9,7 +9,7 @@ description = "High-performance modular dictionary backends"
 source-dir = "src"
 
 [dependencies]
-vinary-tree-interop = { path = "../../../liblevenshtein-rust/vinary-tree-interop/bindings/fortran" }
+vinary-tree-interop = { path = "../../../vinary-tree-interop/bindings/fortran" }
 
 [build]
 link = ["libdictenstein"]

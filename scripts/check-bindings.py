@@ -377,7 +377,7 @@ def javascript_check(report: Report, model: dict) -> dict[str, object]:
     ):
         if not (ROOT / "bindings" / "javascript" / facade_file).is_file():
             report.fail("javascript", f"missing facade file bindings/javascript/{facade_file}")
-    exact = re.compile(r"^\d+\.\d+\.\d+$")
+    exact = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
     dependencies = package.get("dependencies", {})
     for name, version in dependencies.items():
         if name.startswith("@vinary-tree/") and not exact.match(version):
@@ -658,7 +658,6 @@ def check_interop_header(report: Report, model: dict) -> None:
         os.environ.get(
             "LDICT_INTEROP_HEADER_CANONICAL",
             ROOT.parent
-            / "liblevenshtein-rust"
             / "vinary-tree-interop"
             / "include"
             / "vinary_tree_interop.h",
@@ -696,6 +695,7 @@ def check_interop_header(report: Report, model: dict) -> None:
 def check_packages(report: Report, model: dict) -> None:
     packages = model["packages"]
     version = model["packageVersion"]
+    registries = model.get("release", {}).get("registries", {})
     interop_version = model["interop"]["version"]
     clean = True
 
@@ -721,7 +721,7 @@ def check_packages(report: Report, model: dict) -> None:
         )
         interop_dep = cargo.get("dependencies", {}).get("vinary-tree-interop", {})
         expect(
-            interop_dep.get("version") == interop_version,
+            interop_dep.get("version", "").lstrip("=") == interop_version,
             f"Cargo.toml vinary-tree-interop version {interop_dep.get('version')!r} != interop {interop_version!r}",
         )
 
@@ -730,12 +730,12 @@ def check_packages(report: Report, model: dict) -> None:
         python = tomllib.loads(python_source)
         expect(python["project"]["name"] == packages["pypi"], "pyproject.toml name != packages.pypi")
         expect(
-            python["project"]["version"] == version,
-            f"pyproject.toml version {python['project']['version']} != {version}",
+            python["project"]["version"] == registries.get("pypi", version),
+            f"pyproject.toml version {python['project']['version']} != {registries.get('pypi', version)}",
         )
         expect(
-            f"vinary-tree-interop=={interop_version}" in python["project"]["dependencies"],
-            f"pyproject.toml must pin vinary-tree-interop=={interop_version}",
+            f"vinary-tree-interop=={registries.get('pypi', interop_version)}" in python["project"]["dependencies"],
+            f"pyproject.toml must pin vinary-tree-interop=={registries.get('pypi', interop_version)}",
         )
 
     gradle = read_text(report, "packages", ROOT / "bindings" / "jvm" / "build.gradle.kts")
@@ -788,7 +788,7 @@ def check_packages(report: Report, model: dict) -> None:
             f"go.mod module != {packages['goModule']}",
         )
         expect(
-            f"github.com/vinary-tree/liblevenshtein-rust/vinary-tree-interop/bindings/go v{interop_version}"
+            f"github.com/vinary-tree/vinary-tree-interop/bindings/go/v4 v{interop_version}"
             in go_mod,
             f"go.mod must require the interop module at v{interop_version}",
         )
@@ -806,8 +806,8 @@ def check_packages(report: Report, model: dict) -> None:
     )
     if ruby_version is not None:
         expect(
-            f'VERSION = "{version}"' in ruby_version,
-            f"ruby version.rb != {version}",
+            f'VERSION = "{registries.get("rubygems", version)}"' in ruby_version,
+            f"ruby version.rb != {registries.get('rubygems', version)}",
         )
 
     cabal = read_text(
@@ -815,7 +815,10 @@ def check_packages(report: Report, model: dict) -> None:
     )
     if cabal is not None:
         expect(f"name: {packages['hackage']}" in cabal, f"cabal name != {packages['hackage']}")
-        expect(f"version: {version}" in cabal, f"cabal version != {version}")
+        expect(
+            f"version: {registries.get('hackage', version)}" in cabal,
+            f"cabal version != {registries.get('hackage', version)}",
+        )
 
     dune_project = read_text(report, "packages", ROOT / "bindings" / "ocaml" / "dune-project")
     if dune_project is not None:
@@ -833,7 +836,10 @@ def check_packages(report: Report, model: dict) -> None:
         if fpm_source is not None:
             fpm = tomllib.loads(fpm_source)
             expect(fpm["name"] == packages["fpm"], f"{fpm_name} name != {packages['fpm']}")
-            expect(fpm["version"] == version, f"{fpm_name} version != {version}")
+            expect(
+                fpm["version"] == registries.get("fpm", version),
+                f"{fpm_name} version != {registries.get('fpm', version)}",
+            )
     fpm_publish_source = read_text(
         report, "packages", ROOT / "bindings" / "fortran" / "fpm.publish.toml"
     )
@@ -841,7 +847,7 @@ def check_packages(report: Report, model: dict) -> None:
         fpm_publish = tomllib.loads(fpm_publish_source)
         interop_dep = fpm_publish.get("dependencies", {}).get("vinary-tree-interop", {})
         expect(
-            interop_dep.get("v") == interop_version
+            interop_dep.get("v") == registries.get("fpm", interop_version)
             and interop_dep.get("namespace") == model["organization"]["fpmNamespace"],
             f"fpm.publish.toml must depend on {model['organization']['fpmNamespace']}/vinary-tree-interop v{interop_version}",
         )
@@ -858,8 +864,9 @@ def check_packages(report: Report, model: dict) -> None:
         )
         rock_version = re.search(r'version = "([^"]+)"', rockspec)
         expect(
-            rock_version is not None and rock_version.group(1).split("-")[0] == version,
-            f"{rockspec_path.name} version base != {version}",
+            rock_version is not None
+            and rock_version.group(1) == registries.get("luaRocks", version),
+            f"{rockspec_path.name} version != {registries.get('luaRocks', version)}",
         )
         expect(
             rock_version is not None
@@ -913,14 +920,14 @@ def check_sibling_pins(report: Report, model: dict) -> None:
     )
     if release is not None:
         llev_branches = set(
-            re.findall(r"--branch (v[0-9.]+) https://github\.com/vinary-tree/liblevenshtein-rust", release)
+            re.findall(r"--branch (v[0-9A-Za-z.-]+) https://github\.com/vinary-tree/liblevenshtein-rust", release)
         )
         expect(
             llev_branches == {f"v{llev}"},
             f"release-bindings.yml liblevenshtein-rust clone pins {sorted(llev_branches)} != v{llev}",
         )
         llattice_branches = set(
-            re.findall(r"--branch (v[0-9.]+) https://github\.com/vinary-tree/llattice", release)
+            re.findall(r"--branch (v[0-9A-Za-z.-]+) https://github\.com/vinary-tree/llattice", release)
         )
         expect(
             llattice_branches == {f"v{llattice}"},
@@ -929,14 +936,8 @@ def check_sibling_pins(report: Report, model: dict) -> None:
     go_mod = read_text(report, "sibling-pins", ROOT / "bindings" / "go" / "go.mod")
     if go_mod is not None:
         expect(
-            f"github.com/vinary-tree/liblevenshtein-rust/bindings/go v{llev}" in go_mod,
+            f"github.com/vinary-tree/liblevenshtein-rust/bindings/go/v4 v{llev}" in go_mod,
             f"go.mod liblevenshtein module pin != v{llev}",
-        )
-    package_swift = read_text(report, "sibling-pins", ROOT / "Package.swift")
-    if package_swift is not None:
-        expect(
-            f'from: "{llev}"' in package_swift,
-            f"Package.swift liblevenshtein-rust pin != {llev}",
         )
     gradle = read_text(report, "sibling-pins", ROOT / "bindings" / "jvm" / "build.gradle.kts")
     if gradle is not None:

@@ -1,2 +1,2 @@
 {:foreign-libs []
- :npm-deps {"@vinary-tree/libdictenstein" "0.2.1"}}
+ :npm-deps {"@vinary-tree/libdictenstein" "4.0.0-rc.1"}}

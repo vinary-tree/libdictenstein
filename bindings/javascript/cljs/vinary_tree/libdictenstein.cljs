@@ -1,6 +1,6 @@
 (ns vinary-tree.libdictenstein
   "ClojureScript facade mirroring the Clojure libdictenstein API."
-  (:refer-clojure :exclude [contains? get])
+  (:refer-clojure :exclude [contains? get keys])
   (:require [goog.object :as gobj]
             ["@vinary-tree/libdictenstein" :as native]))
 
