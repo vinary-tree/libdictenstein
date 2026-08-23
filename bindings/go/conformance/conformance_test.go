@@ -36,7 +36,7 @@ import (
 	"sync"
 	"testing"
 
-	ld "github.com/vinary-tree/libdictenstein/bindings/go"
+	ld "github.com/vinary-tree/libdictenstein/bindings/go/v4"
 )
 
 // ---------------------------------------------------------------------------

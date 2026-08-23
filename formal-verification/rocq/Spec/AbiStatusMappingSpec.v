@@ -24,9 +24,9 @@
     consumer boundaries is llev ledger LLEV-B6 (wave W3).
 *)
 
-From Stdlib Require Import List.
-From Stdlib Require Import Arith.
-From Stdlib Require Import Lia.
+From Coq Require Import Lists.List.
+From Coq Require Import Arith.Arith.
+From Coq Require Import micromega.Lia.
 Import ListNotations.
 
 (** ** The project-ABI table (src/ffi.rs / include/libdictenstein.h) *)

@@ -218,7 +218,9 @@ jobs:
           components: rust-src
       - name: Run ${{ matrix.sanitizer }}sanitizer
         env:
-          RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
+          # Step-level RUSTFLAGS replaces the workflow-level value, so retain
+          # gxhash's portable x86 requirements while adding the sanitizer.
+          RUSTFLAGS: "-C target-feature=+aes,+sse2 -Z sanitizer=${{ matrix.sanitizer }}"
         run: |
           cargo +nightly test \
             --target x86_64-unknown-linux-gnu \
@@ -226,8 +228,8 @@ jobs:
             --no-fail-fast
 
   # -----------------------------------------------------------------
-  # Rocq proofs. The sources use the List API shared by Coq 8.18 and Rocq 9.1,
-  # while local release verification remains pinned to Rocq 9.1.1.
+  # Rocq proofs. The sources use Coq's compatibility logical namespace, which
+  # is accepted by both the distro Coq runner and local Rocq 9.1.1.
   # -----------------------------------------------------------------
   rocq:
     name: Rocq proofs

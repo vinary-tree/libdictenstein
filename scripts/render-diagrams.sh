@@ -222,6 +222,7 @@ render_plot() {  # $1=gnuplot script (self-contained: sets terminal svg + output
       -e "s#<polygon fill = 'rgb\(249, 174,  54\)'#<polygon fill = 'rgb(249, 168,  37)' fill-opacity = '0.920000'#g" \
       -e "s#<polygon fill = 'rgb\( 62, 135,  66\)'#<polygon fill = 'rgb( 46, 125,  50)' fill-opacity = '0.920000'#g" \
       -e "s#<polygon fill = 'rgb\(202,  57,  57\)'#<polygon fill = 'rgb(198,  40,  40)' fill-opacity = '0.920000'#g" \
+      -e 's#Arc&lt;RwLock>#Arc&lt;RwLock\&gt;#g' \
       -e 's#<tspan font-size="11\.0" dy="0\.00"></tspan>##g' \
       "$out_svg"
   fi

@@ -13,9 +13,9 @@
     - malformed layouts fail closed rather than fabricating children.
 *)
 
-From Stdlib Require Import Arith.
-From Stdlib Require Import Bool.
-From Stdlib Require Import Lia.
+From Coq Require Import Arith.Arith.
+From Coq Require Import Bool.Bool.
+From Coq Require Import micromega.Lia.
 
 Inductive NodeKind : Type :=
 | N4

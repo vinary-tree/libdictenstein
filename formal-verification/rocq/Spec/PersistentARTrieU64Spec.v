@@ -7,8 +7,8 @@
     set, and checkpoint/reopen preserves the abstract set.
 *)
 
-From Stdlib Require Import Lists.List.
-From Stdlib Require Import Arith.PeanoNat.
+From Coq Require Import Lists.List.
+From Coq Require Import Arith.PeanoNat.
 Require Import ARTrie.Spec.DynamicDawgU64Spec.
 Import ListNotations.
 

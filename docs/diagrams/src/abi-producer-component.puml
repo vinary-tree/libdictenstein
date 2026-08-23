@@ -88,7 +88,7 @@ datb -down-> owned : resource()
 scdb -down-> owned : resource()
 perb -down-> owned : resource()
 owned -down-> ctx : Arc(ResourceContext) —\nstrong count = retain ledger
-ctx -down-> snap : snapshot() —\n<latex>\mathcal{O}(1)</latex> revision capture
+ctx -down-> snap : snapshot() —\nO(1) revision capture
 ctx -down-> statics : query_interface selects\ndomain × flags
 owned -down-> vtres : as_raw() —\ntwo borrowed words
 statics .down.> vtdict : conforms to

@@ -12,10 +12,10 @@
     progress/liveness, exact node counts, and canonical minimization.
 *)
 
-From Stdlib Require Import Lists.List.
-From Stdlib Require Import Bool.Bool.
-From Stdlib Require Import Arith.PeanoNat.
-From Stdlib Require Import Logic.FunctionalExtensionality.
+From Coq Require Import Lists.List.
+From Coq Require Import Bool.Bool.
+From Coq Require Import Arith.PeanoNat.
+From Coq Require Import Logic.FunctionalExtensionality.
 Require Import ARTrie.Spec.DictionaryLawSpec.
 Import ListNotations.
 

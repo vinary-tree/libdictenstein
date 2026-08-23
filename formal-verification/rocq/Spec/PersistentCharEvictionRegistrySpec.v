@@ -27,10 +27,10 @@
     compilation are outside this proof boundary. No Admitted, Axiom, or
     Hypothesis is used. *)
 
-From Stdlib Require Import List.
-From Stdlib Require Import Arith.
-From Stdlib Require Import Lia.
-From Stdlib Require Import Bool.
+From Coq Require Import Lists.List.
+From Coq Require Import Arith.Arith.
+From Coq Require Import micromega.Lia.
+From Coq Require Import Bool.Bool.
 Import ListNotations.
 
 (* Char codepoints and on-disk pointers are modeled as natural numbers. *)

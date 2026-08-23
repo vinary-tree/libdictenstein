@@ -7,8 +7,8 @@
     membership is restricted to active source texts.
 *)
 
-From Stdlib Require Import Lists.List.
-From Stdlib Require Import Arith.PeanoNat.
+From Coq Require Import Lists.List.
+From Coq Require Import Arith.PeanoNat.
 Require Import ARTrie.Spec.PersistentSuffixAutomatonSpec.
 Import ListNotations.
 

@@ -41,7 +41,7 @@
 
    Self-contained beyond the proven [Model/PrefixChunking.v]. No [Axiom], no [admit], no [Admitted]. *)
 
-From Stdlib Require Import List Arith Lia Bool.
+From Coq Require Import Lists.List Arith.Arith micromega.Lia Bool.Bool.
 Require Import ARTrie.Model.PrefixChunking.
 Import ListNotations.
 

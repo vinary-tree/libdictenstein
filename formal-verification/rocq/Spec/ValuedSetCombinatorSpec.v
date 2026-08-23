@@ -11,8 +11,8 @@
     then merged left-to-right by the configured ValueMergeStrategy.
 *)
 
-From Stdlib Require Import Arith.PeanoNat.
-From Stdlib Require Import Lists.List.
+From Coq Require Import Arith.PeanoNat.
+From Coq Require Import Lists.List.
 Require Import ARTrie.Spec.MapSpec.
 Import ListNotations.
 

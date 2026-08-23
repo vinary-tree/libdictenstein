@@ -13,8 +13,8 @@
     - read failures preserve the visible snapshot.
 *)
 
-From Stdlib Require Import Arith.PeanoNat.
-From Stdlib Require Import Logic.FunctionalExtensionality.
+From Coq Require Import Arith.PeanoNat.
+From Coq Require Import Logic.FunctionalExtensionality.
 
 Definition Key := nat.
 Definition Prefix := nat.

@@ -70,7 +70,15 @@ jobs:
         with: { name: libdictenstein-so, path: target/release }
       - name: Run conformance and public-package profile smoke tests
         working-directory: bindings/go
-        run: CGO_LDFLAGS="-L$GITHUB_WORKSPACE/target/release" LD_LIBRARY_PATH="$GITHUB_WORKSPACE/target/release" GOWORK=off go test ./conformance/ ./cmd/collection-traversal-profile/
+        run: |
+          parent="$(dirname "$GITHUB_WORKSPACE")"
+          go mod edit \
+            "-replace=github.com/vinary-tree/liblevenshtein-rust/bindings/go/v4=$parent/liblevenshtein-rust/bindings/go"
+          go mod edit \
+            "-replace=github.com/vinary-tree/vinary-tree-interop/bindings/go/v4=$parent/vinary-tree-interop/bindings/go"
+          CGO_LDFLAGS="-L$GITHUB_WORKSPACE/target/release" \
+            LD_LIBRARY_PATH="$GITHUB_WORKSPACE/target/release" \
+            GOWORK=off go test ./conformance/ ./cmd/collection-traversal-profile/
 
   ruby:
     name: Ruby (C1-C10)
@@ -210,7 +218,8 @@ jobs:
           } > /tmp/hs-pc/libdictenstein.pc
           cd bindings/haskell
           PKG_CONFIG_PATH=/tmp/hs-pc LIBRARY_PATH="$rel" LD_LIBRARY_PATH="$rel" \
-            cabal test conformance --extra-lib-dirs="$rel" \
+            cabal test --project-file=cabal.project conformance \
+              --extra-lib-dirs="$rel" \
               --extra-include-dirs="$GITHUB_WORKSPACE/include" \
               --test-show-details=direct \
               --test-options="$GITHUB_WORKSPACE/bindings/canonical_fixture.json"
@@ -227,6 +236,8 @@ jobs:
       - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - name: Run conformance and compile the public-package profile
+        env:
+          VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/../vinary-tree-interop
         run: |
           rel="$GITHUB_WORKSPACE/target/release"
           LIBRARY_PATH="$rel" LD_LIBRARY_PATH="$rel" \
@@ -253,9 +264,11 @@ jobs:
         with: { name: libdictenstein-so, path: target/release }
       - name: Run the conformance runner
         run: |
+          parent="$(dirname "$GITHUB_WORKSPACE")"
           rel="$GITHUB_WORKSPACE/target/release"
           LD_LIBRARY_PATH="$rel" dotnet run -c Release \
             --project bindings/dotnet/tests/VinaryTree.Libdictenstein.Conformance \
+            -p:VinaryTreeInteropRoot="$parent/vinary-tree-interop" \
             -- "$GITHUB_WORKSPACE/bindings/canonical_fixture.json"
 
   jvm:

@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	ld "github.com/vinary-tree/libdictenstein/bindings/go"
+	ld "github.com/vinary-tree/libdictenstein/bindings/go/v4"
 )
 
 func TestEntryCollectionsSnapshotDomainsAndValues(t *testing.T) {

@@ -10,9 +10,9 @@
     - malformed payload handling is fail-closed through a validation predicate.
 *)
 
-Require Import Stdlib.Lists.List.
-Require Import Stdlib.Bool.Bool.
-Require Import Stdlib.Logic.FunctionalExtensionality.
+Require Import Coq.Lists.List.
+Require Import Coq.Bool.Bool.
+Require Import Coq.Logic.FunctionalExtensionality.
 Require Import ARTrie.Spec.MapSpec.
 Import ListNotations.
 

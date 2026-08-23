@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	llev "github.com/vinary-tree/liblevenshtein-rust/bindings/go"
+	llev "github.com/vinary-tree/liblevenshtein-rust/bindings/go/v4"
 )
 
 func id(value uint64) *uint64 { return &value }

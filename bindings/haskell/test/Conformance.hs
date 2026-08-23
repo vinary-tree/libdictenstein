@@ -28,7 +28,7 @@ import Data.Bits (shiftR)
 import qualified Data.ByteString as BS
 import Data.Char (chr, digitToInt, isDigit, isSpace)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (foldl', isPrefixOf)
+import Data.List (isPrefixOf)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
 import Data.Word (Word64)
@@ -36,8 +36,9 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import System.Environment (getArgs)
 import System.Exit (exitFailure, exitSuccess)
+import System.FilePath ((</>))
 import System.IO (hPutStrLn, stderr)
-import VinaryTree.Interop (UnitDomain (..))
+import System.IO.Temp (withSystemTempDirectory)
 import VinaryTree.Libdictenstein
 
 -- --------------------------------------------------------------------------
@@ -233,7 +234,7 @@ c2 _ = do
   _ <- putText dawg (T.pack "a") Nothing
   close dawg
   close dawg -- idempotent
-  dawgs <- forM [0 .. 3] $ \i -> do
+  dawgs <- forM ([0 .. 3] :: [Int]) $ \i -> do
     d <- dynamicDawg UnicodeScalar
     _ <- putText d (T.pack ("term" ++ show i)) (Just (fromIntegral i))
     pure d
@@ -285,11 +286,12 @@ c4 failures root = do
   dat <- doubleArrayTrie UnicodeScalar (byteEntriesOf root)
   assertFixtureReads failures root dat
   close dat
-  let path = "/tmp/ldict-hs-c4-" ++ "fixture.part"
-  art <- createPersistentARTrie UnicodeScalar path
-  forM_ (entriesOf root) $ \(t, v) -> putText art t v >> pure ()
-  assertFixtureReads failures root art
-  close art
+  withSystemTempDirectory "ldict-hs-c4-" $ \directory -> do
+    let path = directory </> "fixture.part"
+    art <- createPersistentARTrie UnicodeScalar path
+    forM_ (entriesOf root) $ \(t, v) -> putText art t v >> pure ()
+    assertFixtureReads failures root art
+    close art
   sc <- scdawg UnicodeScalar
   forM_ (entriesOf root) $ \(t, v) -> putText sc t v >> pure ()
   forM_ (jArr (member "substring_frequency" root)) $ \c -> do
@@ -319,8 +321,8 @@ c5 failures = do
   check failures (not r2) "second remove"
   present <- containsText dawg (T.pack "cat")
   check failures (not present) "cat gone"
-  forM_ [0 .. 49] $ \i -> putText dawg (T.pack ("t" ++ show i)) (Just (fromIntegral i)) >> pure ()
-  forM_ [0, 2 .. 48] $ \i -> do
+  forM_ ([0 .. 49] :: [Int]) $ \i -> putText dawg (T.pack ("t" ++ show i)) (Just (fromIntegral i)) >> pure ()
+  forM_ ([0, 2 .. 48] :: [Int]) $ \i -> do
     ok <- removeText dawg (T.pack ("t" ++ show i))
     check failures ok ("remove even t" ++ show i)
   _ <- compact dawg

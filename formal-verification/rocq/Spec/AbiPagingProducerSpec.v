@@ -21,9 +21,9 @@
     real C ABI).
 *)
 
-From Stdlib Require Import List.
-From Stdlib Require Import Arith.
-From Stdlib Require Import Lia.
+From Coq Require Import Lists.List.
+From Coq Require Import Arith.Arith.
+From Coq Require Import micromega.Lia.
 Require Import ARTrie.Model.ListCompat.
 Import ListNotations.
 

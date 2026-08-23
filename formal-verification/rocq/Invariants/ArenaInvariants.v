@@ -7,10 +7,10 @@
     - Recovery guarantees
 *)
 
-From Stdlib Require Import List.
-From Stdlib Require Import Arith.
-From Stdlib Require Import Lia.
-From Stdlib Require Import Bool.
+From Coq Require Import Lists.List.
+From Coq Require Import Arith.Arith.
+From Coq Require Import micromega.Lia.
+From Coq Require Import Bool.Bool.
 Require Import ARTrie.Model.ArenaManager.
 Import ListNotations.
 

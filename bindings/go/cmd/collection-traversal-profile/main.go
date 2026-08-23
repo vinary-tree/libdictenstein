@@ -13,7 +13,7 @@ import (
 	"sort"
 	"time"
 
-	ld "github.com/vinary-tree/libdictenstein/bindings/go"
+	ld "github.com/vinary-tree/libdictenstein/bindings/go/v4"
 )
 
 const (

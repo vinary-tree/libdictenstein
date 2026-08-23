@@ -163,19 +163,11 @@ impl<const PREFIX: usize> KeyEncoding for U64Key<PREFIX> {
     }
 
     fn units_from_bytes(bytes: &[u8]) -> Option<SmallVec<[Self::Unit; 32]>> {
-        if !bytes.len().is_multiple_of(Self::KEY_BYTES) {
+        let (words, remainder) = bytes.as_chunks::<8>();
+        if !remainder.is_empty() {
             return None;
         }
-        Some(
-            bytes
-                .chunks_exact(Self::KEY_BYTES)
-                .map(|chunk| {
-                    let mut word = [0u8; 8];
-                    word.copy_from_slice(chunk);
-                    u64::from_le_bytes(word)
-                })
-                .collect(),
-        )
+        Some(words.iter().map(|word| u64::from_le_bytes(*word)).collect())
     }
 
     fn units_to_term(units: &[u64]) -> Vec<u64> {

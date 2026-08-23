@@ -7,8 +7,8 @@
     aliases.
 *)
 
-From Stdlib Require Import List.
-From Stdlib Require Import Arith.
+From Coq Require Import Lists.List.
+From Coq Require Import Arith.Arith.
 
 Lemma firstn_length_portable :
   forall (A : Type) (count : nat) (items : list A),

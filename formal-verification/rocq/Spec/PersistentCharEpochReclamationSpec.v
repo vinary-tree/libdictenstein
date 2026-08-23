@@ -18,7 +18,7 @@
     Reclaim is GATED on quiescence (no active readers). No [Admitted], no [Axiom],
     no [Parameter]. *)
 
-From Stdlib Require Import Arith.PeanoNat.
+From Coq Require Import Arith.PeanoNat.
 
 Section EpochReclamation.
 

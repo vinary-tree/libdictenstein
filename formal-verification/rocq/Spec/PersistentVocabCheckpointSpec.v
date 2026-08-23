@@ -15,11 +15,11 @@
     Rust compilation are outside this proof boundary.
  *)
 
-From Stdlib Require Import List.
-From Stdlib Require Import Arith.
-From Stdlib Require Import Lia.
-From Stdlib Require Import Bool.
-From Stdlib Require Import Logic.FunctionalExtensionality.
+From Coq Require Import Lists.List.
+From Coq Require Import Arith.Arith.
+From Coq Require Import micromega.Lia.
+From Coq Require Import Bool.Bool.
+From Coq Require Import Logic.FunctionalExtensionality.
 Import ListNotations.
 
 Definition Term := nat.

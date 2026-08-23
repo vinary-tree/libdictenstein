@@ -23,7 +23,7 @@
    Self-contained: depends only on the Coq/Rocq stdlib (List/Arith/Lia). No [Axiom], no [admit],
    no [Admitted] — consistent with the ARTrie proof corpus. *)
 
-From Stdlib Require Import List Arith Lia.
+From Coq Require Import Lists.List Arith.Arith micromega.Lia.
 Import ListNotations.
 
 Section Chunking.
