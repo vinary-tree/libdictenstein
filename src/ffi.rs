@@ -1065,7 +1065,7 @@ pub unsafe extern "C" fn ldict_entry_cursor_next(
                     || batch.value_count > limits_value.max_values
                     || batch.generation == 0
                     || batch.reserved != 0
-                    || (batch.entry_count != 0 && batch.entries.is_null())
+                    || batch.entries.is_null()
                     || (batch.unit_count != 0 && batch.units.is_null())
                     || (batch.value_count != 0 && batch.values.is_null())
                 {
