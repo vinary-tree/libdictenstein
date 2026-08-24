@@ -12,9 +12,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Avoid the unconditional `target-cpu=native` from .cargo/config.toml so CI
-  # builds remain portable. AES + SSE2 are required by PathMap's gxhash.
-  RUSTFLAGS: "-C target-feature=+aes,+sse2"
 
 jobs:
   # -----------------------------------------------------------------
@@ -218,7 +215,7 @@ jobs:
           components: rust-src
       - name: Run ${{ matrix.sanitizer }}sanitizer
         env:
-          # Step-level RUSTFLAGS replaces the workflow-level value, so retain
+          # Environment RUSTFLAGS replaces .cargo/config.toml, so retain
           # gxhash's portable x86 requirements while adding the sanitizer.
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -Z sanitizer=${{ matrix.sanitizer }}"
           RUSTDOCFLAGS: "-C target-feature=+aes,+sse2 -Z sanitizer=${{ matrix.sanitizer }}"

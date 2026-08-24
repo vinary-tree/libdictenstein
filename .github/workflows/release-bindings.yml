@@ -26,11 +26,6 @@ on:
 permissions:
   contents: read
 
-env:
-  # Override the repository's local-development CPU flags. Release binaries
-  # use the portable baseline of their explicit Rust target.
-  RUSTFLAGS: ""
-
 jobs:
   contract:
     name: Binding and snapshot contract
