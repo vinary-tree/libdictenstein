@@ -7,18 +7,36 @@ function cloneKey(key) {
 }
 function ownedEntry(entry) { return Object.freeze([cloneKey(entry[0]), entry[1]]); }
 const owned = Symbol("owned dictionary snapshot entries");
-function closeableCursor(cursor) {
+function disposeCursor(cursor) {
+  if (typeof cursor.close === "function") { cursor.close(); return; }
+  if (typeof Symbol.dispose === "symbol" && typeof cursor[Symbol.dispose] === "function") {
+    cursor[Symbol.dispose]();
+    return;
+  }
+  if (typeof cursor.return === "function") cursor.return();
+}
+function closeableCursor(cursor, fallbackSize) {
   let closed = false;
-  const close = () => { if (!closed) { closed = true; cursor.close(); } };
+  const close = () => { if (!closed) { closed = true; disposeCursor(cursor); } };
   const result = {
-    get size() { return cursor.size; },
-    get identity() { return cursor.identity; },
+    get size() { return cursor.size ?? fallbackSize; },
+    get identity() { return cursor.identity ?? null; },
     next() {
       const item = cursor.next();
       if (item.done) close();
       return item.done ? item : { done: false, value: ownedEntry(item.value) };
     },
     nextBatch(maximum) {
+      if (typeof cursor.nextBatch !== "function") {
+        if (!Number.isSafeInteger(maximum) || maximum <= 0) throw new RangeError("batch size must be a positive safe integer");
+        const batch = [];
+        while (batch.length < maximum) {
+          const item = this.next();
+          if (item.done) break;
+          batch.push(item.value);
+        }
+        return batch;
+      }
       const batch = cursor.nextBatch(maximum).map(ownedEntry);
       if (batch.length === 0) close();
       return batch;
@@ -67,13 +85,13 @@ function collectionNamespace(namespace) {
         if (exact !== undefined && count !== exact) throw new Error("native exact entry count was not truthful");
         return new DictionarySnapshot(entries, owned);
       }
-      finally { cursor.close(); }
+      finally { disposeCursor(cursor); }
     };
     let facade;
     facade = new Proxy(dictionary, { get(target, property) {
       switch (property) {
         case "snapshot": return materialize;
-        case "streamEntries": return () => closeableCursor(target.entries());
+        case "streamEntries": return () => closeableCursor(target.entries(), target.size);
         case "entries": return () => materialize().entries();
         case "keys": return () => materialize().keys();
         case "values": return () => materialize().values();
