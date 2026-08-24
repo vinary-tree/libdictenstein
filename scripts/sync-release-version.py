@@ -167,7 +167,11 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
         cabal,
         flags=re.MULTILINE,
     )
-    cabal = re.sub(r"vinary-tree-interop >=\S+ && <\S+", "vinary-tree-interop >=4 && <5", cabal)
+    cabal = re.sub(
+        r"vinary-tree-interop >=[^\s,]+ && <[^\s,]+",
+        "vinary-tree-interop >=4 && <5",
+        cabal,
+    )
     cabal_path.write_text(cabal, encoding="utf-8")
     for path in ("Package.swift", "bindings/swift/libdictenstein/Package.swift"):
         replace(
@@ -254,8 +258,11 @@ def validate(model: dict[str, object], versions: dict[str, str]) -> list[str]:
     go_mod = text("bindings/go/go.mod")
     if "module github.com/vinary-tree/libdictenstein/bindings/go/v4" not in go_mod:
         failures.append("Go module lacks /v4 semantic import path")
-    if f"x-release-candidate: rc.{candidate}" not in text("bindings/haskell/vinary-tree-libdictenstein.cabal"):
+    cabal = text("bindings/haskell/vinary-tree-libdictenstein.cabal")
+    if f"x-release-candidate: rc.{candidate}" not in cabal:
         failures.append("Hackage source candidate marker is missing")
+    if "vinary-tree-interop >=4 && <5,\n    vinary-tree-libdictenstein" not in cabal:
+        failures.append("Hackage conformance dependencies are malformed")
     return failures
 
 

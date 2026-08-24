@@ -5,8 +5,8 @@ includedir=${prefix}/include
 
 Name: libdictenstein
 Description: Snapshot-retaining high-performance dictionary backends
-Version: 4.0.0-rc.2
-Requires: vinary-tree-interop = 4.0.0-rc.2
+Version: 4.0.0-rc.3
+Requires: vinary-tree-interop = 4.0.0-rc.3
 Libs: -L${libdir} -llibdictenstein
 Libs.private: -ldl -lpthread -lm
 Cflags: -I${includedir}
