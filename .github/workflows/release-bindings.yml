@@ -292,10 +292,12 @@ jobs:
             ../liblevenshtein-rust/bindings/jvm/build/native-resources/META-INF/native/linux-x86_64/
           ../liblevenshtein-rust/bindings/jvm/gradlew --no-daemon \
             -p ../vinary-tree-interop/bindings/jvm \
+            -PjavaToolchain=25 \
             publishMavenJavaPublicationToStagingRepository \
             "-PstagingRepository=$RUNNER_TEMP/maven-local"
           ../liblevenshtein-rust/bindings/jvm/gradlew --no-daemon \
             -p ../liblevenshtein-rust/bindings/jvm \
+            -PjavaToolchain=25 \
             -PnativePlatforms=linux-x86_64 \
             publishMavenJavaPublicationToStagingRepository
           while IFS= read -r artifact; do
