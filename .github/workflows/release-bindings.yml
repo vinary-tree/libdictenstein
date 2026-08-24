@@ -170,6 +170,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
+      - name: Checkout the exact Python interop dependency
+        shell: bash
+        run: >-
+          git clone --depth 1 --branch v4.0.0-rc.1
+          https://github.com/vinary-tree/vinary-tree-interop.git
+          .release-deps/vinary-tree-interop
       - uses: dtolnay/rust-toolchain@1.95
       - name: Resolve path dependencies through their exact public versions
         shell: bash
@@ -200,7 +206,9 @@ jobs:
           CIBW_ARCHS: ${{ matrix.arch }}
           CIBW_BUILD_VERBOSITY: "1"
           CIBW_TEST_REQUIRES: pytest
-          CIBW_BEFORE_TEST: python -m pip install vinary-tree-interop==4.0.0rc1
+          CIBW_BEFORE_TEST: >-
+            python -m pip install
+            {project}/.release-deps/vinary-tree-interop/bindings/python
           CIBW_TEST_COMMAND: python -m pytest -q {project}/bindings/python/tests/test_backends.py
           CIBW_BEFORE_ALL_LINUX: >-
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
@@ -270,7 +278,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.95
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "25" }
-      - uses: DeLaGuardo/setup-clojure@13.4
+      - uses: DeLaGuardo/setup-clojure@13.6.1
         with: { lein: 2.13.0 }
       - uses: actions/download-artifact@v7
         with: { name: maven-staging, path: maven-staging }
@@ -429,6 +437,8 @@ jobs:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
       - run: git clone --depth 1 --branch v4.0.0-rc.1 https://github.com/vinary-tree/vinary-tree-interop.git ../vinary-tree-interop
+      - run: git clone --depth 1 --branch v0.1.0 https://github.com/vinary-tree/llattice.git ../llattice
+      - uses: dtolnay/rust-toolchain@1.95
       - uses: fortran-lang/setup-fpm@v10
       - name: Validate the numeric 4.0.0 candidates without publication
         shell: bash
@@ -553,7 +563,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
-      - uses: DeLaGuardo/setup-clojure@13.4
+      - uses: DeLaGuardo/setup-clojure@13.6.1
         with: { lein: 2.13.0 }
       - uses: actions/download-artifact@v7
         with: { name: clojure-package, path: bindings/clojure }

@@ -314,7 +314,7 @@ jobs:
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "25" }
-      - uses: DeLaGuardo/setup-clojure@13
+      - uses: DeLaGuardo/setup-clojure@13.6.1
         with: { cli: latest }
       - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
