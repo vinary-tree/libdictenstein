@@ -11,6 +11,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL_PATH = ROOT / "release/version.json"
+GENERATED_TREE_PARTS = frozenset(
+    {".git", ".venv", "_build", "build", "dist", "node_modules", "target", "venv"}
+)
 
 
 def derived(canonical: str) -> dict[str, str]:
@@ -41,6 +44,27 @@ def replace(path: str, pattern: str, replacement: str, expected: int = 1) -> Non
     target.write_text(updated, encoding="utf-8")
 
 
+def rewrite_candidate_tokens(patterns: tuple[str, ...], canonical: str) -> None:
+    base, candidate = canonical.split("-rc.", 1)
+    escaped = re.escape(base)
+    replacements = (
+        (rf"{escaped}\.rc\.\d+", f"{base}.rc.{candidate}"),
+        (rf"{escaped}~rc\d+", f"{base}~rc{candidate}"),
+        (rf"{escaped}rc\d+-\d+", f"{base}rc{candidate}-1"),
+        (rf"{escaped}rc\d+", f"{base}rc{candidate}"),
+        (rf"{escaped}-rc\.\d+", canonical),
+    )
+    for pattern in patterns:
+        for target in ROOT.glob(pattern):
+            relative = target.relative_to(ROOT)
+            if not target.is_file() or GENERATED_TREE_PARTS.intersection(relative.parts):
+                continue
+            source = target.read_text(encoding="utf-8")
+            for version_pattern, replacement in replacements:
+                source = re.sub(version_pattern, replacement, source)
+            target.write_text(source, encoding="utf-8")
+
+
 def update_json(path: str, mutate) -> None:
     target = ROOT / path
     value = json.loads(target.read_text(encoding="utf-8"))
@@ -50,6 +74,7 @@ def update_json(path: str, mutate) -> None:
 
 def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
     canonical = str(model["canonical"])
+    candidate = canonical.rsplit(".", 1)[-1]
     deps = model["dependencies"]
     assert isinstance(deps, dict)
     replace("Cargo.toml", r'^version = "[^"]+"$', f'version = "{canonical}"')
@@ -72,6 +97,9 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
         value["packages"]["_source"]["luarocks"] = (
             f'bindings/lua/vinary-tree-libdictenstein-{versions["luaRocks"]}.rockspec package'
         )
+        value["documentation"]["facades"]["lua"]["package"] = (
+            f'bindings/lua/vinary-tree-libdictenstein-{versions["luaRocks"]}.rockspec package'
+        )
     update_json("bindings/api.json", api)
 
     def npm(value: dict) -> None:
@@ -87,8 +115,9 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
     )
     replace("bindings/python/pyproject.toml", r'^version = "[^"]+"$', f'version = "{versions["pypi"]}"')
     replace(
-        "bindings/python/pyproject.toml", r'^dependencies = \["vinary-tree-interop==[^"]+"\]$',
-        f'dependencies = ["vinary-tree-interop=={versions["pypi"]}"]',
+        "bindings/python/pyproject.toml",
+        r'("vinary-tree-interop==)[^"]+(")',
+        rf'\g<1>{versions["pypi"]}\2',
     )
     replace("bindings/jvm/build.gradle.kts", r'^version = "[^"]+"$', f'version = "{versions["maven"]}"')
     replace("bindings/jvm/jreleaser.yml", r'^  version: \S+$', f'  version: {versions["maven"]}')
@@ -132,6 +161,12 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
     cabal = cabal_path.read_text(encoding="utf-8")
     if "x-release-candidate:" not in cabal:
         cabal = cabal.replace(f"version: {versions['hackage']}\n", f"version: {versions['hackage']}\nx-release-candidate: rc.1\n", 1)
+    cabal = re.sub(
+        r"^x-release-candidate: \S+$",
+        f"x-release-candidate: rc.{candidate}",
+        cabal,
+        flags=re.MULTILINE,
+    )
     cabal = re.sub(r"vinary-tree-interop >=\S+ && <\S+", "vinary-tree-interop >=4 && <5", cabal)
     cabal_path.write_text(cabal, encoding="utf-8")
     for path in ("Package.swift", "bindings/swift/libdictenstein/Package.swift"):
@@ -156,6 +191,12 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
         f'"@vinary-tree/libdictenstein" "{versions["npm"]}"',
     )
     lua_path = f'bindings/lua/vinary-tree-libdictenstein-{versions["luaRocks"]}.rockspec'
+    lua_target = ROOT / lua_path
+    if not lua_target.exists():
+        candidates = list((ROOT / "bindings/lua").glob("vinary-tree-libdictenstein-*.rockspec"))
+        if len(candidates) != 1:
+            raise ValueError(f"expected one LuaRocks source file, found {len(candidates)}")
+        candidates[0].rename(lua_target)
     replace(lua_path, r'^version = "[^"]+"$', f'version = "{versions["luaRocks"]}"')
     replace(
         lua_path,
@@ -165,6 +206,15 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
     replace("cmake/libdictensteinConfigVersion.cmake", r'^set\(PACKAGE_VERSION "[^"]+"\)$', f'set(PACKAGE_VERSION "{versions["cmake"]}")')
     replace("pkgconfig/libdictenstein.pc", r'^Version: \S+$', f'Version: {versions["pkgConfig"]}')
     replace("pkgconfig/libdictenstein.pc", r'^Requires: vinary-tree-interop = \S+$', f'Requires: vinary-tree-interop = {versions["pkgConfig"]}')
+    rewrite_candidate_tokens(
+        (
+            ".github/workflows/*.yml",
+            "bindings/**/*.md",
+            "docs/**/*.md",
+            "docs/**/*.puml",
+        ),
+        canonical,
+    )
 
 
 def validate(model: dict[str, object], versions: dict[str, str]) -> list[str]:
@@ -175,6 +225,7 @@ def validate(model: dict[str, object], versions: dict[str, str]) -> list[str]:
     if not isinstance(publication, dict) or publication.get("fpm") is not False or publication.get("hackage") is not False:
         failures.append("numeric-only fpm and Hackage RC publication must remain embargoed")
     canonical = str(model["canonical"])
+    candidate = canonical.rsplit(".", 1)[-1]
     deps = model["dependencies"]
     assert isinstance(deps, dict)
     required = {
@@ -203,7 +254,7 @@ def validate(model: dict[str, object], versions: dict[str, str]) -> list[str]:
     go_mod = text("bindings/go/go.mod")
     if "module github.com/vinary-tree/libdictenstein/bindings/go/v4" not in go_mod:
         failures.append("Go module lacks /v4 semantic import path")
-    if "x-release-candidate: rc.1" not in text("bindings/haskell/vinary-tree-libdictenstein.cabal"):
+    if f"x-release-candidate: rc.{candidate}" not in text("bindings/haskell/vinary-tree-libdictenstein.cabal"):
         failures.append("Hackage source candidate marker is missing")
     return failures
 

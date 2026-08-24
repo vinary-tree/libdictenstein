@@ -1,6 +1,6 @@
 project:
   name: libdictenstein
-  version: 4.0.0-rc.1
+  version: 4.0.0-rc.2
   description: High-performance dictionaries and retained Vinary Tree resources
   authors:
     - Dylon Edwards

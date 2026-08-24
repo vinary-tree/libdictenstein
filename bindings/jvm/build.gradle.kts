@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "io.vinarytree"
-version = "4.0.0-rc.1"
+version = "4.0.0-rc.2"
 
 java {
     toolchain.languageVersion = JavaLanguageVersion.of(
@@ -36,8 +36,8 @@ tasks.withType<Javadoc>().configureEach {
 repositories { mavenCentral() }
 
 dependencies {
-    api("io.vinarytree:vinary-tree-interop:4.0.0-rc.1")
-    testImplementation("io.vinarytree:liblevenshtein:4.0.0-rc.1")
+    api("io.vinarytree:vinary-tree-interop:4.0.0-rc.2")
+    testImplementation("io.vinarytree:liblevenshtein:4.0.0-rc.2")
     testImplementation(platform("org.junit:junit-bom:6.1.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
