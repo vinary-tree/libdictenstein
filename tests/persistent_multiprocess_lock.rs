@@ -1,6 +1,7 @@
-//! First TRUE cross-process test: the Tier-1 advisory lock (`flock` on the `.wlock` sidecar) must
-//! reject a SECOND OS process opening the same backing file with `FileLocked`, and admit it once
-//! the first process releases (drops) its handle.
+//! First TRUE cross-process test: the Tier-1 advisory lock on the `.wlock` sidecar must reject a
+//! SECOND OS process opening the same backing file with `FileLocked`, and admit it once the first
+//! process releases (drops) its handle. The standard library maps this to `flock` on Unix and
+//! `LockFileEx` on Windows.
 //!
 //! Mechanism: the test binary re-invokes ITSELF as the child (`current_exe` + `--exact` this test),
 //! selected by the `LOCK_CHILD_OPEN_PATH` env var. In child mode it attempts to open the trie at
@@ -80,7 +81,7 @@ fn multiprocess_lock_second_process_rejected() {
     let dir = scratch_dir();
     let path = dir.join("v.vocab");
 
-    // Parent opens (and thereby holds the Tier-1 LOCK_EX on `<path>.wlock`).
+    // Parent opens (and thereby holds the Tier-1 exclusive lock on `<path>.wlock`).
     let trie = PersistentVocabARTrie::create(&path).expect("parent create");
     trie.insert("alpha").expect("seed insert");
     trie.checkpoint().expect("checkpoint");

@@ -359,8 +359,8 @@ pub struct IoUringDiskManager {
     /// `write_blocks_batch`, and `flush_dirty_cache`.
     aligned_block_pool: AlignedBlockPool,
     /// Single-owner advisory-lock guard on the `<path>.wlock` sidecar (Tier-1). Held for the
-    /// manager's lifetime; the OS `flock` releases when the last guard for this path in the process
-    /// drops. Held purely for the lock (RAII) — never read. See
+    /// manager's lifetime; the OS advisory lock releases when the last guard for this path in the
+    /// process drops. Held purely for the lock (RAII) — never read. See
     /// [`MmapDiskManager::acquire_exclusive_lock`].
     #[allow(dead_code)]
     wlock: Option<crate::persistent_artrie::core::disk_manager::WLockGuard>,

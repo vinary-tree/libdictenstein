@@ -105,10 +105,6 @@ io-uring = { version = "0.7", optional = true }
 
 # libc for O_DIRECT flag and fallocate (Linux-only, used by io-uring-backend)
 libc = { version = "0.2", optional = true }
-# Safe syscall wrappers — used for `flock` advisory file locking (Tier-1 single-owner lock).
-# Already present transitively; the `fs` feature adds `rustix::fs::flock` with no new `unsafe`.
-rustix = { version = "1", features = ["fs"], optional = true }
-
 [build-dependencies]
 prost-build = { version = "0.14", optional = true }
 # prost-build shells out to a `protoc` binary and vendors none of its own, so
@@ -168,7 +164,7 @@ protobuf = ["prost", "prost-build", "dep:protoc-bin-vendored"]
 # persistent_artrie* modules use `crate::serialization::bincode_compat`
 # unconditionally — without this dep the module references resolve to a
 # feature-gated crate::serialization that isn't visible.
-persistent-artrie = ["memmap2", "parking_lot", "serde", "bincode", "sysinfo", "xxhash-rust", "lru", "dashmap", "crossbeam-channel", "serialization", "dep:rustix"]
+persistent-artrie = ["memmap2", "parking_lot", "serde", "bincode", "sysinfo", "xxhash-rust", "lru", "dashmap", "crossbeam-channel", "serialization"]
 # Group commit for WAL batching.
 # Status: EXPERIMENTAL — measured 1.5-2x throughput regression on NVMe vs
 # per-record sync in benches/group_commit_benchmarks.rs (recorded 2026-01-15).

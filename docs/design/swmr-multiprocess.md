@@ -4,7 +4,7 @@
 **Scope:** `PersistentVocabARTrie` first, generalizable to the byte/char persistent ARTrie
 variants (they share the disk manager + overlay machinery).
 **Prerequisite:** the **Tier-1** exclusive-owner lock (below), which turns silent cross-process
-corruption into a clean error and is the `LOCK_EX` half of the SWMR protocol.
+corruption into a clean error and is the exclusive-writer half of the SWMR protocol.
 
 Related reading: [`f4-lock-collapse-implementation.md`](f4-lock-collapse-implementation.md)
 (the intra-process lock-free handle this builds on), [`non-blocking-checkpoint.md`](non-blocking-checkpoint.md)
@@ -41,7 +41,7 @@ This design adds two capabilities, in order:
 of the writer or any reader. The F4 lock-free CAS write path and wait-free read path are byte-for-byte
 unchanged. All new synchronization lives in exactly three cold places:
 
-1. **open time** — the advisory `flock` (once per handle, never per op);
+1. **open time** — the OS advisory lock (once per handle, never per op);
 2. **the writer's cold checkpoint** — reader-safe publication, already serialized by the pre-existing
    `checkpoint_lock`;
 3. **the reader's background refresh** — a coarse poll + an `ArcSwap` swap, off the read path.
@@ -52,11 +52,12 @@ A proof sketch is given in [§7](#7-non-blocking-invariant--proof-sketch).
 
 ## 3. Tier-1 — the exclusive-owner lock
 
-An advisory `flock(LOCK_EX | LOCK_NB)` on a **stable `"<path>.wlock"` sidecar** is acquired at the six
-`DiskManager::{create, open, open_without_validation}` chokepoints (mmap + io_uring), before the WAL
-is opened, covering byte/char/vocab uniformly. On contention it returns
-`PersistentARTrieError::FileLocked { path }`. The lock fd is held for the trie's lifetime and released
-automatically on drop.
+The non-blocking exclusive `File::try_lock` advisory lock on a **stable
+`"<path>.wlock"` sidecar** is acquired at the six
+`DiskManager::{create, open, open_without_validation}` chokepoints (mmap + io_uring), before the
+WAL is opened, covering byte/char/vocab uniformly on Unix and Windows. On contention it returns
+`PersistentARTrieError::FileLocked { path }`. The locked file handle is held for the trie's lifetime
+and released automatically on drop.
 
 **Why a sidecar, not the data inode.** Tier-2's publication ([§4](#4-reader-safe-publication--option-a-write-temp--fsync--rename))
 `rename`s a *fresh* data inode over the path each checkpoint, so a lock on the data inode would fail
@@ -118,10 +119,11 @@ background thread polls the monotonic, CRC-covered `checkpoint_lsn` (via `stat`/
 reads keep serving the old one until the swap. Equal `checkpoint_lsn` $`\Rightarrow`$ no committed change $`\Rightarrow`$ refresh
 correctly skipped. Reads never poll or rebuild.
 
-**Lock protocol.** Writer holds `flock(.wlock, LOCK_EX)` (Tier-1); a second writer → `FileLocked`.
-Readers hold `flock(.rlock, LOCK_SH)` for presence (optional GC gating; under A, inode refcounts
-already guarantee correctness). A reader against a static file with no live writer simply never sees
-a refresh. Readers and the writer never share a lock, so a live writer never blocks readers.
+**Lock protocol.** The writer holds an exclusive `File` lock on `.wlock` (Tier-1); a second
+writer → `FileLocked`. Readers hold shared `File` locks on `.rlock` for presence (optional
+garbage-collection gating; under A, inode refcounts already guarantee correctness). A reader
+against a static file with no live writer simply never sees a refresh. Readers and the writer never
+share a lock, so a live writer never blocks readers.
 
 **Crash safety.** A writer crash mid-publish leaves an orphan temp; the canonical path still names the
 last complete, `fsync`'d image, so no torn image is ever visible. Restart sweeps stale temps, then
@@ -134,7 +136,7 @@ scope).
 ## 7. Non-blocking invariant — proof sketch
 
 **Claim.** No lock, atomic, or fence is added to the per-operation hot path of the writer or any
-reader; new synchronization lives only at open (flock), in the cold checkpoint (under
+reader; new synchronization lives only at open (OS advisory lock), in the cold checkpoint (under
 `checkpoint_lock`), and in the background reader refresh.
 
 **Writer hot path** (`insert`/`upsert`): durability gate → WAL append → `AtomicNodePtr::compare_exchange`
@@ -166,7 +168,7 @@ Formal follow-through: model A's `rename` as one atomic state transition publish
 |---|----------|------------|
 | R1 | Torn header/arena read | A: image only ever appears via atomic `rename` of an `fsync`'d temp — never partial. B: dual-slot + single aligned 8-byte `active` store + CRC over the header prefix. |
 | R2 | `rename` atomicity + reader holding a deleted inode | POSIX same-dir `rename` is atomic; the old inode is unlinked but kept alive by the reader's open fd until it refreshes/closes. `fsync(dir)` makes the publish crash-durable. |
-| R3 | flock on the churning data inode $`\Rightarrow`$ two writers | **Lock the stable `.wlock` sidecar, never the data inode** — Tier-1's chosen design. |
+| R3 | Locking the churning data inode $`\Rightarrow`$ two writers | **Lock the stable `.wlock` sidecar, never the data inode** — Tier-1's chosen design. |
 | R4 | `checkpoint_lsn` equal across two publishes | Harmless: equal watermark $`\Rightarrow`$ identical committed term set $`\Rightarrow`$ skipping refresh is correct. (B's strictly-monotonic `active` additionally distinguishes byte-level republications.) |
 | R5 | Reader rebuild racing a publish (half-written image?) | A: the reader opens a specific inode; the writer only ever publishes a *complete* inode via `rename`. B: the reader snapshots `(active, block_count, root_ptr)` from a CRC-valid header before enumerating. |
 | R6 | mmap remap-on-growth for readers (B only) | Reader re-reads `block_count` and remaps read-only before trusting the new `root_ptr`; grow-only + immutable + fsync-before-flip $`\Rightarrow`$ no SIGBUS. (N/A to A — fresh inode.) |
@@ -192,7 +194,7 @@ manager over the immutable image (R11).
 
 | Phase | Work | Est. |
 |-------|------|------|
-| 0 | Locking substrate (flock wrapper + `.wlock`/`.rlock` sidecars; wire Tier-1) | 0.5 d |
+| 0 | Locking substrate (standard-library advisory locks + `.wlock`/`.rlock` sidecars; wire Tier-1) | 0.5 d |
 | 1 | `MmapDiskManager::open_readonly` (RO fd + RO mmap) | 0.5 d |
 | 2 | `VocabReaderHandle` + `VocabRead` trait; `open_readonly` reusing the image-enumeration path | 1.5 d |
 | 3 | Option-A publication (temp+rename, stale-temp sweep) + multi-process reader∥writer consistency test | 2 d |

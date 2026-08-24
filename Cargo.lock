@@ -633,7 +633,6 @@ dependencies = [
  "rand",
  "rayon",
  "rustc-hash",
- "rustix",
  "serde",
  "smallvec",
  "sysinfo",

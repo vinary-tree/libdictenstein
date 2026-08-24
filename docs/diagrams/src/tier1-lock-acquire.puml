@@ -22,16 +22,16 @@ start
 partition "process-global lock registry (Mutex<HashMap>)" {
   if (key already present?\n(same process already owns it)) then (yes)
     :entry.refs += 1;
-    :return WLockGuard\n(SHARES the existing flock — e.g. reopen\nor a crash-sim mem::forget'd owner);<<#CEEAD6>>
+    :return WLockGuard\n(SHARES the existing OS lock — e.g. reopen\nor a crash-sim mem::forget'd owner);<<#CEEAD6>>
     kill
   else (no)
     :open "<path>.wlock" sidecar;
-    if (flock(LOCK_EX | LOCK_NB)) then (EWOULDBLOCK\n— another PROCESS holds it)
+    if (File::try_lock()) then (WouldBlock\n— another PROCESS holds it)
       :return Err(FileLocked { path });<<#F6AEA9>>
       kill
     else (Ok)
       :registry.insert(key → { file, refs = 1 });
-      :return WLockGuard (new flock);<<#CEEAD6>>
+      :return WLockGuard (new OS lock);<<#CEEAD6>>
       kill
     endif
   endif
@@ -40,7 +40,7 @@ partition "process-global lock registry (Mutex<HashMap>)" {
 note right
   The returned guard is stored in the DiskManager for its whole lifetime.
   Dropping the LAST guard for a path removes the registry entry, which drops
-  the `.wlock` File and releases the OS `flock`. A `mem::forget` leaks a
+  the `.wlock` File and releases the OS advisory lock. A `mem::forget` leaks a
   refcount, so the lock stays held until the process exits — exactly a crash.
 
   This runs ONCE per open. The lock-free CAS write path and wait-free read

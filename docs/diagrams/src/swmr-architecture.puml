@@ -12,24 +12,24 @@ skinparam noteBorderColor #E0C060
 
 title SWMR — one writer process ∥ N reader processes over one vocab file (single host)
 
-node "Writer process\n(holds .wlock LOCK_EX — Tier-1)" as W #E8F0FE {
+node "Writer process\n(holds exclusive .wlock — Tier-1)" as W #E8F0FE {
   component "PersistentVocabARTrie\nlock-free overlay: AtomicNodePtr + DashMaps\n(reads + writes — HOT path, unchanged)" as WT #D2E3FC
   component "checkpoint_overlay\nserialize → temp → fsync → rename\n(COLD path, under checkpoint_lock)" as WC #AECBFA
 }
 
-node "Reader process 1\n(holds .rlock LOCK_SH)" as R1 #E6F4EA {
+node "Reader process 1\n(holds shared .rlock)" as R1 #E6F4EA {
   component "VocabReaderHandle\nArcSwap<ReaderSnapshot>\n(lock-free reads over a frozen snapshot)" as RH1 #CEEAD6
   component "refresh thread\npoll checkpoint_lsn; on bump:\nrebuild snapshot → ArcSwap.store" as RT1 #A8DAB5
 }
 
-node "Reader process N\n(holds .rlock LOCK_SH)" as RN #E6F4EA {
+node "Reader process N\n(holds shared .rlock)" as RN #E6F4EA {
   component "VocabReaderHandle" as RHN #CEEAD6
 }
 
 folder "Shared filesystem — single host, shared page cache" as FS #FEF7E0 {
   artifact "vocabulary.vocab\ncanonical inode — atomically\nREPLACED by rename each publish" as IMG #FDE293
-  artifact ".wlock   (LOCK_EX → single writer)" as WL #F6AEA9
-  artifact ".rlock   (LOCK_SH → reader presence)" as RL #F6AEA9
+  artifact ".wlock   (exclusive → single writer)" as WL #F6AEA9
+  artifact ".rlock   (shared → reader presence)" as RL #F6AEA9
   artifact "vocabulary.vocab.wal\nwriter-only crash log (readers ignore)" as WAL #FDE293
 }
 
