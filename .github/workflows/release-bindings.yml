@@ -178,8 +178,16 @@ jobs:
           from pathlib import Path
           path = Path("Cargo.toml")
           source = path.read_text()
-          source = source.replace('llattice = { path = "../llattice", version = "0.1" }', 'llattice = "0.1"')
-          source = source.replace('vinary-tree-interop = { path = "../vinary-tree-interop", version = "=4.0.0-rc.1", optional = true }', 'vinary-tree-interop = { version = "=4.0.0-rc.1", optional = true }')
+          replacements = {
+              'llattice = { path = "../llattice", version = "=0.1.0" }':
+                  'llattice = "=0.1.0"',
+              'vinary-tree-interop = { path = "../vinary-tree-interop", version = "=4.0.0-rc.1", optional = true }':
+                  'vinary-tree-interop = { version = "=4.0.0-rc.1", optional = true }',
+          }
+          for local, published in replacements.items():
+              if local not in source:
+                  raise SystemExit(f"expected path dependency is missing: {local}")
+              source = source.replace(local, published)
           path.write_text(source)
           PY
       - name: Build and test platform wheel
@@ -237,8 +245,8 @@ jobs:
       - name: Test snapshot handoff and stage only libdictenstein
         working-directory: bindings/jvm
         run: |
-          ./gradlew --no-daemon -PnativePlatforms=linux-x86_64 test javadoc
-          ./gradlew --no-daemon verifyNativeResources publishMavenJavaPublicationToStagingRepository
+          ./gradlew --no-daemon -PjavaToolchain=25 -PnativePlatforms=linux-x86_64 test javadoc
+          ./gradlew --no-daemon -PjavaToolchain=25 verifyNativeResources publishMavenJavaPublicationToStagingRepository
       - uses: actions/upload-artifact@v7
         with:
           name: maven-staging
@@ -336,7 +344,7 @@ jobs:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
       - name: Checkout exact shared .NET resource package
-        run: git clone --depth 1 --branch v4.0.0-rc.1 https://github.com/vinary-tree/liblevenshtein-rust.git ../liblevenshtein-rust
+        run: git clone --depth 1 --branch v4.0.0-rc.1 https://github.com/vinary-tree/vinary-tree-interop.git ../vinary-tree-interop
       - uses: actions/setup-dotnet@v5
         with: { dotnet-version: 10.0.x }
       - uses: actions/download-artifact@v7
@@ -425,8 +433,12 @@ jobs:
       - name: Validate the numeric 4.0.0 candidates without publication
         shell: bash
         run: |
+          cargo build --release --features ffi
           fpm build -C ../vinary-tree-interop/bindings/fortran --dump fpm_model.json
-          fpm build -C bindings/fortran --dump fpm_model.json
+          fpm build -C bindings/fortran \
+            --build-dir "$RUNNER_TEMP/fpm-build-libdictenstein" \
+            --link-flag "-L$PWD/target/release" \
+            --dump fpm_model.json
           scripts/stage-fpm-package.sh "$RUNNER_TEMP/fpm-libdictenstein"
           test "$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$RUNNER_TEMP/fpm-libdictenstein/fpm.toml")" = 4.0.0
 
@@ -461,7 +473,7 @@ jobs:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
       - run: sudo apt-get update && sudo apt-get install -y luarocks
-      - run: luarocks lint bindings/lua/vinary-tree-libdictenstein-4.0.0-rc.1-1.rockspec
+      - run: luarocks lint bindings/lua/vinary-tree-libdictenstein-4.0.0rc1-1.rockspec
       - uses: actions/upload-artifact@v7
         with:
           name: luarocks-package

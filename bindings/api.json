@@ -57,7 +57,7 @@
       "fpm": "bindings/fortran/fpm.toml + fpm.publish.toml name",
       "opam": "bindings/ocaml/dune-project (package (name ...))",
       "hackage": "bindings/haskell/vinary-tree-libdictenstein.cabal name",
-      "luarocks": "bindings/lua/vinary-tree-libdictenstein-4.0.0-rc.1-1.rockspec package"
+      "luarocks": "bindings/lua/vinary-tree-libdictenstein-4.0.0rc1-1.rockspec package"
     }
   },
   "documentation": {
@@ -183,7 +183,7 @@
         ],
         "guide": "bindings/lua/README.md",
         "example": "bindings/lua/test/conformance.lua",
-        "package": "bindings/lua/vinary-tree-libdictenstein-4.0.0-rc.1-1.rockspec package"
+        "package": "bindings/lua/vinary-tree-libdictenstein-4.0.0rc1-1.rockspec package"
       }
     }
   },
@@ -785,7 +785,7 @@
       "fpm": "4.0.0",
       "goTag": "v4.0.0-rc.1",
       "hackage": "4.0.0",
-      "luaRocks": "4.0.0-rc.1-1",
+      "luaRocks": "4.0.0rc1-1",
       "maven": "4.0.0-rc.1",
       "npm": "4.0.0-rc.1",
       "nuget": "4.0.0-rc.1",

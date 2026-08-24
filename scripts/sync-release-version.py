@@ -22,7 +22,7 @@ def derived(canonical: str) -> dict[str, str]:
     return {
         "cargo": canonical, "clojars": canonical, "cmake": canonical,
         "fpm": base, "goTag": f"v{canonical}", "hackage": base,
-        "luaRocks": f"{canonical}-1", "maven": canonical, "npm": canonical,
+        "luaRocks": f"{base}rc{candidate}-1", "maven": canonical, "npm": canonical,
         "nuget": canonical, "opam": f"{base}~rc{candidate}",
         "pkgConfig": canonical, "pypi": f"{base}rc{candidate}",
         "rubygems": f"{base}.rc.{candidate}", "swiftTag": canonical,
