@@ -1,7 +1,7 @@
 # Vinary Tree libdictenstein for .NET
 
 A `LibraryImport` (source-generated P/Invoke) facade over libdictenstein's
-stable `ldict_*` C ABI. The NuGet package is `VinaryTree.Libdictenstein`; the
+stable `ldict_*` C ABI. The NuGet package is `Libdictenstein`; the
 namespace is `VinaryTree.Libdictenstein`. It exposes DynamicDAWG CRUD and batch
 insertion, immutable DoubleArrayTrie construction, SCDAWG substring search,
 persistent ARTrie CRUD/checkpoint/reopen, and persistent vocabulary reverse
@@ -96,7 +96,7 @@ with the native library on `LD_LIBRARY_PATH`. See
 | Binding | .NET |
 | Languages/runtime | .NET 8+ / C# |
 | Support tier | Tier 2 |
-| Distribution | NuGet `VinaryTree.Libdictenstein` |
+| Distribution | NuGet `Libdictenstein` |
 | Native boundary | P/Invoke and `VinaryTree.Interop` retained resources |
 | Canonical facade source | [`bindings/dotnet/src/VinaryTree.Libdictenstein`](../../bindings/dotnet/src/VinaryTree.Libdictenstein) |
 

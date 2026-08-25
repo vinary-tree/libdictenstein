@@ -3,7 +3,7 @@ requires = ["setuptools>=77", "wheel>=0.45"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vinary-tree-libdictenstein"
+name = "libdictenstein"
 version = "4.0.0rc4"
 description = "High-performance Vinary Tree dictionaries with retained cross-project resources"
 requires-python = ">=3.10"

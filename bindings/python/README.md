@@ -17,7 +17,7 @@ development against an explicit build.
 | Binding | Python |
 | Languages/runtime | Python 3.10+ |
 | Support tier | Tier 1 |
-| Distribution | PyPI `vinary-tree-libdictenstein` |
+| Distribution | PyPI `libdictenstein` |
 | Native boundary | `ctypes` over the stable C ABI |
 | Canonical facade source | [`bindings/python/src/libdictenstein`](../../bindings/python/src/libdictenstein) |
 

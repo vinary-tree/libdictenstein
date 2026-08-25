@@ -2,7 +2,7 @@
 
 A `foreign import ccall` facade over libdictenstein's stable `ldict_*` C ABI,
 with a thin `cbits/libdictenstein_hs.c` shim for the aggregate-return calls. The
-Hackage package is `vinary-tree-libdictenstein`; the module is
+Hackage package is `libdictenstein`; the module is
 `VinaryTree.Libdictenstein`. It exposes DynamicDAWG CRUD and batch insertion,
 immutable DoubleArrayTrie construction, SCDAWG substring search, persistent
 ARTrie CRUD/checkpoint/reopen, and persistent vocabulary reverse lookup.
@@ -112,7 +112,7 @@ cabal run --project-file=bindings/haskell/cabal.project \
 | Binding | Haskell |
 | Languages/runtime | GHC/Cabal |
 | Support tier | Tier 3 |
-| Distribution | Hackage `vinary-tree-libdictenstein` |
+| Distribution | Hackage `libdictenstein` |
 | Native boundary | Haskell FFI plus retained interop resources |
 | Canonical facade source | [`bindings/haskell/src/VinaryTree/Libdictenstein.hs`](../../bindings/haskell/src/VinaryTree/Libdictenstein.hs) |
 

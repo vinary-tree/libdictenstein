@@ -1,3 +1,3 @@
 (test
  (name conformance)
- (libraries vinary-tree-libdictenstein vinary-tree-interop yojson))
+ (libraries libdictenstein vinary-tree-interop yojson))

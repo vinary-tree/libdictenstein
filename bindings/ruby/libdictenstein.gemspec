@@ -1,7 +1,7 @@
 require_relative "lib/vinary_tree/libdictenstein/version"
 
 Gem::Specification.new do |spec|
-  spec.name = "vinary-tree-libdictenstein"
+  spec.name = "libdictenstein"
   spec.version = VinaryTree::Libdictenstein::VERSION
   spec.authors = ["Dylon Edwards"]
   spec.email = ["dylon.devo@gmail.com"]

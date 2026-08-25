@@ -3,7 +3,7 @@
 A Swift Package Manager facade over libdictenstein's stable `ldict_*` C ABI,
 importing the C header through the `CLibdictenstein` system-library target. The
 development package lives here; the root [`Package.swift`](../../Package.swift)
-declares the distributable `VinaryTreeLibdictenstein` product.
+declares the distributable `Libdictenstein` package and product.
 
 ## Native library
 
@@ -106,7 +106,7 @@ the C ABI directly) when those are required.
 | Binding | Swift |
 | Languages/runtime | Swift 6+ |
 | Support tier | Tier 2 |
-| Distribution | SwiftPM `VinaryTreeLibdictenstein` |
+| Distribution | SwiftPM `Libdictenstein` |
 | Native boundary | Swift system-library target over the C ABI |
 | Canonical facade source | [`bindings/swift/libdictenstein/Sources/Libdictenstein`](../../bindings/swift/libdictenstein/Sources/Libdictenstein) |
 

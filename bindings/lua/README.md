@@ -1,7 +1,7 @@
 # Vinary Tree libdictenstein for Lua
 
 A C extension module over libdictenstein's stable `ldict_*` C ABI. The LuaRocks
-package is `vinary-tree-libdictenstein`; the module loads as
+package is `libdictenstein`; the module loads as
 `vinary_tree.libdictenstein`. It exposes DynamicDAWG CRUD, immutable
 DoubleArrayTrie construction, SCDAWG substring search, persistent ARTrie
 CRUD/checkpoint/reopen, and persistent vocabulary reverse lookup.
@@ -13,7 +13,7 @@ shared library `libdictenstein`. Build the native library first:
 
 ```sh
 cargo build --release --no-default-features --features ffi
-luarocks make bindings/lua/vinary-tree-libdictenstein-4.0.0rc4-1.rockspec
+luarocks make bindings/lua/libdictenstein-4.0.0rc4-1.rockspec
 export LD_LIBRARY_PATH="$PWD/target/release:$LD_LIBRARY_PATH"
 ```
 
@@ -111,7 +111,7 @@ lua bindings/lua/examples/collection_traversal_profile.lua \
 | Binding | Lua |
 | Languages/runtime | Lua 5.4+ |
 | Support tier | Tier 3 |
-| Distribution | LuaRocks `vinary-tree-libdictenstein` |
+| Distribution | LuaRocks `libdictenstein` |
 | Native boundary | C userdata module over the ABI |
 | Canonical facade source | [`bindings/lua/src/libdictenstein_lua.c`](../../bindings/lua/src/libdictenstein_lua.c) |
 

@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "VinaryTreeLibdictenstein",
+    name: "Libdictenstein",
     platforms: [.macOS(.v13)],
     products: [
         .library(name: "Libdictenstein", targets: ["Libdictenstein"]),

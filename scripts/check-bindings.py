@@ -794,7 +794,7 @@ def check_packages(report: Report, model: dict) -> None:
         )
 
     gemspec = read_text(
-        report, "packages", ROOT / "bindings" / "ruby" / "vinary-tree-libdictenstein.gemspec"
+        report, "packages", ROOT / "bindings" / "ruby" / "libdictenstein.gemspec"
     )
     if gemspec is not None:
         expect(
@@ -811,7 +811,7 @@ def check_packages(report: Report, model: dict) -> None:
         )
 
     cabal = read_text(
-        report, "packages", ROOT / "bindings" / "haskell" / "vinary-tree-libdictenstein.cabal"
+        report, "packages", ROOT / "bindings" / "haskell" / "libdictenstein.cabal"
     )
     if cabal is not None:
         expect(f"name: {packages['hackage']}" in cabal, f"cabal name != {packages['hackage']}")

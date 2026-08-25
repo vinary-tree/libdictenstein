@@ -60,6 +60,30 @@ gh workflow run release-bindings.yml \
 `go-module`, `luarocks`, and `opam`—each authorize only their matching
 protected job. There is deliberately no publish-all option.
 
+## Keyless registry authentication
+
+The crates.io job uses OpenID Connect (OIDC) trusted publishing rather than a
+stored Cargo token. In the `libdictenstein` crate settings on crates.io,
+register repository `vinary-tree/libdictenstein`, workflow
+`release-bindings.yml`, and environment `crates-io`. The job grants
+`id-token: write` only to the uploader, obtains a temporary token with
+`rust-lang/crates-io-auth-action@v1`, and passes that value to
+`cargo publish --locked`.
+
+npm uses the corresponding package-level publisher for
+`@vinary-tree/libdictenstein`: repository `vinary-tree/libdictenstein`,
+workflow `release-bindings.yml`, environment `npm`, and direct `npm publish`
+authority. After the first successful keyless publications, require trusted
+publishing on crates.io, disallow npm tokens in the package settings, and
+revoke the superseded long-lived credentials. The family-wide guide contains
+the complete publisher matrix and recovery order.
+
+The renamed global-distribution metadata is present only in append-only source
+`v4.0.0-rc.4-release.1`. LuaRocks therefore fetches that exact source tag,
+while the package version remains `4.0.0rc4-1`; the synchronizer treats this
+source/version distinction as a release invariant. The opam staging job derives
+the same corrective source ref from `GITHUB_REF_NAME`.
+
 ## Artifact evidence
 
 The GitHub prerelease retains portable native archives, Python wheels, the npm

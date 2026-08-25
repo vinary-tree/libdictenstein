@@ -1,7 +1,7 @@
 # Vinary Tree libdictenstein for OCaml
 
 C stubs over libdictenstein's stable `ldict_*` C ABI, built with Dune. The opam
-package is `vinary-tree-libdictenstein`; the module is
+package is `libdictenstein`; the module is
 `Vinary_tree_libdictenstein`. It exposes DynamicDAWG CRUD and batch insertion,
 immutable DoubleArrayTrie construction, SCDAWG substring search, persistent
 ARTrie CRUD/checkpoint/reopen, and persistent vocabulary reverse lookup.
@@ -103,7 +103,7 @@ dune exec --root bindings/ocaml bin/collection_traversal_profile.exe -- \
 | Binding | OCaml |
 | Languages/runtime | OCaml 5 |
 | Support tier | Tier 3 |
-| Distribution | opam `vinary-tree-libdictenstein` |
+| Distribution | opam `libdictenstein` |
 | Native boundary | C stubs over the stable ABI |
 | Canonical facade source | [`bindings/ocaml/vinary_tree_libdictenstein.mli`](../../bindings/ocaml/vinary_tree_libdictenstein.mli) |
 

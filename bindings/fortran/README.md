@@ -5,7 +5,7 @@ insertion, immutable DoubleArrayTrie construction, SCDAWG substring operations,
 persistent ARTrie CRUD/checkpoint/reopen, persistent vocabulary reverse lookup,
 and the shared retained `vt_resource` used by liblevenshtein.
 
-The fpm package is `vinary-tree-libdictenstein`. Link against
+The fpm package is `libdictenstein`. Link against
 `libdictenstein`; published CMake packages support shared or static linkage.
 
 ## Ordered entry collections
@@ -38,7 +38,7 @@ fpm run --directory bindings/fortran --profile release \
 | Binding | Fortran |
 | Languages/runtime | Fortran 2018 |
 | Support tier | Tier 2 |
-| Distribution | fpm `vinary-tree-libdictenstein` |
+| Distribution | fpm `libdictenstein` |
 | Native boundary | `iso_c_binding` over `ldict_*` |
 | Canonical facade source | [`bindings/fortran/src/vinary_tree_libdictenstein.f90`](../../bindings/fortran/src/vinary_tree_libdictenstein.f90) |
 

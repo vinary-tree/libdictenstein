@@ -38,7 +38,7 @@ snapshot = dictionary.entries
 | Binding | Ruby |
 | Languages/runtime | Ruby 3.3+ |
 | Support tier | Tier 2 |
-| Distribution | RubyGems `vinary-tree-libdictenstein` |
+| Distribution | RubyGems `libdictenstein` |
 | Native boundary | Fiddle over the stable C ABI |
 | Canonical facade source | [`bindings/ruby/lib/vinary_tree/libdictenstein`](../../bindings/ruby/lib/vinary_tree/libdictenstein) |
 
