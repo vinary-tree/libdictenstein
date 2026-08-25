@@ -121,11 +121,19 @@ job writes the checksummed GitHub prerelease. Protect that job with the
 `github-release` environment and a required reviewer. It needs no stored
 secret; approval gates the job-scoped `GITHUB_TOKEN` used for the release.
 
-The renamed global-distribution metadata is present only in append-only source
-`v4.0.0-rc.4-release.1`. LuaRocks therefore fetches that exact source tag,
-while the package version remains `4.0.0rc4-1`; the synchronizer treats this
-source/version distinction as a release invariant. The opam staging job derives
-the same corrective source ref from `GITHUB_REF_NAME`.
+The renamed global-distribution metadata first appeared in append-only source
+`v4.0.0-rc.4-release.1`. Its validate-only graph passed every package lane
+except the numeric fpm candidate: fpm correctly rejected the intentional public
+module `vinary_tree_libdictenstein` while optional package-name enforcement was
+enabled for package `libdictenstein`. No registry publication job ran.
+
+Append-only source `v4.0.0-rc.4-release.2` preserves that idiomatic namespaced
+Fortran module and disables only fpm's optional module-name convention in both
+development and staged manifests. LuaRocks fetches this exact corrective source
+tag while the package version remains `4.0.0rc4-1`; the synchronizer and binding
+contract treat both the source/version distinction and the fpm setting as
+release invariants. The opam staging job derives the same corrective source ref
+from `GITHUB_REF_NAME`.
 
 ## Artifact evidence
 

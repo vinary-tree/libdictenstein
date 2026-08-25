@@ -210,7 +210,11 @@ def c_source_symbols(source: str) -> tuple[set[str], set[str]]:
     ldict_* token is a reference into the shared ABI.
     """
     defined = set(
-        re.findall(r"^[A-Za-z_][^;{}()\n]*?\b(ldict_[a-z0-9_]+)\s*\(", source, re.M)
+        re.findall(
+            r"^[A-Za-z_][^;{}()\n]*?\b(ldict_[a-z0-9_]+)\s*\(",
+            source,
+            re.MULTILINE,
+        )
     )
     referenced = set(SYMBOL.findall(source)) - defined
     return referenced, defined
@@ -1032,6 +1036,10 @@ def check_packages(report: Report, model: dict) -> None:
             expect(
                 fpm["version"] == registries.get("fpm", version),
                 f"{fpm_name} version != {registries.get('fpm', version)}",
+            )
+            expect(
+                fpm.get("build", {}).get("module-naming") is False,
+                f"{fpm_name} must disable fpm module naming for the namespaced public module",
             )
     fpm_publish_source = read_text(
         report, "packages", ROOT / "bindings" / "fortran" / "fpm.publish.toml"
