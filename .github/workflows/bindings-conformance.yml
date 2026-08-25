@@ -26,7 +26,7 @@ jobs:
     name: Build cdylib
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
       - name: Build the producer ABI cdylib
@@ -42,7 +42,7 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: actions/setup-python@v6
         with: { python-version: "3.13" }
@@ -61,7 +61,7 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: actions/setup-go@v6
         with: { go-version: "stable", cache: false }
@@ -84,7 +84,7 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ruby/setup-ruby@v1
         with: { ruby-version: "3.4" }
       - uses: actions/download-artifact@v7
@@ -103,7 +103,7 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - name: Compile conformance and public-package profile smoke tests
@@ -126,7 +126,7 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
@@ -150,7 +150,7 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
@@ -173,7 +173,7 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: ocaml/setup-ocaml@v3
         with: { ocaml-compiler: "5.2" }
@@ -195,7 +195,7 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: haskell-actions/setup@v2
         with: { ghc-version: "9.12.2", cabal-version: latest }
@@ -232,7 +232,7 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - name: Report the GitHub runner Swift toolchain
         run: swift --version
@@ -259,7 +259,7 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: actions/setup-dotnet@v5
         with: { dotnet-version: "10.0.x" }
@@ -279,7 +279,7 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "25" }
@@ -309,7 +309,7 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "25" }
@@ -342,7 +342,7 @@ jobs:
     needs: native
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: fortran-lang/setup-fpm@v10
       - uses: actions/download-artifact@v7

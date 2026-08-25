@@ -64,7 +64,7 @@ jobs:
             features: ""
             os: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # Path dependencies: ../llattice (every build) and
       # ../vinary-tree-interop (bindings-core/ffi legs).
       - uses: ./.github/actions/checkout-dev-siblings
@@ -82,7 +82,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -105,7 +105,7 @@ jobs:
     name: Supply chain (cargo-deny)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # cargo-deny resolves the full dependency graph, so the path
       # dependencies must be present.
       - uses: ./.github/actions/checkout-dev-siblings
@@ -124,7 +124,7 @@ jobs:
     env:
       RUSTDOCFLAGS: "-D warnings"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
       - name: cargo doc --all-features --no-deps
@@ -137,7 +137,7 @@ jobs:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -159,7 +159,7 @@ jobs:
     name: MSRV (1.95)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -176,7 +176,7 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -208,7 +208,7 @@ jobs:
       matrix:
         sanitizer: [address, thread]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -267,7 +267,7 @@ jobs:
     name: Rocq proofs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install Rocq (Coq)
         run: |
           sudo apt-get update
@@ -284,7 +284,7 @@ jobs:
     name: Formal correspondence
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-java@v5
@@ -324,7 +324,7 @@ jobs:
     name: Formal unsafe boundary (Miri)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -372,7 +372,7 @@ jobs:
     name: Formal storage backend (io_uring)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-java@v5
@@ -427,7 +427,7 @@ jobs:
       BYTEFIELD_SVG_VERSION: "1.11.0"
       SVGBOB_VERSION: "0.7.6"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -508,7 +508,7 @@ jobs:
     name: Binding contract
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Checkout the complete development sibling graph
         uses: ./.github/actions/checkout-dev-siblings
       - name: Run the binding architecture gate
@@ -525,7 +525,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-java@v5
