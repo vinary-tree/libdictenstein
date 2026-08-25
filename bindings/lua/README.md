@@ -13,7 +13,7 @@ shared library `libdictenstein`. Build the native library first:
 
 ```sh
 cargo build --release --no-default-features --features ffi
-luarocks make bindings/lua/vinary-tree-libdictenstein-4.0.0rc3-1.rockspec
+luarocks make bindings/lua/vinary-tree-libdictenstein-4.0.0rc4-1.rockspec
 export LD_LIBRARY_PATH="$PWD/target/release:$LD_LIBRARY_PATH"
 ```
 

@@ -64,7 +64,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: actions/setup-go@v6
-        with: { go-version: "stable" }
+        with: { go-version: "stable", cache: false }
       - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - name: Run conformance and public-package profile smoke tests

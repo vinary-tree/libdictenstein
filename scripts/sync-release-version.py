@@ -79,6 +79,16 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
     assert isinstance(deps, dict)
     replace("Cargo.toml", r'^version = "[^"]+"$', f'version = "{canonical}"')
     replace(
+        "Cargo.lock",
+        r'(\[\[package\]\]\nname = "libdictenstein"\nversion = ")[^"]+',
+        rf'\g<1>{canonical}',
+    )
+    replace(
+        "Cargo.lock",
+        r'(\[\[package\]\]\nname = "vinary-tree-interop"\nversion = ")[^"]+',
+        rf'\g<1>{deps["vinary-tree-interop"]}',
+    )
+    replace(
         "Cargo.toml", r'^vinary-tree-interop = \{[^\n]+\}$',
         f'vinary-tree-interop = {{ path = "../vinary-tree-interop", version = "={deps["vinary-tree-interop"]}", optional = true }}',
     )
@@ -234,6 +244,16 @@ def validate(model: dict[str, object], versions: dict[str, str]) -> list[str]:
     assert isinstance(deps, dict)
     required = {
         "Cargo": ("Cargo.toml", r'^version = "([^"]+)"$', canonical),
+        "Cargo lock crate": (
+            "Cargo.lock",
+            r'\[\[package\]\]\nname = "libdictenstein"\nversion = "([^"]+)"',
+            canonical,
+        ),
+        "Cargo lock interop": (
+            "Cargo.lock",
+            r'\[\[package\]\]\nname = "vinary-tree-interop"\nversion = "([^"]+)"',
+            deps["vinary-tree-interop"],
+        ),
         "Python": ("bindings/python/pyproject.toml", r'^version = "([^"]+)"$', versions["pypi"]),
         "JVM": ("bindings/jvm/build.gradle.kts", r'^version = "([^"]+)"$', versions["maven"]),
         ".NET": ("bindings/dotnet/src/VinaryTree.Libdictenstein/VinaryTree.Libdictenstein.csproj", r'<Version>([^<]+)</Version>', versions["nuget"]),

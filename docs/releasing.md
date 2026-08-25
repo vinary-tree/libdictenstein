@@ -1,6 +1,6 @@
 # Releasing libdictenstein
 
-This guide is the operator contract for libdictenstein's `4.0.0-rc.3` source,
+This guide is the operator contract for libdictenstein's `4.0.0-rc.4` source,
 native, and language-binding artifacts. The family-wide dependency order,
 registry spellings, and credential matrix remain normative in
 [liblevenshtein's release guide](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/docs/releasing-language-bindings.md).
@@ -9,10 +9,10 @@ registry spellings, and credential matrix remain normative in
 
 `release/version.json` is the version authority. The root crate, package
 manifests, native metadata, and language facades must agree with it before a
-tag is created. The release tag is `v4.0.0-rc.3`; Go later receives the
-additional subdirectory tag `bindings/go/v4.0.0-rc.3`.
+tag is created. The release tag is `v4.0.0-rc.4`; Go later receives the
+additional subdirectory tag `bindings/go/v4.0.0-rc.4`.
 
-The source validation graph consumes exact `v4.0.0-rc.3` tags for
+The source validation graph consumes exact `v4.0.0-rc.4` tags for
 `vinary-tree-interop` and liblevenshtein plus `v0.1.0` for `llattice`.
 liblevenshtein is a cross-project validation consumer, not a registry
 prerequisite: public libdictenstein packages are published after interop and
@@ -28,6 +28,11 @@ RUST_BACKTRACE=1 cargo nextest run --release --no-fail-fast --workspace --all-fe
 cargo clippy --all-features --all-targets -- -D warnings
 ```
 
+The synchronizer writes and validates the libdictenstein and interop package
+entries in the primary `Cargo.lock`. Locked builds must leave that file
+byte-for-byte unchanged; a stale lock is a source defect, not something a
+publication workflow may regenerate.
+
 The repository CI additionally proves the feature matrix, Rocq models,
 sanitizers, documentation, diagrams, and all language conformance suites.
 
@@ -41,12 +46,12 @@ the checksummed GitHub prerelease. Later publication dispatches must choose one
 ```bash
 gh workflow run release-bindings.yml \
   --repo vinary-tree/libdictenstein \
-  --ref v4.0.0-rc.3 \
+  --ref v4.0.0-rc.4 \
   -f registry=validate-only
 
 gh workflow run release-bindings.yml \
   --repo vinary-tree/libdictenstein \
-  --ref v4.0.0-rc.3 \
+  --ref v4.0.0-rc.4 \
   -f registry=npm
 ```
 
@@ -65,7 +70,7 @@ because their numeric `4.0.0` spellings cannot distinguish it from the final
 release.
 
 For npm, the protected job publishes
-`@vinary-tree/libdictenstein@4.0.0-rc.3` with provenance under `next`.
+`@vinary-tree/libdictenstein@4.0.0-rc.4` with provenance under `next`.
 Install the public tarball in a clean directory, exercise dictionary
 construction, mutation, iteration, snapshot stability, and deterministic
 close, then move the new scoped package's `latest` tag to the RC, remove

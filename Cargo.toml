@@ -1,6 +1,6 @@
 [package]
 name = "libdictenstein"
-version = "4.0.0-rc.3"
+version = "4.0.0-rc.4"
 edition = "2021"
 # Effective floor across `--all-features`: pathmap 0.2.2 and sysinfo 0.39 are the
 # binding constraints. The previously declared 1.70 was inaccurate — bincode 2.0.1
@@ -19,7 +19,7 @@ exclude = ["docs/", "formal-verification/"]
 # Stable retained-resource ABI shared with independently packaged Vinary Tree
 # consumers. The path is development-only; crates.io publication resolves the
 # exact version requirement.
-vinary-tree-interop = { path = "../vinary-tree-interop", version = "=4.0.0-rc.3", optional = true }
+vinary-tree-interop = { path = "../vinary-tree-interop", version = "=4.0.0-rc.4", optional = true }
 # Logging facade
 log = "0.4"
 # SmallVec for stack-allocated vectors (performance optimization)
