@@ -78,6 +78,49 @@ publishing on crates.io, disallow npm tokens in the package settings, and
 revoke the superseded long-lived credentials. The family-wide guide contains
 the complete publisher matrix and recovery order.
 
+RubyGems is keyless as well. Because `libdictenstein` is a new global gem
+coordinate, register a pending trusted publisher with repository owner
+`vinary-tree`, repository `libdictenstein`, workflow `release-bindings.yml`,
+and environment `rubygems`; leave reusable-workflow fields empty. The uploader
+alone receives `id-token: write`, exchanges that identity through the official
+RubyGems credential action pinned to release `v2.1.0`'s immutable commit, and
+pushes the exact `.gem` produced by the unprivileged package job. No
+`RUBYGEMS_API_KEY` is stored.
+
+Clojars does not offer a GitHub OIDC exchange. Verify `io.vinarytree` in
+Clojars using the `vinarytree.io` DNS proof, store the public account name as
+the organization variable `CLOJARS_USERNAME`, and store only
+`CLOJARS_DEPLOY_TOKEN` in this repository's protected `clojars` environment.
+The first `io.vinarytree/libdictenstein-clojure` upload requires an unscoped,
+single-use bootstrap token because Clojars cannot scope a token to a nonexistent
+artifact. After registry read-back succeeds, disable it and replace it with a
+finite-expiration token scoped only to that artifact.
+
+LuaRocks has no OIDC trusted-publisher exchange. Create an API key dedicated to
+`vinary-tree/libdictenstein` and store it only as `LUAROCKS_API_KEY` in this
+repository's protected `luarocks` environment; do not share the
+`liblevenshtein-rust` key or place either key at organization scope. The upload
+job uses `--temp-key`, which authenticates this invocation without persisting
+the secret in the runner's LuaRocks configuration. Required-reviewer protection
+remains the human authorization boundary for each upload.
+
+opam publication targets the fixed organization fork
+`vinary-tree/opam-repository` and opens an upstream pull request against
+`ocaml/opam-repository:master`. Store a short-lived classic GitHub token with
+only `public_repo` as `OPAM_GITHUB_TOKEN` in this repository's protected
+`opam` environment. The job checks out the release model, reads the opam-native
+`4.0.0~rc4` version for the package directory, uses the canonical version only
+in its Git-safe branch name, and configures Git authentication without placing
+the token in a remote URL. Submit `vinary-tree-interop.4.0.0~rc4` first; only
+after that upstream package is merged and publicly resolvable should this job
+submit `libdictenstein.4.0.0~rc4`. Revoke the release token after the complete
+three-package submission sequence.
+
+The `validate-only` graph does not mutate a package registry, but its terminal
+job writes the checksummed GitHub prerelease. Protect that job with the
+`github-release` environment and a required reviewer. It needs no stored
+secret; approval gates the job-scoped `GITHUB_TOKEN` used for the release.
+
 The renamed global-distribution metadata is present only in append-only source
 `v4.0.0-rc.4-release.1`. LuaRocks therefore fetches that exact source tag,
 while the package version remains `4.0.0rc4-1`; the synchronizer treats this

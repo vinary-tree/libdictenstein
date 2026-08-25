@@ -574,7 +574,7 @@ jobs:
       - run: lein deploy clojars
         working-directory: bindings/clojure
         env:
-          CLOJARS_USERNAME: ${{ secrets.CLOJARS_USERNAME }}
+          CLOJARS_USERNAME: ${{ vars.CLOJARS_USERNAME }}
           CLOJARS_PASSWORD: ${{ secrets.CLOJARS_DEPLOY_TOKEN }}
 
   npm:
@@ -618,13 +618,15 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' && inputs.registry == 'rubygems'
     runs-on: ubuntu-24.04
     environment: rubygems
+    permissions: { contents: read, id-token: write }
     steps:
       - uses: ruby/setup-ruby@v1
         with: { ruby-version: "3.5" }
       - uses: actions/download-artifact@v7
         with: { name: rubygems-package, path: dist }
+      - name: Exchange GitHub identity for short-lived RubyGems credentials
+        uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
       - run: gem push dist/*.gem
-        env: { GEM_HOST_API_KEY: "${{ secrets.RUBYGEMS_API_KEY }}" }
 
   go-module:
     name: Publish Go module tag
@@ -683,7 +685,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y luarocks
       - uses: actions/download-artifact@v7
         with: { name: luarocks-package, path: dist }
-      - run: luarocks upload dist/*.rockspec --api-key "$LUAROCKS_API_KEY"
+      - run: luarocks upload dist/*.rockspec --temp-key "$LUAROCKS_API_KEY"
         env: { LUAROCKS_API_KEY: "${{ secrets.LUAROCKS_API_KEY }}" }
 
   github-release:
@@ -705,6 +707,7 @@ jobs:
       github.ref_type == 'tag' &&
       inputs.registry == 'validate-only'
     runs-on: ubuntu-24.04
+    environment: github-release
     permissions: { contents: write }
     steps:
       - uses: actions/download-artifact@v7
@@ -751,25 +754,22 @@ jobs:
     runs-on: ubuntu-24.04
     environment: opam
     steps:
+      - uses: actions/checkout@v6
+        with: { persist-credentials: false }
       - uses: actions/download-artifact@v7
         with: { name: opam-package, path: dist }
       - name: Create opam-repository pull request
         shell: bash
         env: { GH_TOKEN: "${{ secrets.OPAM_GITHUB_TOKEN }}" }
         run: |
-          account=$(gh api user --jq .login)
-          if ! gh repo view "$account/opam-repository" >/dev/null 2>&1; then
-            gh repo fork ocaml/opam-repository --clone=false
-          fi
-          for attempt in 1 2 3 4 5 6; do
-            if gh repo view "$account/opam-repository" >/dev/null 2>&1; then break; fi
-            test "$attempt" -ne 6
-            sleep 5
-          done
-          gh repo clone "$account/opam-repository" opam-repository
+          fork="vinary-tree/opam-repository"
+          gh repo view "$fork" >/dev/null
+          gh auth setup-git
+          gh repo clone "$fork" opam-repository
           git -C opam-repository fetch https://github.com/ocaml/opam-repository.git master
-          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
-          branch="libdictenstein-$version-$GITHUB_RUN_ID"
+          canonical=$(python3 -c 'import json; print(json.load(open("release/version.json"))["canonical"])')
+          version=$(python3 -c 'import json; print(json.load(open("release/version.json"))["registries"]["opam"])')
+          branch="libdictenstein-$canonical-$GITHUB_RUN_ID"
           git -C opam-repository checkout -b "$branch" FETCH_HEAD
           package="opam-repository/packages/libdictenstein/libdictenstein.$version"
           mkdir -p "$package"
@@ -780,5 +780,5 @@ jobs:
           git -C opam-repository commit -m "Package libdictenstein $version"
           git -C opam-repository push origin "$branch"
           gh pr create --repo ocaml/opam-repository --base master \
-            --head "$account:$branch" --title "Package libdictenstein $version" \
+            --head "vinary-tree:$branch" --title "Package libdictenstein $version" \
             --body "Automated submission of the tested Vinary Tree OCaml bindings."
