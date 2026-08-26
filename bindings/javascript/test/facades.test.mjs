@@ -8,7 +8,8 @@ const packageJson = JSON.parse(await readFile(new URL("package.json", root)));
 
 test("all language facades select the shared umbrella runtime", () => {
   assert.equal(packageJson.name, "@vinary-tree/libdictenstein");
-  assert.equal(packageJson.dependencies["@vinary-tree/vinary-tree"], "4.0.0-rc.4");
+  assert.equal(packageJson.dependencies["@vinary-tree/vinary-tree-interop"], "4.0.0-rc.5");
+  assert.equal(packageJson.dependencies["@vinary-tree/javascript-runtime"], "4.0.0-rc.5");
   for (const path of [".", "./typescript", "./clojurescript", "./wasm", "./wasi"]) {
     assert.ok(packageJson.exports[path]);
   }

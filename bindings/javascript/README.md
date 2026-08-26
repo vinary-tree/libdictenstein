@@ -2,7 +2,7 @@
 
 `@vinary-tree/libdictenstein` owns the JavaScript, TypeScript, and
 ClojureScript dictionary facades. It delegates to the single
-`@vinary-tree/vinary-tree` runtime so a dictionary passes to
+`@vinary-tree/javascript-runtime` so a dictionary passes to
 `@vinary-tree/liblevenshtein` without serialization or copying.
 
 Use the default export for native Node, `/wasm` in browsers, and `/wasi` for
@@ -19,7 +19,7 @@ lazy and never require materializing the complete result set.
 | Languages/runtime | JavaScript, TypeScript, and ClojureScript |
 | Support tier | Tier 1 |
 | Distribution | npm `@vinary-tree/libdictenstein` |
-| Native boundary | Facade on the singleton `@vinary-tree/vinary-tree` runtime |
+| Native boundary | Facade on the singleton `@vinary-tree/javascript-runtime` |
 | Canonical facade source | [`bindings/javascript`](../../bindings/javascript) |
 
 All tiers implement the same ownership, snapshot, status, and compatibility

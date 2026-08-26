@@ -862,6 +862,19 @@ def check_packages(report: Report, model: dict) -> None:
             report.fail("packages", message)
             clean = False
 
+    release_source = read_text(report, "packages", ROOT / "release" / "version.json")
+    if release_source is not None:
+        release_model = json.loads(release_source)
+        expect(
+            release_model.get("coordinates", {}).get("npmPackage") == packages["npm"],
+            "release/version.json npm coordinate != binding model",
+        )
+        expect(
+            release_model.get("metadata", {}).get("description")
+            == model["productDescription"],
+            "release/version.json description != binding model",
+        )
+
     cargo_source = read_text(report, "packages", ROOT / "Cargo.toml")
     if cargo_source is not None:
         cargo = tomllib.loads(cargo_source)
@@ -909,9 +922,7 @@ def check_packages(report: Report, model: dict) -> None:
     )
     if gradle is not None:
         group, artifact = packages["maven"].split(":")
-        jvm_description = (
-            "High-performance dictionaries and trie-maps for approximate string matching"
-        )
+        jvm_description = model["productDescription"]
         expect(f'group = "{group}"' in gradle, f"build.gradle.kts group != {group}")
         expect(
             f'artifactId = "{artifact}"' in gradle,
@@ -949,6 +960,10 @@ def check_packages(report: Report, model: dict) -> None:
         expect(
             f'[io.vinarytree/vinary-tree-interop "{interop_version}"]' in project_clj,
             f"project.clj must pin io.vinarytree/vinary-tree-interop {interop_version}",
+        )
+        expect(
+            f':description "{model["productDescription"]}"' in project_clj,
+            "Clojars and Maven descriptions have drifted",
         )
     deps_edn = read_text(report, "packages", ROOT / "bindings" / "clojure" / "deps.edn")
     if deps_edn is not None:

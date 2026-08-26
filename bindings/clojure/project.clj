@@ -1,5 +1,5 @@
-(defproject io.vinarytree/libdictenstein-clojure "4.0.0-rc.4"
-  :description "Idiomatic Clojure facade for high-performance libdictenstein dictionaries"
+(defproject io.vinarytree/libdictenstein-clojure "4.0.0-rc.5"
+  :description "High-performance dictionaries and trie-maps for approximate string matching"
   :url "https://github.com/vinary-tree/libdictenstein"
   :license {:name "Apache License 2.0"
             :url "https://www.apache.org/licenses/LICENSE-2.0.txt"}
@@ -13,10 +13,10 @@
                   [:name "Dylon Edwards"]
                   [:email "dylon.devo@gmail.com"]]]
   :dependencies [[org.clojure/clojure "1.12.5" :scope "provided"]
-                 [io.vinarytree/vinary-tree-interop "4.0.0-rc.4"]
-                 [io.vinarytree/libdictenstein "4.0.0-rc.4"]]
+                 [io.vinarytree/vinary-tree-interop "4.0.0-rc.5"]
+                 [io.vinarytree/libdictenstein "4.0.0-rc.5"]]
   :profiles {:test {:dependencies [[org.clojure/data.json "2.5.2"]
-                                   [io.vinarytree/liblevenshtein "4.0.0-rc.4"]]}}
+                                   [io.vinarytree/liblevenshtein "4.0.0-rc.5"]]}}
   :source-paths ["src"]
   :test-paths ["test"]
   :jvm-opts ["--enable-native-access=ALL-UNNAMED"]

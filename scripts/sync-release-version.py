@@ -57,9 +57,9 @@ def replace(path: str, pattern: str, replacement: str, expected: int = 1) -> Non
     target.write_text(updated, encoding="utf-8")
 
 
-def rewrite_candidate_tokens(
-    patterns: tuple[str, ...], canonical: str, lua_rocks_revision: int
-) -> None:
+def rewrite_candidate_text(
+    source: str, canonical: str, lua_rocks_revision: int
+) -> str:
     base, candidate = canonical.split("-rc.", 1)
     escaped = re.escape(base)
     replacements = (
@@ -72,6 +72,14 @@ def rewrite_candidate_tokens(
         (rf"{escaped}rc\d+", f"{base}rc{candidate}"),
         (rf"{escaped}-rc\.\d+", canonical),
     )
+    for version_pattern, replacement in replacements:
+        source = re.sub(version_pattern, replacement, source)
+    return source
+
+
+def rewrite_candidate_tokens(
+    patterns: tuple[str, ...], canonical: str, lua_rocks_revision: int
+) -> None:
     for pattern in patterns:
         for target in ROOT.glob(pattern):
             relative = target.relative_to(ROOT)
@@ -80,9 +88,35 @@ def rewrite_candidate_tokens(
             ):
                 continue
             source = target.read_text(encoding="utf-8")
-            for version_pattern, replacement in replacements:
-                source = re.sub(version_pattern, replacement, source)
+            source = rewrite_candidate_text(source, canonical, lua_rocks_revision)
             target.write_text(source, encoding="utf-8")
+
+
+def rewrite_active_release_guide(canonical: str, lua_rocks_revision: int) -> None:
+    """Refresh the live operator contract without rewriting release history."""
+
+    target = ROOT / "docs/releasing.md"
+    source = target.read_text(encoding="utf-8")
+    history_marker = "The renamed global-distribution metadata first appeared"
+    evidence_marker = "## Artifact evidence"
+    if source.count(history_marker) != 1 or source.count(evidence_marker) != 1:
+        raise ValueError("docs/releasing.md release-history boundaries have drifted")
+    live_prefix, historical_and_evidence = source.split(history_marker, 1)
+    historical, live_suffix = historical_and_evidence.split(evidence_marker, 1)
+    live_prefix = rewrite_candidate_text(
+        live_prefix, canonical, lua_rocks_revision
+    )
+    live_suffix = rewrite_candidate_text(
+        live_suffix, canonical, lua_rocks_revision
+    )
+    target.write_text(
+        live_prefix
+        + history_marker
+        + historical
+        + evidence_marker
+        + live_suffix,
+        encoding="utf-8",
+    )
 
 
 def update_json(path: str, mutate) -> None:
@@ -96,7 +130,11 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
     canonical = str(model["canonical"])
     candidate = canonical.rsplit(".", 1)[-1]
     deps = model["dependencies"]
+    coordinates = model["coordinates"]
+    metadata = model["metadata"]
     assert isinstance(deps, dict)
+    assert isinstance(coordinates, dict)
+    assert isinstance(metadata, dict)
     replace("Cargo.toml", r'^version = "[^"]+"$', f'version = "{canonical}"')
     replace(
         "Cargo.lock",
@@ -120,11 +158,29 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
     )
 
     def api(value: dict) -> None:
+        value["productDescription"] = metadata["description"]
         value["packageVersion"] = canonical
+        value["packages"]["npm"] = coordinates["npmPackage"]
+        value["interop"]["npm"] = "@vinary-tree/vinary-tree-interop"
         value["interop"]["version"] = deps["vinary-tree-interop"]
         value["siblingPins"]["liblevenshtein"] = deps["liblevenshtein"]
         value["siblingPins"]["llattice"] = deps["llattice"]
-        value["wasm"]["umbrellaVersion"] = deps["@vinary-tree/vinary-tree"]
+        value["siblingPins"]["_source"] = (
+            "release pins in .github/workflows/release-bindings.yml; dev facade "
+            "pins in bindings/go/go.mod, Package.swift, "
+            "bindings/jvm/build.gradle.kts (test scope), "
+            "bindings/clojure/project.clj (:test profile), and "
+            "bindings/javascript/package.json (@vinary-tree/javascript-runtime). "
+            "Recorded verbatim; tag existence is a release concern tracked in "
+            "docs/bindings/FINDINGS_LEDGER.md (LDICT-B1)."
+        )
+        value["facades"]["javascript"]["symbolAccess"] = (
+            "mediated (runtime object exported by @vinary-tree/javascript-runtime)"
+        )
+        value["wasm"]["umbrellaPackage"] = "@vinary-tree/javascript-runtime"
+        value["wasm"]["umbrellaVersion"] = deps["@vinary-tree/javascript-runtime"]
+        value["wasm"]["projectPackage"] = coordinates["npmPackage"]
+        value["wasm"]["interopPackage"] = "@vinary-tree/vinary-tree-interop"
         value["release"] = {
             "canonical": canonical,
             "registries": versions,
@@ -140,18 +196,28 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
     update_json("bindings/api.json", api)
 
     def npm(value: dict) -> None:
+        value["name"] = coordinates["npmPackage"]
         value["version"] = versions["npm"]
-        value["dependencies"]["@vinary-tree/interop"] = deps["@vinary-tree/interop"]
-        value["dependencies"]["@vinary-tree/vinary-tree"] = deps[
-            "@vinary-tree/vinary-tree"
-        ]
+        value["dependencies"] = {
+            "@vinary-tree/vinary-tree-interop": deps[
+                "@vinary-tree/vinary-tree-interop"
+            ],
+            "@vinary-tree/javascript-runtime": deps[
+                "@vinary-tree/javascript-runtime"
+            ],
+        }
         value.setdefault("publishConfig", {})["tag"] = model["publication"]["distTag"]
 
     update_json("bindings/javascript/package.json", npm)
     replace(
         "bindings/javascript/test/facades.test.mjs",
-        r'assert\.equal\(packageJson\.dependencies\["@vinary-tree/vinary-tree"\], "[^"]+"\);',
-        f'assert.equal(packageJson.dependencies["@vinary-tree/vinary-tree"], "{deps["@vinary-tree/vinary-tree"]}");',
+        r'assert\.equal\(packageJson\.dependencies\["@vinary-tree/vinary-tree-interop"\], "[^"]+"\);',
+        f'assert.equal(packageJson.dependencies["@vinary-tree/vinary-tree-interop"], "{deps["@vinary-tree/vinary-tree-interop"]}");',
+    )
+    replace(
+        "bindings/javascript/test/facades.test.mjs",
+        r'assert\.equal\(packageJson\.dependencies\["@vinary-tree/(?:vinary-tree|javascript-runtime)"\], "[^"]+"\);',
+        f'assert.equal(packageJson.dependencies["@vinary-tree/javascript-runtime"], "{deps["@vinary-tree/javascript-runtime"]}");',
     )
     replace(
         "bindings/python/pyproject.toml",
@@ -175,6 +241,16 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
     )
     replace(
         "bindings/jvm/build.gradle.kts",
+        r'^( {16}description = )"[^"]+"$',
+        rf'\g<1>"{metadata["description"]}"',
+    )
+    replace(
+        "bindings/jvm/jreleaser.yml",
+        r"^  description: .+$",
+        f"  description: {metadata['description']}",
+    )
+    replace(
+        "bindings/jvm/build.gradle.kts",
         r'api\("io\.vinarytree:vinary-tree-interop:[^"]+"\)',
         f'api("io.vinarytree:vinary-tree-interop:{versions["maven"]}")',
     )
@@ -187,6 +263,11 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
         "bindings/clojure/project.clj",
         r'^(\(defproject io\.vinarytree/libdictenstein-clojure) "[^"]+"$',
         rf'\1 "{versions["clojars"]}"',
+    )
+    replace(
+        "bindings/clojure/project.clj",
+        r'^  :description "[^"]+"$',
+        f'  :description "{metadata["description"]}"',
     )
     for artifact in ("vinary-tree-interop", "libdictenstein", "liblevenshtein"):
         replace(
@@ -238,6 +319,11 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
         "bindings/go/go.mod",
         r"github\.com/vinary-tree/(?:liblevenshtein-rust/vinary-tree-interop|vinary-tree-interop)/bindings/go(?:/v4)? v\S+",
         f"github.com/vinary-tree/vinary-tree-interop/bindings/go/v4 {versions['goTag']}",
+    )
+    replace(
+        ".github/workflows/release-bindings.yml",
+        r"github\.com/vinary-tree/vinary-tree-interop/bindings/go(?:/v4)?@v\S+",
+        f"github.com/vinary-tree/vinary-tree-interop/bindings/go/v4@{versions['goTag']}",
     )
     for path in ("bindings/go/entries.go", "bindings/go/libdictenstein.go"):
         source = text(path)
@@ -340,11 +426,13 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
         (
             ".github/workflows/*.yml",
             "bindings/**/*.md",
-            "docs/**/*.md",
             "docs/**/*.puml",
         ),
         canonical,
         int(model["publication"].get("luaRocksRevision", 1)),
+    )
+    rewrite_active_release_guide(
+        canonical, int(model["publication"].get("luaRocksRevision", 1))
     )
 
 
@@ -363,17 +451,34 @@ def validate(model: dict[str, object], versions: dict[str, str]) -> list[str]:
         )
     canonical = str(model["canonical"])
     source_tag = publication.get("sourceTag") if isinstance(publication, dict) else None
-    corrective_pattern = rf"v{re.escape(canonical)}-release\.[1-9][0-9]*"
+    immutable_tag_pattern = rf"v{re.escape(canonical)}(?:-release\.[1-9][0-9]*)?"
     if (
         not isinstance(source_tag, str)
-        or re.fullmatch(corrective_pattern, source_tag) is None
+        or re.fullmatch(immutable_tag_pattern, source_tag) is None
     ):
         failures.append(
-            "RC publishable source tag must be an append-only numbered correction"
+            "RC source tag must be canonical or an append-only numbered correction"
         )
     candidate = canonical.rsplit(".", 1)[-1]
     deps = model["dependencies"]
+    coordinates = model.get("coordinates", {})
+    metadata = model.get("metadata", {})
     assert isinstance(deps, dict)
+    if coordinates != {"npmPackage": "@vinary-tree/libdictenstein"}:
+        failures.append("canonical npm coordinate is not authoritative or has drifted")
+    description = (
+        metadata.get("description") if isinstance(metadata, dict) else None
+    )
+    if description != (
+        "High-performance dictionaries and trie-maps for approximate string matching"
+    ):
+        failures.append("canonical product description is missing or has drifted")
+    expected_npm_dependencies = {
+        "@vinary-tree/vinary-tree-interop",
+        "@vinary-tree/javascript-runtime",
+    }
+    if expected_npm_dependencies - set(deps):
+        failures.append("canonical npm dependency coordinates are missing")
     required = {
         "Cargo": ("Cargo.toml", r'^version = "([^"]+)"$', canonical),
         "Cargo lock crate": (
@@ -452,13 +557,80 @@ def validate(model: dict[str, object], versions: dict[str, str]) -> list[str]:
     ):
         failures.append("binding model release identity is stale")
     package = json.loads(text("bindings/javascript/package.json"))
-    if package.get("version") != versions["npm"] or package.get(
+    if (
+        package.get("name") != coordinates.get("npmPackage")
+        or package.get("version") != versions["npm"]
+        or set(package.get("dependencies", {})) != expected_npm_dependencies
+        or package.get(
         "publishConfig", {}
-    ).get("tag") != publication.get("distTag"):
+        ).get("tag") != publication.get("distTag")
+    ):
         failures.append("npm release identity is stale")
+    description_contracts = {
+        "Gradle Maven POM": (
+            "bindings/jvm/build.gradle.kts",
+            rf'^\s+description = "{re.escape(str(description))}"$',
+        ),
+        "JReleaser": (
+            "bindings/jvm/jreleaser.yml",
+            rf"^  description: {re.escape(str(description))}$",
+        ),
+        "Clojars": (
+            "bindings/clojure/project.clj",
+            rf'^  :description "{re.escape(str(description))}"$',
+        ),
+    }
+    for label, (path, pattern) in description_contracts.items():
+        if re.search(pattern, text(path), flags=re.MULTILINE) is None:
+            failures.append(f"{label} description differs from release metadata")
+    deprecated_interop = "@vinary-tree/" + "interop"
+    deprecated_runtime = "@vinary-tree/" + "vinary-tree"
+    impossible_composite = "@vinary-tree/javascript-runtime" + "-interop"
+    forbidden_coordinates = tuple(
+        re.compile(re.escape(coordinate) + r"(?![-A-Za-z0-9])")
+        for coordinate in (
+            deprecated_interop,
+            deprecated_runtime,
+            impossible_composite,
+        )
+    )
+    active_files = (
+        ROOT / "release/version.json",
+        ROOT / "bindings/api.json",
+        ROOT / "bindings/javascript/package.json",
+        ROOT / "bindings/javascript/README.md",
+        ROOT / "bindings/javascript/index.d.ts",
+        ROOT / "bindings/javascript/facades/native.cjs",
+        ROOT / "bindings/javascript/facades/native.mjs",
+        ROOT / "bindings/javascript/facades/wasm.mjs",
+        ROOT / "bindings/javascript/facades/wasi.cjs",
+        ROOT / "bindings/javascript/facades/wasi.mjs",
+        ROOT / "scripts/generate-binding-guides.py",
+    )
+    for path in active_files:
+        source = path.read_text(encoding="utf-8")
+        if any(pattern.search(source) for pattern in forbidden_coordinates):
+            failures.append(
+                f"{path.relative_to(ROOT)} retains a deprecated npm coordinate"
+            )
     go_mod = text("bindings/go/go.mod")
     if "module github.com/vinary-tree/libdictenstein/bindings/go/v4" not in go_mod:
         failures.append("Go module lacks /v4 semantic import path")
+    release_workflow = text(".github/workflows/release-bindings.yml")
+    if (
+        f"github.com/vinary-tree/vinary-tree-interop/bindings/go/v4@{versions['goTag']}"
+        not in release_workflow
+    ):
+        failures.append("Go publication wait gate uses a stale interop module identity")
+    release_guide = text("docs/releasing.md")
+    current_release_markers = (
+        f"libdictenstein's `{canonical}` source",
+        f"release tag is `{versions['goTag']}`",
+        f"additional subdirectory tag `bindings/go/{versions['goTag']}`",
+        f"`@vinary-tree/libdictenstein@{versions['npm']}`",
+    )
+    if any(marker not in release_guide for marker in current_release_markers):
+        failures.append("release operator guide uses stale live release identity")
     cabal = text("bindings/haskell/libdictenstein.cabal")
     if f"x-release-candidate: rc.{candidate}" not in cabal:
         failures.append("Hackage source candidate marker is missing")

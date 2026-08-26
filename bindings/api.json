@@ -18,10 +18,10 @@
     "cPrefix": "vt_",
     "cHeader": "vinary_tree_interop.h",
     "headerMirror": "include/vinary_tree_interop.h",
-    "npm": "@vinary-tree/interop",
+    "npm": "@vinary-tree/vinary-tree-interop",
     "maven": "io.vinarytree:vinary-tree-interop",
     "javaPackage": "io.vinarytree.interop",
-    "version": "4.0.0-rc.4",
+    "version": "4.0.0-rc.5",
     "resourceLayout": [
       "context",
       "vtable"
@@ -57,7 +57,7 @@
       "fpm": "bindings/fortran/fpm.toml + fpm.publish.toml name",
       "opam": "bindings/ocaml/dune-project (package (name ...))",
       "hackage": "bindings/haskell/libdictenstein.cabal name",
-      "luarocks": "bindings/lua/libdictenstein-4.0.0rc4-2.rockspec package"
+      "luarocks": "bindings/lua/libdictenstein-4.0.0rc5-1.rockspec package"
     }
   },
   "documentation": {
@@ -183,15 +183,15 @@
         ],
         "guide": "bindings/lua/README.md",
         "example": "bindings/lua/test/conformance.lua",
-        "package": "bindings/lua/libdictenstein-4.0.0rc4-2.rockspec package"
+        "package": "bindings/lua/libdictenstein-4.0.0rc5-1.rockspec package"
       }
     }
   },
-  "packageVersion": "4.0.0-rc.4",
+  "packageVersion": "4.0.0-rc.5",
   "siblingPins": {
-    "liblevenshtein": "4.0.0-rc.4",
+    "liblevenshtein": "4.0.0-rc.5",
     "llattice": "0.1.0",
-    "_source": "release pins in .github/workflows/release-bindings.yml; dev facade pins in bindings/go/go.mod, Package.swift, bindings/jvm/build.gradle.kts (test scope), bindings/clojure/project.clj (:test profile), bindings/javascript/package.json (@vinary-tree/vinary-tree umbrella). Recorded verbatim; tag existence is a release concern tracked in docs/bindings/FINDINGS_LEDGER.md (LDICT-B1)."
+    "_source": "release pins in .github/workflows/release-bindings.yml; dev facade pins in bindings/go/go.mod, Package.swift, bindings/jvm/build.gradle.kts (test scope), bindings/clojure/project.clj (:test profile), and bindings/javascript/package.json (@vinary-tree/javascript-runtime). Recorded verbatim; tag existence is a release concern tracked in docs/bindings/FINDINGS_LEDGER.md (LDICT-B1)."
   },
   "abiVersion": 1,
   "apiRevision": 5,
@@ -708,7 +708,7 @@
         "bindings/javascript/package.json"
       ],
       "package": "npm",
-      "symbolAccess": "mediated (runtime object exported by the @vinary-tree/vinary-tree umbrella)"
+      "symbolAccess": "mediated (runtime object exported by @vinary-tree/javascript-runtime)"
     },
     "jvm": {
       "root": "bindings/jvm",
@@ -762,10 +762,10 @@
     }
   },
   "wasm": {
-    "umbrellaPackage": "@vinary-tree/vinary-tree",
-    "umbrellaVersion": "4.0.0-rc.4",
+    "umbrellaPackage": "@vinary-tree/javascript-runtime",
+    "umbrellaVersion": "4.0.0-rc.5",
     "projectPackage": "@vinary-tree/libdictenstein",
-    "interopPackage": "@vinary-tree/interop",
+    "interopPackage": "@vinary-tree/vinary-tree-interop",
     "exports": [
       ".",
       "./typescript",
@@ -777,24 +777,25 @@
     "_source": "bindings/javascript/package.json"
   },
   "release": {
-    "canonical": "4.0.0-rc.4",
+    "canonical": "4.0.0-rc.5",
     "registries": {
-      "cargo": "4.0.0-rc.4",
-      "clojars": "4.0.0-rc.4",
-      "cmake": "4.0.0-rc.4",
+      "cargo": "4.0.0-rc.5",
+      "clojars": "4.0.0-rc.5",
+      "cmake": "4.0.0-rc.5",
       "fpm": "4.0.0",
-      "goTag": "v4.0.0-rc.4",
+      "goTag": "v4.0.0-rc.5",
       "hackage": "4.0.0",
-      "luaRocks": "4.0.0rc4-2",
-      "maven": "4.0.0-rc.4",
-      "npm": "4.0.0-rc.4",
-      "nuget": "4.0.0-rc.4",
-      "opam": "4.0.0~rc4",
-      "pkgConfig": "4.0.0-rc.4",
-      "pypi": "4.0.0rc4",
-      "rubygems": "4.0.0.rc.4",
-      "swiftTag": "4.0.0-rc.4"
+      "luaRocks": "4.0.0rc5-1",
+      "maven": "4.0.0-rc.5",
+      "npm": "4.0.0-rc.5",
+      "nuget": "4.0.0-rc.5",
+      "opam": "4.0.0~rc5",
+      "pkgConfig": "4.0.0-rc.5",
+      "pypi": "4.0.0rc5",
+      "rubygems": "4.0.0.rc.5",
+      "swiftTag": "4.0.0-rc.5"
     },
     "distTag": "next"
-  }
+  },
+  "productDescription": "High-performance dictionaries and trie-maps for approximate string matching"
 }

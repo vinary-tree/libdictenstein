@@ -1,6 +1,6 @@
 # Releasing libdictenstein
 
-This guide is the operator contract for libdictenstein's `4.0.0-rc.4` source,
+This guide is the operator contract for libdictenstein's `4.0.0-rc.5` source,
 native, and language-binding artifacts. The family-wide dependency order,
 registry spellings, and credential matrix remain normative in
 [liblevenshtein's release guide](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/docs/releasing-language-bindings.md).
@@ -9,10 +9,10 @@ registry spellings, and credential matrix remain normative in
 
 `release/version.json` is the version authority. The root crate, package
 manifests, native metadata, and language facades must agree with it before a
-tag is created. The release tag is `v4.0.0-rc.4`; Go later receives the
-additional subdirectory tag `bindings/go/v4.0.0-rc.4`.
+tag is created. The release tag is `v4.0.0-rc.5`; Go later receives the
+additional subdirectory tag `bindings/go/v4.0.0-rc.5`.
 
-The source validation graph consumes exact `v4.0.0-rc.4` tags for
+The source validation graph consumes exact `v4.0.0-rc.5` tags for
 `vinary-tree-interop` and liblevenshtein plus `v0.1.0` for `llattice`.
 liblevenshtein is a cross-project validation consumer, not a registry
 prerequisite: public libdictenstein packages are published after interop and
@@ -46,12 +46,12 @@ the checksummed GitHub prerelease. Later publication dispatches must choose one
 ```bash
 gh workflow run release-bindings.yml \
   --repo vinary-tree/libdictenstein \
-  --ref v4.0.0-rc.4 \
+  --ref v4.0.0-rc.5 \
   -f registry=validate-only
 
 gh workflow run release-bindings.yml \
   --repo vinary-tree/libdictenstein \
-  --ref v4.0.0-rc.4 \
+  --ref v4.0.0-rc.5 \
   -f registry=npm
 ```
 
@@ -119,11 +119,11 @@ opam publication targets the fixed organization fork
 `ocaml/opam-repository:master`. Store a short-lived classic GitHub token with
 only `public_repo` as `OPAM_GITHUB_TOKEN` in this repository's protected
 `opam` environment. The job checks out the release model, reads the opam-native
-`4.0.0~rc4` version for the package directory, uses the canonical version only
+`4.0.0~rc5` version for the package directory, uses the canonical version only
 in its Git-safe branch name, and configures Git authentication without placing
-the token in a remote URL. Submit `vinary-tree-interop.4.0.0~rc4` first; only
+the token in a remote URL. Submit `vinary-tree-interop.4.0.0~rc5` first; only
 after that upstream package is merged and publicly resolvable should this job
-submit `libdictenstein.4.0.0~rc4`. Revoke the release token after the complete
+submit `libdictenstein.4.0.0~rc5`. Revoke the release token after the complete
 three-package submission sequence.
 
 The `validate-only` graph does not mutate a package registry, but its terminal
@@ -149,6 +149,17 @@ and binding contract treat the semantic version, Lua packaging revision, and
 source tag as independent release invariants. The opam staging job derives its
 own exact corrective source ref from `GITHUB_REF_NAME`.
 
+RC.5 also restores the JavaScript package graph to the repositories' existing,
+public names. The libdictenstein facade remains
+`@vinary-tree/libdictenstein`; its only runtime dependencies are
+`@vinary-tree/vinary-tree-interop` and `@vinary-tree/javascript-runtime` at
+the same exact candidate. The mistakenly shortened `@vinary-tree/interop` and
+mistaken umbrella `@vinary-tree/vinary-tree` coordinates are historical
+artifacts, not aliases to use in manifests. Publish and verify the canonical
+packages before deprecating the mistaken coordinates. The same release model
+owns the product description used verbatim by the Maven POM, JReleaser, and
+Clojars so their public summaries cannot drift.
+
 ## Artifact evidence
 
 The GitHub prerelease retains portable native archives, Python wheels, the npm
@@ -159,7 +170,7 @@ because their numeric `4.0.0` spellings cannot distinguish it from the final
 release.
 
 For npm, the protected job publishes
-`@vinary-tree/libdictenstein@4.0.0-rc.4` with provenance under `next`.
+`@vinary-tree/libdictenstein@4.0.0-rc.5` with provenance under `next`.
 Install the public tarball in a clean directory, exercise dictionary
 construction, mutation, iteration, snapshot stability, and deterministic
 close, then move the new scoped package's `latest` tag to the RC, remove
