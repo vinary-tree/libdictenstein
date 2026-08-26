@@ -357,9 +357,13 @@ def validate(model: dict[str, object], versions: dict[str, str]) -> list[str]:
         )
     canonical = str(model["canonical"])
     source_tag = publication.get("sourceTag") if isinstance(publication, dict) else None
-    if source_tag != f"v{canonical}-release.2":
+    corrective_pattern = rf"v{re.escape(canonical)}-release\.[1-9][0-9]*"
+    if (
+        not isinstance(source_tag, str)
+        or re.fullmatch(corrective_pattern, source_tag) is None
+    ):
         failures.append(
-            "RC.4 publishable source tag must remain the append-only release.2 correction"
+            "RC publishable source tag must be an append-only numbered correction"
         )
     candidate = canonical.rsplit(".", 1)[-1]
     deps = model["dependencies"]
