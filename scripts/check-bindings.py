@@ -1147,6 +1147,10 @@ def check_sibling_pins(report: Report, model: dict) -> None:
             "release-bindings.yml LuaRocks job must use temporary-key mode",
         )
         expect(
+            "luarocks install dkjson" in release,
+            "release-bindings.yml LuaRocks job must install its JSON transport dependency",
+        )
+        expect(
             '--api-key "$LUAROCKS_API_KEY"' not in release,
             "release-bindings.yml must not persist the LuaRocks key in runner configuration",
         )

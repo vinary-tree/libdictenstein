@@ -683,6 +683,8 @@ jobs:
     environment: luarocks
     steps:
       - run: sudo apt-get update && sudo apt-get install -y luarocks
+      - name: Install LuaRocks' JSON transport dependency
+        run: sudo luarocks install dkjson
       - uses: actions/download-artifact@v7
         with: { name: luarocks-package, path: dist }
       - run: luarocks upload dist/*.rockspec --temp-key "$LUAROCKS_API_KEY"
