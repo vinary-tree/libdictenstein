@@ -481,14 +481,30 @@ jobs:
           if-no-files-found: error
 
   luarocks-package:
-    name: LuaRocks metadata
-    needs: contract
+    name: LuaRocks package and installed consumer
+    needs: [contract, native]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
-      - run: sudo apt-get update && sudo apt-get install -y luarocks
-      - run: luarocks lint bindings/lua/libdictenstein-4.0.0rc4-1.rockspec
+      - run: sudo apt-get update && sudo apt-get install -y lua5.4 liblua5.4-dev luarocks
+      - uses: actions/download-artifact@v7
+        with:
+          name: native-x86_64-unknown-linux-gnu
+          path: dist
+      - run: luarocks lint bindings/lua/libdictenstein-4.0.0rc4-2.rockspec
+      - name: Build the rock against the staged native SDK and run its public facade
+        shell: bash
+        run: |
+          tar -xzf dist/libdictenstein-4.0.0-rc.4-x86_64-unknown-linux-gnu.tar.gz -C dist
+          package_root="$PWD/dist/libdictenstein-4.0.0-rc.4-x86_64-unknown-linux-gnu"
+          rock_tree="$RUNNER_TEMP/luarocks-tree"
+          luarocks --lua-version 5.4 make --tree "$rock_tree" \
+            bindings/lua/libdictenstein-4.0.0rc4-2.rockspec \
+            LIBDICTENSTEIN_INCDIR="$package_root/include" \
+            LIBDICTENSTEIN_LIBDIR="$package_root/lib"
+          LUA_CPATH="$rock_tree/lib/lua/5.4/?.so;;" \
+            lua5.4 bindings/lua/test/conformance.lua
       - uses: actions/upload-artifact@v7
         with:
           name: luarocks-package

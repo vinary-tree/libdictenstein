@@ -1075,6 +1075,19 @@ def check_packages(report: Report, model: dict) -> None:
             == f"{packages['luarocks']}-{rock_version.group(1)}.rockspec",
             f"{rockspec_path.name} filename disagrees with its package/version fields",
         )
+        for marker in (
+            'LIBDICTENSTEIN = { header = "libdictenstein.h", library = "libdictenstein" }',
+            '"$(LIBDICTENSTEIN_INCDIR)"',
+            '"$(LIBDICTENSTEIN_LIBDIR)"',
+        ):
+            expect(
+                marker in rockspec,
+                f"{rockspec_path.name} external-library contract is missing {marker}",
+            )
+        expect(
+            '"target/release"' not in rockspec,
+            f"{rockspec_path.name} must not link against a source-checkout target directory",
+        )
 
     package_swift = read_text(report, "packages", ROOT / "Package.swift")
     if package_swift is not None:
@@ -1150,6 +1163,17 @@ def check_sibling_pins(report: Report, model: dict) -> None:
             "luarocks install dkjson" in release,
             "release-bindings.yml LuaRocks job must install its JSON transport dependency",
         )
+        for marker in (
+            "luarocks --lua-version 5.4 make --tree",
+            "luarocks-tree",
+            "LIBDICTENSTEIN_INCDIR=",
+            "LIBDICTENSTEIN_LIBDIR=",
+            "lua5.4 bindings/lua/test/conformance.lua",
+        ):
+            expect(
+                marker in release,
+                f"release-bindings.yml LuaRocks lane must prove installed-package behavior: {marker}",
+            )
         expect(
             '--api-key "$LUAROCKS_API_KEY"' not in release,
             "release-bindings.yml must not persist the LuaRocks key in runner configuration",

@@ -6,15 +6,34 @@ package is `libdictenstein`; the module loads as
 DoubleArrayTrie construction, SCDAWG substring search, persistent ARTrie
 CRUD/checkpoint/reopen, and persistent vocabulary reverse lookup.
 
-## Building
+## Installation
+
+The Lua rock contains the idiomatic C facade and links to an explicitly
+installed native SDK. Point LuaRocks at the matching `4.0.0-rc.4` headers and
+shared library:
+
+```sh
+luarocks install libdictenstein 4.0.0rc4-2 \
+  LIBDICTENSTEIN_INCDIR=/opt/vinary-tree/include \
+  LIBDICTENSTEIN_LIBDIR=/opt/vinary-tree/lib
+```
+
+The external include directory must contain `libdictenstein.h`; the exact
+source rock carries its generated `vinary_tree_interop.h` mirror. The library
+directory must contain the matching `liblibdictenstein` shared library.
+LuaRocks embeds that directory in the extension module's runtime search path;
+it does not rely on a build directory inside the downloaded source archive.
+
+## Building from this checkout
 
 The rockspec compiles `bindings/lua/src/libdictenstein_lua.c` and links the
 shared library `libdictenstein`. Build the native library first:
 
 ```sh
 cargo build --release --no-default-features --features ffi
-luarocks make bindings/lua/libdictenstein-4.0.0rc4-1.rockspec
-export LD_LIBRARY_PATH="$PWD/target/release:$LD_LIBRARY_PATH"
+luarocks make bindings/lua/libdictenstein-4.0.0rc4-2.rockspec \
+  LIBDICTENSTEIN_INCDIR="$PWD/include" \
+  LIBDICTENSTEIN_LIBDIR="$PWD/target/release"
 ```
 
 ## Quickstart

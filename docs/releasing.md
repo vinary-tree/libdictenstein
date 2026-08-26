@@ -104,6 +104,16 @@ job uses `--temp-key`, which authenticates this invocation without persisting
 the secret in the runner's LuaRocks configuration. Required-reviewer protection
 remains the human authorization boundary for each upload.
 
+The source rock deliberately treats the native SDK as an external dependency.
+Its module paths use `LIBDICTENSTEIN_INCDIR` and
+`LIBDICTENSTEIN_LIBDIR`, followed by the source package's generated shared-ABI
+headers; never replace them with a checkout-local `target/release` path. Before
+upload, the release job downloads the exact Linux native SDK, builds the rock
+into an isolated tree through those two variables, and runs the public Lua
+conformance program from that installed tree. `luarocks lint` alone is
+insufficient because it does not invoke the linker or load the resulting
+module.
+
 opam publication targets the fixed organization fork
 `vinary-tree/opam-repository` and opens an upstream pull request against
 `ocaml/opam-repository:master`. Store a short-lived classic GitHub token with
@@ -129,11 +139,15 @@ enabled for package `libdictenstein`. No registry publication job ran.
 
 Append-only source `v4.0.0-rc.4-release.2` preserves that idiomatic namespaced
 Fortran module and disables only fpm's optional module-name convention in both
-development and staged manifests. LuaRocks fetches this exact corrective source
-tag while the package version remains `4.0.0rc4-1`; the synchronizer and binding
-contract treat both the source/version distinction and the fpm setting as
-release invariants. The opam staging job derives the same corrective source ref
-from `GITHUB_REF_NAME`.
+development and staged manifests. Publisher-environment corrections are
+preserved by releases 3 and 4. Public read-back of the revision-1 Lua rock then
+proved that its hard-coded source-tree library path was not installable from a
+registry archive. Append-only source `v4.0.0-rc.4-release.5` replaces that path
+with LuaRocks' external-dependency variables and publishes packaging revision
+`4.0.0rc4-2`. The Rust RC, ABI, and Lua API remain unchanged. The synchronizer
+and binding contract treat the semantic version, Lua packaging revision, and
+source tag as independent release invariants. The opam staging job derives its
+own exact corrective source ref from `GITHUB_REF_NAME`.
 
 ## Artifact evidence
 
