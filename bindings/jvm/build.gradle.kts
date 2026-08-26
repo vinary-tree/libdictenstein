@@ -129,7 +129,7 @@ publishing {
             from(components["java"])
             pom {
                 name = "libdictenstein JVM bindings"
-                description = "High-performance dictionaries and retained Vinary Tree resources"
+                description = "High-performance dictionaries and trie-maps for approximate string matching"
                 url = "https://github.com/vinary-tree/libdictenstein"
                 licenses {
                     license {

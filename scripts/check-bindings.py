@@ -909,6 +909,9 @@ def check_packages(report: Report, model: dict) -> None:
     )
     if gradle is not None:
         group, artifact = packages["maven"].split(":")
+        jvm_description = (
+            "High-performance dictionaries and trie-maps for approximate string matching"
+        )
         expect(f'group = "{group}"' in gradle, f"build.gradle.kts group != {group}")
         expect(
             f'artifactId = "{artifact}"' in gradle,
@@ -921,6 +924,18 @@ def check_packages(report: Report, model: dict) -> None:
             f'api("{model["interop"]["maven"]}:{interop_version}")' in gradle,
             f"build.gradle.kts must pin {model['interop']['maven']}:{interop_version}",
         )
+        expect(
+            f'description = "{jvm_description}"' in gradle,
+            "Maven POM description does not explain the product's purpose",
+        )
+        jreleaser = read_text(
+            report, "packages", ROOT / "bindings" / "jvm" / "jreleaser.yml"
+        )
+        if jreleaser is not None:
+            expect(
+                f"description: {jvm_description}" in jreleaser,
+                "JReleaser and Maven POM descriptions have drifted",
+            )
 
     project_clj = read_text(
         report, "packages", ROOT / "bindings" / "clojure" / "project.clj"
