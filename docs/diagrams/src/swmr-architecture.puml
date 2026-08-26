@@ -1,4 +1,5 @@
 @startuml swmr-architecture
+!pragma layout smetana
 ' SWMR — single-writer / multi-reader-PROCESS access to one vocab file (single host).
 ' Rendered by scripts/render-diagrams.sh → ../swmr-architecture.svg (embedded by
 ' docs/design/swmr-multiprocess.md).
