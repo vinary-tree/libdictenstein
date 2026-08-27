@@ -28,7 +28,8 @@ import Data.Bits (shiftR)
 import qualified Data.ByteString as BS
 import Data.Char (chr, digitToInt, isDigit, isSpace)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (foldl', isPrefixOf)
+import Data.List (isPrefixOf)
+import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
 import Data.Word (Word64)
@@ -99,7 +100,7 @@ pStr = go []
       't' -> go ('\t' : acc) r
       'r' -> go ('\r' : acc) r
       'u' -> let (h, r') = splitAt 4 r
-                 code = foldl' (\a d -> a * 16 + digitToInt d) 0 h
+                 code = List.foldl' (\a d -> a * 16 + digitToInt d) 0 h
               in go (chr code : acc) r'
       _ -> go (c : acc) r
     go acc (c : r) = go (c : acc) r
