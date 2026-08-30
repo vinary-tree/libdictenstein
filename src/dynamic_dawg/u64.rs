@@ -1742,9 +1742,7 @@ mod tests {
                 // Should have at least the initial 100
                 assert!(terms.len() >= 100);
                 iteration_count += 1;
-                if !reported_concurrent_iteration
-                    && iter_write_window.load(Ordering::Acquire)
-                {
+                if !reported_concurrent_iteration && iter_write_window.load(Ordering::Acquire) {
                     iteration_observed_tx
                         .send(())
                         .expect("coordinating writer remains live");
