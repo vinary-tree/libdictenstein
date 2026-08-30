@@ -206,7 +206,7 @@ c1 failures = do
   abi <- abiVersion
   api <- apiRevision
   check failures (abi == 1) "abi version == 1"
-  check failures (api == 5) "api revision == 5"
+  check failures (api == 6) "api revision == 6"
   dawg <- dynamicDawg UnicodeScalar
   k <- dictionaryKind dawg
   check failures (k == 1) "dawg kind"

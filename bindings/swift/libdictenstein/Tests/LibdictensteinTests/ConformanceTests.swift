@@ -107,7 +107,7 @@ final class ConformanceTests: XCTestCase {
 
     func testC1Identity() throws {
         XCTAssertEqual(Dictionary.abiVersion(), 1)
-        XCTAssertEqual(Dictionary.apiRevision(), 5)
+        XCTAssertEqual(Dictionary.apiRevision(), 6)
     }
 
     func testC1KindAndCapabilities() throws {

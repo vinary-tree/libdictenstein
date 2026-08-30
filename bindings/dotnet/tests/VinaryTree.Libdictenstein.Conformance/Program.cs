@@ -83,7 +83,7 @@ void AssertFixtureReads(Dictionary dictionary)
 // -- C1 identity/version ---------------------------------------------------
 
 Check(Dictionary.AbiVersion == 1, "abi version == 1");
-Check(Dictionary.ApiRevision == 5, "api revision == 5");
+Check(Dictionary.ApiRevision == 6, "api revision == 6");
 
 const ulong Read = 1UL << 0, Insert = 1UL << 1, Remove = 1UL << 2,
     Clear = 1UL << 3, Compact = 1UL << 4, Substring = 1UL << 5, Checkpoint = 1UL << 6;

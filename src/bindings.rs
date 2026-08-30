@@ -90,7 +90,7 @@ pub enum BindingUnitDomain {
 ///
 /// The variants preserve arbitrary byte and `u64` keys without coercing them
 /// through UTF-8. Unicode keys are validated scalar strings.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum BindingTerm {
     /// Arbitrary bytes.
     Bytes(Vec<u8>),
@@ -1481,6 +1481,53 @@ impl DynamicDawgBinding {
         Self {
             shared: Arc::new(SharedDictionary {
                 backend: DynamicBackend::new(domain),
+                snapshots: SnapshotMemo::new(),
+            }),
+        }
+    }
+
+    /// Construct a DynamicDAWG directly from an already sorted, duplicate-free
+    /// binding snapshot.
+    ///
+    /// This crate-internal path lets family ABI combinators feed their linear
+    /// merge output directly into the minimal freeze-once builder without a
+    /// second sort, key clone, or sequence of incremental publications.
+    pub(crate) fn from_sorted_binding_entries(
+        domain: BindingUnitDomain,
+        entries: Vec<BindingEntry>,
+    ) -> Self {
+        debug_assert!(entries.windows(2).all(|pair| pair[0].term < pair[1].term));
+
+        let backend = match domain {
+            BindingUnitDomain::Byte => DynamicBackend::Byte(DynamicDawg::from_sorted_byte_entries(
+                entries.into_iter().map(|entry| {
+                    let BindingTerm::Bytes(term) = entry.term else {
+                        unreachable!("byte algebra result contains a non-byte key")
+                    };
+                    (term, entry.value.map(BindingValue::present))
+                }),
+            )),
+            BindingUnitDomain::UnicodeScalar => DynamicBackend::Unicode(
+                DynamicDawgChar::from_sorted_optional_entries(entries.into_iter().map(|entry| {
+                    let BindingTerm::Unicode(term) = entry.term else {
+                        unreachable!("Unicode algebra result contains a non-Unicode key")
+                    };
+                    (term, entry.value.map(BindingValue::present))
+                })),
+            ),
+            BindingUnitDomain::U64 => DynamicBackend::U64(
+                DynamicDawgU64::from_sorted_sequence_entries(entries.into_iter().map(|entry| {
+                    let BindingTerm::U64(term) = entry.term else {
+                        unreachable!("u64 algebra result contains a non-u64 key")
+                    };
+                    (term, entry.value.map(BindingValue::present))
+                })),
+            ),
+        };
+
+        Self {
+            shared: Arc::new(SharedDictionary {
+                backend,
                 snapshots: SnapshotMemo::new(),
             }),
         }

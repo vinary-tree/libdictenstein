@@ -5,7 +5,7 @@
 [FFI boundary analysis](../security/ffi-boundary.md) ·
 [Findings ledger](FINDINGS_LEDGER.md)
 
-This is the normative reference for the **41-function `ldict_*` C ABI** exported
+This is the normative reference for the **42-function `ldict_*` C ABI** exported
 by the libdictenstein cdylib — the project-owned surface above the family
 resource ABI. Every function is documented with its exact header signature, its
 preconditions, the **exact** set of statuses it can return (derived from the
@@ -16,7 +16,7 @@ Authoritative sources, in precedence order:
 
 1. [`bindings/api.json`](../../bindings/api.json) — the machine-readable model
    of this surface (symbols, enums, kinds, capabilities, marshalling laws),
-   enforced against `src/ffi.rs`, `include/libdictenstein.h`, and all 13
+   enforced against `src/ffi.rs`, `include/libdictenstein.h`, and all 16
    language facades by [`scripts/check-bindings.py`](../../scripts/check-bindings.py)
    (CI job `binding-contract`).
 2. [`include/libdictenstein.h`](../../include/libdictenstein.h) — the C header
@@ -56,7 +56,7 @@ evolution model (see the canonical
 | Constant | Value | Meaning | Caller check |
 |---|---|---|---|
 | `LDICT_ABI_VERSION` | 1 | Breaking-change counter for the `ldict_*` surface: layouts, ownership rules, status meanings. | **Exact equality** — refuse any other value. |
-| `LDICT_API_REVISION` | 5 | Additive counter: revision 5 adds the bounded entry cursor/reducer surface over `vt.dict.entry.v1`. | **At least** — a facade built against revision $`n`$ refuses a library reporting less than $`n`$. |
+| `LDICT_API_REVISION` | 6 | Additive counter: revision 5 added the bounded entry cursor/reducer surface; revision 6 adds snapshot-consistent native dictionary algebra. | **At least** — a facade built against revision $`n`$ refuses a library reporting less than $`n`$. |
 
 Every fallible function reports failure twice: as an `LdictStatus` return value
 (the machine channel) and as a human-readable message retrievable through
@@ -84,7 +84,7 @@ Returns `LDICT_ABI_VERSION` (currently `1`).
 LDICT_API uint32_t ldict_api_revision(void);
 ```
 
-Returns `LDICT_API_REVISION` (currently `5`).
+Returns `LDICT_API_REVISION` (currently `6`).
 
 - **Preconditions**: none.
 - **Statuses**: none — cannot fail.
@@ -191,6 +191,23 @@ Every fallible function's body runs inside `boundary()`:
    never leaves an uninitialized handle pointer. All other out-parameters are
    written only on `OK`, with the single documented exception of
    [`ldict_vocab_get_term`](#ldict_vocab_get_term).
+
+### 3.3 Dictionary algebra enums
+
+`LdictAlgebraOperation` defines the exact key-set operation: union,
+intersection, left difference, or symmetric difference. `LdictValueMerge`
+applies only when a retained key occurs in both inputs:
+
+| Policy | Value for a shared key with left `x` and right `y` |
+|---|---|
+| `FIRST` | `x` |
+| `LAST` | `y` |
+| `LATTICE_JOIN` | $`x \sqcup y`$ in the `Option<u64>` lattice: a present value dominates valueless membership; two values take `max` |
+| `LATTICE_MEET` | $`x \sqcap y`$: two present values take `min`; otherwise the result is valueless |
+
+Absence is a key-set fact and never enters the value lattice. The values zero
+and `UINT64_MAX` are ordinary present values, not sentinels. Unknown operation
+or merge-policy integers are rejected with `INVALID_ARGUMENT`.
 
 ---
 
@@ -576,13 +593,46 @@ call the resource vtable's `retain` first (the copy-not-retain law); a
 retained resource then outlives even `ldict_dictionary_free`. Repeated calls
 return the same context — the retain ledger is shared, not forked. Snapshots
 are captured through the resource vtable, never through `ldict_*`; the full
-walk protocol is in [§ 14](#14-the-snapshot-then-walk-consumer-loop).
+walk protocol is in [§ 15](#15-the-snapshot-then-walk-consumer-loop).
 
 - **Preconditions**: both pointers non-null; `dictionary` live.
 - **Statuses**: `OK` · `NULL_POINTER` · `PANIC`.
 - **Ownership**: the two words are borrowed; ownership begins only at an explicit `retain`.
 - **Thread-safety**: safe concurrently with any other call; the vtable operations behind the resource are themselves `PARALLEL_REENTRANT` (see [resource-producer.md](resource-producer.md#6-the-flag-truth-table)).
 - **Complexity**: $`\mathcal{O}(1)`$ — the retained resource was created with the handle.
+
+### `ldict_dictionary_algebra`
+
+```c
+LDICT_API LdictStatus ldict_dictionary_algebra(
+    const LdictDictionary* left,
+    const LdictDictionary* right,
+    uint32_t operation,
+    uint32_t value_merge,
+    LdictDictionary** out_dictionary);
+```
+
+Captures one immutable, lexicographically ordered revision from each input,
+performs the selected set operation with the selected shared-value policy, and
+materializes the duplicate-free sorted result through the DynamicDAWG
+freeze-once constructor. The result is mutable, owns an independent resource,
+and is unaffected by later mutations or destruction of either input.
+
+The merge is the familiar two-cursor algorithm. At each step, emit the lesser
+key when the operation retains its side; for equal keys, emit one merged entry
+for union/intersection or emit nothing for either difference; advance the
+cursor or cursors whose keys were consumed. This establishes both ordering and
+the linear bound:
+
+```math
+T(|L|,|R|)=\Theta(|L|+|R|), \qquad S=\mathcal{O}(|\mathrm{result}|).
+```
+
+- **Preconditions**: `left`, `right`, and `out_dictionary` non-null and live; both inputs have the same unit domain; `operation` and `value_merge` are named enum values.
+- **Statuses**: `OK` · `NULL_POINTER` · `INVALID_ARGUMENT` · `DOMAIN_MISMATCH` · `PROVIDER_ERROR` · `PANIC`.
+- **Ownership**: on entry, `*out_dictionary` is set to null. On `OK`, the caller owns the returned handle and releases it with `ldict_dictionary_free`; on failure, ownership is unchanged.
+- **Thread-safety**: safe concurrently with reads and writes. Each input revision is internally coherent, though the two captures are independent linearization points rather than a cross-dictionary transaction.
+- **Complexity**: linear in the two captured entry counts plus construction of the result. No hash table, comparison sort, per-entry ABI crossing, or incremental version publication is used.
 
 ### `ldict_dictionary_len`
 
@@ -645,7 +695,7 @@ LDICT_API LdictStatus ldict_dictionary_checkpoint(LdictDictionary* dictionary);
 ```
 
 Atomically persists the current revision and advances the committed WAL
-frontier ([persistence caveats, § 13](#13-persistence-path-caveats)).
+frontier ([persistence caveats, § 14](#14-persistence-path-caveats)).
 Persistent backends only.
 
 - **Preconditions**: `dictionary` non-null and live.
@@ -1036,7 +1086,7 @@ reports `0` with `OK`).
 
 ## 13. Bounded entry collection cursor
 
-Revision 5 exposes the optional `vt.dict.entry.v1` provider through project
+Revision 5 introduced the optional `vt.dict.entry.v1` provider through project
 status codes and an opaque owned cursor. Applications never copy the provider's
 two-word cursor or call its vtable directly.
 

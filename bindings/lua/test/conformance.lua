@@ -156,7 +156,7 @@ file:close()
 -- ---------------------------------------------------------------------------
 
 check(m.abi_version() == 1, "abi version == 1")
-check(m.api_revision() == 5, "api revision == 5")
+check(m.api_revision() == 6, "api revision == 6")
 
 do
   local dawg <close> = m.dynamic_dawg("unicode")

@@ -56,6 +56,57 @@ jobs:
           export LIBDICTENSTEIN_LIBRARY="$GITHUB_WORKSPACE/target/release/liblibdictenstein.so"
           python -m pytest -q bindings/python/tests/test_conformance.py bindings/python/tests/test_backends.py
 
+  julia:
+    name: Julia collections and algebra
+    needs: native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/checkout-dev-siblings
+      # yamllint disable-line rule:line-length
+      - uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32  # v3.0.2
+        with: { version: "1.10" }
+      - uses: actions/download-artifact@v7
+        with: { name: libdictenstein-so, path: target/release }
+      - name: Run package conformance and strict API documentation
+        env:
+          LIBDICTENSTEIN_LIBRARY: ${{ github.workspace }}/target/release/liblibdictenstein.so
+        run: |
+          parent="$(dirname "$GITHUB_WORKSPACE")"
+          mkdir -p target/julia-ci-env
+          julia --project=target/julia-ci-env -e '
+            using Pkg
+            Pkg.develop(path=ENV["GITHUB_WORKSPACE"] * "/../vinary-tree-interop/bindings/julia/VinaryTreeInterop")
+            Pkg.develop(path=ENV["GITHUB_WORKSPACE"] * "/bindings/julia/Libdictenstein")
+            Pkg.test("Libdictenstein")
+          '
+          julia --project=bindings/julia/Libdictenstein/docs -e '
+            using Pkg
+            Pkg.develop(path=ENV["GITHUB_WORKSPACE"] * "/../vinary-tree-interop/bindings/julia/VinaryTreeInterop")
+            Pkg.develop(path=ENV["GITHUB_WORKSPACE"] * "/bindings/julia/Libdictenstein")
+            Pkg.instantiate()
+            include("bindings/julia/Libdictenstein/docs/make.jl")
+          '
+
+  raku:
+    name: Raku collections and algebra
+    needs: native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/checkout-dev-siblings
+      # yamllint disable-line rule:line-length
+      - uses: Raku/setup-raku@b8b1a4ebe85ef112edfc65e9edc8c57735367e3f  # v1
+      - uses: actions/download-artifact@v7
+        with: { name: libdictenstein-so, path: target/release }
+      - name: Run NativeCall layout, collection, persistence, and algebra tests
+        env:
+          LIBDICTENSTEIN_LIBRARY: ${{ github.workspace }}/target/release/liblibdictenstein.so
+        run: >-
+          raku -Ibindings/raku/lib
+          -I../vinary-tree-interop/bindings/raku/lib
+          bindings/raku/t/01-conformance.rakutest
+
   go:
     name: Go (C1-C10)
     needs: native

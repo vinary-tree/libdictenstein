@@ -45,7 +45,7 @@ contains
   ! C1: identity constants are surfaced through the facade.
   subroutine test_identity()
     call check(abi_version() == 1, "abi_version == 1")
-    call check(api_revision() == 5, "api_revision == 5")
+    call check(api_revision() == 6, "api_revision == 6")
   end subroutine
 
   ! C2: construction reports its kind; close is idempotent (no double free).

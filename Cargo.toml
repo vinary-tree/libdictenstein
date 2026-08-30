@@ -376,3 +376,7 @@ required-features = ["persistent-artrie", "bench-internals"]
 
 [package.metadata.docs.rs]
 all-features = true
+
+# Keep this independently published repository from being captured by a Cargo
+# workspace merely because a source checkout is nested beneath one.
+[workspace]

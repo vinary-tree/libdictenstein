@@ -45,6 +45,8 @@
     "opam": "libdictenstein",
     "hackage": "libdictenstein",
     "luarocks": "libdictenstein",
+    "julia": "Libdictenstein",
+    "raku": "Libdictenstein",
     "_source": {
       "pypi": "bindings/python/pyproject.toml [project].name",
       "npm": "bindings/javascript/package.json .name",
@@ -57,7 +59,9 @@
       "fpm": "bindings/fortran/fpm.toml + fpm.publish.toml name",
       "opam": "bindings/ocaml/dune-project (package (name ...))",
       "hackage": "bindings/haskell/libdictenstein.cabal name",
-      "luarocks": "bindings/lua/libdictenstein-4.0.0rc5-1.rockspec package"
+      "luarocks": "bindings/lua/libdictenstein-4.0.0rc5-1.rockspec package",
+      "julia": "bindings/julia/Libdictenstein/Project.toml name",
+      "raku": "bindings/raku/META6.json name"
     }
   },
   "documentation": {
@@ -184,6 +188,20 @@
         "guide": "bindings/lua/README.md",
         "example": "bindings/lua/test/conformance.lua",
         "package": "bindings/lua/libdictenstein-4.0.0rc5-1.rockspec package"
+      },
+      "julia": {
+        "languages": [
+          "Julia"
+        ],
+        "guide": "bindings/julia/README.md",
+        "example": "bindings/julia/Libdictenstein/test/runtests.jl"
+      },
+      "raku": {
+        "languages": [
+          "Raku"
+        ],
+        "guide": "bindings/raku/README.md",
+        "example": "bindings/raku/t/01-conformance.rakutest"
       }
     }
   },
@@ -194,7 +212,7 @@
     "_source": "release pins in .github/workflows/release-bindings.yml; dev facade pins in bindings/go/go.mod, Package.swift, bindings/jvm/build.gradle.kts (test scope), bindings/clojure/project.clj (:test profile), and bindings/javascript/package.json (@vinary-tree/javascript-runtime). Recorded verbatim; tag existence is a release concern tracked in docs/bindings/FINDINGS_LEDGER.md (LDICT-B1)."
   },
   "abiVersion": 1,
-  "apiRevision": 5,
+  "apiRevision": 6,
   "cPrefix": "ldict_",
   "cHeader": "include/libdictenstein.h",
   "featureGates": {
@@ -216,6 +234,7 @@
     "nodeExpansion": "batched-contiguous-edges",
     "entryTraversal": "bounded-leased-entry-batches",
     "crudBatching": "single-crossing-contiguous-descriptors",
+    "algebra": "snapshot-linear-merge-to-freeze-once-dynamic-dawg",
     "errorChannel": "thread-local-last-error-message",
     "panicPolicy": "catch-unwind-to-status"
   },
@@ -320,6 +339,26 @@
         "LIMIT_EXCEEDED": 10,
         "PROVIDER_ERROR": 11,
         "BATCH_IN_USE": 12
+      }
+    },
+    "algebraOperation": {
+      "cType": "LdictAlgebraOperation",
+      "cPrefix": "LDICT_ALGEBRA_",
+      "values": {
+        "UNION": 1,
+        "INTERSECTION": 2,
+        "DIFFERENCE": 3,
+        "SYMMETRIC_DIFFERENCE": 4
+      }
+    },
+    "valueMerge": {
+      "cType": "LdictValueMerge",
+      "cPrefix": "LDICT_VALUE_MERGE_",
+      "values": {
+        "FIRST": 1,
+        "LAST": 2,
+        "LATTICE_JOIN": 3,
+        "LATTICE_MEET": 4
       }
     }
   },
@@ -503,6 +542,10 @@
     {
       "name": "ldict_dictionary_resource",
       "group": "handle"
+    },
+    {
+      "name": "ldict_dictionary_algebra",
+      "group": "algebra"
     },
     {
       "name": "ldict_dictionary_entries_open",
@@ -718,6 +761,14 @@
       ],
       "package": "maven"
     },
+    "julia": {
+      "root": "bindings/julia",
+      "parser": "julia-ccall",
+      "importLayers": [
+        "bindings/julia/Libdictenstein/src/Libdictenstein.jl"
+      ],
+      "package": "julia"
+    },
     "lua": {
       "root": "bindings/lua",
       "parser": "c-source",
@@ -741,6 +792,14 @@
         "bindings/python/src/libdictenstein/_native.py"
       ],
       "package": "pypi"
+    },
+    "raku": {
+      "root": "bindings/raku",
+      "parser": "raku-nativecall",
+      "importLayers": [
+        "bindings/raku/lib/Libdictenstein.rakumod"
+      ],
+      "package": "raku"
     },
     "ruby": {
       "root": "bindings/ruby",
@@ -786,6 +845,7 @@
       "goTag": "v4.0.0-rc.5",
       "hackage": "4.0.0",
       "luaRocks": "4.0.0rc5-1",
+      "juliaGeneral": "4.0.0-rc.5",
       "maven": "4.0.0-rc.5",
       "npm": "4.0.0-rc.5",
       "nuget": "4.0.0-rc.5",
@@ -793,6 +853,7 @@
       "pkgConfig": "4.0.0-rc.5",
       "pypi": "4.0.0rc5",
       "rubygems": "4.0.0.rc.5",
+      "zef": "4.0.0-rc.5",
       "swiftTag": "4.0.0-rc.5"
     },
     "distTag": "next"

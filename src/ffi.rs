@@ -3,9 +3,10 @@
 #[cfg(feature = "persistent-artrie")]
 use crate::bindings::PersistentARTrieBinding;
 use crate::bindings::{
-    BindingError, BindingUnitDomain, DoubleArrayTrieBinding, DynamicDawgBinding,
+    BindingEntry, BindingError, BindingUnitDomain, DoubleArrayTrieBinding, DynamicDawgBinding,
     OwnedDictionaryResource, ScdawgBinding,
 };
+use llattice::Lattice;
 use std::cell::RefCell;
 use std::ffi::{c_char, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -20,7 +21,7 @@ use vinary_tree_interop::{
 /// ABI version for the libdictenstein project API.
 pub const LDICT_ABI_VERSION: u32 = 1;
 /// Additive project API revision.
-pub const LDICT_API_REVISION: u32 = 5;
+pub const LDICT_API_REVISION: u32 = 6;
 
 /// DynamicDAWG backend identifier.
 pub const LDICT_KIND_DYNAMIC_DAWG: u32 = 1;
@@ -78,6 +79,34 @@ pub enum LdictStatus {
     ProviderError = 11,
     /// A cursor operation requires the current borrowed batch to be released.
     BatchInUse = 12,
+}
+
+/// Set operation over the exact keys of two immutable dictionary revisions.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LdictAlgebraOperation {
+    /// Keys present in either dictionary.
+    Union = 1,
+    /// Keys present in both dictionaries.
+    Intersection = 2,
+    /// Keys present in the left dictionary but not the right dictionary.
+    Difference = 3,
+    /// Keys present in exactly one dictionary.
+    SymmetricDifference = 4,
+}
+
+/// Value-conflict policy for a key present in both input dictionaries.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LdictValueMerge {
+    /// Preserve the left value.
+    First = 1,
+    /// Preserve the right value.
+    Last = 2,
+    /// Use the `Option<u64>` lattice join (optional maximum).
+    LatticeJoin = 3,
+    /// Use the `Option<u64>` lattice meet (shared optional minimum).
+    LatticeMeet = 4,
 }
 
 /// Optional u64 used by CRUD requests and responses.
@@ -176,6 +205,13 @@ pub struct LdictDictionary {
     resource: OwnedDictionaryResource,
 }
 
+impl LdictDictionary {
+    fn new(binding: LdictBinding) -> Self {
+        let resource = binding.resource();
+        Self { binding, resource }
+    }
+}
+
 enum LdictBinding {
     Dynamic(DynamicDawgBinding),
     DoubleArray(DoubleArrayTrieBinding),
@@ -220,6 +256,16 @@ impl LdictBinding {
                 }
                 capabilities
             }
+        }
+    }
+
+    fn domain(&self) -> BindingUnitDomain {
+        match self {
+            Self::Dynamic(binding) => binding.domain(),
+            Self::DoubleArray(binding) => binding.domain(),
+            Self::Scdawg(binding) => binding.domain(),
+            #[cfg(feature = "persistent-artrie")]
+            Self::Persistent(binding) => binding.domain(),
         }
     }
 
@@ -426,6 +472,161 @@ fn binding<T>(result: Result<T, BindingError>) -> Result<T, (LdictStatus, String
     })
 }
 
+fn algebra_operation(value: u32) -> Result<LdictAlgebraOperation, (LdictStatus, String)> {
+    match value {
+        1 => Ok(LdictAlgebraOperation::Union),
+        2 => Ok(LdictAlgebraOperation::Intersection),
+        3 => Ok(LdictAlgebraOperation::Difference),
+        4 => Ok(LdictAlgebraOperation::SymmetricDifference),
+        _ => Err((
+            LdictStatus::InvalidArgument,
+            format!("unknown dictionary algebra operation {value}"),
+        )),
+    }
+}
+
+fn value_merge_policy(value: u32) -> Result<LdictValueMerge, (LdictStatus, String)> {
+    match value {
+        1 => Ok(LdictValueMerge::First),
+        2 => Ok(LdictValueMerge::Last),
+        3 => Ok(LdictValueMerge::LatticeJoin),
+        4 => Ok(LdictValueMerge::LatticeMeet),
+        _ => Err((
+            LdictStatus::InvalidArgument,
+            format!("unknown dictionary value-merge policy {value}"),
+        )),
+    }
+}
+
+#[inline]
+fn merge_optional_values(
+    left: Option<u64>,
+    right: Option<u64>,
+    policy: LdictValueMerge,
+) -> Option<u64> {
+    match policy {
+        LdictValueMerge::First => left,
+        LdictValueMerge::Last => right,
+        LdictValueMerge::LatticeJoin => left.join(&right),
+        LdictValueMerge::LatticeMeet => left.meet(&right),
+    }
+}
+
+fn next_algebra_entry(
+    entries: &mut impl Iterator<Item = Result<BindingEntry, VtStatus>>,
+) -> Result<Option<BindingEntry>, (LdictStatus, String)> {
+    entries.next().transpose().map_err(|status| {
+        provider_status(status.to_raw(), "dictionary algebra snapshot")
+            .err()
+            .unwrap_or((
+                LdictStatus::ProviderError,
+                format!("dictionary algebra snapshot returned unexpected status {status:?}"),
+            ))
+    })
+}
+
+fn algebra_entries(
+    left: &OwnedDictionaryResource,
+    right: &OwnedDictionaryResource,
+    operation: LdictAlgebraOperation,
+    value_merge: LdictValueMerge,
+) -> Result<Vec<BindingEntry>, (LdictStatus, String)> {
+    let mut left_entries = left.entries();
+    let mut right_entries = right.entries();
+    let left_len = left_entries.size_hint().1.unwrap_or(0);
+    let right_len = right_entries.size_hint().1.unwrap_or(0);
+    let capacity = match operation {
+        LdictAlgebraOperation::Union | LdictAlgebraOperation::SymmetricDifference => {
+            left_len.saturating_add(right_len)
+        }
+        LdictAlgebraOperation::Intersection => left_len.min(right_len),
+        LdictAlgebraOperation::Difference => left_len,
+    };
+    let mut result = Vec::with_capacity(capacity);
+    let mut left_entry = next_algebra_entry(&mut left_entries)?;
+    let mut right_entry = next_algebra_entry(&mut right_entries)?;
+
+    loop {
+        match (left_entry.as_ref(), right_entry.as_ref()) {
+            (Some(left_current), Some(right_current)) => {
+                match left_current.term.cmp(&right_current.term) {
+                    std::cmp::Ordering::Less => {
+                        if matches!(
+                            operation,
+                            LdictAlgebraOperation::Union
+                                | LdictAlgebraOperation::Difference
+                                | LdictAlgebraOperation::SymmetricDifference
+                        ) {
+                            result.push(left_entry.take().expect("left entry is present"));
+                        }
+                        left_entry = next_algebra_entry(&mut left_entries)?;
+                    }
+                    std::cmp::Ordering::Greater => {
+                        if matches!(
+                            operation,
+                            LdictAlgebraOperation::Union
+                                | LdictAlgebraOperation::SymmetricDifference
+                        ) {
+                            result.push(right_entry.take().expect("right entry is present"));
+                        }
+                        right_entry = next_algebra_entry(&mut right_entries)?;
+                    }
+                    std::cmp::Ordering::Equal => {
+                        if matches!(
+                            operation,
+                            LdictAlgebraOperation::Union | LdictAlgebraOperation::Intersection
+                        ) {
+                            let left_current = left_entry.take().expect("left entry is present");
+                            result.push(BindingEntry {
+                                term: left_current.term,
+                                value: merge_optional_values(
+                                    left_current.value,
+                                    right_current.value,
+                                    value_merge,
+                                ),
+                            });
+                        }
+                        left_entry = next_algebra_entry(&mut left_entries)?;
+                        right_entry = next_algebra_entry(&mut right_entries)?;
+                    }
+                }
+            }
+            (Some(_), None) => {
+                if matches!(
+                    operation,
+                    LdictAlgebraOperation::Union
+                        | LdictAlgebraOperation::Difference
+                        | LdictAlgebraOperation::SymmetricDifference
+                ) {
+                    result.push(left_entry.take().expect("left entry is present"));
+                }
+                left_entry = next_algebra_entry(&mut left_entries)?;
+            }
+            (None, Some(_)) => {
+                if matches!(
+                    operation,
+                    LdictAlgebraOperation::Union | LdictAlgebraOperation::SymmetricDifference
+                ) {
+                    result.push(right_entry.take().expect("right entry is present"));
+                }
+                right_entry = next_algebra_entry(&mut right_entries)?;
+            }
+            (None, None) => break,
+        }
+    }
+
+    Ok(result)
+}
+
+fn materialize_algebra_result(
+    domain: BindingUnitDomain,
+    entries: Vec<BindingEntry>,
+) -> LdictDictionary {
+    LdictDictionary::new(LdictBinding::Dynamic(
+        DynamicDawgBinding::from_sorted_binding_entries(domain, entries),
+    ))
+}
+
 unsafe fn slice<'a, T>(
     data: *const T,
     len: usize,
@@ -606,11 +807,7 @@ pub unsafe extern "C" fn ldict_dynamic_dawg_new(
         }
         out_dictionary.write(ptr::null_mut());
         let binding = LdictBinding::Dynamic(DynamicDawgBinding::new(domain(unit_domain)?));
-        let resource = binding.resource();
-        out_dictionary.write(Box::into_raw(Box::new(LdictDictionary {
-            binding,
-            resource,
-        })));
+        out_dictionary.write(Box::into_raw(Box::new(LdictDictionary::new(binding))));
         Ok(LdictStatus::Ok)
     })
 }
@@ -657,11 +854,7 @@ pub unsafe extern "C" fn ldict_double_array_trie_new(
             BindingUnitDomain::U64 => unreachable!(),
         };
         let binding = LdictBinding::DoubleArray(trie);
-        let resource = binding.resource();
-        out_dictionary.write(Box::into_raw(Box::new(LdictDictionary {
-            binding,
-            resource,
-        })));
+        out_dictionary.write(Box::into_raw(Box::new(LdictDictionary::new(binding))));
         Ok(LdictStatus::Ok)
     })
 }
@@ -690,11 +883,7 @@ pub unsafe extern "C" fn ldict_scdawg_new(
                 ))
             }
         };
-        let resource = binding.resource();
-        out_dictionary.write(Box::into_raw(Box::new(LdictDictionary {
-            binding,
-            resource,
-        })));
+        out_dictionary.write(Box::into_raw(Box::new(LdictDictionary::new(binding))));
         Ok(LdictStatus::Ok)
     })
 }
@@ -742,11 +931,7 @@ unsafe fn persistent_open_or_create(
             }
         };
         let binding = LdictBinding::Persistent(binding(persistent)?);
-        let resource = binding.resource();
-        out_dictionary.write(Box::into_raw(Box::new(LdictDictionary {
-            binding,
-            resource,
-        })));
+        out_dictionary.write(Box::into_raw(Box::new(LdictDictionary::new(binding))));
         Ok(LdictStatus::Ok)
     })
 }
@@ -910,6 +1095,55 @@ pub unsafe extern "C" fn ldict_dictionary_resource(
             return Err((LdictStatus::NullPointer, "out_resource is null".into()));
         }
         out_resource.write(dictionary.resource.as_raw());
+        Ok(LdictStatus::Ok)
+    })
+}
+
+/// Materialize an algebraic combination of two immutable dictionary revisions.
+///
+/// Both inputs are captured through their snapshot-safe lexicographic entry
+/// providers. A single linear merge produces a sorted, duplicate-free stream,
+/// which is handed directly to the DynamicDAWG freeze-once builder. The result
+/// is mutable and independent of subsequent input mutations.
+///
+/// # Safety
+/// `left`, `right`, and `out_dictionary` must be valid pointers. On success the
+/// caller owns `*out_dictionary` and must release it with
+/// [`ldict_dictionary_free`].
+#[no_mangle]
+pub unsafe extern "C" fn ldict_dictionary_algebra(
+    left: *const LdictDictionary,
+    right: *const LdictDictionary,
+    operation: u32,
+    value_merge: u32,
+    out_dictionary: *mut *mut LdictDictionary,
+) -> LdictStatus {
+    boundary(|| {
+        let left = left
+            .as_ref()
+            .ok_or((LdictStatus::NullPointer, "left dictionary is null".into()))?;
+        let right = right
+            .as_ref()
+            .ok_or((LdictStatus::NullPointer, "right dictionary is null".into()))?;
+        if out_dictionary.is_null() {
+            return Err((LdictStatus::NullPointer, "out_dictionary is null".into()));
+        }
+        out_dictionary.write(ptr::null_mut());
+
+        let operation = algebra_operation(operation)?;
+        let value_merge = value_merge_policy(value_merge)?;
+        let domain = left.binding.domain();
+        if domain != right.binding.domain() {
+            return Err((
+                LdictStatus::DomainMismatch,
+                "dictionary algebra requires equal unit domains".into(),
+            ));
+        }
+
+        let entries = algebra_entries(&left.resource, &right.resource, operation, value_merge)?;
+        out_dictionary.write(Box::into_raw(Box::new(materialize_algebra_result(
+            domain, entries,
+        ))));
         Ok(LdictStatus::Ok)
     })
 }

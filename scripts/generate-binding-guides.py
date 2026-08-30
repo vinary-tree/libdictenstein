@@ -42,6 +42,8 @@ GUIDES = {
     "ocaml": Guide("OCaml", "OCaml 5", "Tier 3", "opam `libdictenstein`", "C stubs over the stable ABI", "Use explicit close functions or `Fun.protect`; finalizers only protect abandoned values.", "Statuses become typed OCaml exceptions with copied diagnostics.", "bindings/ocaml/vinary_tree_libdictenstein.mli", "bindings/ocaml/test/conformance.ml", "opam exec -- dune runtest --root bindings/ocaml"),
     "haskell": Guide("Haskell", "GHC/Cabal", "Tier 3", "Hackage `libdictenstein`", "Haskell FFI plus retained interop resources", "Use `bracket`/`withDictionary`; mask asynchronous exceptions across acquire/release.", "Failures become typed Haskell exceptions/status values.", "bindings/haskell/src/VinaryTree/Libdictenstein.hs", "bindings/haskell/test/Conformance.hs", "cabal test --project-file=bindings/haskell/cabal.project all"),
     "lua": Guide("Lua", "Lua 5.4+", "Tier 3", "LuaRocks `libdictenstein`", "C userdata module over the ABI", "Use to-be-closed variables or `:close()`; `__gc` is fallback cleanup.", "Failures become Lua errors carrying the symbolic status and diagnostic.", "bindings/lua/src/libdictenstein_lua.c", "bindings/lua/test/conformance.lua", "lua bindings/lua/test/conformance.lua"),
+    "julia": Guide("Julia", "Julia 1.10+", "Tier 2", "Julia General `Libdictenstein`", "`ccall` over the stable C ABI plus `VinaryTreeInterop` snapshots", "Call `close` in `finally`; finalizers contain abandoned handles but do not define resource lifetime.", "Native statuses become `NativeError` values containing the exact operation and copied diagnostic.", "bindings/julia/Libdictenstein/src/Libdictenstein.jl", "bindings/julia/Libdictenstein/test/runtests.jl", "julia --project=bindings/julia/Libdictenstein -e 'using Pkg; Pkg.test()'"),
+    "raku": Guide("Raku", "Rakudo 2025.01+", "Tier 3", "Zef `Libdictenstein`", "NativeCall over the stable C ABI plus `Vinary-Tree-Interop` snapshots", "Call `close` in `LEAVE`/`CATCH` paths; `DESTROY` is fallback containment, and explicitly close iterators after early termination.", "Native statuses become `X::Libdictenstein` exceptions containing the exact operation and copied diagnostic.", "bindings/raku/lib/Libdictenstein.rakumod", "bindings/raku/t/01-conformance.rakutest", "raku -Ibindings/raku/lib -I../vinary-tree-interop/bindings/raku/lib bindings/raku/t/01-conformance.rakutest"),
 }
 
 def block(g: Guide) -> str:
@@ -184,6 +186,20 @@ provides the idiomatic generic-for triple. `dictionary:entry_cursor(limits)`
 exposes explicit `:next()`, metadata, and idempotent `:close()` for bounded
 streaming. Lua 5.4 to-be-closed variables provide lexical cleanup and `__gc`
 only contains abandoned userdata."""
+    elif g.name == "Julia":
+        collection_section = """Every dictionary is an `AbstractDict` whose key type follows its
+byte, Unicode-scalar, or `UInt64`-token domain. Ordinary `iterate`, `keys`,
+`values`, `haskey`, indexing, mutation, `merge`, `intersect`, and `setdiff`
+therefore compose with Julia's standard collection algorithms. Iteration pins
+one immutable retained snapshot and closes it at exhaustion or exception;
+callers close a dictionary explicitly when its native lifetime ends."""
+    elif g.name == "Raku":
+        collection_section = """Every dictionary implements `Associative` and `Iterable`, so
+postcircumfix lookup, `:exists`, assignment, deletion, `elems`, `Seq`, and
+ordinary `for` loops use familiar Raku protocols. Iteration owns one immutable
+retained snapshot and closes it after full drain. For an early stop, obtain
+`iterator`, scope it with `LEAVE`, and call its idempotent `close`; `DESTROY`
+only contains an abandoned iterator."""
     else:
         raise AssertionError(f"collection documentation is missing for {g.name}")
     return f"""{MARKER}
