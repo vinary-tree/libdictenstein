@@ -77,6 +77,66 @@ func TestEntryCollectionsSnapshotDomainsAndValues(t *testing.T) {
 	}
 }
 
+func TestNativeDictionaryAlgebra(t *testing.T) {
+	left, err := ld.NewDynamicDawg(ld.UnicodeScalarDomain)
+	must(t, err)
+	defer left.Close()
+	right, err := ld.NewDynamicDawg(ld.UnicodeScalarDomain)
+	must(t, err)
+	defer right.Close()
+	_, err = left.PutAll([]ld.Entry{{Term: "a", Value: id(1)}, {Term: "shared", Value: id(7)}, {Term: "valueless"}})
+	must(t, err)
+	_, err = right.PutAll([]ld.Entry{{Term: "b", Value: id(2)}, {Term: "shared", Value: id(11)}, {Term: "valueless", Value: id(5)}})
+	must(t, err)
+
+	joined, err := left.UnionWith(right.Dictionary, ld.LatticeJoinValue)
+	must(t, err)
+	defer joined.Close()
+	common, err := left.Intersection(right.Dictionary)
+	must(t, err)
+	defer common.Close()
+	onlyLeft, err := left.Difference(right.Dictionary)
+	must(t, err)
+	defer onlyLeft.Close()
+	exclusive, err := left.SymmetricDifference(right.Dictionary)
+	must(t, err)
+	defer exclusive.Close()
+
+	if size, sizeErr := joined.Len(); sizeErr != nil || size != 4 {
+		t.Fatalf("union size = %d, %v", size, sizeErr)
+	}
+	shared, err := joined.Get("shared")
+	must(t, err)
+	valueless, err := joined.Get("valueless")
+	must(t, err)
+	if shared.Value == nil || *shared.Value != 11 || valueless.Value == nil || *valueless.Value != 5 {
+		t.Fatalf("union values = %#v, %#v", shared, valueless)
+	}
+	shared, err = common.Get("shared")
+	must(t, err)
+	valueless, err = common.Get("valueless")
+	must(t, err)
+	if shared.Value == nil || *shared.Value != 7 || valueless.Value != nil {
+		t.Fatalf("intersection values = %#v, %#v", shared, valueless)
+	}
+	if present, containsErr := onlyLeft.Contains("a"); containsErr != nil || !present {
+		t.Fatalf("difference lacks a: %v", containsErr)
+	}
+	if size, sizeErr := exclusive.Len(); sizeErr != nil || size != 2 {
+		t.Fatalf("symmetric difference size = %d, %v", size, sizeErr)
+	}
+	_, err = left.Put("later", id(99))
+	must(t, err)
+	if present, containsErr := joined.Contains("later"); containsErr != nil || present {
+		t.Fatalf("snapshot union observed later mutation: %v", containsErr)
+	}
+	inserted, err := joined.Put("mutable-result", id(23))
+	must(t, err)
+	if !inserted {
+		t.Fatal("algebra result was not mutable")
+	}
+}
+
 func TestEntrySeqEarlyBreakAndExplicitCancel(t *testing.T) {
 	dictionary, err := ld.NewDynamicDawg(ld.UnicodeScalarDomain)
 	must(t, err)

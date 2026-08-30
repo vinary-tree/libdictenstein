@@ -696,6 +696,10 @@
         "contains-substring?",
         "frequency",
         "vocabulary-term",
+        "union",
+        "intersection",
+        "difference",
+        "symmetric-difference",
         "close!"
       ]
     },

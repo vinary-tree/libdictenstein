@@ -3,10 +3,10 @@
 #[cfg(feature = "persistent-artrie")]
 use crate::bindings::PersistentARTrieBinding;
 use crate::bindings::{
-    BindingEntry, BindingError, BindingUnitDomain, DoubleArrayTrieBinding, DynamicDawgBinding,
+    dictionary_algebra, BindingAlgebraError, BindingAlgebraOperation, BindingError,
+    BindingUnitDomain, BindingValueMerge, DoubleArrayTrieBinding, DynamicDawgBinding,
     OwnedDictionaryResource, ScdawgBinding,
 };
-use llattice::Lattice;
 use std::cell::RefCell;
 use std::ffi::{c_char, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -472,12 +472,12 @@ fn binding<T>(result: Result<T, BindingError>) -> Result<T, (LdictStatus, String
     })
 }
 
-fn algebra_operation(value: u32) -> Result<LdictAlgebraOperation, (LdictStatus, String)> {
+fn algebra_operation(value: u32) -> Result<BindingAlgebraOperation, (LdictStatus, String)> {
     match value {
-        1 => Ok(LdictAlgebraOperation::Union),
-        2 => Ok(LdictAlgebraOperation::Intersection),
-        3 => Ok(LdictAlgebraOperation::Difference),
-        4 => Ok(LdictAlgebraOperation::SymmetricDifference),
+        1 => Ok(BindingAlgebraOperation::Union),
+        2 => Ok(BindingAlgebraOperation::Intersection),
+        3 => Ok(BindingAlgebraOperation::Difference),
+        4 => Ok(BindingAlgebraOperation::SymmetricDifference),
         _ => Err((
             LdictStatus::InvalidArgument,
             format!("unknown dictionary algebra operation {value}"),
@@ -485,146 +485,17 @@ fn algebra_operation(value: u32) -> Result<LdictAlgebraOperation, (LdictStatus, 
     }
 }
 
-fn value_merge_policy(value: u32) -> Result<LdictValueMerge, (LdictStatus, String)> {
+fn value_merge_policy(value: u32) -> Result<BindingValueMerge, (LdictStatus, String)> {
     match value {
-        1 => Ok(LdictValueMerge::First),
-        2 => Ok(LdictValueMerge::Last),
-        3 => Ok(LdictValueMerge::LatticeJoin),
-        4 => Ok(LdictValueMerge::LatticeMeet),
+        1 => Ok(BindingValueMerge::First),
+        2 => Ok(BindingValueMerge::Last),
+        3 => Ok(BindingValueMerge::LatticeJoin),
+        4 => Ok(BindingValueMerge::LatticeMeet),
         _ => Err((
             LdictStatus::InvalidArgument,
             format!("unknown dictionary value-merge policy {value}"),
         )),
     }
-}
-
-#[inline]
-fn merge_optional_values(
-    left: Option<u64>,
-    right: Option<u64>,
-    policy: LdictValueMerge,
-) -> Option<u64> {
-    match policy {
-        LdictValueMerge::First => left,
-        LdictValueMerge::Last => right,
-        LdictValueMerge::LatticeJoin => left.join(&right),
-        LdictValueMerge::LatticeMeet => left.meet(&right),
-    }
-}
-
-fn next_algebra_entry(
-    entries: &mut impl Iterator<Item = Result<BindingEntry, VtStatus>>,
-) -> Result<Option<BindingEntry>, (LdictStatus, String)> {
-    entries.next().transpose().map_err(|status| {
-        provider_status(status.to_raw(), "dictionary algebra snapshot")
-            .err()
-            .unwrap_or((
-                LdictStatus::ProviderError,
-                format!("dictionary algebra snapshot returned unexpected status {status:?}"),
-            ))
-    })
-}
-
-fn algebra_entries(
-    left: &OwnedDictionaryResource,
-    right: &OwnedDictionaryResource,
-    operation: LdictAlgebraOperation,
-    value_merge: LdictValueMerge,
-) -> Result<Vec<BindingEntry>, (LdictStatus, String)> {
-    let mut left_entries = left.entries();
-    let mut right_entries = right.entries();
-    let left_len = left_entries.size_hint().1.unwrap_or(0);
-    let right_len = right_entries.size_hint().1.unwrap_or(0);
-    let capacity = match operation {
-        LdictAlgebraOperation::Union | LdictAlgebraOperation::SymmetricDifference => {
-            left_len.saturating_add(right_len)
-        }
-        LdictAlgebraOperation::Intersection => left_len.min(right_len),
-        LdictAlgebraOperation::Difference => left_len,
-    };
-    let mut result = Vec::with_capacity(capacity);
-    let mut left_entry = next_algebra_entry(&mut left_entries)?;
-    let mut right_entry = next_algebra_entry(&mut right_entries)?;
-
-    loop {
-        match (left_entry.as_ref(), right_entry.as_ref()) {
-            (Some(left_current), Some(right_current)) => {
-                match left_current.term.cmp(&right_current.term) {
-                    std::cmp::Ordering::Less => {
-                        if matches!(
-                            operation,
-                            LdictAlgebraOperation::Union
-                                | LdictAlgebraOperation::Difference
-                                | LdictAlgebraOperation::SymmetricDifference
-                        ) {
-                            result.push(left_entry.take().expect("left entry is present"));
-                        }
-                        left_entry = next_algebra_entry(&mut left_entries)?;
-                    }
-                    std::cmp::Ordering::Greater => {
-                        if matches!(
-                            operation,
-                            LdictAlgebraOperation::Union
-                                | LdictAlgebraOperation::SymmetricDifference
-                        ) {
-                            result.push(right_entry.take().expect("right entry is present"));
-                        }
-                        right_entry = next_algebra_entry(&mut right_entries)?;
-                    }
-                    std::cmp::Ordering::Equal => {
-                        if matches!(
-                            operation,
-                            LdictAlgebraOperation::Union | LdictAlgebraOperation::Intersection
-                        ) {
-                            let left_current = left_entry.take().expect("left entry is present");
-                            result.push(BindingEntry {
-                                term: left_current.term,
-                                value: merge_optional_values(
-                                    left_current.value,
-                                    right_current.value,
-                                    value_merge,
-                                ),
-                            });
-                        }
-                        left_entry = next_algebra_entry(&mut left_entries)?;
-                        right_entry = next_algebra_entry(&mut right_entries)?;
-                    }
-                }
-            }
-            (Some(_), None) => {
-                if matches!(
-                    operation,
-                    LdictAlgebraOperation::Union
-                        | LdictAlgebraOperation::Difference
-                        | LdictAlgebraOperation::SymmetricDifference
-                ) {
-                    result.push(left_entry.take().expect("left entry is present"));
-                }
-                left_entry = next_algebra_entry(&mut left_entries)?;
-            }
-            (None, Some(_)) => {
-                if matches!(
-                    operation,
-                    LdictAlgebraOperation::Union | LdictAlgebraOperation::SymmetricDifference
-                ) {
-                    result.push(right_entry.take().expect("right entry is present"));
-                }
-                right_entry = next_algebra_entry(&mut right_entries)?;
-            }
-            (None, None) => break,
-        }
-    }
-
-    Ok(result)
-}
-
-fn materialize_algebra_result(
-    domain: BindingUnitDomain,
-    entries: Vec<BindingEntry>,
-) -> LdictDictionary {
-    LdictDictionary::new(LdictBinding::Dynamic(
-        DynamicDawgBinding::from_sorted_binding_entries(domain, entries),
-    ))
 }
 
 unsafe fn slice<'a, T>(
@@ -1140,9 +1011,23 @@ pub unsafe extern "C" fn ldict_dictionary_algebra(
             ));
         }
 
-        let entries = algebra_entries(&left.resource, &right.resource, operation, value_merge)?;
-        out_dictionary.write(Box::into_raw(Box::new(materialize_algebra_result(
-            domain, entries,
+        let result = dictionary_algebra(&left.resource, &right.resource, operation, value_merge)
+            .map_err(|error| match error {
+                BindingAlgebraError::DomainMismatch => (
+                    LdictStatus::DomainMismatch,
+                    "dictionary algebra requires equal unit domains".into(),
+                ),
+                BindingAlgebraError::Provider(status) => {
+                    provider_status(status.to_raw(), "dictionary algebra")
+                        .err()
+                        .unwrap_or((
+                            LdictStatus::ProviderError,
+                            format!("dictionary algebra returned unexpected status {status:?}"),
+                        ))
+                }
+            })?;
+        out_dictionary.write(Box::into_raw(Box::new(LdictDictionary::new(
+            LdictBinding::Dynamic(result),
         ))));
         Ok(LdictStatus::Ok)
     })

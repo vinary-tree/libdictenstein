@@ -108,3 +108,30 @@ def test_byte_and_u64_iteration_preserve_native_domains() -> None:
             ((1, 9), None),
             ((2,), 2),
         ]
+
+
+def test_native_algebra_uses_python_set_operators_and_value_policies() -> None:
+    with (
+        libdictenstein.DynamicDawg() as left,
+        libdictenstein.DynamicDawg() as right,
+    ):
+        left.update({"a": 1, "shared": 7, "valueless": None})
+        right.update({"b": 2, "shared": 11, "valueless": 5})
+
+        with left.union(right, libdictenstein.ValueMerge.LATTICE_JOIN) as joined:
+            assert dict(joined) == {
+                "a": 1,
+                "b": 2,
+                "shared": 11,
+                "valueless": 5,
+            }
+            left["later"] = 99
+            assert "later" not in joined
+            joined["mutable-result"] = 23
+
+        with left & right as common:
+            assert dict(common) == {"shared": 7, "valueless": None}
+        with left - right as only_left:
+            assert dict(only_left) == {"a": 1, "later": 99}
+        with left ^ right as exclusive:
+            assert dict(exclusive) == {"a": 1, "b": 2, "later": 99}

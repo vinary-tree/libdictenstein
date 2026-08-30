@@ -46,6 +46,56 @@ GUIDES = {
     "raku": Guide("Raku", "Rakudo 2025.01+", "Tier 3", "Zef `Libdictenstein`", "NativeCall over the stable C ABI plus `Vinary-Tree-Interop` snapshots", "Call `close` in `LEAVE`/`CATCH` paths; `DESTROY` is fallback containment, and explicitly close iterators after early termination.", "Native statuses become `X::Libdictenstein` exceptions containing the exact operation and copied diagnostic.", "bindings/raku/lib/Libdictenstein.rakumod", "bindings/raku/t/01-conformance.rakutest", "raku -Ibindings/raku/lib -I../vinary-tree-interop/bindings/raku/lib bindings/raku/t/01-conformance.rakutest"),
 }
 
+
+ALGEBRA_EXAMPLES = {
+    "C": ("c", "LdictDictionary *joined = NULL;\nLdictStatus status = ldict_dictionary_algebra(\n    left, right, LDICT_ALGEBRA_UNION, LDICT_VALUE_LATTICE_JOIN, &joined);\nif (status == LDICT_OK) ldict_dictionary_free(joined);"),
+    "C++": ("cpp", "auto joined = left.set_union(right, value_merge::lattice_join);"),
+    "Python": ("python", "with left.union(right, ValueMerge.LATTICE_JOIN) as joined:\n    print(len(joined))"),
+    "JVM": ("java", "try (var joined = left.union(right, ValueMerge.LATTICE_JOIN)) {\n    System.out.println(joined.size());\n}"),
+    "Clojure": ("clojure", "(with-open [joined (d/union left right {:value-merge :lattice-join})]\n  (println (d/size joined)))"),
+    "JavaScript family": ("javascript", "using joined = left.union(right, \"lattice-join\");\nusing common = left.intersection(right);"),
+    ".NET": ("csharp", "using var joined = left.Union(right, ValueMerge.LatticeJoin);\nusing var common = left & right;"),
+    "Go": ("go", "joined, err := left.UnionWith(right, libdictenstein.LatticeJoinValue)\nif err != nil { return err }\ndefer joined.Close()\ncount, err := joined.Len()\nif err != nil { return err }\nfmt.Println(count)"),
+    "Swift": ("swift", "let joined = try left.union(right, valueMerge: .latticeJoin)\ndefer { joined.close() }"),
+    "Ruby": ("ruby", "joined = left.union(right, value_merge: LD::ValueMerge::LATTICE_JOIN)\nbegin\n  puts joined.length\nensure\n  joined.close\nend"),
+    "Fortran": ("fortran", "call left%set_union(right, joined, value_merge_lattice_join, status)\nif (status /= ldict_ok) error stop \"union failed\"\ncall joined%close()"),
+    "OCaml": ("ocaml", "let joined = union ~value_merge:Lattice_join left right in\nFun.protect ~finally:(fun () -> close joined)\n  (fun () -> Printf.printf \"%d\\n\" (length joined))"),
+    "Haskell": ("haskell", "bracket (algebra Union LatticeJoin left right) close $ \\joined ->\n  dictionaryLength joined >>= print"),
+    "Lua": ("lua", "local joined <close> = left:union(right, \"lattice_join\")\nlocal common <close> = left & right"),
+    "Julia": ("julia", "joined = algebra(left, right, ALGEBRA_UNION, VALUE_MERGE_LATTICE_JOIN)\ntry\n    println(length(joined))\nfinally\n    close(joined)\nend"),
+    "Raku": ("raku", "my $joined = $left.union($right, merge => VALUE-MERGE-LATTICE-JOIN);\nLEAVE $joined.close;"),
+}
+
+
+def algebra_section(g: Guide) -> str:
+    language, example = ALGEBRA_EXAMPLES[g.name]
+    return f"""## Snapshot-consistent dictionary algebra
+
+Every facade exposes native union, intersection, left difference, and
+symmetric difference. The operation captures one immutable revision from each
+input; those two captures are independent, and later mutations cannot alter
+the result. Inputs must use the same byte, Unicode-scalar, or `u64` term
+domain.
+
+The producer merges the two lexicographically ordered entry streams once and
+feeds the sorted, duplicate-free output directly to the DynamicDAWG
+freeze-once builder. For input cardinalities $`|A|`$ and $`|B|`$, this is
+$`\\Theta(|A|+|B|)`$ work plus $`\\Theta(|R|)`$ result storage. It avoids a
+host-language hash table, per-entry foreign calls, and repeated mutable graph
+publication. The returned DynamicDAWG is independently mutable.
+
+Keys present in both inputs use an explicit optional-`u64` value policy:
+left/first, right/last, lattice join (optional maximum), or lattice meet
+(shared optional minimum). Valueless membership remains distinct from absence
+and from the value zero. Union defaults to right/last and intersection defaults
+to lattice meet; difference operations have no overlapping output key, so a
+value policy cannot affect them.
+
+```{language}
+{example}
+```
+"""
+
 def block(g: Guide) -> str:
     benchmark_section = ""
     if g.name == "C":
@@ -270,6 +320,8 @@ sentinel and empty terms remain valid when supported.
 
 {collection_section}
 {benchmark_section}
+
+{algebra_section(g)}
 
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk

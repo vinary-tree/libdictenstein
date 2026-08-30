@@ -102,6 +102,40 @@ final class BackendIntegrationTest {
         }
     }
 
+    @Test
+    void nativeAlgebraIsSnapshotBasedMutableAndValueAware() {
+        try (var left = new DynamicDawg(); var right = new DynamicDawg()) {
+            left.putAllStrings(Map.of(
+                    "a", OptionalLong.of(1),
+                    "shared", OptionalLong.of(7),
+                    "valueless", OptionalLong.empty()));
+            right.putAllStrings(Map.of(
+                    "b", OptionalLong.of(2),
+                    "shared", OptionalLong.of(11),
+                    "valueless", OptionalLong.of(5)));
+
+            try (var joined = left.union(right, ValueMerge.LATTICE_JOIN);
+                 var common = left.intersection(right);
+                 var onlyLeft = left.difference(right);
+                 var exclusive = left.symmetricDifference(right)) {
+                assertEquals(4, joined.size());
+                assertEquals(new Dictionary.Lookup(true, OptionalLong.of(11)), joined.get("shared"));
+                assertEquals(new Dictionary.Lookup(true, OptionalLong.of(5)), joined.get("valueless"));
+                assertEquals(2, common.size());
+                assertEquals(new Dictionary.Lookup(true, OptionalLong.of(7)), common.get("shared"));
+                assertEquals(new Dictionary.Lookup(true, OptionalLong.empty()), common.get("valueless"));
+                assertTrue(onlyLeft.contains("a"));
+                assertEquals(2, exclusive.size());
+                assertTrue(exclusive.contains("a"));
+                assertTrue(exclusive.contains("b"));
+
+                assertTrue(left.put("later", OptionalLong.of(99)));
+                assertFalse(joined.contains("later"));
+                assertTrue(joined.put("mutable-result", OptionalLong.of(23)));
+            }
+        }
+    }
+
     private static String text(Match match) {
         return ((Term.Utf8) match.term()).value();
     }

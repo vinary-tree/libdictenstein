@@ -454,6 +454,31 @@ static long RssKib()
     Check(snapshot.Entries.TryGetValue(snapshotEntries[2].Key, out ulong? maximum) && maximum == ulong.MaxValue, "u64 value-semantic map lookup");
 }
 
+// -- native snapshot algebra ---------------------------------------------
+
+{
+    using var left = new DynamicDawg();
+    using var right = new DynamicDawg();
+    left.PutAll(new Dictionary<string, ulong?>
+        { ["a"] = 1, ["shared"] = 7, ["valueless"] = null });
+    right.PutAll(new Dictionary<string, ulong?>
+        { ["b"] = 2, ["shared"] = 11, ["valueless"] = 5 });
+    using var joined = left.Union(right, ValueMerge.LatticeJoin);
+    using var common = left & right;
+    using var onlyLeft = left - right;
+    using var exclusive = left ^ right;
+    Check(joined.Count == 4 && joined.Get("shared").Value == 11, "algebra union join");
+    Check(joined.Get("valueless").Value == 5, "algebra join with valueless member");
+    Check(common.Count == 2 && common.Get("shared").Value == 7, "algebra intersection meet");
+    Check(common.Get("valueless") == new Lookup(true, null), "algebra valueless meet");
+    Check(onlyLeft.Count == 1 && onlyLeft.Contains("a"), "algebra difference");
+    Check(exclusive.Count == 2 && exclusive.Contains("a") && exclusive.Contains("b"),
+        "algebra symmetric difference");
+    left.Put("later", 99);
+    Check(!joined.Contains("later"), "algebra result is snapshot independent");
+    Check(joined.Put("mutable-result", 23), "algebra result remains mutable");
+}
+
 // -- summary ---------------------------------------------------------------
 
 if (failures == 0)

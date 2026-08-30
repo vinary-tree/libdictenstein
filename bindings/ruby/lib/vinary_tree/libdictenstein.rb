@@ -8,6 +8,20 @@ module VinaryTree
     UNICODE_SCALAR = 2
     U64 = 3
 
+    module AlgebraOperation
+      UNION = 1
+      INTERSECTION = 2
+      DIFFERENCE = 3
+      SYMMETRIC_DIFFERENCE = 4
+    end
+
+    module ValueMerge
+      FIRST = 1
+      LAST = 2
+      LATTICE_JOIN = 3
+      LATTICE_MEET = 4
+    end
+
     # Native ABI version (LDICT_ABI_VERSION); always 1 for this family.
     def self.abi_version = Native.ldict_abi_version
 
@@ -328,6 +342,46 @@ module VinaryTree
       def keys = entries.map(&:key)
       def values = entries.map(&:value)
 
+      def algebra(right, operation: AlgebraOperation::UNION, value_merge: ValueMerge::LAST)
+        raise TypeError, "right must be a dictionary" unless right.is_a?(Dictionary)
+        output = Native.pointer_output
+        @handle.with_pointer do |left_pointer|
+          right.handle.with_pointer do |right_pointer|
+            Libdictenstein.check(
+              Native.ldict_dictionary_algebra(
+                left_pointer, right_pointer, operation, value_merge, output
+              )
+            )
+          end
+        end
+        DynamicDawg.adopt(Native.read_pointer(output))
+      end
+
+      def union(right, value_merge: ValueMerge::LAST)
+        algebra(right, operation: AlgebraOperation::UNION, value_merge: value_merge)
+      end
+
+      def intersection(right, value_merge: ValueMerge::LATTICE_MEET)
+        algebra(right, operation: AlgebraOperation::INTERSECTION, value_merge: value_merge)
+      end
+
+      def difference(right)
+        algebra(right, operation: AlgebraOperation::DIFFERENCE, value_merge: ValueMerge::FIRST)
+      end
+
+      def symmetric_difference(right)
+        algebra(
+          right,
+          operation: AlgebraOperation::SYMMETRIC_DIFFERENCE,
+          value_merge: ValueMerge::FIRST
+        )
+      end
+
+      def |(right) = union(right)
+      def &(right) = intersection(right)
+      def -(right) = difference(right)
+      def ^(right) = symmetric_difference(right)
+
       def include?(term)
         output = Native.byte_output
         @handle.with_pointer { |pointer| Libdictenstein.check(Native.ldict_dictionary_contains_text(pointer, term.b, term.bytesize, output)) }
@@ -385,8 +439,15 @@ module VinaryTree
     end
 
     class DynamicDawg < Dictionary
-      def initialize(domain: UNICODE_SCALAR)
-        output = Native.pointer_output; Libdictenstein.check(Native.ldict_dynamic_dawg_new(domain, output)); super(Native.read_pointer(output))
+      def self.adopt(pointer) = new(pointer: pointer)
+
+      def initialize(domain: UNICODE_SCALAR, pointer: nil)
+        unless pointer
+          output = Native.pointer_output
+          Libdictenstein.check(Native.ldict_dynamic_dawg_new(domain, output))
+          pointer = Native.read_pointer(output)
+        end
+        super(pointer)
       end
       def put(term, value = nil) = put_text(term, value)
       def remove(term) = remove_text(term)

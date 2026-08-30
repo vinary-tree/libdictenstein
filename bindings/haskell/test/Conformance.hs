@@ -177,6 +177,7 @@ main = do
   c6 failures
   c7 failures
   c8 failures
+  nativeAlgebra failures
   c9 failures
   c10 failures
   entriesConformance failures
@@ -494,6 +495,37 @@ substringNaive failures = do
     present <- containsSubstring sc (bs pattern)
     check failures (present == (expected > 0)) ("pbt contains " ++ pattern)
   close sc
+
+nativeAlgebra :: IORef Int -> IO ()
+nativeAlgebra failures = do
+  left <- dynamicDawg UnicodeScalar
+  right <- dynamicDawg UnicodeScalar
+  _ <- putManyBytes left [(bs "a", Just 1), (bs "shared", Just 7), (bs "valueless", Nothing)]
+  _ <- putManyBytes right [(bs "b", Just 2), (bs "shared", Just 11), (bs "valueless", Just 5)]
+  joined <- algebra Union LatticeJoin left right
+  common <- intersection left right
+  onlyLeft <- difference left right
+  exclusive <- symmetricDifference left right
+  dictionaryLength joined >>= \size -> check failures (size == 4) "algebra union"
+  getText joined (T.pack "shared") >>= \value ->
+    check failures (value == Lookup True (Just 11)) "algebra union joined value"
+  getText joined (T.pack "valueless") >>= \value ->
+    check failures (value == Lookup True (Just 5)) "algebra union valueless join"
+  dictionaryLength common >>= \size -> check failures (size == 2) "algebra intersection"
+  getText common (T.pack "shared") >>= \value ->
+    check failures (value == Lookup True (Just 7)) "algebra intersection meet"
+  getText common (T.pack "valueless") >>= \value ->
+    check failures (value == Lookup True Nothing) "algebra intersection valueless meet"
+  containsText onlyLeft (T.pack "a") >>= \present ->
+    check failures present "algebra difference"
+  dictionaryLength exclusive >>= \size ->
+    check failures (size == 2) "algebra symmetric difference"
+  _ <- putText left (T.pack "later") (Just 99)
+  containsText joined (T.pack "later") >>= \present ->
+    check failures (not present) "algebra snapshot independence"
+  putText joined (T.pack "mutable-result") (Just 23) >>= \inserted ->
+    check failures inserted "algebra result mutable"
+  mapM_ close [left, right, joined, common, onlyLeft, exclusive]
 
 -- C9 ------------------------------------------------------------------------
 

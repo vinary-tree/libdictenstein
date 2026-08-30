@@ -66,6 +66,23 @@ Membership operations remain direct dictionary lookups, never traversal scans.
 | Julia | `Dictionary <: AbstractDict`; standard keys, values, iteration, mutation, and set-like algebra | Iteration pins one retained native snapshot | `close` in `finally`; finalizers contain abandoned handles |
 | Raku | `Dictionary does Associative does Iterable`; postcircumfix lookup and ordinary `Seq`/`for` traversal | Explicit closeable iterator over one retained snapshot | `LEAVE $iterator.close` after early termination; `DESTROY` is fallback |
 
+## Materialized dictionary algebra
+
+Every facade in the matrix exposes union, intersection, left difference, and
+symmetric difference through its own familiar spelling. Each call captures one
+immutable revision from each same-domain input, performs one linear merge of
+their lexicographic streams, and freeze-builds an independently mutable
+DynamicDAWG. No facade reconstructs the operation with a host hash table or a
+sequence of per-entry native calls.
+
+Overlapping keys preserve optional `u64` values through first, last,
+lattice-join, or lattice-meet policies. Union defaults to the right value and
+intersection to the optional-value lattice meet. The operation takes
+$`\Theta(|A|+|B|)`$ time and $`\Theta(|R|)`$ result storage. See each language
+guide for executable syntax and the
+[`ldict_dictionary_algebra`](c-abi-reference.md#ldict_dictionary_algebra)
+contract for validation, status, ownership, and concurrency details.
+
 ## Collection benchmark entrypoints
 
 All profiles keep construction and warmup outside the timed drain and emit one

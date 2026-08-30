@@ -17,6 +17,12 @@ public final class DynamicDawg extends Dictionary {
     /** Construct an empty dictionary in the selected unit domain. */
     public DynamicDawg(UnitDomain domain) { super(domain, create(domain)); }
 
+    private DynamicDawg(UnitDomain domain, MemorySegment handle) { super(domain, handle); }
+
+    static DynamicDawg adopt(UnitDomain domain, MemorySegment handle) {
+        return new DynamicDawg(domain, handle);
+    }
+
     private static MemorySegment create(UnitDomain domain) {
         Objects.requireNonNull(domain, "domain");
         try (Arena arena = Arena.ofConfined()) {

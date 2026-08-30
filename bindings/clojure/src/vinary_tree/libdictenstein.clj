@@ -4,7 +4,7 @@
   (:import
    (io.vinarytree.libdictenstein
     Dictionary Dictionary$Lookup DoubleArrayTrie DynamicDawg
-    PersistentARTrie PersistentVocabulary Scdawg UnitDomain)
+    PersistentARTrie PersistentVocabulary Scdawg UnitDomain ValueMerge)
    (io.vinarytree.interop
     DictionaryEntry DictionaryEntryIterator DictionaryKey DictionarySnapshot
     DictionaryUnitDomain UnsignedLong)
@@ -18,9 +18,19 @@
    :unicode-scalar UnitDomain/UNICODE_SCALAR
    :u64 UnitDomain/U64})
 
+(def ^:private value-merges
+  {:first ValueMerge/FIRST
+   :last ValueMerge/LAST
+   :lattice-join ValueMerge/LATTICE_JOIN
+   :lattice-meet ValueMerge/LATTICE_MEET})
+
 (defn- domain [value]
   (or (domains value)
       (throw (IllegalArgumentException. (str "unknown unit domain: " value)))))
+
+(defn- merge-policy [value]
+  (or (value-merges value)
+      (throw (IllegalArgumentException. (str "unknown value merge policy: " value)))))
 
 (defn- unsigned-long [value]
   (when (some? value)
@@ -139,6 +149,33 @@
 (defn clear! [^DynamicDawg dictionary] (.clear dictionary))
 (defn compact! [^DynamicDawg dictionary] (.compact dictionary))
 (defn checkpoint! [dictionary] (.checkpoint dictionary))
+
+(defn union
+  "Materialize the union as an independent mutable DynamicDAWG.
+
+  Duplicate values are right-biased unless :value-merge selects :first,
+  :lattice-join, or :lattice-meet."
+  ([^Dictionary left ^Dictionary right] (.union left right))
+  ([^Dictionary left ^Dictionary right {:keys [value-merge]
+                                         :or {value-merge :last}}]
+   (.union left right (merge-policy value-merge))))
+
+(defn intersection
+  "Materialize shared keys as an independent mutable DynamicDAWG."
+  ([^Dictionary left ^Dictionary right] (.intersection left right))
+  ([^Dictionary left ^Dictionary right {:keys [value-merge]
+                                         :or {value-merge :lattice-meet}}]
+   (.intersection left right (merge-policy value-merge))))
+
+(defn difference
+  "Materialize keys present in left and absent from right."
+  [^Dictionary left ^Dictionary right]
+  (.difference left right))
+
+(defn symmetric-difference
+  "Materialize keys present in exactly one input."
+  [^Dictionary left ^Dictionary right]
+  (.symmetricDifference left right))
 
 (defn contains-substring? [^Scdawg dictionary pattern]
   (.containsSubstring dictionary pattern))

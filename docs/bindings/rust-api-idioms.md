@@ -37,11 +37,23 @@ The crate provides one lossless, snapshot-consistent collection layer:
   that cannot return their errors; and
 - `ZipperCollection` and `ValuedZipperCollection` traverse union,
   intersection, difference, symmetric-difference, and other zipper views lazily
-  without materializing a result dictionary.
+  without materializing a result dictionary; and
+- with `bindings-core`, `bindings::dictionary_algebra` reuses one generic,
+  snapshot-owning ordered merge for in-process WebAssembly and the C ABI,
+  then feeds its output directly to the byte, Unicode-scalar, or `u64`
+  DynamicDAWG freeze-once builder.
 
 `Index` is intentionally not a target. Concurrent mutation and cloned values do
 not generally permit a sound, stable `&V`. `Deref` to `HashMap`/`BTreeMap` would
 also misrepresent the automata and persistence contracts.
+
+The two algebra surfaces serve different ownership goals. Zippers are lazy
+views for Rust composition and allocate no result dictionary.
+`bindings::dictionary_algebra` materializes an independently mutable result
+for a foreign or cross-project consumer. It captures each resource once,
+rejects mismatched unit domains, performs $`\Theta(|A|+|B|)`$ ordered work, and
+preserves valueless membership with explicit first, last, lattice-join, and
+lattice-meet policies. Neither path uses a hash-based reconstruction.
 
 ## Target user experience
 

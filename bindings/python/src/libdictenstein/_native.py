@@ -7,6 +7,7 @@ import ctypes.util
 import os
 import platform
 import sys
+from enum import IntEnum
 from collections.abc import (
     ItemsView,
     Iterable,
@@ -35,6 +36,24 @@ class NativeError(RuntimeError):
     def __init__(self, status: int, message: str) -> None:
         super().__init__(message)
         self.status = status
+
+
+class AlgebraOperation(IntEnum):
+    """Exact key-set operation executed by the native snapshot merge."""
+
+    UNION = 1
+    INTERSECTION = 2
+    DIFFERENCE = 3
+    SYMMETRIC_DIFFERENCE = 4
+
+
+class ValueMerge(IntEnum):
+    """Conflict policy for optional u64 values on keys in both inputs."""
+
+    FIRST = 1
+    LAST = 2
+    LATTICE_JOIN = 3
+    LATTICE_MEET = 4
 
 
 class _OptionalU64(ctypes.Structure):
@@ -179,6 +198,14 @@ _lib.ldict_dictionary_compact.argtypes = [
     ctypes.POINTER(ctypes.c_size_t),
 ]
 _lib.ldict_dictionary_compact.restype = ctypes.c_uint32
+_lib.ldict_dictionary_algebra.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_void_p),
+]
+_lib.ldict_dictionary_algebra.restype = ctypes.c_uint32
 _lib.ldict_dictionary_entries_open.argtypes = [
     ctypes.c_void_p,
     ctypes.POINTER(ctypes.c_void_p),
@@ -667,6 +694,75 @@ class _Dictionary(Mapping[DictionaryKey, int | None]):
         """Return an immutable values view of one captured revision."""
         return self.snapshot().values()
 
+    def algebra(
+        self,
+        other: _Dictionary,
+        operation: AlgebraOperation = AlgebraOperation.UNION,
+        value_merge: ValueMerge = ValueMerge.LAST,
+    ) -> DynamicDawg:
+        """Materialize a mutable native set-algebra result from two snapshots."""
+        if not isinstance(other, _Dictionary):
+            return NotImplemented
+        if not self._handle or not other._handle:
+            raise RuntimeError("dictionary is closed")
+        output = ctypes.c_void_p()
+        _check(
+            _lib.ldict_dictionary_algebra(
+                self._handle,
+                other._handle,
+                int(operation),
+                int(value_merge),
+                ctypes.byref(output),
+            )
+        )
+        return DynamicDawg._from_handle(self.domain, output)
+
+    def union(
+        self, other: _Dictionary, value_merge: ValueMerge = ValueMerge.LAST
+    ) -> DynamicDawg:
+        """Return keys in either input; duplicate values default to right-biased."""
+        return self.algebra(other, AlgebraOperation.UNION, value_merge)
+
+    def intersection(
+        self,
+        other: _Dictionary,
+        value_merge: ValueMerge = ValueMerge.LATTICE_MEET,
+    ) -> DynamicDawg:
+        """Return shared keys, meeting duplicate optional values by default."""
+        return self.algebra(other, AlgebraOperation.INTERSECTION, value_merge)
+
+    def difference(self, other: _Dictionary) -> DynamicDawg:
+        """Return keys present in this dictionary but absent from ``other``."""
+        return self.algebra(
+            other, AlgebraOperation.DIFFERENCE, ValueMerge.FIRST
+        )
+
+    def symmetric_difference(self, other: _Dictionary) -> DynamicDawg:
+        """Return keys present in exactly one input dictionary."""
+        return self.algebra(
+            other, AlgebraOperation.SYMMETRIC_DIFFERENCE, ValueMerge.FIRST
+        )
+
+    def __or__(self, other: object) -> DynamicDawg:
+        if not isinstance(other, _Dictionary):
+            return NotImplemented
+        return self.union(other)
+
+    def __and__(self, other: object) -> DynamicDawg:
+        if not isinstance(other, _Dictionary):
+            return NotImplemented
+        return self.intersection(other)
+
+    def __sub__(self, other: object) -> DynamicDawg:
+        if not isinstance(other, _Dictionary):
+            return NotImplemented
+        return self.difference(other)
+
+    def __xor__(self, other: object) -> DynamicDawg:
+        if not isinstance(other, _Dictionary):
+            return NotImplemented
+        return self.symmetric_difference(other)
+
     def update_many(
         self,
         entries: Iterable[tuple[str | bytes | Sequence[int], int | None]],
@@ -769,6 +865,14 @@ class DynamicDawg(_MutableDictionary):
         handle = ctypes.c_void_p()
         _check(_lib.ldict_dynamic_dawg_new(int(domain), ctypes.byref(handle)))
         super().__init__(domain, handle)
+
+    @classmethod
+    def _from_handle(
+        cls, domain: UnitDomain, handle: ctypes.c_void_p
+    ) -> DynamicDawg:
+        instance = object.__new__(cls)
+        _Dictionary.__init__(instance, domain, handle)
+        return instance
 
 
 class DoubleArrayTrie(_Dictionary):

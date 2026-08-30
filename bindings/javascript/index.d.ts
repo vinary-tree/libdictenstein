@@ -5,6 +5,8 @@ import type { RuntimeIdentity, UnitDomain } from "@vinary-tree/vinary-tree-inter
 export type DictionaryValue = bigint | null;
 export type DictionaryKey = string | Uint8Array | BigUint64Array;
 export type DictionaryEntry = readonly [DictionaryKey, DictionaryValue];
+export type AlgebraOperation = "union" | "intersection" | "difference" | "symmetric-difference";
+export type ValueMerge = "first" | "last" | "lattice-join" | "lattice-meet";
 export interface Lookup { readonly found: boolean; readonly value: DictionaryValue; }
 export interface DictionaryEntryCursor extends IterableIterator<DictionaryEntry> {
   readonly size: number;
@@ -47,6 +49,11 @@ export interface Dictionary extends Iterable<DictionaryEntry> {
   getU64(term: BigUint64Array): DictionaryValue | undefined;
   snapshot(): DictionarySnapshot;
   streamEntries(): DictionaryEntryCursor;
+  algebra(right: Dictionary, operation: AlgebraOperation, valueMerge?: ValueMerge): Dictionary;
+  union(right: Dictionary, valueMerge?: ValueMerge): Dictionary;
+  intersection(right: Dictionary, valueMerge?: ValueMerge): Dictionary;
+  difference(right: Dictionary): Dictionary;
+  symmetricDifference(right: Dictionary): Dictionary;
   entries(): IterableIterator<DictionaryEntry>;
   keys(): IterableIterator<DictionaryKey>;
   values(): IterableIterator<DictionaryValue>;

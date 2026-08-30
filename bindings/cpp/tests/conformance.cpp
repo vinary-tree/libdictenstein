@@ -736,6 +736,40 @@ void check_c8_substring_vs_naive() {
     }
 }
 
+void check_c8_native_dictionary_algebra() {
+    ld::dynamic_dawg left;
+    ld::dynamic_dawg right;
+    (void)left.insert("a", 1);
+    (void)left.insert("shared", 7);
+    (void)left.insert("valueless", std::nullopt);
+    (void)right.insert("b", 2);
+    (void)right.insert("shared", 11);
+    (void)right.insert("valueless", 5);
+
+    auto joined = left.set_union(right, ld::value_merge::lattice_join);
+    CHECK(joined.size() == 4);
+    CHECK(joined.get("shared").value == std::optional<std::uint64_t>(11));
+    CHECK(joined.get("valueless").value == std::optional<std::uint64_t>(5));
+
+    auto common = left.intersection(right);
+    CHECK(common.size() == 2);
+    CHECK(common.get("shared").value == std::optional<std::uint64_t>(7));
+    CHECK(common.get("valueless").value == std::nullopt);
+
+    auto only_left = left.difference(right);
+    CHECK(only_left.size() == 1);
+    CHECK(only_left.contains("a"));
+
+    auto exclusive = left.symmetric_difference(right);
+    CHECK(exclusive.size() == 2);
+    CHECK(exclusive.contains("a"));
+    CHECK(exclusive.contains("b"));
+
+    (void)left.insert("later", 99);
+    CHECK(!joined.contains("later"));
+    CHECK(joined.insert("mutable-result", 23));
+}
+
 // ---------------------------------------------------------------------------
 // C9 leak discipline
 // ---------------------------------------------------------------------------
@@ -852,6 +886,7 @@ int main(int argc, char** argv) {
     check_c7_snapshot_entry_range();
     check_c8_crud_script_vs_map();
     check_c8_substring_vs_naive();
+    check_c8_native_dictionary_algebra();
     check_c9_leak();
     check_c10_independent_per_thread();
     check_c10_readers_during_writer();

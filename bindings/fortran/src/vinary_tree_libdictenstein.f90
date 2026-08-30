@@ -11,6 +11,10 @@ module vinary_tree_libdictenstein
   integer(c_int64_t), parameter, public :: can_read = 1, can_insert = 2, can_remove = 4
   integer(c_int64_t), parameter, public :: can_clear = 8, can_compact = 16
   integer(c_int64_t), parameter, public :: can_substring = 32, can_checkpoint = 64
+  integer(c_int32_t), parameter, public :: algebra_union = 1, algebra_intersection = 2
+  integer(c_int32_t), parameter, public :: algebra_difference = 3, algebra_symmetric_difference = 4
+  integer(c_int32_t), parameter, public :: value_merge_first = 1, value_merge_last = 2
+  integer(c_int32_t), parameter, public :: value_merge_lattice_join = 3, value_merge_lattice_meet = 4
   public :: vt_unit_byte, vt_unit_unicode_scalar, vt_unit_u64
 
   type, bind(c) :: optional_u64
@@ -82,6 +86,11 @@ module vinary_tree_libdictenstein
     procedure :: fold_entries => dictionary_fold_entries
     procedure :: clear => dictionary_clear
     procedure :: compact => dictionary_compact
+    procedure :: algebra => dictionary_algebra
+    procedure :: set_union => dictionary_set_union
+    procedure :: intersection => dictionary_intersection
+    procedure :: difference => dictionary_difference
+    procedure :: symmetric_difference => dictionary_symmetric_difference
     procedure :: checkpoint => dictionary_checkpoint
     procedure :: contains_substring, substring_frequency, vocabulary_term
     procedure :: close => dictionary_close
@@ -201,6 +210,14 @@ module vinary_tree_libdictenstein
     function c_compact(handle, output) bind(c, name="ldict_dictionary_compact") result(status)
       import c_ptr, c_int32_t, c_size_t
       type(c_ptr), value :: handle; integer(c_size_t), intent(out) :: output; integer(c_int32_t) :: status
+    end function
+    function c_algebra(left, right, operation, value_merge, output) &
+        bind(c, name="ldict_dictionary_algebra") result(status)
+      import c_ptr, c_int32_t
+      type(c_ptr), value :: left, right
+      integer(c_int32_t), value :: operation, value_merge
+      type(c_ptr), intent(out) :: output
+      integer(c_int32_t) :: status
     end function
     function c_checkpoint(handle) bind(c, name="ldict_dictionary_checkpoint") result(status)
       import c_ptr, c_int32_t; type(c_ptr), value :: handle; integer(c_int32_t) :: status
@@ -642,6 +659,56 @@ contains
     class(dictionary),intent(inout)::self;integer(c_int32_t),intent(out),optional::status;integer(c_size_t)::value
     integer(c_int32_t)::code;code=c_compact(self%handle,value);if(present(status))status=code
   end function
+  subroutine dictionary_algebra(self,right,operation,result,value_merge,status)
+    class(dictionary),intent(in)::self,right
+    integer(c_int32_t),intent(in)::operation
+    type(dictionary),intent(out)::result
+    integer(c_int32_t),intent(in),optional::value_merge
+    integer(c_int32_t),intent(out),optional::status
+    integer(c_int32_t)::merge,code
+    merge=value_merge_last
+    if(present(value_merge))merge=value_merge
+    code=c_algebra(self%handle,right%handle,operation,merge,result%handle)
+    if(present(status))status=code
+  end subroutine
+  subroutine dictionary_set_union(self,right,result,value_merge,status)
+    class(dictionary),intent(in)::self,right
+    type(dictionary),intent(out)::result
+    integer(c_int32_t),intent(in),optional::value_merge
+    integer(c_int32_t),intent(out),optional::status
+    integer(c_int32_t)::merge,code
+    merge=value_merge_last
+    if(present(value_merge))merge=value_merge
+    call self%algebra(right,algebra_union,result,merge,code)
+    if(present(status))status=code
+  end subroutine
+  subroutine dictionary_intersection(self,right,result,value_merge,status)
+    class(dictionary),intent(in)::self,right
+    type(dictionary),intent(out)::result
+    integer(c_int32_t),intent(in),optional::value_merge
+    integer(c_int32_t),intent(out),optional::status
+    integer(c_int32_t)::merge,code
+    merge=value_merge_lattice_meet
+    if(present(value_merge))merge=value_merge
+    call self%algebra(right,algebra_intersection,result,merge,code)
+    if(present(status))status=code
+  end subroutine
+  subroutine dictionary_difference(self,right,result,status)
+    class(dictionary),intent(in)::self,right
+    type(dictionary),intent(out)::result
+    integer(c_int32_t),intent(out),optional::status
+    integer(c_int32_t)::code
+    call self%algebra(right,algebra_difference,result,value_merge_first,code)
+    if(present(status))status=code
+  end subroutine
+  subroutine dictionary_symmetric_difference(self,right,result,status)
+    class(dictionary),intent(in)::self,right
+    type(dictionary),intent(out)::result
+    integer(c_int32_t),intent(out),optional::status
+    integer(c_int32_t)::code
+    call self%algebra(right,algebra_symmetric_difference,result,value_merge_first,code)
+    if(present(status))status=code
+  end subroutine
   subroutine dictionary_checkpoint(self,status)
     class(dictionary),intent(inout)::self;integer(c_int32_t),intent(out),optional::status;integer(c_int32_t)::code
     code=c_checkpoint(self%handle);if(present(status))status=code

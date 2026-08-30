@@ -29,6 +29,32 @@ public enum BackendKind : uint
     PersistentVocabulary = 5,
 }
 
+/// <summary>Exact key-set operation evaluated over immutable input revisions.</summary>
+public enum AlgebraOperation : uint
+{
+    /// <summary>Keys present in either input.</summary>
+    Union = 1,
+    /// <summary>Keys present in both inputs.</summary>
+    Intersection = 2,
+    /// <summary>Keys present in the left input but not the right.</summary>
+    Difference = 3,
+    /// <summary>Keys present in exactly one input.</summary>
+    SymmetricDifference = 4,
+}
+
+/// <summary>Conflict policy for optional u64 values on keys in both inputs.</summary>
+public enum ValueMerge : uint
+{
+    /// <summary>Keep the left value.</summary>
+    First = 1,
+    /// <summary>Keep the right value.</summary>
+    Last = 2,
+    /// <summary>Use the optional-u64 lattice join.</summary>
+    LatticeJoin = 3,
+    /// <summary>Use the optional-u64 lattice meet.</summary>
+    LatticeMeet = 4,
+}
+
 /// <summary>Distinguishes absent terms, present terms without values, and mapped terms.</summary>
 public readonly record struct Lookup(bool Found, ulong? Value);
 
@@ -67,6 +93,44 @@ public abstract class Dictionary : IDictionaryResource, IDisposable,
     /// <summary>Open a one-shot enumerable stream with the requested batch bound.</summary>
     public DictionaryEntryStream StreamEntries(int batchSize = 256) =>
         VinaryTree.Interop.DictionaryCollectionExtensions.StreamEntries(this, BatchLimits(batchSize));
+
+    /// <summary>
+    /// Materialize an independent mutable DynamicDAWG with one native ordered merge.
+    /// </summary>
+    public DynamicDawg Algebra(Dictionary right, AlgebraOperation operation,
+        ValueMerge valueMerge = ValueMerge.Last)
+    {
+        ArgumentNullException.ThrowIfNull(right);
+        Native.Check(Native.Algebra(Handle, right.Handle, (uint)operation, (uint)valueMerge,
+            out nint result));
+        return DynamicDawg.Adopt(result);
+    }
+
+    /// <summary>Return keys in either input with right-biased values by default.</summary>
+    public DynamicDawg Union(Dictionary right, ValueMerge valueMerge = ValueMerge.Last) =>
+        Algebra(right, AlgebraOperation.Union, valueMerge);
+
+    /// <summary>Return shared keys with lattice-meet values by default.</summary>
+    public DynamicDawg Intersection(Dictionary right,
+        ValueMerge valueMerge = ValueMerge.LatticeMeet) =>
+        Algebra(right, AlgebraOperation.Intersection, valueMerge);
+
+    /// <summary>Return keys present only in this dictionary.</summary>
+    public DynamicDawg Difference(Dictionary right) =>
+        Algebra(right, AlgebraOperation.Difference, ValueMerge.First);
+
+    /// <summary>Return keys present in exactly one input.</summary>
+    public DynamicDawg SymmetricDifference(Dictionary right) =>
+        Algebra(right, AlgebraOperation.SymmetricDifference, ValueMerge.First);
+
+    /// <summary>Set-union operator using right-biased duplicate values.</summary>
+    public static DynamicDawg operator |(Dictionary left, Dictionary right) => left.Union(right);
+    /// <summary>Set-intersection operator using lattice-meet duplicate values.</summary>
+    public static DynamicDawg operator &(Dictionary left, Dictionary right) => left.Intersection(right);
+    /// <summary>Set-difference operator.</summary>
+    public static DynamicDawg operator -(Dictionary left, Dictionary right) => left.Difference(right);
+    /// <summary>Symmetric-set-difference operator.</summary>
+    public static DynamicDawg operator ^(Dictionary left, Dictionary right) => left.SymmetricDifference(right);
     /// <summary>
     /// Return a native-backed snapshot enumerator. C# foreach disposes it; manually controlled
     /// enumeration must also dispose it when stopping early.

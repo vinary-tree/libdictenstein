@@ -1,5 +1,7 @@
 type t
 type lookup = { found : bool; value : int64 option }
+type algebra_operation = Union | Intersection | Difference | Symmetric_difference
+type value_merge = First | Last | Lattice_join | Lattice_meet
 type entry_key = Bytes of bytes | Unicode of string | U64 of int64 array
 type entry = { key : entry_key; value : int64 option }
 type value_domain = Unit | Optional_u64
@@ -45,6 +47,7 @@ external contains_u64 : t -> int64 array -> bool = "ocaml_ldict_contains_u64"
 external raw_get_u64 : t -> int64 array -> bool * int64 option = "ocaml_ldict_get_u64"
 external clear : t -> unit = "ocaml_ldict_clear"
 external compact : t -> int = "ocaml_ldict_compact"
+external raw_algebra : t -> t -> int -> int -> t = "ocaml_ldict_algebra"
 external checkpoint : t -> unit = "ocaml_ldict_checkpoint"
 external contains_substring : t -> string -> bool = "ocaml_ldict_contains_substring"
 external substring_frequency : t -> string -> int = "ocaml_ldict_substring_frequency"
@@ -80,6 +83,32 @@ let get dictionary text =
 let get_u64 dictionary tokens =
   let found, value = raw_get_u64 dictionary tokens in
   { found; value }
+
+let operation_code = function
+  | Union -> 1
+  | Intersection -> 2
+  | Difference -> 3
+  | Symmetric_difference -> 4
+
+let value_merge_code = function
+  | First -> 1
+  | Last -> 2
+  | Lattice_join -> 3
+  | Lattice_meet -> 4
+
+let algebra ?(value_merge = Last) operation left right =
+  raw_algebra left right (operation_code operation) (value_merge_code value_merge)
+
+let union ?(value_merge = Last) left right =
+  algebra ~value_merge Union left right
+
+let intersection ?(value_merge = Lattice_meet) left right =
+  algebra ~value_merge Intersection left right
+
+let difference left right = algebra ~value_merge:First Difference left right
+
+let symmetric_difference left right =
+  algebra ~value_merge:First Symmetric_difference left right
 
 let open_entries ?(max_entries = 256) ?(max_units = 65536)
     ?(max_values = 256) dictionary =
