@@ -11,7 +11,7 @@
     "bugtracker": "https://github.com/vinary-tree/libdictenstein/issues"
   },
   "depends": [
-    "Vinary-Tree-Interop:ver<4>:auth<zef:vinary-tree>"
+    "Vinary-Tree-Interop:ver<4.0.0.rc.5>:auth<zef:vinary-tree>"
   ],
   "provides": {
     "Libdictenstein": "lib/Libdictenstein.rakumod"

@@ -283,9 +283,7 @@ def julia_ccall_symbols(source: str) -> set[str]:
 
 def raku_nativecall_symbols(source: str) -> set[str]:
     """Return exact NativeCall symbol traits, excluding diagnostic prose."""
-    return set(
-        re.findall(r"symbol\(\s*['\"](ldict_[a-z0-9_]+)['\"]\s*\)", source)
-    )
+    return set(re.findall(r"symbol\(\s*['\"](ldict_[a-z0-9_]+)['\"]\s*\)", source))
 
 
 def haskell_symbols(
@@ -993,11 +991,12 @@ def check_packages(report: Report, model: dict) -> None:
             "Raku package description drifted from the product description",
         )
         expect(
-            any(
-                dependency.startswith("Vinary-Tree-Interop:")
-                for dependency in raku.get("depends", [])
-            ),
-            "Raku package does not declare Vinary-Tree-Interop",
+            "Vinary-Tree-Interop:ver<{}>:auth<zef:vinary-tree>".format(
+                interop_version.replace("-rc.", ".rc.")
+            )
+            in raku.get("depends", []),
+            "Raku package does not exact-pin the coordinated "
+            "Vinary-Tree-Interop release candidate",
         )
 
     gradle = read_text(
