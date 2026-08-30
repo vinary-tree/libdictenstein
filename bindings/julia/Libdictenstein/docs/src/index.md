@@ -77,8 +77,8 @@ ALGORITHM MergeSnapshots(left, right, operation, value_policy)
   RETURN the independently owned mutable result
 ```
 
-This takes linear merge time `O(|A| + |B|)` plus the linear minimal-graph
-builder. It uses `O(|result|)` owned result storage and does not construct a
+This takes linear merge time $`O(|A| + |B|)`$ plus the linear minimal-graph
+builder. It uses $`O(|result|)`$ owned result storage and does not construct a
 host-language `Dict`.
 
 ## Ownership and concurrency

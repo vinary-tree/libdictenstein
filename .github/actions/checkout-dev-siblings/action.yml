@@ -14,9 +14,9 @@ description: >
 inputs:
   ref:
     description: >
-      Baseline development ref. A release/* pull-request head selects the same
-      coordinated branch for every non-llattice sibling unless explicitly
-      overridden.
+      Baseline development ref. A coordinated branch that exists in a sibling
+      repository is selected automatically unless explicitly overridden;
+      otherwise that sibling falls back to this ref.
     required: false
     default: master
   llattice-ref:
@@ -48,12 +48,11 @@ runs:
         # where the path dependencies resolve to.
         parent="$(dirname "$GITHUB_WORKSPACE")"
         event_ref="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-}}"
-        if [[ "$event_ref" == release/* ]]; then
-          development_ref="$event_ref"
-        else
-          development_ref="$BASELINE_REF"
-        fi
+        development_ref="$BASELINE_REF"
         git check-ref-format --branch "$development_ref" >/dev/null
+        if [ -n "$event_ref" ]; then
+          git check-ref-format --branch "$event_ref" >/dev/null
+        fi
         for repo in llattice liblevenshtein-rust vinary-tree-interop; do
           case "$repo" in
             llattice) selected_ref="$LLATTICE_REF" ;;
@@ -61,7 +60,15 @@ runs:
             vinary-tree-interop) selected_ref="$INTEROP_REF" ;;
           esac
           if [ -z "$selected_ref" ]; then
-            selected_ref="$development_ref"
+            remote="https://github.com/vinary-tree/$repo.git"
+            if [ -n "$event_ref" ] && \
+              git ls-remote --exit-code --heads \
+                "$remote" "$event_ref" >/dev/null 2>&1
+            then
+              selected_ref="$event_ref"
+            else
+              selected_ref="$development_ref"
+            fi
           fi
           git check-ref-format --branch "$selected_ref" >/dev/null
           dest="$parent/$repo"
