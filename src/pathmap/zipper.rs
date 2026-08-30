@@ -10,7 +10,7 @@
 use super::ascii::PathMapDictionary;
 use super::core::{trie_ref_root, trie_ref_root_borrowed, TrieRefLike};
 use crate::value::DictionaryValue;
-use crate::zipper::{DictZipper, ValuedDictZipper};
+use crate::zipper::{DictZipper, ValuedDictZipper, ZipperTraversalNode};
 use pathmap::zipper::{TrieRefBorrowed, TrieRefOwned};
 use pathmap::PathMap;
 use std::marker::PhantomData;
@@ -52,6 +52,10 @@ pub struct TrieRefZipper<V: DictionaryValue, R: TrieRefLike<V> = TrieRefOwned<V>
     r: R,
     /// Byte path from the root, retained only for [`DictZipper::path`].
     path: Arc<[u8]>,
+    /// Whether ordinary zipper navigation must preserve `path`. The opaque
+    /// dictionary-node view disables this after consuming the zipper because
+    /// query reconstruction is then owned by the product scheduler.
+    track_path: bool,
     _v: PhantomData<fn() -> V>,
 }
 
@@ -69,6 +73,7 @@ impl<V: DictionaryValue, R: TrieRefLike<V>> Clone for TrieRefZipper<V, R> {
         Self {
             r: self.r.clone(),
             path: Arc::clone(&self.path),
+            track_path: self.track_path,
             _v: PhantomData,
         }
     }
@@ -80,8 +85,28 @@ impl<V: DictionaryValue, R: TrieRefLike<V>> TrieRefZipper<V, R> {
         Self {
             r,
             path,
+            track_path: true,
             _v: PhantomData,
         }
+    }
+
+    #[inline]
+    fn child_path(&self, label: u8) -> Arc<[u8]> {
+        if self.track_path {
+            let mut path = Vec::with_capacity(self.path.len() + 1);
+            path.extend_from_slice(&self.path);
+            path.push(label);
+            Arc::from(path)
+        } else {
+            Arc::clone(&self.path)
+        }
+    }
+
+    #[inline]
+    fn child_from_focus(&self, focus: R, label: u8) -> Self {
+        let mut child = Self::from_parts(focus, self.child_path(label));
+        child.track_path = self.track_path;
+        child
     }
 
     /// Borrow the underlying focus handle.
@@ -138,10 +163,7 @@ impl<V: DictionaryValue, R: TrieRefLike<V>> DictZipper for TrieRefZipper<V, R> {
     fn descend(&self, label: Self::Unit) -> Option<Self> {
         let focus = self.r.descend_bytes(&[label]);
         if focus.path_exists() {
-            let mut new_path = Vec::with_capacity(self.path.len() + 1);
-            new_path.extend_from_slice(&self.path);
-            new_path.push(label);
-            Some(Self::from_parts(focus, Arc::from(new_path)))
+            Some(self.child_from_focus(focus, label))
         } else {
             None
         }
@@ -152,14 +174,38 @@ impl<V: DictionaryValue, R: TrieRefLike<V>> DictZipper for TrieRefZipper<V, R> {
         // so we descend directly from the focus with no re-validation, no lock,
         // and no 256-way bit scan (`ByteMask::iter()` is word-skipping).
         let r = self.r.clone();
-        let base = Arc::clone(&self.path);
+        let parent = self.clone();
         r.child_mask().iter().map(move |byte| {
             let focus = r.descend_bytes(&[byte]);
-            let mut new_path = Vec::with_capacity(base.len() + 1);
-            new_path.extend_from_slice(&base);
-            new_path.push(byte);
-            (byte, Self::from_parts(focus, Arc::from(new_path)))
+            (byte, parent.child_from_focus(focus, byte))
         })
+    }
+
+    #[inline]
+    fn filter_map_children<T, P, F>(&self, mut project: P, mut visitor: F)
+    where
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self, T),
+    {
+        // Project directly from the native child mask. Rejected labels never
+        // descend a TrieRef and never allocate/copy a zipper path.
+        for label in self.r.child_mask().iter() {
+            if let Some(projected) = project(label) {
+                let focus = self.r.descend_bytes(&[label]);
+                visitor(label, self.child_from_focus(focus, label), projected);
+            }
+        }
+    }
+
+    #[inline]
+    fn into_traversal_node(mut self) -> ZipperTraversalNode<Self> {
+        // The node adapter is opaque and the product scheduler owns relative
+        // result reconstruction, so retaining/copying root-relative zipper
+        // paths would be duplicated work. The TrieRef focus remains the exact
+        // immutable snapshot owner.
+        self.path = Arc::from(Vec::new());
+        self.track_path = false;
+        ZipperTraversalNode::new(self)
     }
 
     #[inline]
@@ -395,5 +441,31 @@ mod tests {
 
         // Can't descend anywhere
         assert!(zipper.descend(b'a').is_none());
+    }
+
+    #[test]
+    fn projected_children_preserve_order_paths_and_finality() {
+        let dict = PathMapDictionary::<()>::new();
+        for term in ["a", "b", "c"] {
+            dict.insert(term);
+        }
+
+        let zipper = PathMapZipper::new_from_dict(&dict);
+        let mut visited = Vec::new();
+        let is_final = zipper.filter_map_children_and_finality(
+            |label| (label != b'b').then_some(label.to_ascii_uppercase()),
+            |label, child, projected| {
+                visited.push((label, child.path(), projected, child.is_final()));
+            },
+        );
+
+        assert!(!is_final);
+        assert_eq!(
+            visited,
+            vec![
+                (b'a', vec![b'a'], b'A', true),
+                (b'c', vec![b'c'], b'C', true),
+            ]
+        );
     }
 }

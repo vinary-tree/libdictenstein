@@ -41,7 +41,7 @@
 //! ```
 
 use crate::value::DictionaryValue;
-use crate::CharUnit;
+use crate::{CharUnit, DictionaryNode, SnapshotTraversalCursor};
 
 /// Core trait for dictionary navigation via zippers.
 ///
@@ -158,6 +158,58 @@ pub trait DictZipper: Clone {
     /// ```
     fn children(&self) -> impl Iterator<Item = (Self::Unit, Self)>;
 
+    /// Project outgoing labels before constructing accepted child zippers.
+    ///
+    /// `project` is called exactly once for every outgoing label. `visitor` is
+    /// called exactly once for every label whose projection returns `Some`.
+    /// The compatibility implementation uses [`children`](Self::children), but
+    /// backends with a borrowed/native focus should override this seam so a
+    /// rejected edge does not copy a path or construct a child focus.
+    #[inline]
+    fn filter_map_children<T, P, F>(&self, mut project: P, mut visitor: F)
+    where
+        Self: Sized,
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self, T),
+    {
+        for (label, child) in self.children() {
+            if let Some(projected) = project(label) {
+                visitor(label, child, projected);
+            }
+        }
+    }
+
+    /// Read finality and project labels before constructing accepted children.
+    ///
+    /// The compatibility implementation composes [`is_final`](Self::is_final)
+    /// and [`filter_map_children`](Self::filter_map_children). Backends that can
+    /// observe both from one immutable focus may override the fused operation.
+    #[inline]
+    fn filter_map_children_and_finality<T, P, F>(&self, project: P, visitor: F) -> bool
+    where
+        Self: Sized,
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self, T),
+    {
+        let is_final = self.is_final();
+        self.filter_map_children(project, visitor);
+        is_final
+    }
+
+    /// Consume this focus into the dictionary-node view used by product schedulers.
+    ///
+    /// The default preserves the complete zipper representation. A backend may
+    /// override this hook to discard navigation context that the opaque node
+    /// view cannot expose, such as a root-relative path buffer, while retaining
+    /// the immutable focus owner and identical child/finality semantics.
+    #[inline]
+    fn into_traversal_node(self) -> ZipperTraversalNode<Self>
+    where
+        Self: Sized,
+    {
+        ZipperTraversalNode::new(self)
+    }
+
     /// Get the path from root to the current position.
     ///
     /// Returns a sequence of edge labels representing the path from the root
@@ -186,6 +238,70 @@ pub trait DictZipper: Clone {
     /// assert_eq!(String::from_utf8(path).unwrap(), "cat");
     /// ```
     fn path(&self) -> Vec<Self::Unit>;
+}
+
+/// Opaque dictionary-node view of a persistent zipper focus.
+///
+/// Product schedulers use this adapter to share their compact state machine,
+/// parent arena, ordering, and traversal-buffer cache with zipper-rooted
+/// queries. The wrapped zipper is deliberately not recoverable: this permits a
+/// backend's [`DictZipper::into_traversal_node`] hook to erase path-only context
+/// without weakening the public zipper contract.
+#[derive(Clone)]
+pub struct ZipperTraversalNode<Z: DictZipper>(Z);
+
+impl<Z: DictZipper> ZipperTraversalNode<Z> {
+    #[inline]
+    pub(crate) fn new(zipper: Z) -> Self {
+        Self(zipper)
+    }
+}
+
+impl<Z> DictionaryNode for ZipperTraversalNode<Z>
+where
+    Z: DictZipper + Send + Sync,
+{
+    type Unit = Z::Unit;
+    type SnapshotCursor = SnapshotTraversalCursor;
+    type SnapshotGraphValueHandle = SnapshotTraversalCursor;
+
+    #[inline]
+    fn is_final(&self) -> bool {
+        self.0.is_final()
+    }
+
+    #[inline]
+    fn transition(&self, label: Self::Unit) -> Option<Self> {
+        self.0.descend(label).map(Self)
+    }
+
+    fn edges(&self) -> Box<dyn Iterator<Item = (Self::Unit, Self)> + '_> {
+        Box::new(self.0.children().map(|(label, child)| (label, Self(child))))
+    }
+
+    #[inline]
+    fn filter_map_edges<T, P, F>(&self, project: P, mut visitor: F)
+    where
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self, T),
+    {
+        self.0
+            .filter_map_children(project, |label, child, projected| {
+                visitor(label, Self(child), projected);
+            });
+    }
+
+    #[inline]
+    fn filter_map_edges_and_finality<T, P, F>(&self, project: P, mut visitor: F) -> bool
+    where
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self, T),
+    {
+        self.0
+            .filter_map_children_and_finality(project, |label, child, projected| {
+                visitor(label, Self(child), projected);
+            })
+    }
 }
 
 /// Extension trait for dictionaries with associated values.
