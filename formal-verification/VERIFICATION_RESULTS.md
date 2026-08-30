@@ -298,6 +298,7 @@ implementation surface.
 | Double-array trie spec | `DoubleArrayTrieSpec.v` to byte and Unicode `DoubleArrayTrie` BASE/CHECK traversal, construction normalization, mapped lookup, child iteration, and zipper values | Passed, 8 default-feature tests |
 | Zipper language spec | `ZipperLanguageSpec.v` to public `DictZipper` / `ValuedDictZipper` traversal, iterator, filter, combinator, suffix, SCDAWG, and persistent zipper APIs | Passed, 8 default-feature tests and 9 `persistent-artrie` tests |
 | Valued set-combinator spec | `ValuedSetCombinatorSpec.v` to `UnionZipper` / `IntersectionZipper` duplicate-value merge semantics | Passed, 7 default-feature tests and 9 `lling-llang` tests |
+| FFI dictionary-algebra spec | `AbiDictionaryAlgebraSpec.v` and `ValuedSetCombinatorSpec.v` to `ldict_dictionary_algebra` set/value semantics and independent revision ownership | Passed, 4 `ffi_algebra` tests including generated finite-map correspondence |
 | Persistent merge spec | `PersistentMergeSpec.v` to `PersistentARTrie` cursor pagination, ordinary batched merge, arena-grouped batched merge, and feature-gated parallel merge | Passed, 3 `persistent-artrie` tests and 4 `persistent-artrie parallel-merge` tests |
 | Persistent prefix spec | `PersistentPrefixSpec.v` to `PersistentARTrieChar` prefix iteration, valued/arena projections, ordinary removal, batched removal, durable-prefix deletion, and checked RMW overflow | Passed, 4 prefix tests and 4 bulk-mutation tests |
 | PathMap/factory/snapshot specs | `PathMapFactorySpec.v` and `PathMapSnapshotSpec.v` to optional `PathMapDictionary`, `PathMapDictionaryChar`, `PathMapZipper`, `PathMapSnapshot`, `PathMapRef`, mutation traits, and `DictionaryFactory` dispatch | Passed, 9 `pathmap-backend` tests; caught/fixed missing `MutableDictionary` impls and collapsed Unicode sibling edges; now checks copy-on-write snapshot decoupling, subtrie scoping, and `Send + Sync` adapter contracts |
@@ -500,6 +501,7 @@ The prior 15-module core compiled with Rocq 9.1.0 (~72 s wall clock under
 | Spec/DoubleArrayTrieSpec.v | 499 | 22 | 5 | 27 | Complete |
 | Spec/ZipperLanguageSpec.v | 255 | 19 | 0 | 19 | Complete |
 | Spec/ValuedSetCombinatorSpec.v | 454 | 28 | 2 | 30 | Complete |
+| Spec/AbiDictionaryAlgebraSpec.v | 208 | 10 | 0 | 10 | Complete |
 | Spec/BloomFilterSpec.v | 362 | 11 | 6 | 17 (+1 `Defined`) | Complete |
 | Spec/PersistentMergeSpec.v | 246 | 11 | 0 | 11 | Complete |
 | Spec/PersistentPrefixSpec.v | 562 | 26 | 2 | 28 (+1 `Defined`) | Complete |

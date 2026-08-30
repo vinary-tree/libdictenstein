@@ -127,9 +127,9 @@ formal-verification/
 │   ├── PART.cfg               # TLC configuration (no crash)
 │   └── PART_crash.cfg         # TLC configuration (with crash)
 │
-└── rocq/                      # Rocq/Coq proofs (72 .v files, 27,689 LOC,
-    │                            1,348 theorem/lemma/corollary propositions
-    │                            = 1,027 Theorem + 313 Lemma + 8 Corollary,
+└── rocq/                      # Rocq/Coq proofs (74 .v files, 27,988 LOC,
+    │                            1,363 theorem/lemma/corollary propositions
+    │                            = 1,037 Theorem + 318 Lemma + 8 Corollary,
     │                            0 Admitted / 0 Axiom / 0 Parameter)
     ├── Makefile               # Build system
     ├── Spec/                  # Specifications
@@ -140,6 +140,7 @@ formal-verification/
     │   ├── DoubleArrayTrieSpec.v # BASE/CHECK DAT construction/traversal laws
     │   ├── ZipperLanguageSpec.v # Traversal-language equivalence laws
     │   ├── ValuedSetCombinatorSpec.v # Union/intersection value-merge laws
+    │   ├── AbiDictionaryAlgebraSpec.v # FFI algebra and revision-ownership laws
     │   ├── BloomFilterSpec.v # Bloom filter no-false-negative laws
     │   ├── PersistentMergeSpec.v # Cursor pagination and persistent merge laws
     │   ├── PersistentPrefixSpec.v # Persistent char prefix/removal/recovery laws
@@ -577,6 +578,7 @@ introduced in the L-campaign and eviction work.
 | DoubleArrayTrieSpec.v | Complete | Generic BASE/CHECK transition, traversal, normalization, and lookup/domain refinement laws for byte and Unicode DATs |
 | ZipperLanguageSpec.v | Complete | Zipper traversal-language, valued lookup, prefix/excluding, and set-combinator laws |
 | ValuedSetCombinatorSpec.v | Complete | Ordered value-merge laws for union/intersection zippers, first-wins/last-wins/custom strategies, lattice join/meet, and semiring join-only boundaries |
+| AbiDictionaryAlgebraSpec.v | Complete | Snapshot-based FFI union/intersection/difference laws, unit-domain parametricity, absent-versus-valueless preservation, and independent result revisions |
 | BloomFilterSpec.v | Complete | No-false-negative Bloom filter insertion, clear, byte/string refinement, duplicate insert, and nonvacuous parameter laws |
 | PersistentMergeSpec.v | Complete | Cursor pagination, ordinary batched merge, grouped batched merge, and parallel partition merge equivalence laws |
 | PersistentPrefixSpec.v | Complete | Persistent char prefix filter, valued/arena projection, ordinary removal, batched-removal equivalence, durable-prefix deletion, and checked RMW overflow laws |
@@ -672,6 +674,7 @@ This full spec↔Rust correspondence table is the authoritative source for the
 | `DoubleArrayTrieSpec.v` | `tests/double_array_trie_correspondence.rs`, byte and Unicode `DoubleArrayTrie` construction, lookup, child traversal, zipper values, and duplicate normalization |
 | `ZipperLanguageSpec.v` | `tests/zipper_language_correspondence.rs`, public `DictZipper` / `ValuedDictZipper` traversal, iterator, prefix/excluding, set-combinator, value-diff, suffix, SCDAWG, and persistent zipper APIs |
 | `ValuedSetCombinatorSpec.v` | `src/union_zipper/*`, `src/intersection_zipper.rs`, and `tests/valued_set_combinator_correspondence.rs` for ordered duplicate-value merge strategies, lattice values, Unicode/byte/DynamicDawg zippers, and semiring join (via the always-on `llattice` dependency) |
+| `AbiDictionaryAlgebraSpec.v` | `src/bindings.rs` and `tests/ffi_algebra.rs` for snapshot-based FFI union, intersection, left difference, symmetric difference, byte/Unicode/u64 key preservation, optional-value merge policies, and independently mutable result revisions |
 | `BloomFilterSpec.v` | `src/bloom_filter.rs`, Bloom-backed `DynamicDawg` lookup, and `tests/bloom_filter_correspondence.rs` for no-false-negative lookup rejection, clear/reinsert traces, byte/string refinement, duplicate inserts, and parameter normalization |
 | `PersistentMergeSpec.v` | `tests/persistent_merge_correspondence.rs`, `PersistentARTrie::iter_prefix_from_cursor`, `merge_from_batched`, `merge_from_batched_grouped`, and `SharedARTrieParallelExt::merge_from_parallel` |
 | `PersistentPrefixSpec.v` | `tests/persistent_prefix_correspondence.rs`, `tests/persistent_bulk_mutation_correspondence.rs`, `PersistentARTrieChar::iter_prefix*`, `iter_prefix_with_*_arena`, `remove_prefix`, `remove_prefix_batched`, and byte/char checked `increment`/`fetch_add` overflow |
