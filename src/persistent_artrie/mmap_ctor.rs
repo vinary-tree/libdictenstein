@@ -119,11 +119,21 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// let dict: PersistentARTrie<()> = PersistentARTrie::create("words.part")?;
     /// ```
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
+        Self::create_with_buffer_pool_size(path, super::DEFAULT_BUFFER_POOL_SIZE)
+    }
+
+    /// Create a persistent dictionary with an explicit resident buffer-pool size.
+    ///
+    /// Allocation is fallible and the pool occupies at most `pool_size` storage
+    /// blocks, plus bounded manager metadata.
+    pub fn create_with_buffer_pool_size<P: AsRef<Path>>(path: P, pool_size: usize) -> Result<Self> {
         use super::buffer_manager::BufferManager;
         use super::disk_manager::DiskManager;
-        use super::DEFAULT_BUFFER_POOL_SIZE;
 
         let path = path.as_ref();
+        if pool_size == 0 {
+            return Err(PersistentARTrieError::InvalidBufferPoolSize { pool_size });
+        }
 
         // Fail if file already exists
         if path.exists() {
@@ -141,7 +151,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         let disk_manager = DiskManager::create(path)?;
 
         // Create buffer manager with default pool size (takes ownership of disk_manager)
-        let buffer_manager = BufferManager::new(disk_manager, DEFAULT_BUFFER_POOL_SIZE);
+        let buffer_manager = BufferManager::try_new(disk_manager, pool_size)?;
         let buffer_manager = Arc::new(RwLock::new(buffer_manager));
 
         // Create async WAL file alongside the main file
@@ -313,7 +323,18 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
         // This impl block is the default-`S` (`MmapDiskManager`) block.
         let gate = <Self as LockFreeOverlay<ByteKey, V, super::disk_manager::MmapDiskManager>>::USE_F5_REOPEN_LOADER;
-        Self::open_inner(path.as_ref(), gate)
+        Self::open_inner(path.as_ref(), gate, super::DEFAULT_BUFFER_POOL_SIZE)
+    }
+
+    /// Open a persistent dictionary with an explicit resident buffer-pool size.
+    pub fn open_with_buffer_pool_size<P: AsRef<Path>>(path: P, pool_size: usize) -> Result<Self> {
+        use crate::persistent_artrie::core::key_encoding::ByteKey;
+        use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
+        if pool_size == 0 {
+            return Err(PersistentARTrieError::InvalidBufferPoolSize { pool_size });
+        }
+        let gate = <Self as LockFreeOverlay<ByteKey, V, super::disk_manager::MmapDiskManager>>::USE_F5_REOPEN_LOADER;
+        Self::open_inner(path.as_ref(), gate, pool_size)
     }
 
     /// **F5 (S2 test surface) — reopen via the DIRECT dense→overlay loader**,
@@ -322,17 +343,16 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
     /// `load_root_immutable` + `replay_records_lww_overlay`; an Owned-regime file still
     /// uses the owned loader. Used by the F5 both-loaders correspondence proptest.
     pub fn open_with_f5_loader<P: AsRef<Path>>(path: P) -> Result<Self> {
-        Self::open_inner(path.as_ref(), true)
+        Self::open_inner(path.as_ref(), true, super::DEFAULT_BUFFER_POOL_SIZE)
     }
 
     /// Shared `open` body. `force_f5` selects the F5 dense→overlay loader for an
     /// Overlay-regime file (the gate value from `open`, or `true` from
     /// `open_with_f5_loader`); an Owned-regime file ignores it.
-    fn open_inner(path: &Path, force_f5: bool) -> Result<Self> {
+    fn open_inner(path: &Path, force_f5: bool, pool_size: usize) -> Result<Self> {
         use super::buffer_manager::BufferManager;
         use super::disk_manager::DiskManager;
         use super::recovery::RecoveryManager;
-        use super::DEFAULT_BUFFER_POOL_SIZE;
         // F5 trait methods resolve through the seam.
         #[allow(unused_imports)]
         use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
@@ -378,7 +398,7 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
         };
 
         // Create buffer manager (takes ownership of disk_manager)
-        let buffer_manager = BufferManager::new(disk_manager, DEFAULT_BUFFER_POOL_SIZE);
+        let buffer_manager = BufferManager::try_new(disk_manager, pool_size)?;
         let buffer_manager = Arc::new(RwLock::new(buffer_manager));
 
         // Create arena manager for space-efficient node storage

@@ -293,15 +293,15 @@ pub(crate) trait OverlayEvictable<K: KeyEncoding, V: DictionaryValue, S>:
             root: &Arc<OverlayNode<K, V>>,
             key: &[K::Unit],
         ) -> Option<Arc<OverlayNode<K, V>>> {
-            let mut current = Arc::clone(root);
+            // `root` pins the immutable snapshot. Borrow down the resident path so
+            // an all-in-memory read performs no atomic refcount operation per edge.
+            let mut current = root;
             for &edge in key {
                 let child = current.find_child(edge)?;
-                let child_arc = child.as_in_mem()?;
-                let next = Arc::clone(child_arc);
-                current = next;
+                current = child.as_in_mem()?;
             }
             if current.is_final() {
-                Some(current)
+                Some(Arc::clone(current))
             } else {
                 None
             }
@@ -325,7 +325,9 @@ pub(crate) trait OverlayEvictable<K: KeyEncoding, V: DictionaryValue, S>:
             // Walk top-down, collecting (node, edge) for a possible rebuild, until
             // we either reach the leaf (all InMem ⇒ answer directly), hit a missing
             // edge (absent), or hit an OnDisk edge (fault + CAS + rebase).
-            let mut spine: super::OverlaySpine<K, V> = Vec::with_capacity(key.len());
+            // Retain ancestors lazily. An absent edge near the root (or an empty
+            // key) must not reserve path memory proportional to the whole key.
+            let mut spine: super::OverlaySpine<K, V> = Vec::new();
             let mut current = Arc::clone(&old_root);
             let mut faulted = false;
 
@@ -339,7 +341,10 @@ pub(crate) trait OverlayEvictable<K: KeyEncoding, V: DictionaryValue, S>:
                 match child {
                     Child::InMem(child_arc) => {
                         let next = Arc::clone(child_arc);
-                        spine.push((Arc::clone(&current), edge));
+                        // Move the cursor Arc into the pending continuation instead
+                        // of clone-then-drop; this leaves one refcount increment (the
+                        // child pin) rather than two atomic operations per edge.
+                        spine.push((current, edge));
                         current = next;
                         idx += 1;
                     }

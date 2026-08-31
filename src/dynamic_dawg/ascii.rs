@@ -959,6 +959,28 @@ impl<V: DictionaryValue> DictionaryNode for DynamicDawgNode<V> {
         })
     }
 
+    #[inline]
+    fn supports_efficient_snapshot_cursor_edge_paging(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn visit_snapshot_cursor_edge_page<F>(
+        &self,
+        cursor: Self::SnapshotCursor,
+        start: usize,
+        capacity: usize,
+        visitor: F,
+    ) -> Option<(bool, usize)>
+    where
+        F: FnMut(u8, Self::SnapshotCursor),
+    {
+        // SAFETY: inherited unchanged from the trait contract.
+        Some(unsafe {
+            LockFreeDawgNode::<u8, V>::visit_cursor_edge_page(cursor, start, capacity, visitor)
+        })
+    }
+
     fn is_final(&self) -> bool {
         self.node.is_final()
     }

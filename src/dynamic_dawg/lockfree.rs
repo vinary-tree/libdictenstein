@@ -316,6 +316,42 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawgNode<U, V> {
         node.is_final
     }
 
+    /// Visit a bounded contiguous page of one cursor node's sorted edges.
+    ///
+    /// This is the allocation-free primitive used by strict lazy products.
+    /// It performs constant-time metadata access and work proportional only to
+    /// the requested page, rather than rescanning or cloning the full fanout.
+    ///
+    /// # Safety
+    ///
+    /// `cursor` must satisfy
+    /// [`Self::filter_map_cursor_edges_and_finality`]'s retained-revision
+    /// contract.
+    #[inline]
+    pub(crate) unsafe fn visit_cursor_edge_page<F>(
+        cursor: super::DynamicDawgSnapshotCursor<U, V>,
+        start: usize,
+        capacity: usize,
+        mut visitor: F,
+    ) -> (bool, usize)
+    where
+        F: FnMut(U, super::DynamicDawgSnapshotCursor<U, V>),
+    {
+        // SAFETY: the method contract ties the cursor to this exact node type
+        // and to a still-retained immutable root revision.
+        let pointer = unsafe { cursor.node_pointer::<Self>() };
+        // SAFETY: published graph nodes are immutable and the retained root
+        // transitively owns every reachable allocation.
+        let node = unsafe { pointer.as_ref() };
+        let total = node.edges.edges.len();
+        let available = total.saturating_sub(start);
+        let take = available.min(capacity);
+        for (label, child) in node.edges.edges.iter().skip(start).take(take) {
+            visitor(*label, Self::traversal_cursor(child));
+        }
+        (node.is_final, total)
+    }
+
     /// Read a value through a cursor retained by the captured root revision.
     ///
     /// # Safety

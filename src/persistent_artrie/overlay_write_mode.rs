@@ -341,7 +341,6 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
         })?;
         let _epoch = self.epoch_manager.enter_read();
         loop {
-            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             let root = match lockfree_root.load() {
                 Some(r) => r,
                 None => {
@@ -350,6 +349,9 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
                     continue;
                 }
             };
+            // Bind the ticket to the loaded CAS snapshot. A stale snapshot loses
+            // the CAS and its ticket; the retry loads before claiming again.
+            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             // Mode pre-check on the FRESHLY-loaded root.
             let was_present = self.find_leaf_recursive(&root, key_bytes, 0).is_some();
             match &mode {

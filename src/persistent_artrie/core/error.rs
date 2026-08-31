@@ -114,6 +114,20 @@ pub enum PersistentARTrieError {
         total_pages: usize,
     },
 
+    /// A bounded heap allocation failed before the requested structure was published.
+    #[error("Allocation failed while reserving {requested_bytes} bytes")]
+    AllocationFailed {
+        /// Requested byte count, saturated on arithmetic overflow.
+        requested_bytes: usize,
+    },
+
+    /// A persistent trie requires at least one resident buffer frame.
+    #[error("Invalid buffer-pool size {pool_size}; at least one frame is required")]
+    InvalidBufferPoolSize {
+        /// Requested number of resident frames.
+        pool_size: usize,
+    },
+
     /// Lock was poisoned (panic occurred while holding lock)
     #[error("Lock poisoned for {resource}")]
     LockPoisoned {

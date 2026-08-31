@@ -35,6 +35,7 @@ use crate::persistent_artrie::eviction::EvictionCoordinator;
 use dashmap::DashMap;
 
 use super::dict_impl::PersistentVocabARTrie;
+use super::lockfree_cas::VocabPathInsertError;
 
 // The vocab overlay node alias (V = u64).
 type VocabOverlayNode = OverlayNode<CharKey, u64>;
@@ -188,9 +189,18 @@ impl<S: BlockStorage> LockFreeOverlay<CharKey, u64, S> for PersistentVocabARTrie
                     }
                     Err(_) => continue,
                 },
-                // Already final (recovery re-applying the same term) or OnDisk-blocked
-                // (impossible on a fresh reestablish overlay): the value is already set.
-                Err(_) => return,
+                // Recovery may idempotently replay an already-final term. Every
+                // representation failure is distinct: it must never be mistaken
+                // for the stable vocabulary id 0 or for successful publication.
+                Err(VocabPathInsertError::AlreadyExists(_)) => return,
+                Err(error) => {
+                    log::error!("recovery vocab path publication failed closed: {error:?}");
+                    debug_assert!(
+                        false,
+                        "fresh vocab recovery overlay violated its resident-tree invariant"
+                    );
+                    return;
+                }
             }
         }
     }
@@ -318,9 +328,6 @@ impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabAR
         let lockfree_root = self.require_lockfree_root()?;
         let _epoch = self.epoch_manager.enter_read();
         loop {
-            // Order-A generation CLAIM (loop-top, re-claimed per iteration): the
-            // winning claim is strictly monotone in the global root-CAS order + durable.
-            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             let root = match lockfree_root.load() {
                 Some(r) => r,
                 None => {
@@ -330,6 +337,9 @@ impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabAR
                     continue;
                 }
             };
+            // LOAD-BEFORE-CLAIM: bind the recovery ticket to this expected root.
+            // A conflicting publication discards the ticket with the failed CAS.
+            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             // InsertOnce pre-check on the freshly-loaded root: a concurrent insert may
             // have won between the caller's present-hoist and this CAS.
             if self.find_in_lockfree_trie(&root, &chars).is_some() {
@@ -351,8 +361,12 @@ impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabAR
                     }
                 },
                 // A concurrent insert finalized the term between the pre-check and the
-                // build: insert-once → NotApplied.
-                Err(_existing) => return Ok(ValuePublishOutcome::NotApplied),
+                // build: insert-once → NotApplied. Representation failures fail
+                // closed instead of masquerading as a duplicate/no-op.
+                Err(VocabPathInsertError::AlreadyExists(_)) => {
+                    return Ok(ValuePublishOutcome::NotApplied)
+                }
+                Err(error) => return Err(error.into_persistent_error()),
             }
         }
     }

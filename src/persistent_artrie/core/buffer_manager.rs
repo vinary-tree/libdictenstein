@@ -315,24 +315,67 @@ impl<S: BlockStorage> BufferManager<S> {
     /// * `storage` - The storage backend for I/O operations
     /// * `pool_size` - Number of frames in the buffer pool
     pub fn new(storage: S, pool_size: usize) -> Self {
-        let frames: Vec<FrameMetadata> = (0..pool_size).map(|_| FrameMetadata::new()).collect();
-        let buffer_pool: Vec<AlignedBlock> = (0..pool_size).map(|_| AlignedBlock::new()).collect();
+        Self::try_new(storage, pool_size).expect("buffer-manager allocation failed")
+    }
+
+    /// Fallibly create a buffer manager with an explicit resident-page ceiling.
+    ///
+    /// This constructor reserves every backing collection before initialization.
+    /// The aligned page pool is zeroed in its final allocation, avoiding both an
+    /// abort-on-OOM collection and a 256-KiB stack temporary per page.
+    pub fn try_new(storage: S, pool_size: usize) -> Result<Self> {
+        if pool_size == 0 {
+            return Err(PersistentARTrieError::InvalidBufferPoolSize { pool_size });
+        }
+        let requested_bytes = pool_size.saturating_mul(std::mem::size_of::<AlignedBlock>());
+        let mut frames = Vec::new();
+        frames
+            .try_reserve_exact(pool_size)
+            .map_err(|_| PersistentARTrieError::AllocationFailed { requested_bytes })?;
+        frames.extend((0..pool_size).map(|_| FrameMetadata::new()));
+
+        let mut buffer_pool: Vec<AlignedBlock> = Vec::new();
+        buffer_pool
+            .try_reserve_exact(pool_size)
+            .map_err(|_| PersistentARTrieError::AllocationFailed { requested_bytes })?;
+        // SAFETY: `AlignedBlock` contains only a byte array, for which the all-zero
+        // bit pattern is valid. Capacity for exactly `pool_size` elements was
+        // reserved successfully, the memory is initialized before `set_len`, and
+        // the vector cannot reallocate while the registered pointers are live.
+        unsafe {
+            std::ptr::write_bytes(buffer_pool.as_mut_ptr(), 0, pool_size);
+            buffer_pool.set_len(pool_size);
+        }
 
         // Register buffer pool with storage backend for zero-copy I/O.
         // This is a no-op for mmap but enables ReadFixed/WriteFixed for io_uring.
-        let buffers: Vec<(*mut u8, usize)> = buffer_pool
-            .iter()
-            .map(|block| (block.data.as_ptr() as *mut u8, BLOCK_SIZE))
-            .collect();
+        let mut buffers = Vec::new();
+        buffers.try_reserve_exact(pool_size).map_err(|_| {
+            PersistentARTrieError::AllocationFailed {
+                requested_bytes: pool_size.saturating_mul(std::mem::size_of::<(*mut u8, usize)>()),
+            }
+        })?;
+        buffers.extend(
+            buffer_pool
+                .iter()
+                .map(|block| (block.data.as_ptr() as *mut u8, BLOCK_SIZE)),
+        );
         // Safety: buffer_pool is owned by BufferManager and will not be moved/freed
         // until BufferManager is dropped, at which point unregister_buffer_pool is called.
         // The Vec itself is never reallocated (capacity is fixed at construction).
         let fixed_buffers_registered = unsafe { storage.register_buffer_pool(&buffers).is_ok() }
             && storage.supports_fixed_buffers();
 
-        Self {
+        let mut page_table = HashMap::new();
+        page_table
+            .try_reserve(pool_size)
+            .map_err(|_| PersistentARTrieError::AllocationFailed {
+                requested_bytes: pool_size.saturating_mul(std::mem::size_of::<(u32, FrameId)>()),
+            })?;
+
+        Ok(Self {
             storage,
-            page_table: RwLock::new(HashMap::with_capacity(pool_size)),
+            page_table: RwLock::new(page_table),
             lifecycle_lock: Mutex::new(()),
             frames,
             buffer_pool,
@@ -340,7 +383,7 @@ impl<S: BlockStorage> BufferManager<S> {
             pool_size,
             active_pool_size: AtomicUsize::new(pool_size),
             fixed_buffers_registered,
-        }
+        })
     }
 
     /// Create a buffer manager without registering buffers for zero-copy I/O.
@@ -1452,6 +1495,17 @@ mod tests {
             let guard = bm.fetch_page(block_id).expect("fetch_page");
             assert_eq!(guard.data()[0], i as u8, "Page {} corrupted", i);
         }
+    }
+
+    #[test]
+    fn zero_sized_fallible_pool_is_rejected_before_registration() {
+        let storage = TrackingFixedStorage::new();
+        let state = Arc::clone(&storage.state);
+        assert!(matches!(
+            BufferManager::try_new(storage, 0),
+            Err(PersistentARTrieError::InvalidBufferPoolSize { pool_size: 0 })
+        ));
+        assert_eq!(state.register_calls.load(Ordering::Acquire), 0);
     }
 
     #[test]

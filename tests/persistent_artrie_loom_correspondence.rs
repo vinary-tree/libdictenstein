@@ -1175,6 +1175,37 @@ fn char_merge_snapshot_never_exceeds_visible_value() {
 }
 
 #[test]
+fn vocab_path_copy_publication_never_mutates_a_captured_root() {
+    loom::model(|| {
+        let vocab = Arc::new(ModelVocabOverlay::new());
+        // This models an Arc-retained immutable root loaded before either CAS.
+        // A writer may publish a replacement, but it cannot modify this capture.
+        let captured = vocab.root_snapshot();
+
+        let first = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                vocab.insert(0);
+            })
+        };
+        let second = {
+            let vocab = Arc::clone(&vocab);
+            thread::spawn(move || {
+                vocab.insert(1);
+            })
+        };
+
+        first.join().expect("first path copy completed");
+        second.join().expect("second path copy completed");
+
+        assert_eq!(captured, ModelVocabSnapshot::empty());
+        let published = vocab.root_snapshot();
+        assert!(published.get(0).is_some());
+        assert!(published.get(1).is_some());
+    });
+}
+
+#[test]
 fn vocab_duplicate_insert_returns_stable_index_and_allows_sparse_next_index() {
     loom::model(|| {
         const NOT_OBSERVED: usize = usize::MAX;

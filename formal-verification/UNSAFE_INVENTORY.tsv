@@ -200,14 +200,17 @@ src/lib.rs	unsafe_fn	unsafe fn visit_snapshot_cursor_edge_page<F>(	1	snapshot-de
 src/persistent_artrie/char/nodes/node16_char.rs	unsafe_block	unsafe {	1	char-node16-prefix-copy
 src/persistent_artrie/char/overlay_dictionary_node_faulting_tests.rs	unsafe_block	if unsafe { node.snapshot_cursor_is_final(cursor) }.expect("cursor finality") {	1	snapshot-dense-cursor-contract
 src/persistent_artrie/char/overlay_dictionary_node_faulting_tests.rs	unsafe_block	unsafe {	1	snapshot-dense-cursor-contract
-src/persistent_artrie/char/types.rs	unsafe_block	Some(unsafe { Box::from_raw(ptr as *mut CharTrieNodeInner<V>) })	1	char-child-box-reclaim
+src/persistent_artrie/char/types.rs	unsafe_block	Some(unsafe { Box::from_raw(ptr.cast_mut()) })	1	char-child-box-reclaim
+src/persistent_artrie/char/types.rs	unsafe_block	drop(unsafe { Box::from_raw(new_raw) });	1	char-child-box-replacement
 src/persistent_artrie/char/types.rs	unsafe_block	let child_ref = unsafe { &*p };	1	char-child-read-only-traversal
 src/persistent_artrie/char/types.rs	unsafe_block	let child_ref = unsafe { &*ptr };	1	char-child-read-only-traversal
-src/persistent_artrie/char/types.rs	unsafe_block	let old_child = unsafe { Box::from_raw(ptr as *mut CharTrieNodeInner<V>) };	1	char-child-box-replacement
-src/persistent_artrie/char/types.rs	unsafe_block	unsafe {	2	char-child-raw-map-iteration
+src/persistent_artrie/char/types.rs	unsafe_block	let mut child = unsafe { Box::from_raw(raw) };	1	char-child-box-reclaim
+src/persistent_artrie/char/types.rs	unsafe_block	return unsafe { &mut *existing.cast_mut() };	1	char-child-unique-mutation
+src/persistent_artrie/char/types.rs	unsafe_block	return unsafe { &mut *ptr.cast_mut() };	1	char-child-unique-mutation
+src/persistent_artrie/char/types.rs	unsafe_block	unsafe {	1	char-child-box-replacement
 src/persistent_artrie/char/types.rs	unsafe_block	unsafe { &*ptr }	1	char-child-read-only-traversal
-src/persistent_artrie/char/types.rs	unsafe_block	unsafe { &mut *(ptr as *mut CharTrieNodeInner<V>) }	1	char-child-unique-mutation
 src/persistent_artrie/char/types.rs	unsafe_block	unsafe { &mut *ptr }	1	char-child-unique-mutation
+src/persistent_artrie/char/types.rs	unsafe_block	unsafe { Box::from_raw(raw.cast_mut()) }	1	char-child-box-replacement
 src/persistent_artrie/core/block_storage.rs	unsafe_block	unsafe {	1	block-storage-default-fixed-buffer-registration
 src/persistent_artrie/core/block_storage.rs	unsafe_fn	unsafe fn register_buffer_pool(&self, _buffers: &[(*mut u8, usize)]) -> Result<()> {	1	block-storage-fixed-buffer-registration-contract
 src/persistent_artrie/core/buffer_manager.rs	unsafe_block	let fixed_buffers_registered = unsafe { storage.register_buffer_pool(&buffers).is_ok() }	2	buffer-manager-fixed-buffer-registration

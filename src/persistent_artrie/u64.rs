@@ -871,8 +871,9 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
 
     fn insert_sequence_cas_ranked(&self, sequence: &[u64], value: Option<V>) -> U64CasOutcome {
         loop {
-            let generation = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             let root = self.root_arc();
+            // LOAD-BEFORE-CLAIM: a generation is tied to this expected root.
+            let generation = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             let Some((new_root, inserted)) =
                 Self::build_insert_path(&root, sequence, 0, value.clone())
             else {
@@ -943,8 +944,9 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
 
     fn remove_sequence_cas_ranked(&self, sequence: &[u64]) -> U64CasOutcome {
         loop {
-            let generation = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             let root = self.root_arc();
+            // LOAD-BEFORE-CLAIM: a generation is tied to this expected root.
+            let generation = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             let Some((new_root, removed)) = Self::build_remove_path(&root, sequence, 0) else {
                 return U64CasOutcome::Idempotent;
             };

@@ -375,9 +375,6 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
         })?;
         let _epoch = self.epoch_manager.enter_read();
         loop {
-            // S4 commit_seq CLAIM (loop-top, re-claimed per iteration) — the winning
-            // claim is strictly monotone in the global root-CAS order + durable.
-            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             let root = match lockfree_root.load() {
                 Some(r) => r,
                 None => {
@@ -386,6 +383,10 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
                     continue;
                 }
             };
+            // LOAD-BEFORE-CLAIM: this ticket belongs to `root`, the exact CAS
+            // expected value. An overtaking publication forces a retry and a fresh
+            // claim, so replay generation order matches visibility order.
+            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             // Mode pre-check on the FRESHLY-loaded root (so a concurrent change
             // between the caller's initial read and this CAS is observed).
             let was_present = self.find_leaf_recursive(&root, &chars, 0).is_some();

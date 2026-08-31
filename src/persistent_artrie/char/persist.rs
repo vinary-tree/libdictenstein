@@ -257,12 +257,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             .unwrap_or(0);
 
         // S5-2 (A3 floor): the durable global commit_seq, captured (Acquire) in the
-        // SAME pre-root-load window as the watermark. commit_seq claims are monotone in
-        // CAS order (fetch_add loop-top), so this value is ≥ every survivor generation
-        // folded into the about-to-be-loaded root ⇒ raising the WAL floor to it makes a
-        // post-checkpoint op out-rank all of them. Reading it BEFORE the root load is
-        // required (after would risk a floor above an in-snapshot survivor). DO NOT
-        // REORDER past the root load below.
+        // SAME pre-root-load window as the watermark. Successful commit_seq claims are
+        // monotone in CAS order because each attempt loads its expected root before
+        // claiming. This value covers every generation whose WAL record can lie at or
+        // below `watermark_at_capture` and therefore be reclaimed. A newer generation
+        // that enters the subsequently loaded root has an LSN above that earlier
+        // watermark, so its WAL + CommitRank remain for replay/seed scanning. Keep this
+        // capture beside the pre-root watermark; the pair defines the same cut.
         let commit_seq_at_capture = self.commit_seq.load(AtomicOrdering::Acquire);
 
         let overlay_revision = self

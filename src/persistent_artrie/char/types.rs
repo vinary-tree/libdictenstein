@@ -459,18 +459,32 @@ pub struct PrefixTermWithValueAndArena<V> {
 /// - Binary search for CharNode48
 /// - HashMap for CharBucket (>48 children)
 ///
-/// # Safety
+/// # Ownership invariant
 ///
-/// The raw pointers are managed carefully:
-/// - Created via `Box::into_raw()` when inserting children
-/// - Recovered via `Box::from_raw()` when dropping or removing
-/// - The `Drop` implementation ensures all children are properly freed
+/// This is an exclusively owned serialization tree, not the live `Arc`-shared
+/// overlay. Its raw child slots obey all of the following rules:
+///
+/// - Every in-memory slot contains the address of one `Box<CharTrieNodeInner<V>>`
+///   transferred by `Box::into_raw`.
+/// - That address occurs in exactly one owning slot. Cloning allocates a fresh
+///   box for every in-memory descendant; it never copies an owning address.
+/// - An on-disk slot owns no allocation and is never dereferenced or reclaimed
+///   as a box.
+/// - Replacement and removal detach the slot before reconstructing its box, and
+///   reconstruct a given box at most once.
+/// - Shared child references are tied to `&self`. Exclusive child references
+///   are created only by `get_or_create_child` while `&mut self` excludes every
+///   shared or competing exclusive borrow of the complete owned tree.
+///
+/// The fields and raw-slot insertion seam are crate-private so safe downstream
+/// code cannot forge a second owning slot. The live concurrent representation
+/// uses `Child::InMem(Arc<_>)` instead and never relies on this invariant.
 pub struct CharTrieNodeInner<V: DictionaryValue> {
     /// The adaptive radix node structure (N4/N16/N48/Bucket)
     /// Children are stored as raw pointers encoded in the CharNode's SwizzledPtr fields.
-    pub node: CharNode,
+    pub(crate) node: CharNode,
     /// Optional value associated with this node (stored separately from CharNode)
-    pub value: Option<V>,
+    pub(crate) value: Option<V>,
 }
 
 // Manual Debug implementation to avoid requiring Debug on V
@@ -523,22 +537,31 @@ impl<V: DictionaryValue> Clone for CharTrieNodeInner<V> {
     }
 }
 
-// Drop implementation - must free all child nodes
+// Iterative Drop: reclaim each uniquely owned child box exactly once without
+// recursing down a potentially long serialization spine.
 impl<V: DictionaryValue> Drop for CharTrieNodeInner<V> {
     fn drop(&mut self) {
-        // Collect child pointers first to avoid iterator invalidation
-        let child_ptrs: Vec<_> = self
-            .node
+        // Detach our complete child store first. Re-entrant `Drop` on a box
+        // popped below therefore observes an empty node and cannot recurse.
+        let root_node = std::mem::replace(&mut self.node, CharNode::new_node4());
+        let mut worklist: Vec<*mut CharTrieNodeInner<V>> = root_node
             .iter_children()
-            .filter_map(|(_, ptr)| ptr.as_ptr::<CharTrieNodeInner<V>>())
+            .filter_map(|(_, ptr)| {
+                ptr.as_ptr::<CharTrieNodeInner<V>>()
+                    .map(|raw| raw.cast_mut())
+            })
             .collect();
 
-        // Free each child
-        for ptr in child_ptrs {
-            // Safety: We created these pointers via Box::into_raw() during insertion
-            unsafe {
-                drop(Box::from_raw(ptr as *mut CharTrieNodeInner<V>));
-            }
+        while let Some(raw) = worklist.pop() {
+            // SAFETY: the ownership invariant gives this detached worklist the
+            // only owning occurrence of `raw`. Reconstruct exactly one Box.
+            let mut child = unsafe { Box::from_raw(raw) };
+            let child_node = std::mem::replace(&mut child.node, CharNode::new_node4());
+            worklist.extend(child_node.iter_children().filter_map(|(_, ptr)| {
+                ptr.as_ptr::<CharTrieNodeInner<V>>()
+                    .map(|descendant| descendant.cast_mut())
+            }));
+            // `child.node` is empty, so dropping `child` is constant-stack.
         }
     }
 }
@@ -576,27 +599,19 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
         self.node.num_children()
     }
 
-    /// Get a child by character
+    /// Get a shared child by character.
+    ///
+    /// The returned reference cannot outlive or overlap mutation of `self`.
+    /// Crate-private fields prevent safe code from duplicating an owning slot,
+    /// so the pointee remains allocated for the complete borrow.
     pub fn get_child(&self, c: char) -> Option<&CharTrieNodeInner<V>> {
         self.node
             .find_child(c as u32)
             .and_then(|ptr| ptr.as_ptr::<CharTrieNodeInner<V>>())
             .map(|ptr| {
-                // Safety: We control all SwizzledPtr creation; ptr is valid
+                // SAFETY: the ownership invariant makes every in-memory slot a
+                // live unique Box allocation owned transitively by `self`.
                 unsafe { &*ptr }
-            })
-    }
-
-    /// Get a child mutably by character
-    pub fn get_child_mut(&mut self, c: char) -> Option<&mut CharTrieNodeInner<V>> {
-        self.node
-            .find_child(c as u32)
-            .and_then(|ptr| ptr.as_ptr::<CharTrieNodeInner<V>>())
-            .map(|ptr| {
-                // Safety: We control all SwizzledPtr creation; ptr is valid
-                // Note: This is technically unsound for shared access, but
-                // the mutable borrow of self prevents concurrent access
-                unsafe { &mut *(ptr as *mut CharTrieNodeInner<V>) }
             })
     }
 
@@ -608,33 +623,35 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
     ) -> Option<Box<CharTrieNodeInner<V>>> {
         let key = c as u32;
 
-        // Check if child already exists
-        if let Some(existing_ptr) = self.node.find_child(key) {
-            if let Some(ptr) = existing_ptr.as_ptr::<CharTrieNodeInner<V>>() {
-                // Remove old child and recover the Box
-                if let Some((_, Some(new_node))) = self.node.remove_child_shrinking(key) {
-                    self.node = new_node;
-                }
-                // Safety: ptr was created via Box::into_raw()
-                let old_child = unsafe { Box::from_raw(ptr as *mut CharTrieNodeInner<V>) };
+        // Detach an existing slot before reconstructing an owned in-memory Box.
+        // An on-disk slot owns no Box and is simply replaced.
+        let old_ptr = self.node.remove_child_shrinking(key).map(|(old, shrunk)| {
+            if let Some(new_node) = shrunk {
+                self.node = new_node;
+            }
+            old
+        });
 
-                // Insert the new child
-                let new_ptr = SwizzledPtr::in_memory(Box::into_raw(Box::new(child)));
-                if let Ok(Some(grown)) = self.node.add_child_growing(key, new_ptr) {
-                    self.node = grown;
-                }
-
-                return Some(old_child);
+        let new_raw = Box::into_raw(Box::new(child));
+        let new_ptr = SwizzledPtr::in_memory(new_raw);
+        match self.node.add_child_growing(key, new_ptr) {
+            Ok(Some(grown)) => self.node = grown,
+            Ok(None) => {}
+            Err(_) => {
+                // SAFETY: publication failed, so `new_raw` never entered an
+                // owning slot and remains the caller's unique allocation.
+                drop(unsafe { Box::from_raw(new_raw) });
+                panic!("invariant violation: detached child key remained present");
             }
         }
 
-        // No existing child, just insert
-        let new_ptr = SwizzledPtr::in_memory(Box::into_raw(Box::new(child)));
-        if let Ok(Some(grown)) = self.node.add_child_growing(key, new_ptr) {
-            self.node = grown;
-        }
-
-        None
+        old_ptr
+            .and_then(|ptr| ptr.as_ptr::<CharTrieNodeInner<V>>())
+            .map(|raw| {
+                // SAFETY: the old slot was detached above and was its unique
+                // owning occurrence. Ownership transfers to the returned Box.
+                unsafe { Box::from_raw(raw.cast_mut()) }
+            })
     }
 
     /// Insert a raw SwizzledPtr as a child, returning the old pointer if it existed
@@ -646,11 +663,23 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
     ///
     /// If the returned SwizzledPtr is in-memory, the caller is responsible for
     /// freeing the pointed-to memory (e.g., by calling Box::from_raw on it).
-    pub fn insert_child_ptr(&mut self, c: char, child_ptr: SwizzledPtr) -> Option<SwizzledPtr> {
+    pub(crate) fn insert_child_ptr(
+        &mut self,
+        c: char,
+        child_ptr: SwizzledPtr,
+    ) -> Option<SwizzledPtr> {
+        assert!(
+            !child_ptr.is_swizzled(),
+            "raw in-memory ownership must enter through insert_child"
+        );
         let key = c as u32;
 
         // Check if child already exists
-        if self.node.find_child(key).is_some() {
+        if let Some(existing) = self.node.find_child(key) {
+            assert!(
+                !existing.is_swizzled(),
+                "insert_child_ptr cannot detach an owned in-memory child; use insert_child"
+            );
             // Remove old child and get its pointer
             if let Some((old_ptr, shrunk)) = self.node.remove_child_shrinking(key) {
                 if let Some(new_node) = shrunk {
@@ -680,8 +709,15 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
 
         // Check if child already exists
         if self.node.find_child(key).is_some() {
-            // Child exists, return mutable reference
-            return self.get_child_mut(c).expect("child should exist");
+            let ptr = self
+                .node
+                .find_child(key)
+                .and_then(|slot| slot.as_ptr::<CharTrieNodeInner<V>>())
+                .expect("owned child slot must contain an in-memory allocation");
+            // SAFETY: `&mut self` excludes every shared or competing mutable
+            // borrow of this exclusively owned tree; the invariant makes `ptr`
+            // the sole owning child slot for the duration of the returned borrow.
+            return unsafe { &mut *ptr.cast_mut() };
         }
 
         // Create new child
@@ -703,11 +739,18 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
                 unsafe {
                     drop(Box::from_raw(ptr));
                 }
-                return self.get_child_mut(c).expect("child should exist");
+                let existing = self
+                    .node
+                    .find_child(key)
+                    .and_then(|slot| slot.as_ptr::<CharTrieNodeInner<V>>())
+                    .expect("existing owned child must be in memory");
+                // SAFETY: same unique-parent argument as the existing-child arm.
+                return unsafe { &mut *existing.cast_mut() };
             }
         }
 
-        // Safety: We just inserted this pointer
+        // SAFETY: `ptr` was freshly allocated and has exactly one owning slot;
+        // `&mut self` excludes aliases for the returned borrow.
         unsafe { &mut *ptr }
     }
 
@@ -715,19 +758,21 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
     pub fn remove_child(&mut self, c: char) -> Option<Box<CharTrieNodeInner<V>>> {
         let key = c as u32;
 
-        // Check if child exists and get its pointer
-        let ptr = self
-            .node
+        // Only in-memory slots own a Box. Leave on-disk references untouched.
+        self.node
             .find_child(key)
-            .and_then(|p| p.as_ptr::<CharTrieNodeInner<V>>())?;
+            .and_then(|slot| slot.as_ptr::<CharTrieNodeInner<V>>())?;
 
-        // Remove from node
-        if let Some((_, Some(new_node))) = self.node.remove_child_shrinking(key) {
+        let (removed, shrunk) = self.node.remove_child_shrinking(key)?;
+        if let Some(new_node) = shrunk {
             self.node = new_node;
         }
+        let ptr = removed
+            .as_ptr::<CharTrieNodeInner<V>>()
+            .expect("detached owned child must remain in memory");
 
-        // Safety: ptr was created via Box::into_raw()
-        Some(unsafe { Box::from_raw(ptr as *mut CharTrieNodeInner<V>) })
+        // SAFETY: removal detached the sole owning slot before reconstruction.
+        Some(unsafe { Box::from_raw(ptr.cast_mut()) })
     }
 
     /// Iterate over children
@@ -737,7 +782,8 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
         self.node.iter_children().filter_map(|(key, ptr)| {
             ptr.as_ptr::<CharTrieNodeInner<V>>().map(|p| {
                 let c = char::from_u32(key).unwrap_or('\u{FFFD}');
-                // Safety: We control all SwizzledPtr creation; ptr is valid
+                // SAFETY: shared access is tied to `&self`, and the ownership
+                // invariant keeps the unique child allocation live.
                 let child_ref = unsafe { &*p };
                 (c, child_ref)
             })
@@ -790,5 +836,29 @@ mod tests {
         let removed = root.remove_child('a');
         assert!(removed.is_some());
         assert_eq!(root.num_children(), 1);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "large constrained-stack stress is covered outside Miri"
+    )]
+    fn owned_serialization_tree_drop_is_stack_safe() {
+        std::thread::Builder::new()
+            .name("owned-char-tree-drop-stack-gate".to_string())
+            .stack_size(64 * 1024)
+            .spawn(|| {
+                let mut root = CharTrieNodeInner::<u64>::new();
+                let mut cursor = &mut root;
+                for _ in 0..16_384 {
+                    cursor = cursor.get_or_create_child('x');
+                }
+                cursor.set_final(true);
+                // `root` is dropped on this constrained stack. Iterative Drop
+                // must reclaim the complete unique-box chain without recursion.
+            })
+            .expect("spawn constrained-stack thread")
+            .join()
+            .expect("owned char tree drop must not overflow its stack");
     }
 }

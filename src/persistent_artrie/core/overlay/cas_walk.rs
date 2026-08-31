@@ -10,8 +10,10 @@
 //! unit `K::Unit` (`u8` vs `u32`). This module lifts the COMMON descent ONCE,
 //! generic over `<K: KeyEncoding, V>`:
 //!
-//!   * [`find_leaf_recursive`] / [`find_in_lockfree_trie`] — the non-faulting
-//!     in-memory point-read walks (membership `bool` + leaf `Arc`).
+//!   * [`find_leaf_recursive`] / [`find_in_lockfree_trie`] — the non-faulting,
+//!     iterative in-memory point-read walks (membership `bool` + leaf `Arc`). The
+//!     historical `find_leaf_recursive` name is retained for its crate-private
+//!     callers, but neither walk consumes call-stack space per key unit.
 //!   * [`create_spine`] — the bottom-up "build the remaining spine for a key
 //!     suffix" path builder, parameterized by a leaf-maker closure (so a
 //!     non-durable non-final leaf vs a durable `as_final` leaf vs a valued leaf
@@ -34,18 +36,19 @@
 //!     in [`resolve_or_fault`]'s doc) — byte non-durable-insert's
 //!     `FaultFailed/Null → AlreadyExists` (TERMINAL, NOT a retry) is preserved;
 //!   * the recovery generation (the durable global `commit_seq`, claimed by the
-//!     CALLER's retry loop via [`OverlayCasWalk::claim_generation`] — NEVER the
+//!     per-variant attempt after its expected-root load via
+//!     [`OverlayCasWalk::claim_generation`] — NEVER the
 //!     walk's `root.version()`; see the §MANDATORY-FIX-1 note below).
 //!
 //! # MANDATORY FIX 1 (data-loss) — generation comes from `claim_generation`, NOT the walk
 //!
 //! The recovery generation that flows into `reconcile_lww` is the durable global
-//! `commit_seq` (restart-seeded), NOT a node's `root.version()`. The skeleton's
-//! retry loop (the per-variant CALLER) claims the generation via
+//! `commit_seq` (restart-seeded), NOT a node's `root.version()`. Each per-variant
+//! attempt first loads its compare-exchange expected root, then claims via
 //! [`OverlayCasWalk::claim_generation`] (default `self.claim_commit_seq()`,
-//! identical in both variants) and passes the CALLER-CLAIMED
-//! `committed_generation` to `commit_rank_and_mark`. The walk's `root.version()`
-//! is DROPPED inside the skeleton exactly as both variants do today — a
+//! identical in both variants), and returns that generation only if its CAS wins.
+//! The skeleton passes the successful attempt's `committed_generation` to
+//! `commit_rank_and_mark`. The walk's `root.version()` is not used — a
 //! `make_*(_, published_root_version)` hook that read the walk's version would
 //! re-introduce the A.2 cross-restart resurrection bug (post-restart version
 //! resets → wrong replay order → resurrected/dropped term).
@@ -143,14 +146,22 @@ pub(crate) enum FaultMode {
 // Free COMMON descent functions — generic over <K: KeyEncoding, V>
 // ============================================================================
 
-/// Non-faulting recursive leaf find: descend `key[depth..]` through IN-MEMORY
+/// Non-faulting iterative leaf find: descend `key[depth..]` through IN-MEMORY
 /// children only, returning the final leaf `Arc` iff the full path exists AND the
 /// leaf is final, else `None`. An `OnDisk` child short-circuits to `None` (the
 /// lock-free overlay cannot traverse a disk ref without a faulter — the per-variant
 /// faulting walk `find_leaf_faulting` handles eviction).
 ///
-/// Token-for-token the prior per-variant `find_leaf_recursive` (byte
-/// `lockfree_cas.rs:555`, char `:1293`), now generic over `K::Unit`.
+/// # Space and snapshot invariant
+///
+/// The input `Arc` pins the immutable root snapshot and therefore every child on
+/// the selected path. The cursor can borrow each child `Arc` in place; it performs
+/// no atomic reference-count mutation per edge and clones only the final leaf that
+/// the API returns. Auxiliary space is therefore $`O(1)`$, Rust call-stack use is
+/// independent of key length, and traversal cost is one child lookup per unit.
+///
+/// The crate-private name is retained to avoid duplicating a compatibility shim at
+/// every byte/char value seam; its implementation is deliberately not recursive.
 ///
 #[inline]
 pub(crate) fn find_leaf_recursive<K: KeyEncoding, V: Clone>(
@@ -158,24 +169,22 @@ pub(crate) fn find_leaf_recursive<K: KeyEncoding, V: Clone>(
     key: &[K::Unit],
     depth: usize,
 ) -> Option<Arc<OverlayNode<K, V>>> {
-    if depth == key.len() {
-        return if node.is_final() {
-            Some(Arc::clone(node))
-        } else {
-            None
-        };
+    let suffix = key.get(depth..)?;
+    let mut current = node;
+    for &unit in suffix {
+        let child = current.find_child(unit)?;
+        // Can't traverse disk refs in the lock-free overlay; `as_in_mem` returns
+        // `None` for an on-disk child, preserving the old short-circuit.
+        current = child.as_in_mem()?;
     }
-    let child = node.find_child(key[depth])?;
-    // Can't traverse disk refs in the lock-free overlay; `as_in_mem` returns
-    // `None` for an on-disk child, short-circuiting via `?` (owned `Arc`).
-    let child_arc = child.as_in_mem()?;
-    find_leaf_recursive(&Arc::clone(child_arc), key, depth + 1)
+    current.is_final().then(|| Arc::clone(current))
 }
 
-/// Non-faulting recursive membership check: `true` iff `key[depth..]` reaches a
-/// final node through IN-MEMORY children only. Token-for-token the prior
-/// per-variant `find_in_lockfree_trie` (byte `lockfree_cas.rs:511`, char `:1252`),
-/// now generic over `K::Unit`.
+/// Non-faulting iterative membership check: `true` iff `key[depth..]` reaches a
+/// final node through IN-MEMORY children only. Like [`find_leaf_recursive`], it
+/// holds one borrowed current-node cursor, allocates no path buffer, performs no
+/// per-edge `Arc` refcount operations, and has $`O(1)`$ auxiliary space and
+/// key-length-independent call-stack use.
 ///
 #[inline]
 pub(crate) fn find_in_lockfree_trie<K: KeyEncoding, V: Clone>(
@@ -183,16 +192,21 @@ pub(crate) fn find_in_lockfree_trie<K: KeyEncoding, V: Clone>(
     key: &[K::Unit],
     depth: usize,
 ) -> bool {
+    // Preserve the former helper's defensive `depth >= len` terminal semantics;
+    // production callers start at zero, while this also keeps internal partial-walk
+    // callers behavior-identical.
     if depth >= key.len() {
         return node.is_final();
     }
-    let key_unit = key[depth];
-    if let Some(child) = node.find_child(key_unit) {
-        if let Some(child_arc) = child.as_in_mem() {
-            return find_in_lockfree_trie(&Arc::clone(child_arc), key, depth + 1);
-        }
+    let suffix = &key[depth..];
+    let mut current = node;
+    for &unit in suffix {
+        let Some(next) = current.find_child(unit).and_then(Child::as_in_mem) else {
+            return false;
+        };
+        current = next;
     }
-    false
+    current.is_final()
 }
 
 /// Build a NEW path for the remaining `suffix` units, bottom-up, with the terminal
@@ -267,7 +281,11 @@ where
         &crate::persistent_artrie::core::swizzled_ptr::SwizzledPtr,
     ) -> crate::persistent_artrie::core::error::Result<Arc<OverlayNode<K, V>>>,
 {
-    let mut spine: super::OverlaySpine<K, V> = Vec::with_capacity(key.len().saturating_sub(depth));
+    // Allocate lazily as existing edges are actually traversed. Snapshot loading
+    // commonly inserts a key whose first missing edge is near the root; reserving
+    // for the entire key up front would transiently allocate $`O(n)`$ path memory
+    // even though no ancestor needs to be retained in that case.
+    let mut spine: super::OverlaySpine<K, V> = Vec::new();
     let mut current = Arc::clone(node);
     let mut d = depth;
     loop {
@@ -334,7 +352,7 @@ where
 /// # The (variant × method × resolution) mapping table (FIX 2 — assert each cell matches today)
 ///
 /// Each cell is how that method maps the [`ChildResolution`] variant. `descend`
-/// means recurse into the resolved child. Verified against source at the cited lines.
+/// means advance into the resolved child (iteratively for byte's durable paths).
 ///
 /// ```text
 ///                                       │ InMem   │ Faulted │ FaultFailed       │ Null              │ Absent
@@ -342,11 +360,9 @@ where
 /// byte non-durable insert               │ descend │ descend │ AlreadyExists     │ AlreadyExists     │ create_spine
 ///   build_path_recursive (byte:395-421) │         │         │  (TERMINAL, false)│  (TERMINAL, false)│  (non-final leaf)
 /// byte durable insert                   │ descend │ descend │ Conflict (retry)  │ Conflict (retry)  │ create_spine
-///   build_final_path_recursive          │         │         │                   │                   │  (final leaf)
-///   (byte:920-952)                      │         │         │                   │                   │
+///   build_final_path_iterative          │         │         │                   │                   │  (final leaf)
 /// byte durable remove                   │ descend │ descend │ Conflict (retry)  │ AlreadyExists     │ AlreadyExists
-///   build_remove_path_recursive         │         │         │                   │  (= absent)       │  (= absent)
-///   (byte:1030-1059)                    │         │         │                   │                   │
+///   build_remove_path_iterative         │         │         │                   │  (= absent)       │  (= absent)
 /// byte VALUE path                       │ descend │ descend │ None              │ None              │ create valued
 ///   build_value_path_recursive          │         │         │  (no rich error)  │  (no rich error)  │  spine
 ///   (byte:1100-1132)                    │         │         │                   │                   │
@@ -407,17 +423,14 @@ where
 /// The variant-agnostic outcome of a SINGLE durable membership-clear CAS attempt
 /// (the [`OverlayCasWalk::try_remove_path_attempt`] hook). The per-variant
 /// `LockfreeRemoveResult` enums (char's `Removed(u64)` / byte's `Removed`) collapse
-/// to this UNIFORM core — and CRUCIALLY, FIX 1: the char variant's per-attempt
-/// `root.version()` is DROPPED at the boundary (it is NOT carried in `Removed`), so
-/// the skeleton's retry loop can ONLY rank with the CALLER-claimed
-/// `committed_generation` ([`OverlayCasWalk::claim_generation`]). A
-/// `Removed(published_root_version)` field would re-open the A.2 cross-restart
-/// resurrection bug, so it deliberately carries nothing.
+/// to this UNIFORM core. `Removed` carries the durable `commit_seq` claimed after
+/// the attempt loaded its expected root, not the per-lifetime `root.version()`.
+/// The generation is returned only from the winning root-CAS arm.
 pub(crate) enum RemoveAttempt {
     /// The term was present and cleared: a new root with the freshly-cleared
-    /// (non-final) leaf was published via the winning root CAS. Carries NO
-    /// generation (FIX 1 — the skeleton ranks the CALLER-claimed `commit_seq`).
-    Removed,
+    /// (non-final) leaf was published via the winning root CAS. Carries the
+    /// load-bound durable generation for that successful attempt.
+    Removed(u64),
     /// The term is absent on this snapshot (full depth non-final, or a missing/null
     /// spine edge). No spine was published — the idempotent NO-RANK arm.
     AlreadyAbsent,
@@ -440,10 +453,10 @@ pub(crate) enum RemoveAttempt {
 /// per-variant `LockfreeInsertResult` (char `Inserted(node, version)`) /
 /// `LockfreeDurableInsertResult` (byte `Inserted(version)`) collapse to this.
 ///
-/// FIX 1: `Inserted` carries NEITHER the leaf NOR the per-attempt `root.version()`
+/// FIX 1: `Inserted` carries no leaf and no per-attempt `root.version()`
 /// — the DURABLE path does not hand a leaf to a caller-level `try_set_final` (the
-/// root CAS fully arbitrates — REC 3, single-LP), and the generation is the
-/// CALLER-claimed `commit_seq`, NEVER the walk's version.
+/// root CAS fully arbitrates — REC 3, single-LP). It carries the restart-seeded
+/// `commit_seq` claimed after the attempt loaded its expected root.
 ///
 /// This is the DURABLE-insert outcome ONLY. The NON-DURABLE `insert_cas`
 /// two-phase publish (CAS a non-final spine, THEN the caller-level `try_set_final`)
@@ -451,8 +464,8 @@ pub(crate) enum RemoveAttempt {
 pub(crate) enum InsertAttempt {
     /// The term was newly published FINAL via the WINNING root CAS (this op newly
     /// published it; a racer loses the CAS, retries, sees `AlreadyExists`). Carries
-    /// NO generation (FIX 1 — the skeleton ranks the CALLER-claimed `commit_seq`).
-    Inserted,
+    /// the load-bound durable generation for that successful attempt.
+    Inserted(u64),
     /// The term is already present on this snapshot (the leaf is already final). No
     /// spine was published — the idempotent NO-RANK arm.
     AlreadyExists,
@@ -480,15 +493,15 @@ pub(crate) enum InsertAttempt {
 // ============================================================================
 
 /// The UNIFIED outcome of one durable single-phase CAS attempt, onto which both
-/// [`InsertAttempt`] and [`RemoveAttempt`] map (FIX 1: NO generation field —
-/// `drive_cas` ranks the CALLER-claimed `commit_seq`, never a walk version).
+/// [`InsertAttempt`] and [`RemoveAttempt`] map. The applied arm carries the
+/// successful attempt's load-bound `commit_seq`, never a walk version.
 ///
 /// `pub(crate)` (not private) only because it appears in the signature of the
 /// `pub(crate)` trait method `OverlayCasWalk::drive_cas` (which the two public
 /// drivers call). It is never named outside this module's two dispatchers.
 pub(crate) enum CasOutcome {
     /// The op applied (insert published / remove cleared) via the winning root CAS.
-    Applied,
+    Applied(u64),
     /// Idempotent no-op (already-present insert race / already-absent remove). No
     /// publication — the NO-RANK + liveness-mark arm.
     Idempotent,
@@ -540,9 +553,13 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
     /// by. The default delegates to [`LockFreeOverlay::claim_commit_seq`] — already
     /// `self.commit_seq.fetch_add(1, AcqRel) + 1`, identical in both variants.
     ///
-    /// The CALLER's retry loop claims this at the loop-top, RE-CLAIMS it each
-    /// iteration (so a Conflict-retry discards the lost claim), and passes the
-    /// CALLER-CLAIMED value to `commit_rank_and_mark` as the `committed_generation`.
+    /// The per-variant attempt MUST claim this only after loading the exact root
+    /// snapshot it will use as the compare-exchange expected value. A conflict
+    /// discards the claim and the retry loads a fresh snapshot before re-claiming.
+    /// This load-before-claim order is what makes successful generations strictly
+    /// monotone in root-CAS order: a writer that observes a later root cannot retain
+    /// an earlier ticket, while a writer overtaken after its load necessarily loses
+    /// its compare-exchange.
     /// It MUST NEVER be sourced from the walk's `root.version()` (post-restart
     /// version resets → wrong replay order → resurrected/dropped term, the A.2 bug).
     #[inline]
@@ -553,18 +570,19 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
     // ========================================================================
     // P2 — DURABLE REMOVE skeleton (shared retry loop + Order-A tail).
     // The DESCENT stays in the per-variant `try_remove_path_attempt` hook
-    // (it names the variant's `build_remove_path_recursive` + result enum); the
-    // skeleton owns ONLY the retry structure, the FIX-1 generation claim, the
+    // (it names the variant's iterative/recursive path builder + result enum); the
+    // skeleton owns ONLY the retry structure, successful-generation forwarding, the
     // cache-invalidate, and the data-loss-critical commit-rank/watermark ORDER.
     // ========================================================================
 
     /// **Per-variant remove SEAM hook — ONE durable membership-clear CAS attempt.**
     /// Loads the published root, builds a NEW spine whose target leaf is a FRESH
-    /// `as_non_final` copy (the variant's `build_remove_path_recursive` —
+    /// `as_non_final` copy (the variant's remove path builder —
     /// `units`/`chars` decode + the per-(variant×method) OnDisk mapping live here),
     /// and CAS-publishes it via the root pointer. Returns the UNIFORM
     /// [`RemoveAttempt`] — the per-variant `LockfreeRemoveResult` is mapped to it at
-    /// the boundary, DROPPING any per-attempt `root.version()` (FIX 1). NO WAL
+    /// the boundary, carrying its load-bound `commit_seq` and discarding the
+    /// per-lifetime `root.version()` (FIX 1). NO WAL
     /// append (the skeleton owns Order-A step 1), NO commit rank (step 3).
     fn try_remove_path_attempt(&self, key_bytes: &[u8]) -> RemoveAttempt;
 
@@ -583,11 +601,10 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
     /// every CAS retry (we never re-append — that would burn LSNs + punch a watermark
     /// hole).
     ///
-    /// FIX 1: the generation is claimed PER ITERATION via [`Self::claim_generation`]
-    /// (the durable global `commit_seq`), RE-CLAIMED on a `Conflict` retry, and on a
-    /// winning `Removed` it is THIS iteration's claim that is bound by
-    /// `commit_rank_and_mark` — NEVER a per-attempt `root.version()` (the hook
-    /// already dropped it). `key_bytes` is the raw key the data record mutated.
+    /// FIX 1: the attempt loads its expected root, claims via
+    /// [`Self::claim_generation`], and returns the claim only on a winning `Removed`.
+    /// A `Conflict` retry discards it and loads before re-claiming. This generation
+    /// is bound by `commit_rank_and_mark`; `key_bytes` is the raw mutated key.
     ///
     /// Returns `Ok(true)` (cleared a present term — ranked), `Ok(false)`
     /// (idempotent AlreadyAbsent — NO-RANK + liveness mark), or `Err(e)` (a
@@ -603,7 +620,7 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
     {
         // P6: delegate to the unified `drive_cas` core (REC 3-safe — durable
         // single-phase). The remove attempt maps to the UNIFIED `CasOutcome`
-        // (DROPPING any per-attempt version — FIX 1) and the cache direction is
+        // (carrying its load-bound generation — FIX 1) and the cache direction is
         // INVALIDATE (§3.4). `key_bytes` is the raw key the durable `Remove@data_lsn`
         // record mutated.
         self.drive_cas(
@@ -611,7 +628,7 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
             data_lsn,
             CacheDirection::Invalidate,
             |this| match this.try_remove_path_attempt(key_bytes) {
-                RemoveAttempt::Removed => CasOutcome::Applied,
+                RemoveAttempt::Removed(generation) => CasOutcome::Applied(generation),
                 RemoveAttempt::AlreadyAbsent => CasOutcome::Idempotent,
                 RemoveAttempt::Conflict => CasOutcome::Conflict,
                 RemoveAttempt::IoError(e) => CasOutcome::IoError(e),
@@ -630,10 +647,10 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
     /// CAS attempt.** Loads the published root, builds a NEW spine whose target leaf
     /// is a FRESH `as_final` copy (published FINAL inside the root CAS — the sole LP,
     /// the variant's durable `build_path_recursive(finalize=true)` /
-    /// `build_final_path_recursive`; the `units`/`chars` decode + the
+    /// `build_final_path_iterative`; the `units`/`chars` decode + the
     /// per-(variant×method) OnDisk mapping live here), and CAS-publishes it. Returns
-    /// the UNIFORM [`InsertAttempt`] — DROPPING any per-attempt leaf + `root.version()`
-    /// (FIX 1, REC 3). NO WAL append (the skeleton owns Order-A step 1), NO rank.
+    /// the UNIFORM [`InsertAttempt`] — carrying its load-bound `commit_seq` while
+    /// dropping the leaf + `root.version()` (FIX 1, REC 3). NO WAL append, NO rank.
     fn try_insert_path_attempt(&self, key_bytes: &[u8]) -> InsertAttempt;
 
     /// **Per-variant positive-cache mark SEAM hook.** Record `key_bytes` PRESENT in
@@ -650,10 +667,9 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
     /// the non-faulting present-hoist it must keep). The single durable append covers
     /// every CAS retry (we never re-append).
     ///
-    /// FIX 1: the generation is claimed PER ITERATION via [`Self::claim_generation`],
-    /// RE-CLAIMED on `Conflict`, and on a winning `Inserted` it is THIS iteration's
-    /// claim that `commit_rank_and_mark` binds — NEVER a per-attempt `root.version()`
-    /// (the hook already dropped it).
+    /// FIX 1: the attempt loads its expected root, claims via
+    /// [`Self::claim_generation`], and returns the claim only on a winning `Inserted`.
+    /// A conflict retry discards it and loads before re-claiming.
     ///
     /// Returns `Ok(true)` (newly published — ranked), `Ok(false)` (idempotent
     /// AlreadyExists — NO-RANK + liveness mark; a concurrent insert won the race
@@ -670,7 +686,7 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
     {
         // P6: delegate to the unified `drive_cas` core (REC 3-safe — durable
         // single-phase, NO `try_set_final`). The insert attempt maps to the UNIFIED
-        // `CasOutcome` (DROPPING any per-attempt leaf + version — FIX 1, REC 3) and
+        // `CasOutcome` (carrying its load-bound generation — FIX 1, REC 3) and
         // the cache direction is MARK-PRESENT (the durable insert caches on BOTH the
         // Applied and Idempotent arm).
         self.drive_cas(
@@ -678,7 +694,7 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
             data_lsn,
             CacheDirection::MarkPresent,
             |this| match this.try_insert_path_attempt(key_bytes) {
-                InsertAttempt::Inserted => CasOutcome::Applied,
+                InsertAttempt::Inserted(generation) => CasOutcome::Applied(generation),
                 InsertAttempt::AlreadyExists => CasOutcome::Idempotent,
                 InsertAttempt::Conflict => CasOutcome::Conflict,
                 InsertAttempt::IoError(e) => CasOutcome::IoError(e),
@@ -688,7 +704,7 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
 
     // ========================================================================
     // P6 — the UNIFIED durable single-phase CAS retry-loop driver. ONE copy of
-    // the FIX-1 generation claim + the data-loss-critical Order-A
+    // the FIX-1 generation forwarding + the data-loss-critical Order-A
     // commit-rank/watermark ORDER + the cache effect, shared by BOTH the durable
     // insert and durable remove (which differ only in the attempt closure + the
     // cache direction). REC 3-SAFE: both are durable single-phase (the root CAS
@@ -697,9 +713,9 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
     // ========================================================================
 
     /// The unified Order-A durable single-phase CAS retry loop. `attempt` performs
-    /// ONE root-CAS attempt and classifies it into the UNIFIED [`CasOutcome`]
-    /// (DROPPING any per-attempt `root.version()` — FIX 1, so this loop can ONLY
-    /// rank the CALLER-claimed generation). `cache` selects the positive-cache effect
+    /// ONE root-CAS attempt and classifies it into the UNIFIED [`CasOutcome`]. Its
+    /// applied arm carries the attempt's load-bound generation (FIX 1); `cache`
+    /// selects the positive-cache effect
     /// on the state-changing arms. The `Insert`/`Remove` WAL record was ALREADY
     /// appended durable at `data_lsn` (Order-A step 1, owned by the per-variant
     /// caller); the single append covers every retry (we never re-append).
@@ -725,18 +741,13 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
             CacheDirection::Invalidate => this.invalidate_positive_cache(key_bytes),
         };
         loop {
-            // FIX 1: claim the durable global `commit_seq` at the loop-top, RE-CLAIMED
-            // each iteration so a Conflict-retry discards the lost claim and takes a
-            // fresh (higher) one. The winning iteration's claim is strictly monotone
-            // in the global root-CAS order AND durable across restart — the recovery
-            // generation `reconcile_lww` orders by, NEVER the walk's `root.version()`.
-            let committed_generation = self.claim_generation();
             match attempt(self) {
-                CasOutcome::Applied => {
+                CasOutcome::Applied(committed_generation) => {
                     // Cache effect FIRST (before mark): the op is now visible.
                     touch_cache(self);
-                    // Order-A step 2.5 + 3: bind the CALLER-claimed generation durable,
-                    // then advance the watermark over BOTH LSNs.
+                    // Order-A step 2.5 + 3: bind the path-attempt generation durable,
+                    // then advance the watermark over BOTH LSNs. The variant claimed
+                    // it only after loading the exact root-CAS expected snapshot.
                     self.commit_rank_and_mark(data_lsn, key_bytes, committed_generation)?;
                     return Ok(true);
                 }

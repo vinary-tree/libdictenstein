@@ -558,9 +558,11 @@ pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_ar
     pub(crate) cas_retries: std::sync::atomic::AtomicU64,
 
     /// DG0 (D2.8 D4): the durable global commit-sequence counter. Seeded on open
-    /// from `max(header.commit_seq_floor, scan-max-of-CommitRank)`; a future
-    /// `next_commit_seq()` is a claim-before-CAS `fetch_add` (the visibility-order
-    /// replay key). Plumbed here (default 0); it becomes load-bearing only when
+    /// from `max(header.commit_seq_floor, scan-max-of-CommitRank)`. A ranked attempt
+    /// loads its exact root-CAS expected snapshot before `fetch_add`; a conflicting
+    /// publication discards that claim and the retry loads before re-claiming. This
+    /// makes successful claims the visibility-order replay key. Plumbed here (default
+    /// 0); it becomes load-bearing only when
     /// DG-RECON stamps it into `CommitRank.generation` — until then it is inert.
     pub(crate) commit_seq: std::sync::atomic::AtomicU64,
 
