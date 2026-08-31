@@ -537,15 +537,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// retaining the WAL — is UNMOVED. The committed-watermark no-lost-write proof
     /// (`LockFreeDurableCheckpoint.tla` `NoLostWriteUnderLockFreeCommit`,
     /// re-derived under registry publication + eviction in
-    /// `LockFreeDurableCheckpointEviction.tla`) carries: the registry is invisible
-    /// to recovery (`RecoveredSet` never reads it), so publishing it cannot change
-    /// the conclusion. The registry is published ONLY AFTER `verify_checkpoint()`
-    /// proves the on-disk image durable (the `EvictionRegistryPublication.tla`
-    /// publish-after-verify ordering), and every durable mutation INVALIDATES it at
-    /// the `append_to_wal_inner` chokepoint BEFORE its visibility CAS — so a racing
-    /// writer dirties the published registry before its write is visible, and
-    /// eviction (gated on `is_valid()`) then reclaims nothing: a liveness loss, not
-    /// a safety loss.
+    /// `LockFreeDurableCheckpointEviction.tla`) carries: exact catalogs and detached
+    /// advisory snapshots are invisible to recovery, so publishing either cannot
+    /// change the recovered state. The catalog is stamped only after
+    /// `verify_checkpoint()` proves the on-disk image durable. Exact publication
+    /// then succeeds only if the captured root revision and generation are still
+    /// current. A semantic successor clears the exact binding in the same root CAS;
+    /// WAL append alone does not change semantic root identity. Exact eviction and
+    /// fault operations revalidate the current root pair before committing.
     ///
     /// Takes the snapshot by value because exact registry publication consumes
     /// the registry (mirrors the owned `publish_durable_and_reclaim(snapshot)`).

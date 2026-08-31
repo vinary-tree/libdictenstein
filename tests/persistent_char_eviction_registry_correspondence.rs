@@ -1,16 +1,17 @@
 #![cfg(feature = "persistent-artrie")]
-//! Correspondence between the eviction-registry-publication model and the real
-//! persistent char trie (HEAD commit f10c43e, feature G6).
+//! Correspondence between exact root-bound eviction-catalog publication and
+//! the persistent char trie.
 //!
 //! Models:
-//! - TLA+: `formal-verification/tla+/EvictionRegistryPublication.tla`
+//! - TLA+: `formal-verification/tla+/EvictionExactRootPublication.tla`
+//! - TLA+: `formal-verification/tla+/LockFreeDurableCheckpointEviction.tla`
 //! - Rocq: `formal-verification/rocq/Spec/PersistentCharEvictionRegistrySpec.v`
 //!
 //! Each test names the model invariant / theorem it refines. The model proves
-//! that the eviction `DiskLocationRegistry` is published only after a verified
-//! checkpoint, references only durable on-disk data, is invalidated by writes,
-//! and is not recovery state; these tests demonstrate the implementation obeys
-//! those properties through its public API.
+//! that an eviction catalog becomes exact authority only after a durable stamp
+//! and a successful captured-root comparison; semantic root publication clears
+//! that binding atomically, exact use revalidates the current pair, and recovery
+//! ignores both exact catalogs and detached advisory snapshots.
 
 use libdictenstein::artrie_trait::{ARTrie, EvictableARTrie};
 use libdictenstein::persistent_artrie::char::SharedCharARTrie;
@@ -48,7 +49,8 @@ fn build(path: &Path) -> SharedCharARTrie<i32> {
     shared
 }
 
-/// TLA `NoPublishWithoutVerify` + Rocq `publish_empty_unless_verified`:
+/// TLA `PublishedCatalogIsStamped` + `ExactRootRegistryAgreement`; Rocq
+/// `publish_empty_unless_verified`:
 /// `checkpoint()` publishes exact registry authority only AFTER `verify_checkpoint()`
 /// succeeds, so the published registry is empty (eviction selects nothing) until
 /// the first checkpoint.
@@ -73,7 +75,7 @@ fn registry_empty_until_verified_checkpoint() {
     shared.disable_eviction().expect("disable");
 }
 
-/// TLA `RegistryEntriesAreDurable` + `EvictedNodeRemainsResolvable`: every node
+/// TLA `RegistryPointsAtDurableWatermark` + `RecoveredNeverInventsState`: every node
 /// eviction reclaims references durable, verified on-disk data, so an evicted
 /// key always reloads to its exact value -- and a fresh reopen (which reads only
 /// the durable image) agrees, confirming the registry pointed at durable data.
@@ -106,7 +108,8 @@ fn evicted_entries_reference_durable_data() {
     }
 }
 
-/// TLA `Mutate` action (the A1 fix): a write's semantic root CAS clears the
+/// TLA `SemanticVisibilityCas`; Rocq
+/// `semantic_successor_clears_exact_binding`: a write's semantic root CAS clears the
 /// exact eviction binding, preserving `RegistryEntriesAreDurable` across
 /// mutations -- eviction selects nothing until the next checkpoint publishes a
 /// fresh root-bound catalog.
@@ -134,8 +137,10 @@ fn write_clears_exact_eviction_binding() {
     shared.disable_eviction().expect("disable");
 }
 
-/// TLA `RecoveredAreDurable` + `JustRecoveredMatchesDurable`; Rocq
-/// `recovery_independent_of_registry` + `registry_is_side_effect_free_on_disk_root`:
+/// TLA `NoLostWriteUnderLockFreeCommit` + `RecoveryIndependentOfDetached`; Rocq
+/// `recovery_independent_of_detached_advisory` +
+/// `recovery_independent_of_exact_catalog` +
+/// `registry_is_side_effect_free_on_disk_root`:
 /// reopening recovers exactly the durable map, independent of whether the
 /// registry was ever built or used for eviction.
 #[test]

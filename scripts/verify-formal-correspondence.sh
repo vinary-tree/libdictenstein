@@ -486,7 +486,6 @@ if command -v tla2sany >/dev/null 2>&1; then
       ConcurrentCheckpointPublication \
       LockFreeDurableCheckpoint \
       LockFreeDurableCheckpointEviction \
-      EvictionRegistryPublication \
       DetachedCallbackSeparation \
       CachelessOwnedRegistry \
       EvictionExactRootPublication \
@@ -564,7 +563,6 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       ConcurrentCheckpointPublication \
       LockFreeDurableCheckpoint \
       LockFreeDurableCheckpointEviction \
-      EvictionRegistryPublication \
       DetachedCallbackSeparation \
       CachelessOwnedRegistry \
       EvictionExactRootPublication \
@@ -609,14 +607,7 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       AbiProducerSnapshot \
       AbiSnapshotQuiescence
     do
-      case "$module" in
-        EvictionRegistryPublication)
-          tlc_workers=4
-          ;;
-        *)
-          tlc_workers=1
-          ;;
-      esac
+      tlc_workers=1
       run_tlc_isolated "$module" \
         -workers "$tlc_workers" \
         -config "${module}.cfg" \
@@ -655,10 +646,11 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
     # Each `_Unsafe.cfg` deliberately relaxes the one design choice the model
     # exists to justify, and MUST FAIL a safety invariant:
     #   * LockFreeDurableCheckpoint / LockFreeDurableCheckpointEviction set
-    #     USE_WATERMARK = FALSE and MUST violate `NoLostWriteUnderLockFreeCommit`
-    #     (the GAP_LEDGER #41 appended-frontier losing trace) — proving the
-    #     committed-watermark choice is REQUIRED (base retain-WAL reclaim AND with
-    #     eviction-registry publication on).
+    #     USE_WATERMARK = FALSE and MUST violate `NoLostWriteUnderLockFreeCommit`.
+    #     The composite model additionally proves that semantic publication clears
+    #     exact authority, exact publication checks the captured root and catalog
+    #     stamp, exact operations revalidate the current pair, and recovery ignores
+    #     detached advisory state. Each obligation has its own unsafe control.
     #   * OverlayEvictionCas sets USE_FAULT_IN = FALSE (lets the overlay evictor
     #     fire on a LIVE node with NO fault-in recovery) and MUST violate
     #     `ReadNeverMissesCommitted` — proving the read/write fault-in path is
@@ -719,6 +711,11 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
     done <<'NEGATIVE_CONTROLS'
 LockFreeDurableCheckpoint|invariant|NoLostWriteUnderLockFreeCommit
 LockFreeDurableCheckpointEviction|invariant|NoLostWriteUnderLockFreeCommit
+LockFreeDurableCheckpointEviction|invariant|ExactRootRegistryAgreement|LockFreeDurableCheckpointEviction_SemanticBindingUnsafe
+LockFreeDurableCheckpointEviction|invariant|ExactRootRegistryAgreement|LockFreeDurableCheckpointEviction_StaleRootUnsafe
+LockFreeDurableCheckpointEviction|invariant|PublishedCatalogIsStamped|LockFreeDurableCheckpointEviction_PreStampUnsafe
+LockFreeDurableCheckpointEviction|invariant|NoInexactUse|LockFreeDurableCheckpointEviction_InexactUseUnsafe
+LockFreeDurableCheckpointEviction|invariant|RecoveryIndependentOfDetached|LockFreeDurableCheckpointEviction_RecoveryDetachedUnsafe
 DetachedCallbackSeparation|invariant|DetachedCallbackHasOnlyDetachedCapability|DetachedCallbackSeparation_LegacyReadsExactUnsafe
 DetachedCallbackSeparation|invariant|DetachedNeverAuthorizesExactCommit|DetachedCallbackSeparation_DetachedAuthorizesUnsafe
 DetachedCallbackSeparation|invariant|DetachedCatalogContainsOnlyDetached|DetachedCallbackSeparation_CheckpointPopulatesDetachedUnsafe

@@ -53,7 +53,7 @@ masquerading as successful negative controls.
 |-----------|-----------|-----------|-----|
 | acknowledged $`\implies`$ durable; `checkpoint_lsn` = committed prefix; no truncation loss | `LockFreeDurableCheckpoint.tla` (+ `_Unsafe`), `SharedPersistentConcurrency.tla` | `Spec/PublicDurabilityPolicySpec.v`, `Spec/PersistentWalAtomicitySpec.v` | [durability-and-recovery](durability-and-recovery.md) |
 | Checkpoint snapshot $`\subseteq`$ visible; publication serialized by `CK` | `ConcurrentCheckpointPublication.tla`, `ConcurrentCheckpointSerialization.tla` (+ `_Unsafe` `NoTornDescriptor`) | `Spec/PersistentCheckpointRetentionSpec.v`, `Spec/PersistentDirtyCheckpointSpec.v` | [durability-and-recovery](durability-and-recovery.md) |
-| Durable checkpoint under eviction | `LockFreeDurableCheckpointEviction.tla` (+ `_Unsafe`) | `Spec/PersistentDirtyCheckpointSpec.v` | [durability-and-recovery](durability-and-recovery.md) |
+| Durable checkpoint under exact eviction authority: committed-watermark reclaim, captured-root publication, stamped catalogs, exact-use revalidation, and recovery independent of detached state | `LockFreeDurableCheckpointEviction.tla` (+ six named unsafe controls), `EvictionExactRootPublication.tla` | `Spec/PersistentDirtyCheckpointSpec.v`, `Spec/PersistentCharEvictionRegistrySpec.v`, `Spec/EvictionExactRootPublicationSpec.v` | [durability-and-recovery](durability-and-recovery.md), [eviction](eviction.md) |
 
 ### Recovery & crash-safety
 

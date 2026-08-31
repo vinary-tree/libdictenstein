@@ -5,7 +5,7 @@
 This document records the results of formal verification efforts for the
 Persistent Adaptive Radix Trie (PART) implementation in libdictenstein.
 
-**Originally written:** 2026-01-20. **Last reconciled:** 2026-08-30.
+**Originally written:** 2026-01-20. **Last reconciled:** 2026-08-31.
 
 As of the live tree the corpus is **83** Rocq `.v` files (**1,738**
 propositions = 1,364 `Theorem` + 356 `Lemma` + 18 `Corollary` + 0 `Proposition`,
@@ -19,6 +19,17 @@ both CI-gated by `scripts/verify-unsafe-boundary-inventory.sh` (set-equality).
 Newest first. Each entry is a dated milestone; the per-module tables below carry
 the detailed proof/state-count data captured at each step.
 
+- **2026-08-31** — Replaced the remaining mutable-registry/WAL-append
+  invalidation model with a maintained durability × exact-root composition.
+  `LockFreeDurableCheckpointEviction` completed with 6,163 generated / 2,722
+  distinct states, depth 13, and no errors. Its six controls each returned TLC
+  status 12 for the required unsafe watermark, retained semantic binding,
+  stale-root publication, pre-stamp publication, inexact-use, or detached-state
+  recovery defect. `PersistentCharEvictionRegistrySpec.v` now proves the exact
+  publication, semantic-clearing, exact-use, and recovery-independence laws;
+  the focused specification compiles with no proof escape hatches. The obsolete
+  model is archived under `formal-verification/history/tla+/` and removed from
+  the active SANY/TLC gate.
 - **2026-08-30** — Completed the final API and assurance-harness closure.
   `ApiFeatureVisibilitySpec.v` proves that established causal APIs remain
   available in every feature profile while persistent serialization statistics

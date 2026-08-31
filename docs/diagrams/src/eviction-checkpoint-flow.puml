@@ -1,10 +1,6 @@
 @startuml eviction-checkpoint-flow
-' ============================================================================
-' eviction-checkpoint-flow.puml — checkpoint() rebuilds the DiskRegistry atomically.
-' Replaces the ASCII checkpoint-integration flow in docs/persistence/eviction.md.
-' Color key (persistence accents):  indigo = checkpoint trigger
-'             blue = on-disk serialization steps   teal = the atomic coordinator swap
-' ============================================================================
+' Exact checkpoint/catalog publication corresponding to
+' LockFreeDurableCheckpointEviction.tla and EvictionExactRootPublication.tla.
 skinparam defaultFontSize 14
 skinparam shadowing false
 skinparam backgroundColor #FFFFFF
@@ -13,12 +9,44 @@ skinparam ArrowColor #37474F
 skinparam ActivityBorderColor #37474F
 skinparam TitleFontSize 15
 
-title checkpoint() — rebuild the on-disk registry atomically
+title checkpoint() — durable image and exact eviction-catalog publication
 
 start
-:**checkpoint()**;<<#C5CAE9>>
-:**Serialize Trie to Disk**\nDFS traversal — write nodes to disk;<<#BBDEFB>>
-:**Build New DiskRegistry**\nper node written:\nregistry.register(path, disk_ptr, size, depth, type);<<#BBDEFB>>
-:**Update Coordinator**\ncoordinator.update_disk_registry(new_registry)\nreplaces old registry atomically;<<#B2DFDB>>
+:Capture immutable root pair
+**(revision, generation)** and
+committed WAL watermark;<<#C5CAE9>>
+:Serialize with an explicit iterative worklist;
+note right
+  The library imposes no traversal-depth limit.
+  Consumer policy may impose resource limits.
+end note
+:Write checkpoint image and candidate catalog;<<#BBDEFB>>
+:Sync and verify durable image;<<#90CAF9>>
+:Stamp candidate catalog with its
+root revision and durable generation;<<#80CBC4>>
+if (Captured root pair is still current?) then (yes)
+  :Publish exact catalog by root CAS;<<#66BB6A>>
+  :Exact eviction/fault operations revalidate
+  the current revision and generation;<<#A5D6A7>>
+else (no)
+  :Reject exact publication;
+  :Retire the unbound candidate;<<#FFCC80>>
+endif
+:Retain/reclaim WAL only through the
+committed checkpoint watermark;<<#BBDEFB>>
+:Recovery reads durable checkpoint + WAL only;
+note right
+  Detached callback snapshots and eviction
+  catalogs never authorize recovery.
+end note
 stop
+
+legend right
+  |= Color |= Meaning |
+  |<#C5CAE9>| Immutable capture |
+  |<#BBDEFB>| Durable checkpoint / WAL |
+  |<#80CBC4>| Catalog stamp |
+  |<#66BB6A>| Exact root authority |
+  |<#FFCC80>| Rejected stale candidate |
+endlegend
 @enduml

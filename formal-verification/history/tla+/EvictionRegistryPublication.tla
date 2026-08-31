@@ -1,4 +1,11 @@
 -------------------- MODULE EvictionRegistryPublication --------------------
+(***************************************************************************)
+(* HISTORICAL MODEL: this mutable-registry/WAL-append invalidation protocol *)
+(* predates exact root-revision publication. It is retained as design       *)
+(* history and is deliberately excluded from the active formal gate. The    *)
+(* maintained composition is LockFreeDurableCheckpointEviction.tla; the     *)
+(* focused authority model is EvictionExactRootPublication.tla.             *)
+(***************************************************************************)
 (****************************************************************************)
 (* Bounded model of the persistent char trie's eviction DiskLocationRegistry  *)
 (* publication ordering (HEAD commit f10c43e, feature G6).                    *)
