@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "title": "libdictenstein stack-safety recursion evidence manifest",
   "policy": {
     "objective": "Maximize sensitivity to true recursion and recursive lifecycle hazards. False positives are acceptable; false negatives are the primary failure.",
@@ -24,56 +24,64 @@
     }
   },
   "manifest": {
-    "generated_at": "2026-08-29T03:31:00-04:00",
+    "generated_at": "2026-08-31T11:29:01-04:00",
     "worktree": "/home/dylon/Workspace/f1r3fly.io/libdictenstein-stack-safety",
     "branch": "codex/libdictenstein-stack-safety",
-    "head": "7326f08ab6a4b6d08c1c4521c83dd1d605c0f3c0",
+    "audited_source_head": "a22e4e340d215f4ae466eb6c7a141f7e7dbf30b2",
+    "audit_note": "The audited source head identifies the final production bytes. Evidence-only manifest and audit-document commits do not invalidate source-bound dispositions when every recorded source SHA-256 remains equal.",
     "cargo_sha256": {
-      "Cargo.toml": "2849b34f6fb50ca1a10e5f66412b791c4ada8a843ede219a31f20a6127db2706",
-      "Cargo.lock": "18582c6f72ce6d0d1c6cc6542376ab7fb01a9a90176842647c120e38da847962"
+      "Cargo.toml": "fe4d11777e66b1cad389bc11c65ca604f26b05ba6a19808ffd036a79d7ebe98f",
+      "Cargo.lock": "331c49641b909659071fc7cc15b5aafe575eecb4c4a2c44b75038a3730d8e09e"
     },
-    "classic_production_run_id": "cb8eb63a-14cd-4f38-a124-72a7e3ecc4ed",
+    "classic_production_run_id": "c7d90cd9-48c9-412a-9835-29216d81ddd5",
     "classic_production_coverage": {
-      "ambiguous_edges_excluded": 15477,
-      "analyzed_files": 516,
-      "eligible_files_after_size_filter": 607,
-      "excluded_nonproduction_files": 353,
+      "ambiguous_edges_excluded": 2350,
+      "analyzed_files": 501,
+      "eligible_files_after_size_filter": 606,
+      "excluded_nonproduction_files": 371,
       "failed_files": 0,
       "failures_by_kind": {},
-      "files_after_production_filter": 607,
-      "libcpg_call_edges_accepted": 6316,
-      "libcpg_call_edges_rejected_as_scope_ambiguous": 49754,
-      "libcpg_call_scc_candidates": 855,
-      "low_confidence_edges_excluded": 0,
+      "files_after_production_filter": 606,
+      "libcpg_call_edges_accepted": 6248,
+      "libcpg_call_edges_rejected_as_scope_ambiguous": 49180,
+      "libcpg_call_scc_candidates": 853,
+      "low_confidence_edges_excluded": 9328,
       "oversized_files_skipped": 0,
-      "persisted_call_edges": 81869,
-      "selected_files": 960,
+      "persisted_call_edges": 82394,
+      "selected_files": 977,
       "skipped_file_examples": [],
-      "trusted_persisted_edges": 3326,
-      "unresolved_edges_excluded": 26110,
+      "trusted_persisted_edges": 4549,
+      "unresolved_edges_excluded": 26346,
       "unsupported_by_language": {
         "clojure": 2,
         "clojurescript": 2,
         "coq": 21,
         "text": 5,
-        "tlaplus": 61
+        "tlaplus": 75
       },
-      "unsupported_language_files": 91
+      "unsupported_language_files": 105
     },
-    "historical_semantic_snapshot": {
-      "snapshot_id": "ad33271b-11fb-4415-b55b-416de3b0aac4",
-      "source_fingerprint": "snapshot:0056c687bd48ada68c4cb32fc2004adbc0b5fea81724c700ce04510feebe013b",
+    "captured_all_features_semantic_snapshot": {
+      "snapshot_id": "0feb65ad-569d-4c41-9d29-3cb7a68b5d6a",
+      "source_fingerprint": "snapshot:728c3c0af40dc24d0d1c6c66223c5d25c77d5431b581197b991006488c1baf5a",
       "analyzer_signature": "pgmcp-semantic-v1+syn0.1.0+disabled_safe_mode+safe-source-only",
       "profile": "all-features",
       "execution_mode": "safe",
+      "stale_when_captured": false,
+      "finding_counts": {
+        "typed_interprocedural_scc": 37,
+        "stack_risk": 37,
+        "recursive_ownership_drop_glue": 4
+      },
       "coverage": {
         "compiler_sidecar": "disabled_safe_mode",
         "failed_files": 0,
         "fallback_parsed_files": 0,
-        "indexed_files": 417,
+        "indexed_files": 421,
         "limitations": [
           "could not uniquely associate custom Drop impl for Counted",
           "could not uniquely associate custom Drop impl for EpochGuard",
+          "could not uniquely associate custom Drop impl for Guard",
           "merged 1 duplicate semantic edge(s) produced by equivalent compiler definitions",
           "ownership semantics for wrapper chain AdaptiveEdgeStore -> Child are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain AdaptiveEdgeStore are unknown; configure [analysis].owning_wrappers when it owns its type argument",
@@ -92,9 +100,12 @@
           "ownership semantics for wrapper chain AtomicOnceBox are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain AtomicPtr -> SparseOnceChunk are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain AtomicPtr are unknown; configure [analysis].owning_wrappers when it owns its type argument",
+          "ownership semantics for wrapper chain BrandedSnapshotCursor are unknown; configure [analysis].owning_wrappers when it owns its type argument",
+          "ownership semantics for wrapper chain BrandedSnapshotEdgeRange are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain BufReader are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain BuilderChildren are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain CharTrieNodeInner are unknown; configure [analysis].owning_wrappers when it owns its type argument",
+          "ownership semantics for wrapper chain ChildReplacements are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain ChildStore are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain DATCoreShared are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain DATRawShared are unknown; configure [analysis].owning_wrappers when it owns its type argument",
@@ -133,6 +144,7 @@
           "ownership semantics for wrapper chain NativeSuffixWalOp are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain NodeArena are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain OnceLock are unknown; configure [analysis].owning_wrappers when it owns its type argument",
+          "ownership semantics for wrapper chain OverlayNodeHandle are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain PathMap are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain PendingChildSource are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain PersistentARTrie are unknown; configure [analysis].owning_wrappers when it owns its type argument",
@@ -140,8 +152,6 @@
           "ownership semantics for wrapper chain PersistentARTrieCharNode are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain PersistentARTrieU64 are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain PrefixIterator are unknown; configure [analysis].owning_wrappers when it owns its type argument",
-          "ownership semantics for wrapper chain PreparedEvictionCommit are unknown; configure [analysis].owning_wrappers when it owns its type argument",
-          "ownership semantics for wrapper chain PreparedFaultCommit are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain PreparedRootBinding are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain RegistryBuildMode are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain RootRevision are unknown; configure [analysis].owning_wrappers when it owns its type argument",
@@ -152,6 +162,7 @@
           "ownership semantics for wrapper chain SemanticMutationPublicationPermit are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain Sender are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain SharedARTrie are unknown; configure [analysis].owning_wrappers when it owns its type argument",
+          "ownership semantics for wrapper chain SnapshotEdgeRangeToken are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain SlotChunk are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain SortedUniqueEntries are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "ownership semantics for wrapper chain SparseOnceBoxSlots are unknown; configure [analysis].owning_wrappers when it owns its type argument",
@@ -161,24 +172,59 @@
           "ownership semantics for wrapper chain UnionIterator are unknown; configure [analysis].owning_wrappers when it owns its type argument",
           "safe mode does not execute Cargo/rust-analyzer/cargo-expand; trait dispatch, indirect function pointers without a local binding, macro-expanded definition identities, generated field ownership, and compiler enablement of cfg/feature variants are reported as unresolved, while each source cfg variant keeps a distinct identity/context and lexical closures/function pointers plus modeled async lowering retain explicit provenance"
         ],
-        "parsed_files": 417,
+        "parsed_files": 421,
         "partial_files": [],
-        "resolved_edges": 16947,
+        "resolved_edges": 17851,
         "skipped_unavailable_source": 0,
-        "symbols": 17119,
-        "unresolved_edges": 59724
+        "symbols": 17924,
+        "unresolved_edges": 61924
       }
     },
-    "current_refresh_runs": [
-      "8a690fd6-7b89-4f99-9d16-90c16a42f7e4",
-      "c9fdc64e-d620-40da-a6ec-9e182871bc69"
+    "captured_default_semantic_snapshot": {
+      "snapshot_id": "27376952-2945-4db0-9b21-fcf0797dc14f",
+      "source_fingerprint": "snapshot:d6f8f3ca3294db4c18af1141fb9f6e9d3f4f4deb75fa4cde2ef6995ef00c5fce",
+      "analyzer_signature": "pgmcp-semantic-v1+syn0.1.0+disabled_safe_mode+safe-source-only",
+      "profile": "default",
+      "execution_mode": "safe",
+      "stale_when_captured": false,
+      "finding_counts": {
+        "typed_interprocedural_scc": 37,
+        "stack_risk": 37,
+        "recursive_ownership_drop_glue": 4
+      },
+      "coverage": {
+        "compiler_sidecar": "disabled_safe_mode",
+        "failed_files": 0,
+        "fallback_parsed_files": 0,
+        "indexed_files": 421,
+        "parsed_files": 421,
+        "partial_files": [],
+        "resolved_edges": 17851,
+        "skipped_unavailable_source": 0,
+        "symbols": 17924,
+        "unresolved_edges": 61924
+      }
+    },
+    "final_source_refresh_runs": [
+      "b940e173-bbe8-4d8d-8e24-f8d3a273d944",
+      "c7d90cd9-48c9-412a-9835-29216d81ddd5"
     ],
     "current_branch_verification": {
-      "source_hash_audit": "target/campaign-logs/stack-safety-phase7/recursion-ledger-source-hash-audit.tsv",
+      "source_hash_audit": "target/campaign-logs/stack-safety-phase7/recursion-ledger-source-hash-audit-a22e4e3.tsv",
+      "source_hash_records_matched": 189,
+      "source_hash_records_mismatched": 0,
       "all_features_compile": "target/campaign-logs/stack-safety-phase7/all-features-lib-compile.log",
       "depth_100000": "target/campaign-logs/stack-safety-phase7/production-100k-current.log",
       "char_extreme_lifecycle": "target/campaign-logs/stack-safety-phase7/production-char-extreme-current.log",
       "overlay_worklists": "target/campaign-logs/stack-safety-phase7/production-overlay-worklists-current.log",
+      "final_formal_correspondence": "target/campaign-logs/stack-safety-phase7/formal-correspondence-full-final2.log",
+      "final_all_features_tests": "target/campaign-logs/stack-safety-phase7/final-cargo-test-all-features.log",
+      "final_locked_all_features_tests": "target/campaign-logs/stack-safety-phase7/final-locked-cargo-test-all-features.log",
+      "final_locked_clippy": "target/campaign-logs/stack-safety-phase7/final-locked-clippy-all-targets-all-features.log",
+      "final_evidence_json": "target/campaign-logs/stack-safety-phase7/final-evidence-json.log",
+      "final_evidence_diff_check": "target/campaign-logs/stack-safety-phase7/final-evidence-diff-check.log",
+      "final_evidence_cargo_fmt": "target/campaign-logs/stack-safety-phase7/final-evidence-cargo-fmt.log",
+      "final_pgmcp_bug_gate": "target/campaign-logs/stack-safety-phase7/final-pgmcp-bug-gate.log",
       "depth_100000_passed": 14,
       "char_extreme_passed": 2,
       "overlay_worklists_passed": 2,
@@ -186,14 +232,14 @@
       "stack_tuning": false,
       "tmpdir": "target/campaign-logs/tmp"
     },
-    "semantic_delivery_gap": "Current safe refreshes activate findings but are immediately marked stale; pgmcp bug pgmcp-semantic-snapshot-immediate-staleness-after-refresh (6073). Historical typed evidence is retained as a union channel."
+    "semantic_delivery_status": "Both refreshed Rust snapshots were active, queryable, and stale=false when the 78 findings were captured against the audited production source. Editing only this evidence manifest then made both snapshots stale without changing Rust source, reproducing pgmcp bug pgmcp-semantic-snapshot-immediate-staleness-after-refresh (6073). The captured typed findings remain a positive union channel; classic analysis, source-SHA review, manual ownership review, compilation, and depth gates independently close the libdictenstein campaign."
   },
   "metrics": {
-    "classic_production_units_total": 140,
-    "classic_production_units_disposed": 140,
-    "classic_production_call_sites_inspected": 150,
-    "classic_production_call_sites_total": 150,
-    "typed_candidates_retained": 38,
+    "classic_production_units_total": 135,
+    "classic_production_units_disposed": 135,
+    "classic_production_call_sites_inspected": 145,
+    "classic_production_call_sites_total": 145,
+    "typed_candidates_retained": 37,
     "ownership_candidates_retained": 8,
     "production_implicit_lifecycle_refactors": 5,
     "unresolved_semantic_delivery_defects": 1,
@@ -1539,7 +1585,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/char/lockfree_cas.rs",
-      "source_sha256": "369d5d2ae2e76fab11341c0315fcd483dcc0b89e14af199f7bedc4ca4c9dcef9",
+      "source_sha256": "0329d45fd241f492dfddb376e80e91f1d22836a7f7c772dcdb5b07a1257597c6",
       "definition": {
         "line": 1176,
         "column": 0
@@ -1568,7 +1614,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/char/lockfree_cas.rs",
-      "source_sha256": "369d5d2ae2e76fab11341c0315fcd483dcc0b89e14af199f7bedc4ca4c9dcef9",
+      "source_sha256": "0329d45fd241f492dfddb376e80e91f1d22836a7f7c772dcdb5b07a1257597c6",
       "definition": {
         "line": 1210,
         "column": 0
@@ -1655,7 +1701,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/char/mod.rs",
-      "source_sha256": "9ed884272d12747650712da7b2a62f5760d215a101a304c74375ff92da26b612",
+      "source_sha256": "4321d894176e03f7bb72f0f43b213c33f61b2266d1f9ca7e3163123f4b5be587",
       "definition": {
         "line": 1177,
         "column": 0
@@ -1684,7 +1730,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/char/mod.rs",
-      "source_sha256": "9ed884272d12747650712da7b2a62f5760d215a101a304c74375ff92da26b612",
+      "source_sha256": "4321d894176e03f7bb72f0f43b213c33f61b2266d1f9ca7e3163123f4b5be587",
       "definition": {
         "line": 1184,
         "column": 0
@@ -1713,7 +1759,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/char/mod.rs",
-      "source_sha256": "9ed884272d12747650712da7b2a62f5760d215a101a304c74375ff92da26b612",
+      "source_sha256": "4321d894176e03f7bb72f0f43b213c33f61b2266d1f9ca7e3163123f4b5be587",
       "definition": {
         "line": 889,
         "column": 0
@@ -1771,9 +1817,9 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/char/types.rs",
-      "source_sha256": "6bd387fe4669a754e2615aa2f3dfc472772f18ba0dc8ff692f9209f3d33c0912",
+      "source_sha256": "8f4f12792144ca5a5ee1976e61588d979d72a407e16615ee0fa4bbf9dbf1c9b7",
       "definition": {
-        "line": 1042,
+        "line": 1158,
         "column": 0
       },
       "function": "crate::CharTrieNodeInner < V >::set_final",
@@ -1782,7 +1828,7 @@
           "column": 8,
           "evidence": "libcpg_scope_corroborated",
           "file": "src/persistent_artrie/char/types.rs",
-          "line": 1043,
+          "line": 1159,
           "snippet": "self.node.header_mut().set_final(is_final)"
         }
       ],
@@ -2463,23 +2509,23 @@
       "source_reviewed": true
     },
     {
-      "id": "C-D-079",
+      "id": "C-D-140",
       "scope": "production",
       "kind": "classic_direct",
-      "file": "src/persistent_artrie/core/eviction/coordinator.rs",
-      "source_sha256": "ba7470c1bbd1d93b5f41261a8e0e9f2ce2df8a90b352ed11cf2640ea4a5aa05a",
+      "file": "src/persistent_artrie/core/overlay/atomic_ptr.rs",
+      "source_sha256": "f32559fa1e1a132ed1bffb4e1e7282bce71f002970551ab4fd1aa6e607c0c2b6",
       "definition": {
-        "line": 1056,
+        "line": 135,
         "column": 0
       },
-      "function": "crate::EvictionCoordinator::char_resident_estimate_bytes",
+      "function": "crate::RootEvictionRevision::help",
       "call_sites": [
         {
           "column": 8,
           "evidence": "libcpg_scope_corroborated",
-          "file": "src/persistent_artrie/core/eviction/coordinator.rs",
-          "line": 1057,
-          "snippet": "self.disk_registry.read().char_resident_estimate_bytes()"
+          "file": "src/persistent_artrie/core/overlay/atomic_ptr.rs",
+          "line": 136,
+          "snippet": "K::residency(&self.catalog).help(self.predecessor_ordinal, self.ordinal, &self.delta)"
         }
       ],
       "channels": [
@@ -2487,153 +2533,8 @@
       ],
       "disposition": "false_positive_proven",
       "closure_status": "closed",
-      "proof_code": "different_receiver",
-      "proof": "The witness receiver is a returned guard, snapshot, inner index/core, header, node, iterator, or storage object; source-level receiver identity excludes re-entry into the enclosing function.",
-      "source_reviewed": true
-    },
-    {
-      "id": "C-D-080",
-      "scope": "production",
-      "kind": "classic_direct",
-      "file": "src/persistent_artrie/core/eviction/coordinator.rs",
-      "source_sha256": "ba7470c1bbd1d93b5f41261a8e0e9f2ce2df8a90b352ed11cf2640ea4a5aa05a",
-      "definition": {
-        "line": 1061,
-        "column": 0
-      },
-      "function": "crate::EvictionCoordinator::byte_resident_estimate_bytes",
-      "call_sites": [
-        {
-          "column": 8,
-          "evidence": "libcpg_scope_corroborated",
-          "file": "src/persistent_artrie/core/eviction/coordinator.rs",
-          "line": 1062,
-          "snippet": "self.disk_registry.read().byte_resident_estimate_bytes()"
-        }
-      ],
-      "channels": [
-        "classic_min_confidence_0"
-      ],
-      "disposition": "false_positive_proven",
-      "closure_status": "closed",
-      "proof_code": "different_receiver",
-      "proof": "The witness receiver is a returned guard, snapshot, inner index/core, header, node, iterator, or storage object; source-level receiver identity excludes re-entry into the enclosing function.",
-      "source_reviewed": true
-    },
-    {
-      "id": "C-D-081",
-      "scope": "production",
-      "kind": "classic_direct",
-      "file": "src/persistent_artrie/core/eviction/coordinator.rs",
-      "source_sha256": "ba7470c1bbd1d93b5f41261a8e0e9f2ce2df8a90b352ed11cf2640ea4a5aa05a",
-      "definition": {
-        "line": 1067,
-        "column": 0
-      },
-      "function": "crate::EvictionCoordinator::byte_resident_len",
-      "call_sites": [
-        {
-          "column": 8,
-          "evidence": "libcpg_scope_corroborated",
-          "file": "src/persistent_artrie/core/eviction/coordinator.rs",
-          "line": 1068,
-          "snippet": "self.disk_registry.read().byte_resident_len()"
-        }
-      ],
-      "channels": [
-        "classic_min_confidence_0"
-      ],
-      "disposition": "false_positive_proven",
-      "closure_status": "closed",
-      "proof_code": "different_receiver",
-      "proof": "The witness receiver is a returned guard, snapshot, inner index/core, header, node, iterator, or storage object; source-level receiver identity excludes re-entry into the enclosing function.",
-      "source_reviewed": true
-    },
-    {
-      "id": "C-D-082",
-      "scope": "production",
-      "kind": "classic_direct",
-      "file": "src/persistent_artrie/core/eviction/coordinator.rs",
-      "source_sha256": "ba7470c1bbd1d93b5f41261a8e0e9f2ce2df8a90b352ed11cf2640ea4a5aa05a",
-      "definition": {
-        "line": 1072,
-        "column": 0
-      },
-      "function": "crate::EvictionCoordinator::byte_resident_serialized_bytes",
-      "call_sites": [
-        {
-          "column": 8,
-          "evidence": "libcpg_scope_corroborated",
-          "file": "src/persistent_artrie/core/eviction/coordinator.rs",
-          "line": 1073,
-          "snippet": "self.disk_registry.read().byte_resident_serialized_bytes()"
-        }
-      ],
-      "channels": [
-        "classic_min_confidence_0"
-      ],
-      "disposition": "false_positive_proven",
-      "closure_status": "closed",
-      "proof_code": "different_receiver",
-      "proof": "The witness receiver is a returned guard, snapshot, inner index/core, header, node, iterator, or storage object; source-level receiver identity excludes re-entry into the enclosing function.",
-      "source_reviewed": true
-    },
-    {
-      "id": "C-D-083",
-      "scope": "production",
-      "kind": "classic_direct",
-      "file": "src/persistent_artrie/core/eviction/coordinator.rs",
-      "source_sha256": "ba7470c1bbd1d93b5f41261a8e0e9f2ce2df8a90b352ed11cf2640ea4a5aa05a",
-      "definition": {
-        "line": 1078,
-        "column": 0
-      },
-      "function": "crate::EvictionCoordinator::char_resident_len",
-      "call_sites": [
-        {
-          "column": 8,
-          "evidence": "libcpg_scope_corroborated",
-          "file": "src/persistent_artrie/core/eviction/coordinator.rs",
-          "line": 1079,
-          "snippet": "self.disk_registry.read().char_resident_len()"
-        }
-      ],
-      "channels": [
-        "classic_min_confidence_0"
-      ],
-      "disposition": "false_positive_proven",
-      "closure_status": "closed",
-      "proof_code": "different_receiver",
-      "proof": "The witness receiver is a returned guard, snapshot, inner index/core, header, node, iterator, or storage object; source-level receiver identity excludes re-entry into the enclosing function.",
-      "source_reviewed": true
-    },
-    {
-      "id": "C-D-084",
-      "scope": "production",
-      "kind": "classic_direct",
-      "file": "src/persistent_artrie/core/eviction/coordinator.rs",
-      "source_sha256": "ba7470c1bbd1d93b5f41261a8e0e9f2ce2df8a90b352ed11cf2640ea4a5aa05a",
-      "definition": {
-        "line": 1083,
-        "column": 0
-      },
-      "function": "crate::EvictionCoordinator::char_resident_serialized_bytes",
-      "call_sites": [
-        {
-          "column": 8,
-          "evidence": "libcpg_scope_corroborated",
-          "file": "src/persistent_artrie/core/eviction/coordinator.rs",
-          "line": 1084,
-          "snippet": "self.disk_registry.read().char_resident_serialized_bytes()"
-        }
-      ],
-      "channels": [
-        "classic_min_confidence_0"
-      ],
-      "disposition": "false_positive_proven",
-      "closure_status": "closed",
-      "proof_code": "different_receiver",
-      "proof": "The witness receiver is a returned guard, snapshot, inner index/core, header, node, iterator, or storage object; source-level receiver identity excludes re-entry into the enclosing function.",
+      "proof_code": "different_receiver_type",
+      "proof": "RegistryFamily::residency returns &AtomicResidencyGeneration, so the witness invokes AtomicResidencyGeneration::help rather than RootEvictionRevision::help. Source-level receiver and return-type identity exclude re-entry into the enclosing function.",
       "source_reviewed": true
     },
     {
@@ -2742,7 +2643,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/lockfree_cas.rs",
-      "source_sha256": "5e79d2ea726364e658a47f6f24218e6ab877f60136b8f537f0e69359c2cc67cb",
+      "source_sha256": "5567324f362882d9fe6e81afeeaf2a48df1a2c1284e3c85708e38f8ad5096876",
       "definition": {
         "line": 464,
         "column": 0
@@ -2771,7 +2672,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/lockfree_cas.rs",
-      "source_sha256": "5e79d2ea726364e658a47f6f24218e6ab877f60136b8f537f0e69359c2cc67cb",
+      "source_sha256": "5567324f362882d9fe6e81afeeaf2a48df1a2c1284e3c85708e38f8ad5096876",
       "definition": {
         "line": 502,
         "column": 0
@@ -2829,9 +2730,9 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/persistence_api.rs",
-      "source_sha256": "0d1e18cde5032d761eb8effd641b0761e20b1c6a46b9fa976b3f59b0a7672cde",
+      "source_sha256": "1501a3949c6b7ffd1b4bcbd9e490878c5606da04fea9fe77fbdf6163b13b1077",
       "definition": {
-        "line": 85,
+        "line": 84,
         "column": 0
       },
       "function": "crate::PersistentARTrie < V , S >::flush_sequential",
@@ -2840,7 +2741,7 @@
           "column": 12,
           "evidence": "libcpg_scope_corroborated",
           "file": "src/persistent_artrie/persistence_api.rs",
-          "line": 87,
+          "line": 86,
           "snippet": "am.write().flush_sequential()"
         }
       ],
@@ -3148,7 +3049,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/shared_trait_impl.rs",
-      "source_sha256": "9f8de4c485068ae0d5c57baf07e63ecaa14fe7592fa162da565a5aeb74e0f120",
+      "source_sha256": "867fc5815ff5887c733de04a75eae013dd9ba1b9f0a40df396be5abccdfb6710",
       "definition": {
         "line": 106,
         "column": 0
@@ -3177,9 +3078,9 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/shared_trait_impl.rs",
-      "source_sha256": "9f8de4c485068ae0d5c57baf07e63ecaa14fe7592fa162da565a5aeb74e0f120",
+      "source_sha256": "867fc5815ff5887c733de04a75eae013dd9ba1b9f0a40df396be5abccdfb6710",
       "definition": {
-        "line": 392,
+        "line": 412,
         "column": 0
       },
       "function": "crate::SharedARTrie < V >::contains",
@@ -3188,7 +3089,7 @@
           "column": 8,
           "evidence": "libcpg_scope_corroborated",
           "file": "src/persistent_artrie/shared_trait_impl.rs",
-          "line": 393,
+          "line": 413,
           "snippet": "self.read().contains(term)"
         }
       ],
@@ -3206,9 +3107,9 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/shared_trait_impl.rs",
-      "source_sha256": "9f8de4c485068ae0d5c57baf07e63ecaa14fe7592fa162da565a5aeb74e0f120",
+      "source_sha256": "867fc5815ff5887c733de04a75eae013dd9ba1b9f0a40df396be5abccdfb6710",
       "definition": {
-        "line": 396,
+        "line": 416,
         "column": 0
       },
       "function": "crate::SharedARTrie < V >::len",
@@ -3217,7 +3118,7 @@
           "column": 8,
           "evidence": "libcpg_scope_corroborated",
           "file": "src/persistent_artrie/shared_trait_impl.rs",
-          "line": 397,
+          "line": 417,
           "snippet": "self.read().len()"
         }
       ],
@@ -3235,9 +3136,9 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/shared_trait_impl.rs",
-      "source_sha256": "9f8de4c485068ae0d5c57baf07e63ecaa14fe7592fa162da565a5aeb74e0f120",
+      "source_sha256": "867fc5815ff5887c733de04a75eae013dd9ba1b9f0a40df396be5abccdfb6710",
       "definition": {
-        "line": 400,
+        "line": 420,
         "column": 0
       },
       "function": "crate::SharedARTrie < V >::sync_strategy",
@@ -3246,7 +3147,7 @@
           "column": 8,
           "evidence": "libcpg_scope_corroborated",
           "file": "src/persistent_artrie/shared_trait_impl.rs",
-          "line": 405,
+          "line": 425,
           "snippet": "self.read().sync_strategy()"
         }
       ],
@@ -3264,9 +3165,9 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/shared_trait_impl.rs",
-      "source_sha256": "9f8de4c485068ae0d5c57baf07e63ecaa14fe7592fa162da565a5aeb74e0f120",
+      "source_sha256": "867fc5815ff5887c733de04a75eae013dd9ba1b9f0a40df396be5abccdfb6710",
       "definition": {
-        "line": 412,
+        "line": 432,
         "column": 0
       },
       "function": "crate::SharedARTrie < V >::get_value",
@@ -3275,7 +3176,7 @@
           "column": 8,
           "evidence": "libcpg_scope_corroborated",
           "file": "src/persistent_artrie/shared_trait_impl.rs",
-          "line": 413,
+          "line": 433,
           "snippet": "self.read().get_value(term)"
         }
       ],
@@ -3293,7 +3194,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/shared_trait_impl.rs",
-      "source_sha256": "9f8de4c485068ae0d5c57baf07e63ecaa14fe7592fa162da565a5aeb74e0f120",
+      "source_sha256": "867fc5815ff5887c733de04a75eae013dd9ba1b9f0a40df396be5abccdfb6710",
       "definition": {
         "line": 63,
         "column": 0
@@ -3322,7 +3223,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/shared_trait_impl.rs",
-      "source_sha256": "9f8de4c485068ae0d5c57baf07e63ecaa14fe7592fa162da565a5aeb74e0f120",
+      "source_sha256": "867fc5815ff5887c733de04a75eae013dd9ba1b9f0a40df396be5abccdfb6710",
       "definition": {
         "line": 70,
         "column": 0
@@ -3351,7 +3252,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/shared_trait_impl.rs",
-      "source_sha256": "9f8de4c485068ae0d5c57baf07e63ecaa14fe7592fa162da565a5aeb74e0f120",
+      "source_sha256": "867fc5815ff5887c733de04a75eae013dd9ba1b9f0a40df396be5abccdfb6710",
       "definition": {
         "line": 78,
         "column": 0
@@ -3380,7 +3281,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/shared_trait_impl.rs",
-      "source_sha256": "9f8de4c485068ae0d5c57baf07e63ecaa14fe7592fa162da565a5aeb74e0f120",
+      "source_sha256": "867fc5815ff5887c733de04a75eae013dd9ba1b9f0a40df396be5abccdfb6710",
       "definition": {
         "line": 87,
         "column": 0
@@ -3815,7 +3716,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/vocab/mod.rs",
-      "source_sha256": "77c7eb078bf6513f3d0c8d8bfbb271e2c0dc48e128e86118fe90c807e5067287",
+      "source_sha256": "99413078554f3debcb59d5b78c4f1e7585481b8c5c89d654be8cb780f611c1ce",
       "definition": {
         "line": 158,
         "column": 0
@@ -3844,7 +3745,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/vocab/mod.rs",
-      "source_sha256": "77c7eb078bf6513f3d0c8d8bfbb271e2c0dc48e128e86118fe90c807e5067287",
+      "source_sha256": "99413078554f3debcb59d5b78c4f1e7585481b8c5c89d654be8cb780f611c1ce",
       "definition": {
         "line": 162,
         "column": 0
@@ -3873,7 +3774,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/vocab/mod.rs",
-      "source_sha256": "77c7eb078bf6513f3d0c8d8bfbb271e2c0dc48e128e86118fe90c807e5067287",
+      "source_sha256": "99413078554f3debcb59d5b78c4f1e7585481b8c5c89d654be8cb780f611c1ce",
       "definition": {
         "line": 311,
         "column": 0
@@ -3909,7 +3810,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/vocab/mod.rs",
-      "source_sha256": "77c7eb078bf6513f3d0c8d8bfbb271e2c0dc48e128e86118fe90c807e5067287",
+      "source_sha256": "99413078554f3debcb59d5b78c4f1e7585481b8c5c89d654be8cb780f611c1ce",
       "definition": {
         "line": 527,
         "column": 0
@@ -3938,7 +3839,7 @@
       "scope": "production",
       "kind": "classic_direct",
       "file": "src/persistent_artrie/vocab/mod.rs",
-      "source_sha256": "77c7eb078bf6513f3d0c8d8bfbb271e2c0dc48e128e86118fe90c807e5067287",
+      "source_sha256": "99413078554f3debcb59d5b78c4f1e7585481b8c5c89d654be8cb780f611c1ce",
       "definition": {
         "line": 531,
         "column": 0
@@ -4267,7 +4168,7 @@
             "column": 0,
             "line": 621
           },
-          "symbol_id": 10205353
+          "symbol_id": 11692465
         },
         {
           "complexity": null,
@@ -4277,7 +4178,7 @@
             "column": 0,
             "line": 876
           },
-          "symbol_id": 10205356
+          "symbol_id": 11692468
         },
         {
           "complexity": null,
@@ -4287,7 +4188,7 @@
             "column": 0,
             "line": 722
           },
-          "symbol_id": 10205354
+          "symbol_id": 11692466
         }
       ],
       "calls": [
@@ -4301,8 +4202,8 @@
               "snippet": "OpenOptions::new()"
             }
           ],
-          "source_symbol_id": 10205353,
-          "target_symbol_id": 10205353
+          "source_symbol_id": 11692465,
+          "target_symbol_id": 11692465
         },
         {
           "call_sites": [
@@ -4314,8 +4215,8 @@
               "snippet": "Self::acquire_exclusive_lock(&path_str)"
             }
           ],
-          "source_symbol_id": 10205354,
-          "target_symbol_id": 10205356
+          "source_symbol_id": 11692466,
+          "target_symbol_id": 11692468
         },
         {
           "call_sites": [
@@ -4334,8 +4235,8 @@
               "snippet": "OpenOptions::new()"
             }
           ],
-          "source_symbol_id": 10205356,
-          "target_symbol_id": 10205354
+          "source_symbol_id": 11692468,
+          "target_symbol_id": 11692466
         },
         {
           "call_sites": [
@@ -4347,8 +4248,8 @@
               "snippet": "OpenOptions::new()"
             }
           ],
-          "source_symbol_id": 10205356,
-          "target_symbol_id": 10205353
+          "source_symbol_id": 11692468,
+          "target_symbol_id": 11692465
         },
         {
           "call_sites": [
@@ -4360,8 +4261,8 @@
               "snippet": "Self::acquire_exclusive_lock(&path_str)"
             }
           ],
-          "source_symbol_id": 10205353,
-          "target_symbol_id": 10205356
+          "source_symbol_id": 11692465,
+          "target_symbol_id": 11692468
         },
         {
           "call_sites": [
@@ -4373,8 +4274,8 @@
               "snippet": "OpenOptions::new()"
             }
           ],
-          "source_symbol_id": 10205354,
-          "target_symbol_id": 10205354
+          "source_symbol_id": 11692466,
+          "target_symbol_id": 11692466
         },
         {
           "call_sites": [
@@ -4386,8 +4287,8 @@
               "snippet": "OpenOptions::new()"
             }
           ],
-          "source_symbol_id": 10205353,
-          "target_symbol_id": 10205354
+          "source_symbol_id": 11692465,
+          "target_symbol_id": 11692466
         }
       ],
       "source_sha256_by_file": {
@@ -4403,7 +4304,7 @@
       "source_reviewed": true
     }
   ],
-  "typed_historical": [
+  "typed_current": [
     {
       "id": "T-D-001",
       "scope": "production",
@@ -4434,7 +4335,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -4474,7 +4376,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -4514,7 +4417,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -4554,7 +4458,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -4594,7 +4499,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -4634,7 +4540,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -4674,7 +4581,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -4714,7 +4622,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -4754,7 +4663,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -4794,7 +4704,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -4834,7 +4745,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -4874,7 +4786,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -4914,7 +4827,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -4954,7 +4868,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -4994,7 +4909,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5034,7 +4950,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5351,7 +5268,8 @@
         }
       ],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5391,7 +5309,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5431,7 +5350,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5471,7 +5391,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5511,7 +5432,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5551,7 +5473,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5591,7 +5514,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5631,7 +5555,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5671,7 +5596,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5711,7 +5637,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5751,7 +5678,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5791,7 +5719,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5831,7 +5760,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5871,7 +5801,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5886,37 +5817,37 @@
       "scope": "production",
       "kind": "typed_direct",
       "file": "src/persistent_artrie/char/mod.rs",
-      "source_sha256": "9ed884272d12747650712da7b2a62f5760d215a101a304c74375ff92da26b612",
+      "source_sha256": "4321d894176e03f7bb72f0f43b213c33f61b2266d1f9ca7e3163123f4b5be587",
       "definition": {
         "end_column": 5,
-        "end_line": 883,
+        "end_line": 893,
         "file": "src/persistent_artrie/char/mod.rs",
         "start_column": 4,
-        "start_line": 878
+        "start_line": 888
       },
       "function": "crate::PersistentARTrieChar < V , S >::len",
       "edges": [
         {
           "call_site": {
             "end_column": 23,
-            "end_line": 882,
+            "end_line": 892,
             "file": "src/persistent_artrie/char/mod.rs",
             "start_column": 13,
-            "start_line": 882
+            "start_line": 892
           },
           "resolution": "exact_self",
           "dispatch": "self_method",
-          "fingerprint": "fact:7365c7cb59af4c59c6cfcd6f3a20f84df84594120a8fdda389b27baa3fe5f8cd"
+          "fingerprint": "fact:d3fd12ac9cb7a9fe9f19420ec3f3b1b0fa7ce8dab175685d84517acc7149d22e"
         }
       ],
       "unresolved_incident_edges": [
         {
           "call_site": {
             "end_column": 24,
-            "end_line": 882,
+            "end_line": 892,
             "file": "src/persistent_artrie/char/mod.rs",
             "start_column": 8,
-            "start_line": 882
+            "start_line": 892
           },
           "dispatch": "direct",
           "resolution": "unresolved",
@@ -5924,7 +5855,8 @@
         }
       ],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5932,7 +5864,7 @@
       "proof_code": "trait_to_inherent_forwarder",
       "proof": "Source context is a trait-to-inherent forwarding body. The safe parser resolver reports compiler_resolved=false and matched the forwarding call to the trait body; Rust resolves it to the concrete inherent method.",
       "source_reviewed": true,
-      "evidence_source_sha256": "9ed884272d12747650712da7b2a62f5760d215a101a304c74375ff92da26b612"
+      "evidence_source_sha256": "4321d894176e03f7bb72f0f43b213c33f61b2266d1f9ca7e3163123f4b5be587"
     },
     {
       "id": "T-D-032",
@@ -5964,7 +5896,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -5975,51 +5908,11 @@
       "evidence_source_sha256": "558430d65ecd8613a6004748f5b3714f36da5d548de5b4000921de973439f4b6"
     },
     {
-      "id": "T-D-033",
-      "scope": "production",
-      "kind": "typed_direct",
-      "file": "src/persistent_artrie/char/mod.rs",
-      "source_sha256": "9ed884272d12747650712da7b2a62f5760d215a101a304c74375ff92da26b612",
-      "definition": {
-        "end_column": 5,
-        "end_line": 897,
-        "file": "src/persistent_artrie/char/mod.rs",
-        "start_column": 4,
-        "start_line": 891
-      },
-      "function": "crate::PersistentARTrieChar < V , S >::get_value",
-      "edges": [
-        {
-          "call_site": {
-            "end_column": 28,
-            "end_line": 896,
-            "file": "src/persistent_artrie/char/mod.rs",
-            "start_column": 8,
-            "start_line": 896
-          },
-          "resolution": "exact_self",
-          "dispatch": "self_method",
-          "fingerprint": "fact:6096094a4b9aa023b32d4f272493e1edb151d5724988afc9b3e8e55ae9d04d11"
-        }
-      ],
-      "unresolved_incident_edges": [],
-      "channels": [
-        "safe_typed_all_features_historical"
-      ],
-      "compiler_resolved": false,
-      "disposition": "false_positive_proven",
-      "closure_status": "closed",
-      "proof_code": "trait_to_inherent_forwarder",
-      "proof": "Source context is a trait-to-inherent forwarding body. The safe parser resolver reports compiler_resolved=false and matched the forwarding call to the trait body; Rust resolves it to the concrete inherent method.",
-      "source_reviewed": true,
-      "evidence_source_sha256": "9ed884272d12747650712da7b2a62f5760d215a101a304c74375ff92da26b612"
-    },
-    {
       "id": "T-D-034",
       "scope": "production",
       "kind": "typed_direct",
       "file": "src/persistent_artrie/vocab/mod.rs",
-      "source_sha256": "77c7eb078bf6513f3d0c8d8bfbb271e2c0dc48e128e86118fe90c807e5067287",
+      "source_sha256": "99413078554f3debcb59d5b78c4f1e7585481b8c5c89d654be8cb780f611c1ce",
       "definition": {
         "end_column": 5,
         "end_line": 314,
@@ -6057,7 +5950,8 @@
         }
       ],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -6065,7 +5959,7 @@
       "proof_code": "trait_to_inherent_forwarder",
       "proof": "Source context is a trait-to-inherent forwarding body. The safe parser resolver reports compiler_resolved=false and matched the forwarding call to the trait body; Rust resolves it to the concrete inherent method.",
       "source_reviewed": true,
-      "evidence_source_sha256": "77c7eb078bf6513f3d0c8d8bfbb271e2c0dc48e128e86118fe90c807e5067287"
+      "evidence_source_sha256": "99413078554f3debcb59d5b78c4f1e7585481b8c5c89d654be8cb780f611c1ce"
     },
     {
       "id": "T-D-035",
@@ -6097,7 +5991,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -6137,7 +6032,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -6177,7 +6073,8 @@
       ],
       "unresolved_incident_edges": [],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -6446,7 +6343,8 @@
         }
       ],
       "channels": [
-        "safe_typed_all_features_historical"
+        "safe_typed_default_current",
+        "safe_typed_all_features_current"
       ],
       "compiler_resolved": false,
       "disposition": "false_positive_proven",
@@ -6729,13 +6627,13 @@
       "id": "O-003",
       "kind": "recursive_ownership_drop_glue",
       "file": "tests/persistent_lockfree_overlay_loom.rs",
-      "source_sha256": "37332ad67685e0c2ef80de9c7654f70c4fbc1b054b2be355ccaf08d6e1856a5c",
+      "source_sha256": "57c51c99b0f9fd0275eec1697d2fdf7fa870caed8394e24c95222758b8086203",
       "definition": {
         "end_column": 1,
         "end_line": 328,
         "file": "tests/persistent_lockfree_overlay_loom.rs",
         "start_column": 0,
-        "start_line": 323
+        "start_line": 319
       },
       "function": "crate::FaultModelNode",
       "members": [
@@ -6782,7 +6680,9 @@
           }
         }
       ],
-      "custom_drop_members": [],
+      "custom_drop_members": [
+        "FaultModelNode"
+      ],
       "generated_operation_paths": [
         {
           "members": [
@@ -6915,7 +6815,7 @@
       "scope": "nonproduction",
       "disposition": "test_oracle_bounded",
       "closure_status": "accepted_bounded",
-      "proof": "The Loom fault model constructs only the explicit length-one fault-in topology used by its scenarios and bounds retry loops; it is not an input-shaped production traversal.",
+      "proof": "The Loom fault model constructs only the explicit length-one fault-in topology used by its scenarios and bounds retry loops; it is not an input-shaped production traversal. FaultModelNode's custom Drop increments an optional counter and does not recurse; Rust's subsequent field drop remains bounded by the same length-one model topology.",
       "source_reviewed": true,
       "verification": []
     },
@@ -7027,7 +6927,7 @@
       "kind": "manual_recursive_ownership_review",
       "evidence_origin": "safe_snapshot_unknown_wrapper_followup",
       "file": "src/persistent_artrie/char/types.rs",
-      "source_sha256": "6bd387fe4669a754e2615aa2f3dfc472772f18ba0dc8ff692f9209f3d33c0912",
+      "source_sha256": "8f4f12792144ca5a5ee1976e61588d979d72a407e16615ee0fa4bbf9dbf1c9b7",
       "definition": {
         "start_line": 509,
         "end_line": 518
@@ -7065,7 +6965,7 @@
       "kind": "manual_recursive_ownership_review",
       "evidence_origin": "safe_snapshot_unknown_wrapper_followup",
       "file": "src/persistent_artrie/core/overlay/node.rs",
-      "source_sha256": "8bd9fd06800e63725e9ce2f63e3fc0086cd9752adf9a226ecad5503fa8e7346e",
+      "source_sha256": "a96a5919f1d0de93f982cec0cdff778f5e66ddce873ed4af6059e52d1a52908b",
       "definition": {
         "start_line": 351,
         "end_line": 392
@@ -7169,6 +7069,65 @@
       ]
     }
   ],
+  "manual_wrapper_reviews": [
+    {
+      "id": "W-001",
+      "scope": "production",
+      "kind": "nonowning_cursor_wrapper_review",
+      "files": {
+        "src/lib.rs": "6fedfbe630c9c2d4589647654a932d842d863610fd81665ff1ce1118cc0fdde1",
+        "src/serialization/protobuf_impl.rs": "bf7503a00c919d4dd0dde694679871521ae3c3e694fb53c096978e3cf019b7d5"
+      },
+      "wrappers": [
+        "SnapshotEdgeRangeToken",
+        "BrandedSnapshotCursor",
+        "BrandedSnapshotEdgeRange"
+      ],
+      "disposition": "nonowning_wrapper_proven",
+      "closure_status": "closed",
+      "proof": "SnapshotEdgeRangeToken contains two NonNull<()> values and invariant PhantomData; the branded wrappers contain only a Copy cursor or that Copy token plus invariant PhantomData. They own no node, allocation, or descendant and implement Copy, shallow Clone, and nontraversing Debug where applicable, so their destruction cannot recurse through dictionary topology.",
+      "source_reviewed": true
+    },
+    {
+      "id": "W-002",
+      "scope": "production",
+      "kind": "overlay_ownership_wrapper_review",
+      "files": {
+        "src/persistent_artrie/core/overlay/mod.rs": "e716281ea8e0cad5e768f047c78819ee9245a099ab97e8a42675bed3f7fa271c",
+        "src/persistent_artrie/core/overlay/node.rs": "a96a5919f1d0de93f982cec0cdff778f5e66ddce873ed4af6059e52d1a52908b"
+      },
+      "wrappers": [
+        "OverlayNodeHandle",
+        "OverlayPathFrame",
+        "OverlayPathSpine",
+        "ChildReplacements"
+      ],
+      "disposition": "iterative_owner_boundary_proven",
+      "closure_status": "closed",
+      "proof": "Borrowed handles own nothing. Owned handles, path frames, path spines, and replacement buffers retain OverlayNode only through Arc and never embed the node by value. Clone is shallow. If dropping one of these wrappers releases the last Arc, OverlayNode's custom last-owner Drop drains descendants through its explicit heap worklist, so wrapper nesting does not reintroduce native-stack growth.",
+      "source_reviewed": true,
+      "verification": [
+        "target/campaign-logs/stack-safety-phase7/production-overlay-worklists-current.log"
+      ]
+    },
+    {
+      "id": "W-003",
+      "scope": "nonproduction",
+      "kind": "ambiguous_custom_drop_name_review",
+      "files": {
+        "src/persistent_artrie/core/overlay/mod.rs": "e716281ea8e0cad5e768f047c78819ee9245a099ab97e8a42675bed3f7fa271c",
+        "src/serialization/protobuf_impl.rs": "bf7503a00c919d4dd0dde694679871521ae3c3e694fb53c096978e3cf019b7d5"
+      },
+      "wrappers": [
+        "overlay_spine_failpoint::Guard",
+        "snapshot_cursor_fault::Guard"
+      ],
+      "disposition": "test_guard_nonrecursive_proven",
+      "closure_status": "closed",
+      "proof": "The safe analyzer could not uniquely associate two same-named custom Drop impls. Both are test-only guards with no recursive field: each Drop only resets thread-local Cell state. Neither can traverse dictionary topology.",
+      "source_reviewed": true
+    }
+  ],
   "nonproduction_classic_additions": [
     {
       "id": "N-D-001",
@@ -7197,11 +7156,12 @@
       "code": "unsupported_or_partial",
       "subject": "safe semantic snapshot delivery",
       "status": "open",
-      "detail": "Newly activated Rust snapshots are immediately classified stale despite no Rust source mutation, so current typed findings cannot be queried through analyze_code.",
+      "detail": "Both refreshed Rust snapshots were fresh and queryable when their findings were captured against the audited production source. Editing only the evidence manifest then made them stale without a Rust source mutation, so subsequent analyze_code calls returned zero findings with refresh_required=true.",
       "tracker": "pgmcp-semantic-snapshot-immediate-staleness-after-refresh",
       "campaign_coverage_status": "closed_by_independent_evidence",
       "campaign_closure_evidence": [
         "classic production ledger",
+        "captured fresh default and all-features typed finding union",
         "source-SHA suppression expiry audit",
         "manual ownership-wrapper review",
         "current all-features compilation",
@@ -7216,6 +7176,7 @@
       "campaign_coverage_status": "closed_by_manual_ownership_review",
       "campaign_closure_evidence": [
         "recursive_ownership O-001 through O-008",
+        "manual wrapper reviews W-001 through W-003",
         "operation-specific Clone, Debug, and Drop review",
         "current 100,000-depth lifecycle gates"
       ]
@@ -7227,6 +7188,7 @@
       "detail": "Safe mode keeps source cfg identities but does not execute compiler expansion or prove enablement; default/all-features absence is not negative evidence.",
       "campaign_coverage_status": "closed_by_compiler_and_runtime_evidence",
       "campaign_closure_evidence": [
+        "fresh default and all-features snapshot captures",
         "current exact-RC2 all-features test-target compilation",
         "current all-features 100,000-depth tests",
         "classic evidence retained without typed negative filtering"
