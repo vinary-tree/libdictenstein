@@ -30,16 +30,29 @@ fn collect_walk(
     prefix: &mut String,
     out: &mut BTreeMap<String, i32>,
 ) {
-    if node.is_final() {
-        if let Some(value) = node.value() {
-            out.insert(prefix.clone(), value);
+    let initial_prefix_len = prefix.len();
+    let mut pending = vec![(node.clone(), initial_prefix_len, None)];
+
+    while let Some((node, parent_prefix_len, incoming)) = pending.pop() {
+        prefix.truncate(parent_prefix_len);
+        if let Some(ch) = incoming {
+            prefix.push(ch);
+        }
+
+        if node.is_final() {
+            if let Some(value) = node.value() {
+                out.insert(prefix.clone(), value);
+            }
+        }
+
+        let child_prefix_len = prefix.len();
+        let mut children: Vec<_> = node.edges().collect();
+        while let Some((ch, child)) = children.pop() {
+            pending.push((child, child_prefix_len, Some(ch)));
         }
     }
-    for (ch, child) in node.edges() {
-        prefix.push(ch);
-        collect_walk(&child, prefix, out);
-        prefix.pop();
-    }
+
+    prefix.truncate(initial_prefix_len);
 }
 
 fn walk_map(trie: &PersistentARTrieChar<i32>) -> BTreeMap<String, i32> {

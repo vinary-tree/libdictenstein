@@ -4,7 +4,7 @@
 //! # Why this module exists (the byte twin of char's `lockfree_value_route`)
 //!
 //! The byte lock-free overlay's value-write path
-//! ([`build_value_path_recursive`](super::dict_impl::PersistentARTrie)) and the
+//! ([`build_value_path_iterative`](super::dict_impl::PersistentARTrie)) and the
 //! valued Order-A durable primitives (`insert_cas_with_value_durable` /
 //! `upsert_cas_durable` / `try_increment_cas_durable` / `get_lockfree`) are all
 //! defined on the `impl<S> PersistentARTrie<u64, S>` block (the byte counter

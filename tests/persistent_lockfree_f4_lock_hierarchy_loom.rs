@@ -104,7 +104,7 @@ fn checkpoint_thread(m: &Arc<LockModel>) {
     m.overlay_committed.load(Ordering::Acquire);
 }
 
-/// **Eviction reclaim callback** — `evict_overlay_nodes` / the char twin.
+/// **Generation-qualified compact eviction reclaim callback** — byte/char twins.
 ///
 /// Clones the coordinator out under a BRIEF **EC** lock, RELEASES EC, then
 /// unswizzles the overlay slot via a lock-free CAS (no root lock — OR is gone).

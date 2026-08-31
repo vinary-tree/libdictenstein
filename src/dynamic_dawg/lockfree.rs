@@ -26,7 +26,7 @@ type LockFreeEdges<U, V> = SmallVec<[(U, Arc<LockFreeDawgNode<U, V>>); 4]>;
 const EDGE_LINEAR_SCAN_LIMIT: usize = 16;
 
 /// Immutable sorted edge list published atomically by a node.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct LockFreeEdgeList<U: CharUnit, V: DictionaryValue> {
     pub(crate) edges: LockFreeEdges<U, V>,
 }
@@ -73,7 +73,6 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeEdgeList<U, V> {
 }
 
 /// Lock-free DAWG node.
-#[derive(Debug)]
 pub(crate) struct LockFreeDawgNode<U: CharUnit, V: DictionaryValue> {
     pub(crate) edges: LockFreeEdgeList<U, V>,
     pub(crate) is_final: bool,
@@ -82,6 +81,56 @@ pub(crate) struct LockFreeDawgNode<U: CharUnit, V: DictionaryValue> {
     /// Path-copy mutations deliberately create an identity-less root, which
     /// selects the snapshot arena's sequential fallback until recompaction.
     pub(crate) snapshot_id: Option<crate::SnapshotNodeIdentity>,
+}
+
+struct LockFreeDawgNodeSummary<'a, U: CharUnit, V: DictionaryValue>(&'a LockFreeDawgNode<U, V>);
+
+impl<U: CharUnit, V: DictionaryValue> std::fmt::Debug for LockFreeDawgNodeSummary<'_, U, V> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LockFreeDawgNodeSummary")
+            .field("edge_count", &self.0.edges.edges.len())
+            .field("is_final", &self.0.is_final)
+            .field("has_value", &self.0.value.is_some())
+            .field("snapshot_id", &self.0.snapshot_id)
+            .finish()
+    }
+}
+
+struct LockFreeDawgEdgesSummary<'a, U: CharUnit, V: DictionaryValue>(&'a LockFreeEdges<U, V>);
+
+impl<U: CharUnit, V: DictionaryValue> std::fmt::Debug for LockFreeDawgEdgesSummary<'_, U, V> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_map()
+            .entries(
+                self.0
+                    .iter()
+                    .map(|(label, target)| (label, LockFreeDawgNodeSummary(target.as_ref()))),
+            )
+            .finish()
+    }
+}
+
+impl<U: CharUnit, V: DictionaryValue> std::fmt::Debug for LockFreeEdgeList<U, V> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LockFreeEdgeList")
+            .field("edges", &LockFreeDawgEdgesSummary(&self.edges))
+            .finish()
+    }
+}
+
+impl<U: CharUnit, V: DictionaryValue> std::fmt::Debug for LockFreeDawgNode<U, V> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LockFreeDawgNode")
+            .field("edges", &self.edges)
+            .field("is_final", &self.is_final)
+            .field("has_value", &self.value.is_some())
+            .field("snapshot_id", &self.snapshot_id)
+            .finish()
+    }
 }
 
 /// One atomically published dictionary revision.
@@ -297,6 +346,148 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawgNode<U, V> {
             }
         }
         node.is_final
+    }
+
+    /// Visit one native page of immutable outgoing edges without cloning any
+    /// owning child handle or re-enumerating edges outside the requested page.
+    ///
+    /// # Safety
+    ///
+    /// `cursor` must satisfy [`Self::filter_map_cursor_edges_and_finality`]'s
+    /// retained-revision contract.
+    #[inline]
+    pub(crate) unsafe fn visit_cursor_edge_page<F>(
+        cursor: super::DynamicDawgSnapshotCursor<U, V>,
+        start: usize,
+        capacity: usize,
+        mut visitor: F,
+    ) -> (bool, usize)
+    where
+        F: FnMut(U, super::DynamicDawgSnapshotCursor<U, V>),
+    {
+        // SAFETY: the method contract ties the cursor to this exact node type
+        // and to a still-retained immutable root revision.
+        let pointer = unsafe { cursor.node_pointer::<Self>() };
+        // SAFETY: upheld by the method contract. The retained root transitively
+        // owns every node reached by this immutable cursor.
+        let node = unsafe { pointer.as_ref() };
+        let total = node.edges.edges.len();
+        if capacity == 1 {
+            if let Some((label, child)) = node.edges.edges.get(start) {
+                visitor(*label, Self::traversal_cursor(child));
+            }
+            return (node.is_final, total);
+        }
+        let page_start = start.min(total);
+        let page_end = start.saturating_add(capacity).min(total);
+        for (label, child) in &node.edges.edges[page_start..page_end] {
+            visitor(*label, Self::traversal_cursor(child));
+        }
+        (node.is_final, total)
+    }
+
+    /// Observe one native edge index without callback or owning-handle traffic.
+    ///
+    /// # Safety
+    ///
+    /// `cursor` must satisfy [`Self::filter_map_cursor_edges_and_finality`]'s
+    /// retained-revision contract.
+    #[inline]
+    pub(crate) unsafe fn cursor_edge_at(
+        cursor: super::DynamicDawgSnapshotCursor<U, V>,
+        index: usize,
+    ) -> crate::SnapshotCursorEdgeObservation<U, super::DynamicDawgSnapshotCursor<U, V>> {
+        // SAFETY: the method contract ties the cursor to this exact node type
+        // and to a still-retained immutable root revision.
+        let pointer = unsafe { cursor.node_pointer::<Self>() };
+        // SAFETY: the retained root transitively owns this immutable node and
+        // every child referenced by its stable edge storage.
+        let node = unsafe { pointer.as_ref() };
+        let total = node.edges.edges.len();
+        let edge = node
+            .edges
+            .edges
+            .get(index)
+            .map(|(label, child)| (*label, Self::traversal_cursor(child)));
+        crate::SnapshotCursorEdgeObservation::new(node.is_final, total, edge)
+    }
+
+    /// Begin one zero-copy traversal over immutable native edge storage.
+    ///
+    /// # Safety
+    ///
+    /// `cursor` must identify a node transitively owned by the retained root
+    /// revision. That owner must outlive the returned first cursor and range.
+    #[inline]
+    pub(crate) unsafe fn cursor_edge_range_start(
+        cursor: super::DynamicDawgSnapshotCursor<U, V>,
+    ) -> crate::SnapshotEdgeRangeStart<U, super::DynamicDawgSnapshotCursor<U, V>, Self> {
+        // SAFETY: the method contract ties the cursor to this exact node type.
+        let pointer = unsafe { cursor.node_pointer::<Self>() };
+        // SAFETY: the retained root transitively owns this immutable node.
+        let node = unsafe { pointer.as_ref() };
+        let edges = node.edges.edges.as_slice();
+        let total = edges.len();
+        let first = edges
+            .first()
+            .map(|(label, child)| (*label, Self::traversal_cursor(child)));
+        let remaining = if total >= 2 {
+            // SAFETY: `total >= 2` proves both `base.add(1)` and the one-past
+            // `base.add(total)` are within the same immutable edge allocation.
+            let current =
+                unsafe { std::ptr::NonNull::new_unchecked(edges.as_ptr().add(1) as *mut ()) };
+            // SAFETY: identical allocation/bounds argument; one-past pointers
+            // are valid to retain and compare but are never dereferenced.
+            let end =
+                unsafe { std::ptr::NonNull::new_unchecked(edges.as_ptr().add(total) as *mut ()) };
+            // SAFETY: published `SmallVec` storage never moves or mutates.
+            // The retained root owns both inline and spilled representations
+            // until the complete traversal and every continuation are dropped.
+            Some(unsafe { crate::SnapshotEdgeRangeToken::from_raw_parts(current, end) })
+        } else {
+            None
+        };
+        crate::SnapshotEdgeRangeStart::new(node.is_final, total, first, remaining)
+    }
+
+    /// Consume one edge from a nonempty native range without Arc traffic.
+    ///
+    /// # Safety
+    ///
+    /// `token` must originate from [`Self::cursor_edge_range_start`] or an
+    /// earlier step for the same retained root revision.
+    #[inline]
+    pub(crate) unsafe fn cursor_edge_range_step(
+        token: crate::SnapshotEdgeRangeToken<Self>,
+    ) -> (
+        U,
+        super::DynamicDawgSnapshotCursor<U, V>,
+        Option<crate::SnapshotEdgeRangeToken<Self>>,
+    ) {
+        let (current, end) = token.into_raw_parts();
+        let current = current.cast::<(U, Arc<Self>)>();
+        let end = end.cast::<(U, Arc<Self>)>();
+        debug_assert_ne!(current, end, "retained edge ranges are nonempty");
+
+        // SAFETY: the token contract proves `current` is aligned, initialized,
+        // strictly before `end`, and owned by the retained immutable revision.
+        let (label, child) = unsafe { current.as_ref() };
+        // SAFETY: advancing one element from a nonempty range yields either
+        // another initialized element or its same-allocation one-past pointer.
+        let advanced = unsafe { current.as_ptr().add(1) };
+        let remaining = if advanced == end.as_ptr() {
+            None
+        } else {
+            // SAFETY: `advanced != end` plus the input range invariant proves
+            // a nonempty suffix with the same allocation and element type.
+            Some(unsafe {
+                crate::SnapshotEdgeRangeToken::from_raw_parts(
+                    std::ptr::NonNull::new_unchecked(advanced).cast(),
+                    end.cast(),
+                )
+            })
+        };
+        (*label, Self::traversal_cursor(child), remaining)
     }
 
     /// Read a value through a cursor retained by the captured root revision.
@@ -1167,6 +1358,184 @@ mod tests {
     }
 
     #[test]
+    fn capacity_one_cursor_pages_are_exact_index_observations() {
+        let dawg = LockFreeDawg::<u8, ()>::from_sorted_terms_by(
+            [b"a".as_slice(), b"b".as_slice(), b"c".as_slice()],
+            |term, units| units.extend_from_slice(term),
+        );
+        let root = dawg.root_arc();
+        let cursor = LockFreeDawgNode::traversal_cursor(&root);
+
+        for start in 0..=root.edges.edges.len() {
+            let expected = root
+                .edges
+                .edges
+                .get(start)
+                .map(|(label, child)| (*label, LockFreeDawgNode::traversal_cursor(child)));
+            let mut observed = None;
+            // SAFETY: `cursor` was obtained from `root`, which retains the
+            // immutable revision through every indexed observation.
+            let metadata = unsafe {
+                LockFreeDawgNode::visit_cursor_edge_page(cursor, start, 1, |label, child| {
+                    assert!(observed.is_none(), "capacity one emitted multiple edges");
+                    observed = Some((label, child));
+                })
+            };
+
+            assert_eq!(metadata, (root.is_final, root.edges.edges.len()));
+            assert_eq!(
+                observed.map(|(label, child)| (label, child.pointer)),
+                expected.map(|(label, child)| (label, child.pointer)),
+            );
+        }
+    }
+
+    fn collect_native_root_edge_range(
+        root: &Arc<LockFreeDawgNode<u8, ()>>,
+    ) -> (bool, usize, Vec<u8>) {
+        let cursor = LockFreeDawgNode::traversal_cursor(root);
+        // SAFETY: `root` retains the exact immutable revision that produced
+        // `cursor` and remains live until the returned range is fully drained.
+        let start = unsafe { LockFreeDawgNode::cursor_edge_range_start(cursor) };
+        let finality = start.is_final();
+        let total = start.total_edge_count();
+        let (first, mut remaining) = start.into_first_and_remaining();
+        let mut labels = Vec::with_capacity(total);
+        if let Some((label, _child)) = first {
+            labels.push(label);
+        }
+        while let Some(token) = remaining {
+            // SAFETY: `token` originated from `root` or the preceding step;
+            // the same immutable root remains retained throughout the loop.
+            let (label, _child, next) =
+                unsafe { LockFreeDawgNode::<u8, ()>::cursor_edge_range_step(token) };
+            labels.push(label);
+            remaining = next;
+        }
+        (finality, total, labels)
+    }
+
+    #[test]
+    fn native_edge_ranges_are_exact_across_inline_and_spilled_storage() {
+        for (terms, expected) in [
+            (
+                vec![
+                    b"a".as_slice(),
+                    b"b".as_slice(),
+                    b"c".as_slice(),
+                    b"d".as_slice(),
+                ],
+                b"abcd".as_slice(),
+            ),
+            (
+                vec![
+                    b"a".as_slice(),
+                    b"b".as_slice(),
+                    b"c".as_slice(),
+                    b"d".as_slice(),
+                    b"e".as_slice(),
+                ],
+                b"abcde".as_slice(),
+            ),
+        ] {
+            let dawg = LockFreeDawg::<u8, ()>::from_sorted_terms_by(terms, |term, units| {
+                units.extend_from_slice(term)
+            });
+            let root = dawg.root_arc();
+            let (finality, total, labels) = collect_native_root_edge_range(&root);
+            assert!(!finality);
+            assert_eq!(total, expected.len());
+            assert_eq!(labels, expected);
+        }
+    }
+
+    #[test]
+    fn native_edge_range_start_and_steps_do_not_clone_child_arcs() {
+        let dawg = LockFreeDawg::<u8, ()>::from_sorted_terms_by(
+            [
+                b"a".as_slice(),
+                b"b".as_slice(),
+                b"c".as_slice(),
+                b"d".as_slice(),
+                b"e".as_slice(),
+            ],
+            |term, units| units.extend_from_slice(term),
+        );
+        let root = dawg.root_arc();
+        let before: Vec<_> = root
+            .edges
+            .edges
+            .iter()
+            .map(|(_, child)| Arc::strong_count(child))
+            .collect();
+
+        let (_, _, labels) = collect_native_root_edge_range(&root);
+
+        assert_eq!(labels, b"abcde");
+        assert_eq!(
+            before,
+            root.edges
+                .edges
+                .iter()
+                .map(|(_, child)| Arc::strong_count(child))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn retained_old_edge_range_survives_new_root_publication() {
+        let dawg = LockFreeDawg::<u8, ()>::from_sorted_terms_by(
+            [
+                b"a".as_slice(),
+                b"b".as_slice(),
+                b"c".as_slice(),
+                b"d".as_slice(),
+                b"e".as_slice(),
+            ],
+            |term, units| units.extend_from_slice(term),
+        );
+        let retained_root = dawg.root_arc();
+        let cursor = LockFreeDawgNode::traversal_cursor(&retained_root);
+        // SAFETY: `retained_root` owns the immutable storage until the range is
+        // drained below, even after the DAWG publishes another root.
+        let start = unsafe { LockFreeDawgNode::cursor_edge_range_start(cursor) };
+        assert!(dawg.insert_units(b"z"));
+
+        let (first, mut remaining) = start.into_first_and_remaining();
+        let mut labels = vec![first.expect("old root has a first edge").0];
+        while let Some(token) = remaining {
+            // SAFETY: every token belongs to `retained_root`, which is still
+            // live; publication path-copied instead of mutating its storage.
+            let (label, _child, next) =
+                unsafe { LockFreeDawgNode::<u8, ()>::cursor_edge_range_step(token) };
+            labels.push(label);
+            remaining = next;
+        }
+
+        assert_eq!(labels, b"abcde");
+        assert_eq!(
+            dawg.root_arc()
+                .edges
+                .edges
+                .iter()
+                .map(|(label, _)| *label)
+                .collect::<Vec<_>>(),
+            b"abcdez"
+        );
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn edge_range_token_is_exactly_two_machine_words() {
+        type Token = crate::SnapshotEdgeRangeToken<LockFreeDawgNode<u8, ()>>;
+        assert_eq!(
+            std::mem::size_of::<Token>(),
+            2 * std::mem::size_of::<usize>()
+        );
+        assert_eq!(std::mem::align_of::<Token>(), std::mem::align_of::<usize>());
+    }
+
+    #[test]
     fn sorted_builder_interns_equivalent_final_suffixes() {
         let dawg = LockFreeDawg::<u8, ()>::from_sorted_terms_by(
             [b"ab".as_slice(), b"cb".as_slice()],
@@ -1248,6 +1617,88 @@ mod tests {
 
         assert!(dawg.contains_units(&term));
         assert_eq!(dawg.node_count(), term.len() + 1);
+    }
+
+    #[test]
+    fn node_debug_and_last_owner_drop_are_stack_safe_at_one_hundred_thousand_depth() {
+        const DEPTH: usize = 100_000;
+
+        let mut root = Arc::new(LockFreeDawgNode::<u8, ()>::new(true));
+        for _ in 0..DEPTH {
+            let mut edges = LockFreeEdges::new();
+            edges.push((b'x', root));
+            root = Arc::new(LockFreeDawgNode {
+                edges: LockFreeEdgeList { edges },
+                is_final: false,
+                value: None,
+                snapshot_id: None,
+            });
+        }
+
+        let rendered = format!("{root:?}");
+        assert!(rendered.contains("LockFreeDawgNodeSummary"));
+        assert!(
+            rendered.len() < 1_024,
+            "Debug must summarize immediate edges rather than traverse the graph"
+        );
+
+        drop(root);
+    }
+
+    #[test]
+    fn last_owner_drop_is_stack_safe_on_a_one_hundred_thousand_depth_branching_spine() {
+        const DEPTH: usize = 100_000;
+
+        let mut spine = Arc::new(LockFreeDawgNode::<u8, ()>::new(true));
+        for _ in 0..DEPTH {
+            let mut edges = LockFreeEdges::new();
+            edges.push((b'a', spine));
+            edges.push((b'b', Arc::new(LockFreeDawgNode::new(false))));
+            spine = Arc::new(LockFreeDawgNode {
+                edges: LockFreeEdgeList { edges },
+                is_final: false,
+                value: None,
+                snapshot_id: None,
+            });
+        }
+
+        // The two-child spine exercises a nontrivial explicit worklist rather
+        // than only the one-child linear topology.
+        drop(spine);
+    }
+
+    #[test]
+    fn last_owner_drop_reclaims_a_shared_dag_exactly_once() {
+        fn node(edges: LockFreeEdges<u8, ()>) -> Arc<LockFreeDawgNode<u8, ()>> {
+            Arc::new(LockFreeDawgNode {
+                edges: LockFreeEdgeList { edges },
+                is_final: false,
+                value: None,
+                snapshot_id: None,
+            })
+        }
+
+        let leaf = node(LockFreeEdges::new());
+        let leaf_weak = Arc::downgrade(&leaf);
+
+        let mut left_edges = LockFreeEdges::new();
+        left_edges.push((b'l', Arc::clone(&leaf)));
+        let left = node(left_edges);
+        let left_weak = Arc::downgrade(&left);
+
+        let mut right_edges = LockFreeEdges::new();
+        right_edges.push((b'r', leaf));
+        let right = node(right_edges);
+        let right_weak = Arc::downgrade(&right);
+
+        let mut root_edges = LockFreeEdges::new();
+        root_edges.push((b'a', left));
+        root_edges.push((b'b', right));
+        drop(node(root_edges));
+
+        assert!(left_weak.upgrade().is_none());
+        assert!(right_weak.upgrade().is_none());
+        assert!(leaf_weak.upgrade().is_none());
     }
 
     #[test]

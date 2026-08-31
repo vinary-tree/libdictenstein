@@ -52,8 +52,20 @@ use crate::persistent_artrie::core::overlay::evict::{
     OverlayEvictable, DEFAULT_MAX_FAULTIN_RETRIES,
 };
 use crate::persistent_artrie::core::overlay::node::OverlayNode;
+use crate::persistent_artrie::core::overlay::{OverlayNodeHandle, INLINE_OVERLAY_DEPTH};
 use crate::value::DictionaryValue;
+use smallvec::SmallVec;
 use std::sync::Arc;
+
+struct OverlayVisitFrame<'root, K: KeyEncoding, V> {
+    node: OverlayNodeHandle<'root, K, V>,
+    next_child: usize,
+}
+
+type OverlayVisitFrames<'root, K, V> =
+    SmallVec<[OverlayVisitFrame<'root, K, V>; INLINE_OVERLAY_DEPTH]>;
+type BorrowedOverlayFrames<'root, K, V> =
+    SmallVec<[(&'root Arc<OverlayNode<K, V>>, usize); INLINE_OVERLAY_DEPTH]>;
 
 // ============================================================================
 // F7 — crash-injection FAIL POINTS for the Owned→Overlay conversion (crash-safety
@@ -241,7 +253,11 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// inserts, CAS, AND counter increments (both absolute and the accumulated delta total —
     /// see the `Op::Increment` arms). SETs the value (last-writer = the CAS winner); at
     /// reestablish/replay the overlay is uncontended.
-    fn overlay_publish_value(&self, units: &[K::Unit], value: V);
+    fn overlay_publish_value(
+        &self,
+        units: &[K::Unit],
+        value: V,
+    ) -> crate::persistent_artrie::core::error::Result<()>;
 
     /// **G5/F1 + G5.2/RT-1 — read the overlay leaf's ARBITRARY-`V` value at `units`**,
     /// FAULTING any `OnDisk` (evicted) interior node back in along the way, or `None`
@@ -268,7 +284,10 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// "faulting read before the WAL append racing checkpoint/eviction" lock-ordering
     /// inversion (the "75-minute hang"); the hot-insert hoists keep their NON-faulting
     /// walks.
-    fn overlay_value_get(&self, units: &[K::Unit]) -> Option<V> {
+    fn overlay_value_get(&self, units: &[K::Unit]) -> Option<V>
+    where
+        K: crate::persistent_artrie::core::eviction::RegistryFamily,
+    {
         let root_slot = self.lockfree_root()?;
         match self.find_leaf_faulting(root_slot, units, DEFAULT_MAX_FAULTIN_RETRIES) {
             Ok(found) => found.and_then(|leaf| leaf.get_value()),
@@ -335,15 +354,21 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// not turn that valid input into a construction-time stack overflow.
     fn overlay_count_finals(node: &Arc<OverlayNode<K, V>>) -> u64 {
         let mut count = 0_u64;
-        let mut pending = vec![Arc::clone(node)];
+        let mut frames: BorrowedOverlayFrames<'_, K, V> = SmallVec::new();
+        count += u64::from(node.is_final());
+        frames.push((node, 0));
 
-        while let Some(current) = pending.pop() {
-            count += u64::from(current.is_final());
-            for (_, child) in current.iter_children() {
-                if let Some(child_arc) = child.as_in_mem() {
-                    pending.push(Arc::clone(child_arc));
-                }
-            }
+        while let Some((current, next_child)) = frames.last_mut() {
+            let Some((_, child)) = current.child_at(*next_child) else {
+                frames.pop();
+                continue;
+            };
+            *next_child += 1;
+            let Some(child) = child.as_in_mem() else {
+                continue;
+            };
+            count += u64::from(child.is_final());
+            frames.push((child, 0));
         }
 
         count
@@ -387,44 +412,95 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
             None => None,
             Some(node) => {
                 let mut terms = Vec::new();
-                self.overlay_collect_finals(&node, prefix.to_vec(), &mut terms);
+                self.overlay_visit_finals(node, prefix.to_vec(), |path, _| {
+                    terms.push(path.to_vec());
+                });
                 Some(terms)
             }
         }
     }
 
-    /// Pre-order DFS mirroring the owned `collect_terms_under_node` (final-first,
-    /// then children in key order). Accumulates `Vec<K::Unit>` by pushing each
-    /// edge `*key` (NOT building a `String` via `char::from_u32` — the variant
-    /// converts units→term at the public boundary). Recurses by key length;
-    /// depth-safe at the production point-read bound.
-    fn overlay_collect_finals(
+    /// Visit final nodes in the same pre-order as the owned
+    /// `collect_terms_under_node`: final first, then children in key order.
+    ///
+    /// The machine stores one `(node, next-child-index)` frame per active path
+    /// node and maintains one mutable unit path. `child_at` is constant-time for
+    /// every adaptive edge-store tier, so traversal is linear in visited nodes
+    /// and edges. Native call-stack use is constant, and prefixes are copied only
+    /// when a final is emitted rather than once per traversed edge.
+    fn overlay_visit_finals<F>(
         &self,
-        node: &Arc<OverlayNode<K, V>>,
-        prefix: Vec<K::Unit>,
-        out: &mut Vec<Vec<K::Unit>>,
-    ) {
+        node: Arc<OverlayNode<K, V>>,
+        mut path: Vec<K::Unit>,
+        mut visit: F,
+    ) where
+        F: FnMut(&[K::Unit], &OverlayNode<K, V>),
+    {
         if node.is_final() {
-            out.push(prefix.clone());
+            visit(&path, node.as_ref());
         }
-        for (key, child) in node.iter_children() {
-            // Phase A (prefix-fault): fault an OnDisk child READ-ONLY (load the durable
-            // image, recurse into the transient `Arc`; NO install/CAS — enumeration must
-            // not bloat the overlay or un-evict). A null/failed slot is skipped
-            // (fail-closed, point-read parity: a transient miss, never a fabricated term).
-            let child_arc = match child.as_in_mem() {
-                Some(c) => Arc::clone(c),
-                None => match child
-                    .as_on_disk()
-                    .and_then(|ptr| self.fault_overlay_slot(ptr))
-                {
-                    Some(loaded) => loaded,
-                    None => continue,
-                },
+        let mut frames = OverlayVisitFrames::new();
+        frames.push(OverlayVisitFrame {
+            node: OverlayNodeHandle::Borrowed(&node),
+            next_child: 0,
+        });
+
+        while !frames.is_empty() {
+            let next_child = {
+                let frame = frames.last_mut().expect("nonempty cursor stack");
+                match &mut frame.node {
+                    OverlayNodeHandle::Borrowed(current) => {
+                        let current = *current;
+                        current
+                            .child_at(frame.next_child)
+                            .and_then(|(unit, child)| {
+                                frame.next_child += 1;
+                                let child = match child {
+                                crate::persistent_artrie::core::overlay::node::Child::InMem(
+                                    child,
+                                ) => OverlayNodeHandle::Borrowed(child),
+                                crate::persistent_artrie::core::overlay::node::Child::OnDisk(
+                                    pointer,
+                                ) => {
+                                    OverlayNodeHandle::Owned(self.fault_overlay_slot(pointer)?)
+                                }
+                            };
+                                Some((*unit, child))
+                            })
+                    }
+                    OverlayNodeHandle::Owned(current) => current
+                        .child_at(frame.next_child)
+                        .and_then(|(unit, child)| {
+                            frame.next_child += 1;
+                            let child = match child {
+                                crate::persistent_artrie::core::overlay::node::Child::InMem(
+                                    child,
+                                ) => OverlayNodeHandle::Owned(Arc::clone(child)),
+                                crate::persistent_artrie::core::overlay::node::Child::OnDisk(
+                                    pointer,
+                                ) => OverlayNodeHandle::Owned(self.fault_overlay_slot(pointer)?),
+                            };
+                            Some((*unit, child))
+                        }),
+                }
             };
-            let mut child_prefix = prefix.clone();
-            child_prefix.push(*key);
-            self.overlay_collect_finals(&child_arc, child_prefix, out);
+
+            let Some((unit, child)) = next_child else {
+                frames.pop();
+                if !frames.is_empty() {
+                    path.pop();
+                }
+                continue;
+            };
+
+            path.push(unit);
+            if child.node().is_final() {
+                visit(&path, child.node());
+            }
+            frames.push(OverlayVisitFrame {
+                node: child,
+                next_child: 0,
+            });
         }
     }
 
@@ -440,44 +516,16 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
             None => None,
             Some(node) => {
                 let mut entries = Vec::new();
-                self.overlay_collect_with_values(&node, prefix.to_vec(), &mut entries);
+                self.overlay_visit_finals(node, prefix.to_vec(), |path, node| {
+                    // Counter finals store their value; membership finals synthesize
+                    // `()` through `unit_as_v`. Ineligible V monomorphs are not routed
+                    // through the overlay and therefore produce no entry here.
+                    if let Some(value) = node.get_value().or_else(unit_as_v::<V>) {
+                        entries.push((path.to_vec(), value));
+                    }
+                });
                 Some(entries)
             }
-        }
-    }
-
-    fn overlay_collect_with_values(
-        &self,
-        node: &Arc<OverlayNode<K, V>>,
-        prefix: Vec<K::Unit>,
-        out: &mut Vec<(Vec<K::Unit>, V)>,
-    ) {
-        if node.is_final() {
-            // `get_value()` for a counter final is `Some(counter)`; for a `()`
-            // final it is `None`, so fall back to the synthesized `()` for the `V
-            // == ()` monomorph. For an ineligible `V` (never `route_overlay()`)
-            // both are `None` and the final is skipped — harmless, as this path is
-            // unreachable for ineligible `V`.
-            if let Some(value) = node.get_value().or_else(unit_as_v::<V>) {
-                out.push((prefix.clone(), value));
-            }
-        }
-        for (key, child) in node.iter_children() {
-            // Phase A (prefix-fault): fault an OnDisk child READ-ONLY (load + recurse
-            // transiently, no install/CAS; null/failed → skip, point-read parity).
-            let child_arc = match child.as_in_mem() {
-                Some(c) => Arc::clone(c),
-                None => match child
-                    .as_on_disk()
-                    .and_then(|ptr| self.fault_overlay_slot(ptr))
-                {
-                    Some(loaded) => loaded,
-                    None => continue,
-                },
-            };
-            let mut child_prefix = prefix.clone();
-            child_prefix.push(*key);
-            self.overlay_collect_with_values(&child_arc, child_prefix, out);
         }
     }
 
@@ -545,7 +593,10 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// The per-variant `overlay_get_value` skin delegates here; the only seam it
     /// uses are [`Self::overlay_counter_get`] / [`Self::overlay_contains`], so the
     /// counter-monomorph naming stays in the ~2-LOC seam (design §4).
-    fn overlay_route_get_value(&self, units: &[K::Unit]) -> Option<Option<V>> {
+    fn overlay_route_get_value(&self, units: &[K::Unit]) -> Option<Option<V>>
+    where
+        K: crate::persistent_artrie::core::eviction::RegistryFamily,
+    {
         use std::any::TypeId;
         // `V == CounterValue`: read the counter via the seam, re-wrap as `V`.
         if TypeId::of::<V>() == TypeId::of::<Self::CounterValue>() {
@@ -611,23 +662,26 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
             )
         })?;
         loop {
-            let old = match root_ptr.load() {
-                Some(r) => r,
+            let old_revision = match root_ptr.load_revision() {
+                Some(revision) => revision,
                 None => {
                     let _ = root_ptr.try_init(Arc::new(OverlayNode::new()));
                     continue;
                 }
             };
-            if !needs_publish(&old) {
+            let old = old_revision.node();
+            if !needs_publish(old) {
                 return Ok(false);
             }
-            let new = transform(&old);
+            let new = transform(old);
             let term_count_delta = match (old.is_final(), new.is_final()) {
                 (false, true) => 1,
                 (true, false) => -1,
                 _ => 0,
             };
-            match root_ptr.compare_exchange_counted(&old, new, term_count_delta) {
+            #[cfg(test)]
+            crate::persistent_artrie::core::overlay::durable_write::semantic_cas_rendezvous();
+            match root_ptr.compare_exchange_revision_counted(&old_revision, new, term_count_delta) {
                 Ok(_) => return Ok(true),
                 Err(_) => {
                     self.note_cas_retry();
@@ -648,6 +702,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
         &self,
         transform: impl Fn(&OverlayNode<K, V>) -> Arc<OverlayNode<K, V>>,
         already_in_state: impl Fn(&OverlayNode<K, V>) -> bool,
+        _permit: &crate::persistent_artrie::core::overlay::durable_write::SemanticMutationPublicationPermit<'_, crate::persistent_artrie::core::overlay::durable_write::RegistryEligibleMutation>,
     ) -> Result<RootPublishOutcome> {
         let root_ptr = self.lockfree_root().ok_or_else(|| {
             crate::persistent_artrie::core::error::PersistentARTrieError::InvalidOperation(
@@ -657,23 +712,24 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
         loop {
             // Per-iteration claim — the WINNING iteration's generation is returned.
             let generation = self.claim_commit_seq();
-            let old = match root_ptr.load() {
-                Some(r) => r,
+            let old_revision = match root_ptr.load_revision() {
+                Some(revision) => revision,
                 None => {
                     let _ = root_ptr.try_init(Arc::new(OverlayNode::new()));
                     continue;
                 }
             };
-            if already_in_state(&old) {
+            let old = old_revision.node();
+            if already_in_state(old) {
                 return Ok(RootPublishOutcome::AlreadyInState);
             }
-            let new = transform(&old);
+            let new = transform(old);
             let term_count_delta = match (old.is_final(), new.is_final()) {
                 (false, true) => 1,
                 (true, false) => -1,
                 _ => 0,
             };
-            match root_ptr.compare_exchange_counted(&old, new, term_count_delta) {
+            match root_ptr.compare_exchange_revision_counted(&old_revision, new, term_count_delta) {
                 Ok(_) => return Ok(RootPublishOutcome::Published(generation)),
                 Err(_) => {
                     self.note_cas_retry();
@@ -835,7 +891,10 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     fn apply_recovered_operation_overlay(
         &self,
         op: crate::persistent_artrie::core::recovery::RecoveredOperation,
-    ) -> bool {
+    ) -> bool
+    where
+        K: crate::persistent_artrie::core::eviction::RegistryFamily,
+    {
         use crate::persistent_artrie::core::recovery::RecoveredOperation as Op;
         // Decode the raw key bytes into this encoding's units once, up front. A key
         // that is not valid for the encoding (e.g. a non-UTF-8 byte sequence for the
@@ -855,10 +914,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
             Op::Insert { value, .. } => match value {
                 Some(value_bytes) => {
                     match crate::serialization::bincode_compat::deserialize::<V>(&value_bytes) {
-                        Ok(v) => {
-                            self.overlay_publish_value_any(units, v);
-                            true
-                        }
+                        Ok(v) => self.overlay_publish_value_any(units, v),
                         Err(error) => {
                             log::warn!(
                                 "F5 overlay replay: insert value deserialize failed: {:?}",
@@ -879,10 +935,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
             }
             Op::Upsert { value, .. } => {
                 match crate::serialization::bincode_compat::deserialize::<V>(&value) {
-                    Ok(v) => {
-                        self.overlay_publish_value_any(units, v);
-                        true
-                    }
+                    Ok(v) => self.overlay_publish_value_any(units, v),
                     Err(error) => {
                         log::warn!(
                             "F5 overlay replay: upsert value deserialize failed: {:?}",
@@ -899,10 +952,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
                     return false;
                 }
                 match crate::serialization::bincode_compat::deserialize::<V>(&new_value) {
-                    Ok(v) => {
-                        self.overlay_publish_value_any(units, v);
-                        true
-                    }
+                    Ok(v) => self.overlay_publish_value_any(units, v),
                     Err(error) => {
                         log::warn!(
                             "F5 overlay replay: CAS value deserialize failed: {:?}",
@@ -940,20 +990,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
                         let decoded = counter_codec::counter_leaf_to_i128::<V>(&v.to_le_bytes())
                             .and_then(counter_codec::i128_to_counter_value::<V>);
                         match decoded {
-                            Some(vv) => {
-                                if units.is_empty() {
-                                    if let Err(e) = self.overlay_publish_root_value(vv) {
-                                        log::warn!(
-                                            "F5 overlay replay: root counter set failed: {:?}",
-                                            e
-                                        );
-                                        return false;
-                                    }
-                                } else {
-                                    self.overlay_publish_value(units, vv);
-                                }
-                                true
-                            }
+                            Some(vv) => self.overlay_publish_value_any(units, vv),
                             None => {
                                 log::warn!("F5 overlay replay: increment-absolute value not a counter for this V; skipping");
                                 false
@@ -1000,10 +1037,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
                         };
                         let final_i128 = current_i128 + delta as i128;
                         match counter_codec::i128_to_counter_value::<V>(final_i128) {
-                            Some(value) => {
-                                self.overlay_publish_value(units, value);
-                                true
-                            }
+                            Some(value) => self.overlay_publish_value_any(units, value),
                             None => {
                                 log::warn!("F5 overlay replay: increment-delta total is out of range for this V; stopping at durable prefix");
                                 false
@@ -1031,13 +1065,18 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     /// `V`-generic value publish: non-empty → `overlay_publish_value`, empty "" →
     /// `overlay_publish_root_value` (the fresh-root-CAS root value publisher — the
     /// §2.2/G5-NEW-4 data-loss fix; NOT an in-place root mutation).
-    fn overlay_publish_value_any(&self, units: &[K::Unit], value: V) {
-        if units.is_empty() {
-            if let Err(e) = self.overlay_publish_root_value(value) {
-                log::warn!("F5 overlay replay: root value publish failed: {:?}", e);
-            }
+    fn overlay_publish_value_any(&self, units: &[K::Unit], value: V) -> bool {
+        let result = if units.is_empty() {
+            self.overlay_publish_root_value(value)
         } else {
-            self.overlay_publish_value(units, value);
+            self.overlay_publish_value(units, value)
+        };
+        match result {
+            Ok(()) => true,
+            Err(error) => {
+                log::warn!("F5 overlay replay: value publish failed: {:?}", error);
+                false
+            }
         }
     }
 
@@ -1089,7 +1128,10 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
         segments: &[std::path::PathBuf],
         loaded_from_disk: bool,
         image_checkpoint_lsn: crate::persistent_artrie::core::wal::Lsn,
-    ) -> Result<usize> {
+    ) -> Result<usize>
+    where
+        K: crate::persistent_artrie::core::eviction::RegistryFamily,
+    {
         use crate::persistent_artrie::core::recovery::RecoveryManager;
         use crate::persistent_artrie::core::wal::{Lsn, RankRegime, WalReader, WalRecord};
         use std::collections::{HashMap, HashSet};
@@ -1253,6 +1295,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     ) -> Result<usize>
     where
         Self: crate::persistent_artrie::core::wal_managed::WalManaged,
+        K: crate::persistent_artrie::core::eviction::RegistryFamily,
     {
         let segments = self.wal_collect_segments(config)?;
         self.drain_segments_into_overlay(&segments, loaded_from_disk, image_checkpoint_lsn)
@@ -1294,6 +1337,7 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
     ) -> Result<()>
     where
         Self: crate::persistent_artrie::core::wal_managed::WalManaged,
+        K: crate::persistent_artrie::core::eviction::RegistryFamily,
     {
         use crate::persistent_artrie::core::error::PersistentARTrieError;
         use f7_failpoint::FailPoint;

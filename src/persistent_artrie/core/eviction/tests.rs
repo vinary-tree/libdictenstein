@@ -1,5 +1,7 @@
 //! Integration tests for the eviction module.
 
+#![allow(deprecated)]
+
 use super::*;
 use std::sync::Arc;
 use std::thread;
@@ -77,6 +79,9 @@ fn test_disk_registry_eviction_selection() {
             lru.touch(&path);
         }
     }
+    registry
+        .try_finalize_for_publication()
+        .expect("finalize byte selection registry");
 
     // Select with min_depth = 1 (should exclude depth 0 nodes)
     let selected = registry.select_for_eviction(1024, &lru, 1, 5, 0);
@@ -116,7 +121,9 @@ fn test_coordinator_with_mock_eviction() {
             NodeType::Node16,
         );
     }
-    coordinator.update_disk_registry(registry);
+    coordinator
+        .try_install_detached_compatibility_catalog(registry)
+        .expect("finalize and publish byte eviction test registry");
 
     // Track evictions
     let eviction_count = Arc::new(AtomicUsize::new(0));
@@ -186,7 +193,7 @@ fn test_access_tracker_thread_safety() {
 }
 
 #[test]
-fn test_registry_invalidation_on_write() {
+fn test_detached_catalog_clear() {
     let epoch_manager = Arc::new(EpochManager::new());
     let config = EvictionConfig::default();
     let coordinator = EvictionCoordinator::new(config, epoch_manager);
@@ -200,18 +207,24 @@ fn test_registry_invalidation_on_write() {
         1,
         NodeType::Node16,
     );
-    coordinator.update_disk_registry(registry);
+    coordinator
+        .try_install_detached_compatibility_catalog(registry)
+        .expect("finalize and publish detached eviction test catalog");
 
-    // Before invalidation, eviction should find candidates
-    let (count_before, _) = coordinator.force_eviction(1024);
-    assert_eq!(count_before, 1);
+    // Before clearing, the compatibility callback should receive candidates.
+    assert_eq!(
+        coordinator.force_eviction_bytes(1024, |entries| (entries.len(), 256)),
+        (1, 256)
+    );
 
-    // Invalidate (simulating a write operation)
-    coordinator.invalidate_registry();
+    coordinator.clear_detached_compatibility_catalog();
 
-    // After invalidation, no candidates
-    let (count_after, _) = coordinator.force_eviction(1024);
-    assert_eq!(count_after, 0);
+    assert_eq!(
+        coordinator.force_eviction_bytes(1024, |_| {
+            panic!("cleared detached catalog produced candidates")
+        }),
+        (0, 0)
+    );
 }
 
 #[test]
@@ -244,6 +257,9 @@ fn test_eviction_respects_min_depth() {
         );
         lru.touch(&path);
     }
+    registry
+        .try_finalize_for_publication()
+        .expect("finalize min-depth registry");
 
     // Select with min_depth=1
     let selected = registry.select_for_eviction(10000, &lru, 1, 100, 0);
@@ -374,10 +390,10 @@ fn test_char_disk_registry_eviction_selection() {
         let path: Vec<char> = format!("node_{}", i).chars().collect();
         registry.register_char(
             path.clone(),
-            SwizzledPtr::on_disk(1, i * 100, NodeType::Node16),
+            SwizzledPtr::on_disk(1, i * 100, NodeType::CharNode16),
             256,
             (i % 3) as usize, // Depths 0, 1, 2, 0, 1, 2, ...
-            NodeType::Node16,
+            NodeType::CharNode16,
         );
 
         // Touch in LRU with varying access counts
@@ -386,6 +402,9 @@ fn test_char_disk_registry_eviction_selection() {
             lru.touch_hash(hash_char_path(&path));
         }
     }
+    registry
+        .try_finalize_for_publication()
+        .expect("finalize char selection registry");
 
     // Select with min_depth = 1 (should exclude depth 0 nodes)
     let selected = registry.select_char_for_eviction(1024, &lru, 1, 5, 0);
@@ -420,13 +439,15 @@ fn test_coordinator_char_eviction_loop() {
         let path: Vec<char> = format!("path_{}", i).chars().collect();
         registry.register_char(
             path,
-            SwizzledPtr::on_disk(1, i * 100, NodeType::Node16),
+            SwizzledPtr::on_disk(1, i * 100, NodeType::CharNode16),
             256,
             2, // Depth 2 so it can be evicted
-            NodeType::Node16,
+            NodeType::CharNode16,
         );
     }
-    coordinator.update_disk_registry(registry);
+    coordinator
+        .try_install_detached_compatibility_catalog(registry)
+        .expect("finalize and publish LRU eviction test registry");
 
     // Track evictions
     let eviction_count = Arc::new(AtomicUsize::new(0));

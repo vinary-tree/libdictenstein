@@ -4,7 +4,7 @@ version = "0.2.1"
 edition = "2021"
 # Effective floor across `--all-features`: pathmap 0.2.2 and sysinfo 0.39 are the
 # binding constraints. The previously declared 1.70 was inaccurate — bincode 2.0.1
-# and lru 0.18 already required 1.85, and pathmap 0.2.2 required 1.88.
+# already required 1.85, and pathmap 0.2.2 required 1.88.
 rust-version = "1.95"
 authors = ["Dylon Edwards <dylon.devo@gmail.com>"]
 license = "Apache-2.0"
@@ -19,7 +19,7 @@ exclude = ["docs/", "formal-verification/"]
 # Stable retained-resource ABI shared with independently packaged Vinary Tree
 # consumers. The path is development-only; crates.io publication resolves the
 # exact version requirement.
-vinary-tree-interop = { path = "../liblevenshtein-rust/vinary-tree-interop", version = "0.1.0", optional = true }
+vinary-tree-interop = { path = "../liblevenshtein-rust/vinary-tree-interop", version = "=4.0.0-rc.2", optional = true }
 # Logging facade
 log = "0.4"
 # SmallVec for stack-allocated vectors (performance optimization)
@@ -88,9 +88,6 @@ rayon = { version = "1.12", optional = true }
 
 # Fast non-cryptographic hashing for node deduplication
 xxhash-rust = { version = "0.8", features = ["xxh3"], optional = true }
-
-# LRU cache for reverse lookups in vocabulary trie
-lru = { version = "0.18", optional = true }
 
 # Concurrent hash map for LRU tracking in eviction
 dashmap = { version = "6.2", optional = true }
@@ -168,7 +165,7 @@ protobuf = ["prost", "prost-build", "dep:protoc-bin-vendored"]
 # persistent_artrie* modules use `crate::serialization::bincode_compat`
 # unconditionally — without this dep the module references resolve to a
 # feature-gated crate::serialization that isn't visible.
-persistent-artrie = ["memmap2", "parking_lot", "serde", "bincode", "sysinfo", "xxhash-rust", "lru", "dashmap", "crossbeam-channel", "serialization", "dep:rustix"]
+persistent-artrie = ["memmap2", "parking_lot", "serde", "bincode", "sysinfo", "xxhash-rust", "dashmap", "crossbeam-channel", "serialization", "dep:rustix"]
 # Group commit for WAL batching.
 # Status: EXPERIMENTAL — measured 1.5-2x throughput regression on NVMe vs
 # per-record sync in benches/group_commit_benchmarks.rs (recorded 2026-01-15).
@@ -340,6 +337,10 @@ required-features = ["persistent-artrie"]
 
 [[example]]
 name = "test_checkpoint_debug"
+required-features = ["persistent-artrie"]
+
+[[example]]
+name = "char_node_format_probe"
 required-features = ["persistent-artrie"]
 
 [[bench]]

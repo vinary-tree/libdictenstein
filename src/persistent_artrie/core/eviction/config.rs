@@ -125,17 +125,23 @@ pub struct EvictionConfig {
     /// Default: `None`
     pub resident_budget_bytes: Option<usize>,
 
-    /// Optional per-checkpoint cap on how many overlay nodes the budget tail evicts in
-    /// ONE pass (a NODE count = the `max_count` of the cold-set selection, which bounds
-    /// the O(depth) spine-rebuild + root-CAS work done while `checkpoint_lock` is held).
-    /// `None` (default) = UNCAPPED (`usize::MAX`): one pass evicts the entire coldest set
-    /// down to the budget — budget-precise, but the FIRST over-budget checkpoint after a
-    /// bulk load may hold `checkpoint_lock` for the duration of that one-time large
-    /// eviction (the eviction itself is non-blocking loser-safe root-CAS, so concurrent
-    /// writers proceed). `Some(n)` = a latency limiter for operators who MEASURED their
-    /// per-checkpoint cold growth: it converges over checkpoints ONLY IF `n` ≥ that
-    /// growth, else resident accumulates unbounded (the budget never converges). Set it
-    /// from a measured number, not a guess.
+    /// Optional per-checkpoint cap on positive-gain resident anchors admitted by the
+    /// budget tail in one pass. An anchor is one resident durable record. Selection
+    /// ranks a subtree by its warmest resident descendant and breaks equal scores
+    /// deeper-first; consequently, selecting an ancestor implies that every resident
+    /// descendant it covers was selected earlier. The admitted set is therefore
+    /// downward-closed and this cap also bounds the number of resident records cleared
+    /// and successful replacement endpoints. It does not bound reclaimed bytes because
+    /// record sizes vary.
+    ///
+    /// `None` (default) is uncapped (`usize::MAX`): a quiescent authoritative checkpoint
+    /// reaches every structurally reachable budget in one tail pass. `Some(n)` is a
+    /// latency limiter on checkpoint-lock-held root-rebuild/commit work. Repeated capped
+    /// checkpoints converge only when the exact resident weight covered by the first
+    /// `n` cold-ranked anchors exceeds inter-checkpoint resident growth; a node-count
+    /// comparison alone is not sufficient. Root races or semantic mutation can reduce
+    /// actual reclamation below the captured plan, never increase it. Choose the cap
+    /// from measured coverage and growth distributions.
     ///
     /// Default: `None` (uncapped)
     pub resident_budget_eviction_cap: Option<usize>,

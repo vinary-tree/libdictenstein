@@ -404,6 +404,7 @@ Notable dated performance and storage changes are recorded in
 | Theory: disk tries, ART, SCDAWG (with citations) | [`docs/theory/`](docs/theory/)                                                   |
 | Persistent-ARTrie persistence architecture       | [`docs/persistence/`](docs/persistence/README.md)                                |
 | Eviction design                                  | [`docs/persistence/eviction.md`](docs/persistence/eviction.md)                   |
+| Character-node V2/V3 format                      | [`docs/persistence/char-node-format.md`](docs/persistence/char-node-format.md)   |
 | Proof scope, results, gap ledger                 | [`formal-verification/`](formal-verification/)                                   |
 | Diagram sources & rendering (PlantUML · D2 · Graphviz · bytefield · gnuplot) | [`docs/diagrams/`](docs/diagrams/README.md)                          |
 | Changelog                                        | [`CHANGELOG.md`](CHANGELOG.md)                                                   |

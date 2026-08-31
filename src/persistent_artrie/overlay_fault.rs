@@ -19,6 +19,7 @@
 
 use std::sync::Arc;
 
+use crate::persistent_artrie::core::eviction::{DurableRecordRef, DurableRegistryRecord};
 use crate::persistent_artrie::core::key_encoding::ByteKey;
 use crate::persistent_artrie::core::overlay::evict::OverlayEvictable;
 use crate::persistent_artrie::core::overlay::{AtomicNodePtr, Child, OverlayFaulter, OverlayNode};
@@ -33,6 +34,57 @@ use super::serialization::v2::DeserializationContext;
 use super::swizzled_ptr::SwizzledPtr;
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
+    /// Read one exact durable byte-node record without deserializing `V`.
+    ///
+    /// The arena lock is held only while copying bounded structural metadata.
+    /// Child values remain opaque, making this suitable for iterative registry
+    /// reconstruction after a restart or an unavailable carry source.
+    pub(crate) fn read_byte_registry_record(
+        &self,
+        record_ref: DurableRecordRef,
+    ) -> Result<DurableRegistryRecord<u8>> {
+        let arena_id = record_ref.address.block_id.checked_sub(1).ok_or_else(|| {
+            PersistentARTrieError::corrupted(
+                "byte registry metadata record uses reserved block zero",
+            )
+        })?;
+        let slot = ArenaSlot::new(arena_id, record_ref.address.slot_id);
+        let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
+            PersistentARTrieError::internal("No arena manager for registry metadata read")
+        })?;
+        let arena = arena_manager.read();
+        let record_bytes = arena.read(slot)?;
+        let metadata = serialization::v2::decode_node_metadata(
+            record_bytes,
+            &DeserializationContext::new(slot),
+            record_ref.expected_type,
+        )?;
+        drop(arena);
+
+        let mut children = Vec::new();
+        children
+            .try_reserve_exact(metadata.children.len())
+            .map_err(|error| {
+                PersistentARTrieError::allocation_failed(
+                    "byte registry metadata child references",
+                    metadata.children.len(),
+                    error,
+                )
+            })?;
+        for (edge, pointer) in metadata.children {
+            children.push((edge, DurableRecordRef::from_typed_pointer(&pointer)?));
+        }
+
+        Ok(DurableRegistryRecord {
+            canonical_ptr: record_ref.address.canonical_pointer(metadata.node_type)?,
+            address: record_ref.address,
+            node_type: metadata.node_type,
+            serialized_bytes: metadata.serialized_bytes,
+            prefix: metadata.prefix,
+            children,
+        })
+    }
+
     /// Load an `OnDisk` overlay child back into an immutable overlay node
     /// (`Arc<OverlayNode<ByteKey, V>>`) — the byte **fault-in load+deserialize
     /// primitive**. Reuses the production/recovery-tested byte v2 single-node
@@ -77,7 +129,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let is_final = node.header().is_final();
         // Capture the value blob BEFORE dropping the arena lock (it borrows
         // `node_data`, which borrows `am`).
-        let value_bytes = serialization::v2::read_node_value(node_data);
+        let value_bytes = serialization::v2::try_read_node_value(node_data)?;
         // Collect child pointers (non-null) BEFORE dropping the arena lock.
         let child_ptrs: Vec<(u8, SwizzledPtr)> = node
             .iter_children()
@@ -134,36 +186,39 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 "CX #43 (4A): an expanded prefix intermediate must be prefix_len=0, non-final, single-child"
             );
         }
-        // CX/#43 (#6 eviction-ON): stamp the TOP-of-span node (`cur` = the head of the expanded
-        // chain, or `real` itself when p==0) with `disk_ptr` IFF this was a COMPRESSED node
-        // (`prefix_len > 0`), so a fault-then-evict re-installs `Child::OnDisk` for the WHOLE
-        // re-expanded span (the evictor walks to this top node + checks `durable_stamp == disk_ptr`).
-        // NO-OP for `prefix_len == 0` (every current production image), so the production fault path
-        // + #39 eviction stay byte-for-byte unchanged. The byte twin of char's `disk_io.rs` stamp.
-        if prefix_len > 0 {
-            cur.set_durable_stamp(disk_ptr.to_raw());
-        }
+        // The top-of-span node is an exact in-memory representation of `disk_ptr`: for an
+        // uncompressed record it is `real`, and for a compressed record it is the head of the
+        // lossless expanded chain. Stamp both cases before the node can be published. The stamp is
+        // necessary for fault -> re-evict progress, but is not sufficient authority: exact
+        // eviction additionally revalidates the root's registry generation, path, disk address,
+        // and residency under the coordinator lifecycle transaction. Detached loads may therefore
+        // carry the same truthful content stamp without changing published residency. Every
+        // structural path copy still clears its stamp, so a modified ancestor cannot be evicted to
+        // this older image.
+        cur.set_durable_stamp(disk_ptr.to_raw());
         Ok(Arc::new(cur))
     }
 }
 
 /// Byte impl of the SAFE overlay fault-in capability (resolves `Child::OnDisk`
 /// overlay children during an overlay-backed `DictionaryNode` walk). Delegates to
-/// the inherent `PersistentARTrie::load_overlay_node_from_disk`; an I/O / decode
-/// error degrades to `None` (no child) — never UB, never a fabricated term.
+/// the inherent `PersistentARTrie::load_overlay_node_from_disk` while preserving
+/// its exact I/O / decode error for durable callers.
 impl<V: DictionaryValue, S: BlockStorage> OverlayFaulter<ByteKey, V> for PersistentARTrie<V, S> {
     #[inline]
-    fn fault_overlay_slot(&self, slot: &SwizzledPtr) -> Option<Arc<OverlayNode<ByteKey, V>>> {
-        self.load_overlay_node_from_disk(slot).ok()
+    fn try_fault_overlay_slot(
+        &self,
+        slot: &SwizzledPtr,
+    ) -> crate::persistent_artrie::core::error::Result<Arc<OverlayNode<ByteKey, V>>> {
+        self.load_overlay_node_from_disk(slot)
     }
 }
 
-/// Byte impl of the SHARED GENERIC [`OverlayEvictable`] (Phase 5) — the per-attempt
-/// overlay evict + read-fault primitives, K-generic over `OverlayNode<ByteKey, V>`.
+/// Byte implementation of the shared generic [`OverlayEvictable`] compact
+/// eviction and exact fault-in machines over `OverlayNode<ByteKey, V>`.
 /// Supplies the three variant-specific accessors (`lockfree_root` / `epoch_manager` /
-/// `eviction_coordinator`); the primitives themselves are the trait defaults
-/// (`find_leaf_faulting` for the byte read/counter fault-in, `evict_overlay_node_at_path`
-/// for the byte evict driver). The `OverlayFaulter<ByteKey, V>` super-trait requirement
+/// `eviction_coordinator`); the machines themselves are trait defaults. The
+/// `OverlayFaulter<ByteKey, V>` super-trait requirement
 /// is satisfied by the impl above (the `load_overlay_node_from_disk` loader — byte's
 /// arena+`deserialize_node_v2` body, NOT unified with char's buffer-manager loader).
 ///
@@ -192,78 +247,72 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayEvictable<ByteKey, V, S>
     ) -> Option<Arc<crate::persistent_artrie::eviction::EvictionCoordinator>> {
         self.eviction_coordinator
             .lock()
-            .expect("eviction_coordinator mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .map(Arc::clone)
+    }
+
+    #[inline]
+    fn prepare_overlay_eviction_commit(
+        &self,
+        coordinator: &crate::persistent_artrie::eviction::EvictionCoordinator,
+        root_revision: &crate::persistent_artrie::core::overlay::RootRevision<ByteKey, V>,
+        batch: &crate::persistent_artrie::core::eviction::CompactEvictionBatch<u8>,
+        successful: &mut [usize],
+    ) -> Option<crate::persistent_artrie::core::eviction::PreparedPackedResidency> {
+        coordinator.prepare_byte_eviction_commit(root_revision, batch, successful)
+    }
+
+    #[inline]
+    fn commit_overlay_eviction(
+        &self,
+        coordinator: &crate::persistent_artrie::eviction::EvictionCoordinator,
+        root: &AtomicNodePtr<ByteKey, V>,
+        root_transition: crate::persistent_artrie::core::overlay::PreparedBoundRootTransition<
+            ByteKey,
+            V,
+        >,
+    ) -> crate::persistent_artrie::core::eviction::ExactEvictionOutcome {
+        coordinator.commit_byte_eviction_transaction(root, root_transition)
+    }
+
+    #[inline]
+    fn prepare_overlay_fault_commit(
+        &self,
+        coordinator: &crate::persistent_artrie::eviction::EvictionCoordinator,
+        root_revision: &crate::persistent_artrie::core::overlay::RootRevision<ByteKey, V>,
+        path: &[u8],
+        disk_ptr: &SwizzledPtr,
+    ) -> Option<crate::persistent_artrie::core::eviction::PreparedPackedResidency> {
+        coordinator.prepare_byte_fault_commit(root_revision, path, disk_ptr)
+    }
+
+    #[inline]
+    fn commit_overlay_fault(
+        &self,
+        coordinator: &crate::persistent_artrie::eviction::EvictionCoordinator,
+        root: &AtomicNodePtr<ByteKey, V>,
+        root_transition: crate::persistent_artrie::core::overlay::PreparedBoundRootTransition<
+            ByteKey,
+            V,
+        >,
+    ) -> crate::persistent_artrie::core::eviction::ExactFaultOutcome {
+        coordinator.commit_byte_fault_transaction(root, root_transition)
     }
 }
 
 // ============================================================================
-// Phase 6 byte bench/test eviction surface — the byte twins of char's
-// `bench_enable_eviction` / `bench_immutable_checkpoint_with_eviction` /
-// `evictable_node_count` + the `evict_overlay_nodes` batch driver. `#[cfg]`-gated to
-// the test/bench surface; the production force-eviction wiring is a later phase.
+// Shared production byte eviction driver, followed by the byte twins of char's
+// gated `bench_enable_eviction` / `bench_immutable_checkpoint_with_eviction` /
+// `evictable_node_count` test and benchmark controls.
 // ============================================================================
 
-/// Reclaim a batch of COLD OVERLAY nodes (the byte twin of char's `evict_overlay_nodes`,
-/// Phase 6). Evicts LEAF-FIRST (descending depth) so a node is evicted before any
-/// ancestor — keeping each victim's parent spine in memory at eviction time (a later
-/// shallower candidate whose spine now passes through an already-on-disk slot is reported
-/// `NotEvictable` and skipped). Each victim gets up to `max_rebase_retries` root-CAS
-/// attempts via the lifted K-generic primitive
-/// [`OverlayEvictable::evict_overlay_node_at_path`] (the 1c guard lives in it): a
-/// `RootCasLost` (a concurrent writer won) rebases + retries; on exhaustion the victim is
-/// SKIPPED (a missed eviction is liveness-only — loser-safe).
-///
-/// Returns `(evicted, bytes_freed)` (nominal ~256 B/node estimate; the peak-RSS pass is
-/// the physical witness). Registry plumbing (`Vec<u8>` paths, byte `remove_hash`) is
-/// variant-specific. Takes NO lock and uses NO `unsafe`.
-///
-/// Phase 7.4: UN-GATED to production (the byte checkpoint-tail resident-budget eviction
-/// calls it). The `bench_*` enabler impl below stays gated; this driver does not.
-pub(crate) fn evict_overlay_nodes<V: DictionaryValue, S: BlockStorage>(
+pub(crate) fn evict_overlay_compact_batch<V: DictionaryValue, S: BlockStorage>(
     trie: &PersistentARTrie<V, S>,
-    mut nodes: Vec<(u64, Vec<u8>, SwizzledPtr)>,
+    batch: crate::persistent_artrie::core::eviction::CompactEvictionBatch<u8>,
     max_rebase_retries: usize,
 ) -> (usize, usize) {
-    use crate::persistent_artrie::core::overlay::evict::{OverlayEvictOutcome, OverlayEvictable};
-    use crate::persistent_artrie::eviction::lru_tracker::LruRegistry;
-
-    // LEAF-FIRST: sort by DESCENDING path length (depth).
-    nodes.sort_by_key(|b| std::cmp::Reverse(b.1.len()));
-
-    let mut evicted = 0usize;
-    let mut bytes_freed = 0usize;
-    for (_path_hash, path, disk_ptr) in nodes {
-        // Byte overlay keys are `u8`; the registry path IS already `&[u8]` — no
-        // conversion needed (unlike char's `Vec<char>` → `u32`).
-        let mut attempt = 0;
-        loop {
-            match trie.evict_overlay_node_at_path(&path, disk_ptr.clone()) {
-                OverlayEvictOutcome::Evicted => {
-                    evicted += 1;
-                    bytes_freed += 256;
-                    // Drop the LRU entry so a later (re)insert of this cold path starts
-                    // fresh (parity with char). Byte uses the `u8`-path hash.
-                    if let Some(coordinator) = trie.overlay_eviction_coordinator() {
-                        coordinator
-                            .lru_registry()
-                            .remove_hash(LruRegistry::path_hash(&path));
-                    }
-                    break;
-                }
-                OverlayEvictOutcome::RootCasLost => {
-                    attempt += 1;
-                    if attempt > max_rebase_retries {
-                        break; // exhausted → SKIP (liveness-only miss)
-                    }
-                    // else: rebase (re-load the root) on the next iteration.
-                }
-                OverlayEvictOutcome::NotEvictable => break, // skip; never retried
-            }
-        }
-    }
-    (evicted, bytes_freed)
+    trie.evict_overlay_batch(batch, max_rebase_retries)
 }
 
 #[cfg(any(test, feature = "bench-internals"))]
@@ -272,8 +321,8 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// `bench_enable_eviction`, Phase 6). Install an [`EvictionCoordinator`] directly on
     /// this bare `PersistentARTrie` (sharing THIS trie's `epoch_manager`) so the in-crate
     /// byte OE tests can run eviction-ON checkpoints + drive the overlay evictor. The
-    /// reclaim callback is a no-op `(0, 0)` (the test drives reclamation synchronously via
-    /// `evict_overlay_nodes`); the bench measures the CHECKPOINT registration path.
+    /// reclaim callback is a compact no-op `(0, 0)`; tests drive reclamation
+    /// synchronously while the bench measures checkpoint registration.
     #[allow(dead_code)]
     pub(crate) fn bench_enable_eviction(
         &self,
@@ -295,16 +344,17 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         // Share THIS trie's epoch manager with the coordinator (Phase 6 epoch-share,
         // parity with char's `bench_enable_eviction`).
         let epoch_manager = Arc::clone(&self.epoch_manager);
-        let coordinator = crate::persistent_artrie::eviction::EvictionCoordinator::new(
-            config.clone(),
-            epoch_manager,
-        );
+        let coordinator =
+            crate::persistent_artrie::eviction::EvictionCoordinator::new_with_publication_gate(
+                config.clone(),
+                epoch_manager,
+                Arc::clone(&self.registry_publication_gate),
+            );
 
-        // No-op reclaim callback: the byte OE tests reclaim synchronously via
-        // `evict_overlay_nodes`. The bench/test only needs the registry-publication
-        // CHECKPOINT path active.
+        // No-op compact callback: tests reclaim synchronously. The bench/test
+        // only needs the registry-publication checkpoint path active.
         coordinator
-            .start(|_nodes_to_evict| (0usize, 0usize))
+            .start_compact(|_batch| (0usize, 0usize))
             .map_err(|e| PersistentARTrieError::internal(&e))?;
         coordinator
             .start_memory_monitor()
@@ -329,16 +379,34 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         self.publish_overlay_snapshot_retaining_with_eviction(snapshot)
     }
 
-    /// Number of BYTE nodes registered as evictable in the disk-location registry
-    /// published at the last `bench_immutable_checkpoint_with_eviction` (byte twin of
-    /// char's `evictable_node_count`, Phase 6). `None` when eviction is disabled;
-    /// `Some(0)` before the first checkpoint.
+    /// Exact number of resident BYTE-node occurrences represented by the
+    /// currently published eviction topology. Exact eviction and fault commits
+    /// update it immediately; nonresident structural records are excluded.
+    /// `None` when eviction is disabled; `Some(0)` before the first checkpoint.
     #[allow(dead_code)]
     pub(crate) fn evictable_node_count(&self) -> Option<usize> {
+        let coordinator = self
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+            .cloned()?;
+        let resident = self
+            .lockfree_root
+            .as_ref()
+            .and_then(|root| coordinator.root_resident_totals(root))
+            .map_or(0, |totals| totals.0);
+        Some(resident)
+    }
+
+    /// Number of durable BYTE-node occurrences in the published topology,
+    /// including nonresident records retained for exact fault-in.
+    #[allow(dead_code)]
+    pub(crate) fn registered_node_count(&self) -> Option<usize> {
         self.eviction_coordinator
             .lock()
             .expect("eviction_coordinator mutex poisoned")
             .as_ref()
-            .map(|c| c.disk_registry_len())
+            .map(|coordinator| coordinator.disk_registry_len())
     }
 }

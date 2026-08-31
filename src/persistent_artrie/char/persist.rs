@@ -10,13 +10,22 @@
 //!   encoding eligibility check
 //! - `serialize_char_node_to_disk` — node serialization
 //! - `build_disk_char_node` — construct on-disk node from in-memory
-//! - `char_node_to_node_type` — node-type discriminant helper
 
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
+use crate::persistent_artrie::core::eviction::{
+    scan_durable_registry_subtree, DurableRecordRef, DurableRegistryScanEvent,
+    LocalRegistryGraftStats, PreparedRegistryPublication, RegistryBuilderSubtree,
+    RegistryBuilderSubtreeStart, RegistryGraftOutcome, RegistryPathId, RegistryPublicationOutcome,
+    RegistryStructuralSource,
+};
 use crate::persistent_artrie::core::key_encoding::CharKey;
-use crate::persistent_artrie::core::overlay::compressed_serialize::OverlayCompressedSerialize;
+#[cfg(test)]
+use crate::persistent_artrie::core::overlay::compressed_serialize::try_analysis_registry_transaction;
+use crate::persistent_artrie::core::overlay::compressed_serialize::{
+    OverlayCompressedSerialize, OverlaySerializationBuild,
+};
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::eviction::DiskLocationRegistry;
 use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr};
@@ -24,7 +33,6 @@ use crate::persistent_artrie::wal::WalRecord;
 use crate::value::DictionaryValue;
 
 use super::dict_impl_char::{ROOT_TYPE_EMPTY, ROOT_TYPE_NODE};
-use super::nodes::CharNode;
 use super::types::CharTrieNodeInner;
 
 /// An immutable, self-consistent checkpoint snapshot captured during checkpoint
@@ -37,7 +45,7 @@ use super::types::CharTrieNodeInner;
 /// exclusive `RwLock` write guard, then **downgrades** the guard to a read guard
 /// (admitting concurrent readers) for the durable-publish + WAL phases — using
 /// exactly this frozen snapshot, so those phases never re-read mutable trie state.
-pub(crate) struct CheckpointSnapshot {
+pub(crate) struct CheckpointSnapshot<V: DictionaryValue> {
     /// Root descriptor type byte (`ROOT_TYPE_EMPTY` / `ROOT_TYPE_NODE`).
     root_type: u8,
     /// Whether the root node is itself a terminal/final node.
@@ -69,7 +77,7 @@ pub(crate) struct CheckpointSnapshot {
     commit_seq_at_capture: Option<u64>,
     /// Freshly-built disk-location registry (only when eviction is enabled),
     /// published to the eviction coordinator after durability is verified.
-    eviction_registry: Option<DiskLocationRegistry>,
+    registry_publication: Option<PreparedRegistryPublication<CharKey, V>>,
 }
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
@@ -161,14 +169,23 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// S5-9: un-gated to production (was `#[cfg(any(test, feature="bench-internals"))]`).
     /// `checkpoint()` route-splits to this (`route_overlay()` is universally true) so the
     /// checkpoint captures the immutable overlay (the live data). Adds zero new `unsafe`.
-    pub(crate) fn capture_snapshot_immutable(&self) -> Result<CheckpointSnapshot> {
-        let mut eviction_registry = self
+    pub(crate) fn capture_snapshot_immutable(&self) -> Result<CheckpointSnapshot<V>> {
+        let eviction_coordinator = self
             .eviction_coordinator
             .lock()
             .expect("eviction_coordinator mutex poisoned")
             .as_ref()
-            .map(|_| DiskLocationRegistry::new());
-
+            .map(std::sync::Arc::clone);
+        let structural_source = eviction_coordinator
+            .as_ref()
+            .map(|coordinator| coordinator.registry_structural_source())
+            .transpose()
+            .map_err(|error| {
+                PersistentARTrieError::internal(format!(
+                    "capture char eviction-registry structural source: {error}"
+                ))
+            })?
+            .flatten();
         // ═══════════════════════════════════════════════════════════════════
         //  THE SNAPSHOT-LSN CAPTURE ORDERING — "the single most dangerous line
         //  in the design" (plan §4). Read with the utmost care before editing.
@@ -250,36 +267,51 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         let overlay_revision = self
             .lockfree_root
             .as_ref()
-            .and_then(|root| root.load_with_term_count());
-        let (root_type, root_ptr, is_final, entry_count) = match overlay_revision {
-            None => (ROOT_TYPE_EMPTY, 0u64, false, 0u64),
-            Some((root, term_count)) => {
-                // F6 flag-1b: serialize the overlay DIRECTLY with an ITERATIVE
-                // post-order walk (no deep intermediate `CharTrieNodeInner` tree,
-                // no recursive serialize, no recursive `Drop`), so a ~500-char term
-                // (a ~500-deep un-path-compressed overlay spine) does not overflow
-                // the stack. The on-disk image is byte-identical to the prior
-                // `serialize_char_node_to_disk(&overlay_to_inner(&root), ...)` (both
-                // funnel each node through the shared NON-recursive
-                // `serialize_one_char_node_to_disk`). `count_overlay_finals` is
-                // iterative too (same reason). The root's finality is the overlay
-                // root's finality (`overlay_to_inner` set the inner root's final
-                // flag from `root.is_final()`).
-                // CX-universal: PATH-COMPRESSED serialize (proven NO-TRUNCATION — Rocq T1/T3 +
-                // exhaustive Rust round-trip/density). Also iterative (stack-safe per the note
-                // above); the loader expands prefixes back into chains (4A), and the #6 path
-                // re-stamps the registry at the chunk's true expanded depth. On-disk images shrink;
-                // reopen stays byte-faithful (uncompressed prefix_len=0 images still load).
-                let ptr =
-                    self.serialize_overlay_snapshot_compressed(&root, eviction_registry.as_mut())?;
-                (
-                    ROOT_TYPE_NODE,
-                    ptr.to_raw(),
-                    root.is_final(),
-                    term_count as u64,
-                )
-            }
-        };
+            .and_then(|root| root.load_revision());
+        let (root_type, root_ptr, is_final, entry_count, registry_publication) =
+            match overlay_revision {
+                None => (ROOT_TYPE_EMPTY, 0u64, false, 0u64, None),
+                Some(revision) => {
+                    let root = std::sync::Arc::clone(revision.node());
+                    let mut serialization = match eviction_coordinator {
+                        Some(coordinator) => OverlaySerializationBuild::production_with_eviction(
+                            coordinator,
+                            structural_source,
+                        ),
+                        None => OverlaySerializationBuild::production_disabled(),
+                    };
+                    // F6 flag-1b: serialize the overlay DIRECTLY with an ITERATIVE
+                    // post-order walk (no deep intermediate `CharTrieNodeInner` tree,
+                    // no recursive serialize, no recursive `Drop`), so a ~500-char term
+                    // (a ~500-deep un-path-compressed overlay spine) does not overflow
+                    // the stack. The on-disk image is byte-identical to the prior
+                    // `serialize_char_node_to_disk(&overlay_to_inner(&root), ...)` (both
+                    // funnel each node through the shared NON-recursive
+                    // `serialize_one_char_node_to_disk`). `count_overlay_finals` is
+                    // iterative too (same reason). The root's finality is the overlay
+                    // root's finality (`overlay_to_inner` set the inner root's final
+                    // flag from `root.is_final()`).
+                    // CX-universal: PATH-COMPRESSED serialize (proven NO-TRUNCATION — Rocq T1/T3 +
+                    // exhaustive Rust round-trip/density). Also iterative (stack-safe per the note
+                    // above); the loader expands prefixes back into chains (4A), and the #6 path
+                    // re-stamps the registry at the chunk's true expanded depth. On-disk images shrink;
+                    // reopen stays byte-faithful (uncompressed prefix_len=0 images still load).
+                    let ptr = self.serialize_compressed_loop(&root, &mut serialization)?;
+                    let entry_count = u64::try_from(revision.term_count()).map_err(|_| {
+                        PersistentARTrieError::internal(
+                            "char checkpoint term count does not fit the durable u64 field",
+                        )
+                    })?;
+                    let registry_publication = serialization.finish(&revision)?;
+                    (
+                        ROOT_TYPE_NODE,
+                        ptr.to_raw(),
+                        root.is_final(),
+                        entry_count,
+                        registry_publication,
+                    )
+                }
+            };
 
         // ── Executable refinement of the capture-ordering invariant ──────────
         // What we CAN assert (the overlay has no per-node LSN to max over, per the
@@ -343,7 +375,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             // The commit_seq captured in the same window (S5-2); the publisher raises
             // the WAL floor to it.
             commit_seq_at_capture: Some(commit_seq_at_capture),
-            eviction_registry,
+            registry_publication,
         })
     }
 
@@ -393,7 +425,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// `route_overlay()`. Inert until the S5-12 flip.
     pub(crate) fn publish_immutable_snapshot_retaining_wal(
         &self,
-        snapshot: &CheckpointSnapshot,
+        snapshot: &CheckpointSnapshot<V>,
     ) -> Result<()> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -404,7 +436,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // the registry to be `Clone` (it is not), so it is left to the
         // owner-gated flip's `publish_durable_and_reclaim`.
         debug_assert!(
-            snapshot.eviction_registry.is_none(),
+            snapshot.registry_publication.is_none(),
             "publish_immutable_snapshot_retaining_wal is the eviction-disabled soak \
              publisher; an eviction registry here means it was called on an \
              eviction-enabled trie, which must use publish_durable_and_reclaim"
@@ -497,7 +529,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// one-line gap closed: the watermark-bounded **retain-WAL** reclaim of the
     /// retain-WAL publisher (record `checkpoint_lsn = committed watermark`, RETAIN
     /// the WAL, NO destructive `rotate_to_archive`) plus the registry publication
-    /// the owned path already does (`coordinator.update_disk_registry`).
+    /// the owned path already does through exact root-bound publication.
     ///
     /// Reclaim/durability semantics are therefore BYTE-IDENTICAL to the
     /// already-proven [`Self::publish_immutable_snapshot_retaining_wal`]: the
@@ -515,8 +547,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// eviction (gated on `is_valid()`) then reclaims nothing: a liveness loss, not
     /// a safety loss.
     ///
-    /// Takes the snapshot BY VALUE because `update_disk_registry` consumes the
-    /// registry (mirrors the owned `publish_durable_and_reclaim(snapshot)`).
+    /// Takes the snapshot by value because exact registry publication consumes
+    /// the registry (mirrors the owned `publish_durable_and_reclaim(snapshot)`).
     /// Requires an immutable-overlay snapshot (`committed_watermark_at_capture =
     /// Some`); an owned-tree snapshot is rejected (its `next_lsn` convention is the
     /// wrong `checkpoint_lsn` here).
@@ -527,7 +559,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// `publish_immutable_snapshot_retaining_wal`). Inert until the S5-12 flip.
     pub(crate) fn publish_immutable_snapshot_retaining_wal_with_eviction(
         &self,
-        snapshot: CheckpointSnapshot,
+        snapshot: CheckpointSnapshot<V>,
     ) -> Result<()> {
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -552,23 +584,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         self.publish_snapshot(&snapshot, Some(checkpoint_lsn))?;
         self.verify_checkpoint()?;
 
-        // (2) Publish the eviction registry — ONLY AFTER verify proves the image
-        //     durable (publish-after-verify, EvictionRegistryPublication.tla). The
-        //     registry CONSUMES (moves) here; `update_disk_registry` is an in-memory
-        //     `RwLock::write` swap with ZERO fsync (no per-checkpoint fsync-count
-        //     asymmetry vs the eviction-OFF publisher).
-        if let Some(registry) = snapshot.eviction_registry {
-            if let Some(coordinator) = self
-                .eviction_coordinator
-                .lock()
-                .expect("eviction_coordinator mutex poisoned")
-                .as_ref()
-            {
-                coordinator.update_disk_registry(registry);
-            }
-        }
-
-        // (3) Record `checkpoint_lsn = watermark` so recovery skips deltas ≤ it
+        // (2) Record `checkpoint_lsn = watermark` so recovery skips deltas ≤ it
         //     (already in the image), then sync — but RETAIN the WAL (NO rotate).
         //     Identical to publish_immutable_snapshot_retaining_wal: the reclaim
         //     semantics, and thus the no-lost-write proof, are byte-identical.
@@ -611,42 +627,73 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             // owner-gated irreversible migration.
         }
 
+        // (3) Publish the eviction registry only after every fallible durable
+        //     checkpoint tail has succeeded: descriptor publish, image verify,
+        //     Checkpoint WAL append+sync, committed-watermark advance, and
+        //     commit-sequence floor. A failure before this point cannot expose
+        //     pointers from an incompletely committed checkpoint.
+        let registry_published = if let Some(publication) = snapshot.registry_publication {
+            let coordinator_slot = self
+                .eviction_coordinator
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match (coordinator_slot.as_ref(), self.lockfree_root.as_ref()) {
+                (Some(installed), Some(root)) => {
+                    publication.publish(installed, root) == RegistryPublicationOutcome::Published
+                }
+                _ => false,
+            }
+        } else {
+            false
+        };
+
         // (4) RESIDENT-BUDGET TAIL (Phase 7.5 — GO-LIVE). The registry is published
         //     (step 2) and the WAL Checkpoint is synced (step 3), so every registered
         //     disk_ptr is durable. If a resident budget is configured and the estimate
         //     exceeds it, evict the COLDEST registered char overlay nodes down to budget
         //     in ONE pass. The eviction is non-blocking loser-safe root-CAS (no write
         //     lock); the 1c `durable_stamp` guard + the registry `is_valid()` gate keep it
-        //     safe under concurrent writers. This is the OVERLAY publisher, and
-        //     `evict_overlay_nodes` is a no-op `(0,0)` with no overlay root, so no
-        //     `route_overlay()` gate is needed here.
+        //     safe under concurrent writers. This is the OVERLAY publisher; the
+        //     generation-qualified compact driver returns `(0,0)` with no overlay
+        //     root, so no `route_overlay()` gate is needed here.
         //
         //     DEADLOCK-SAFETY: bind the coordinator in a `let` so the
         //     `eviction_coordinator` mutex guard is dropped AT THE `;` — the eviction
-        //     callback (`evict_overlay_nodes`) re-locks `eviction_coordinator` for its LRU
-        //     bookkeeping, and an `if let Some(c) = self.eviction_coordinator.lock()…`
+        //     compact callback re-locks `eviction_coordinator` for its exact
+        //     residency/LRU commit, and an
+        //     `if let Some(c) = self.eviction_coordinator.lock()…`
         //     would hold the guard across the callback (if-let temporary lifetime) =
         //     a self-deadlock.
         let coordinator = self
             .eviction_coordinator
             .lock()
-            .expect("eviction_coordinator mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .map(std::sync::Arc::clone);
-        if let Some(coordinator) = coordinator {
-            if let Some(budget) = coordinator.resident_budget_bytes() {
-                let resident = coordinator.char_resident_estimate_bytes();
-                if resident > budget {
-                    let target = resident - budget;
-                    // UNCAPPED (budget-precise) by default; an opt-in cap bounds the
-                    // one-time first-over-budget-checkpoint latency (it MUST be >= the
-                    // per-checkpoint cold growth or the budget never converges).
-                    let max_count = coordinator
-                        .resident_budget_eviction_cap()
-                        .unwrap_or(usize::MAX);
-                    coordinator.force_eviction_char_resident(target, max_count, |nodes| {
-                        super::evict_overlay_nodes(self, nodes, 4)
-                    });
+        if registry_published {
+            if let Some(coordinator) = coordinator {
+                if let Some(budget) = coordinator.resident_budget_bytes() {
+                    let Some(root) = self.lockfree_root.as_ref() else {
+                        return Ok(());
+                    };
+                    let resident = coordinator
+                        .char_root_resident_estimate_bytes(root)
+                        .unwrap_or(0);
+                    if resident > budget {
+                        let target = resident - budget;
+                        // UNCAPPED (budget-precise) by default; an opt-in cap bounds the
+                        // one-time first-over-budget-checkpoint latency (it MUST be >= the
+                        // per-checkpoint cold growth or the budget never converges).
+                        let max_count = coordinator
+                            .resident_budget_eviction_cap()
+                            .unwrap_or(usize::MAX);
+                        coordinator.force_eviction_compact_char_resident_root(
+                            root,
+                            target,
+                            max_count,
+                            |batch| super::evict_overlay_compact_batch(self, batch, 4),
+                        );
+                    }
                 }
             }
         }
@@ -711,7 +758,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// checkpoint/rotation step succeeds in `checkpoint()`. Takes `&self`.
     fn publish_snapshot(
         &self,
-        snapshot: &CheckpointSnapshot,
+        snapshot: &CheckpointSnapshot<V>,
         image_checkpoint_lsn: Option<u64>,
     ) -> Result<()> {
         let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
@@ -788,26 +835,6 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             return None;
         }
 
-        // Collect arena slots from SwizzledPtrs
-        let mut slots: Vec<ArenaSlot> = Vec::with_capacity(child_ptrs.len());
-        for (_, ptr) in child_ptrs {
-            // All children must be on disk to use the disk-slot sequential encoding.
-            let loc = ptr.disk_location()?;
-            // Canonical arena-space id: arena N lives in block N+1 (block 0 is the file
-            // header). This matches ptr_to_arena_slot / collect_char_child_slots (the reader
-            // that validate_v2_serialization_context walks) and the byte twin's as_arena_slot().
-            // Reading loc.block_id verbatim (the historical bug) placed first_child one arena
-            // too high, so the writer's own contiguity self-check rejected the node as
-            // "char v2 sequential child mismatch".
-            // `?` declines sequential if block_id == 0 (the header block, never a child).
-            let arena_id = loc.block_id.checked_sub(1)?;
-            if arena_id != parent_arena_id {
-                // All children must be in the same arena as parent
-                return None;
-            }
-            slots.push(ArenaSlot::new(arena_id, loc.offset));
-        }
-
         // Children arrive in key order (`child_ptrs` follows iter_children, sorted-ascending;
         // see the contract on serialize_one_char_node_to_disk). The sequential decoder
         // reconstructs child `i` as `(first_child.arena_id, first_child.slot_id + i)` and pairs
@@ -815,21 +842,28 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // children occupy consecutive ascending slots IN KEY ORDER. Verify that directly — do
         // NOT sort by slot_id, or a same-arena set that is consecutive but out of key order
         // would be mis-paired on decode (and rejected by validate_v2_serialization_context).
-        // The per-index checked_add also subsumes the old first_slot + (count-1) overflow guard.
-        let first = slots[0];
-        for (i, slot) in slots.iter().enumerate() {
-            // `?` declines sequential on u32 overflow (subsumes the old count-1 overflow guard).
-            if slot.slot_id != first.slot_id.checked_add(i as u32)? {
+        // The streaming check uses O(1) auxiliary memory and declines the optimization on
+        // any address-conversion or slot-range overflow.
+        let first_location = child_ptrs.first()?.1.disk_location()?;
+        let first_arena = first_location.block_id.checked_sub(1)?;
+        if first_arena != parent_arena_id {
+            return None;
+        }
+        let first = ArenaSlot::new(first_arena, first_location.offset);
+        let mut last_slot = first.slot_id;
+        for (index, (_, ptr)) in child_ptrs.iter().enumerate() {
+            let location = ptr.disk_location()?;
+            let arena_id = location.block_id.checked_sub(1)?;
+            let offset = u32::try_from(index).ok()?;
+            let expected_slot = first.slot_id.checked_add(offset)?;
+            if arena_id != parent_arena_id || location.offset != expected_slot {
                 return None;
             }
+            last_slot = expected_slot;
         }
-
-        let count = slots.len() as u32;
 
         // Verify last slot is within arena bounds.
         // This aligns with formal spec: first + count - 1 < arena_node_count
-        // The overflow check above guarantees this subtraction is safe.
-        let last_slot = first.slot_id + count - 1;
         if last_slot >= arena_node_count {
             return None; // Would exceed arena bounds, use non-sequential encoding
         }
@@ -846,7 +880,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// node+value serialization, the arena-overflow re-serialize, and the eviction-
     /// registry record) factored out verbatim, so the on-disk bytes are identical.
     ///
-    /// `child_disk_ptrs` MUST be in `node.node.iter_children()` (sorted-ascending)
+    /// `child_disk_ptrs` MUST be in the sealed node's exact child iteration order
     /// order — the order the recursive walk produced them — so the encoding decisions
     /// (sequential-sibling detection, relative offsets) and child layout match. `path`
     /// is this node's full key path (for the eviction registry); the caller maintains
@@ -856,54 +890,25 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         node: &CharTrieNodeInner<V>,
         child_disk_ptrs: &[(u32, SwizzledPtr)],
         path: &[char],
+        path_depth: usize,
+        registry_path: Option<RegistryPathId>,
         registry: Option<&mut DiskLocationRegistry>,
     ) -> Result<SwizzledPtr> {
         use super::relative_encoding::SerializationContext;
-        use super::serialization_char::serialize_char_node_v2;
+        use super::serialization_char::serialize_validated_char_node_v2;
 
         let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
             PersistentARTrieError::internal("No arena manager for disk serialization")
         })?;
 
-        // Get the predicted parent slot for sequential sibling check
-        let parent_arena_id = arena_manager.read().next_slot().arena_id;
-
-        // Get the predicted parent slot and arena node count for encoding children
-        let (parent_slot, arena_node_count) = {
-            let mgr = arena_manager.read();
-            let slot = mgr.next_slot();
-            let node_count = mgr
-                .get_arena(parent_arena_id)
-                .map(|a| a.node_count())
-                .unwrap_or(0);
-            (slot, node_count)
-        };
-
-        // Check if children are consecutive (enables sequential sibling storage)
-        // Create serialization context that determines encoding mode:
-        // - Sequential: children stored as (first_slot, count) instead of N pointers
-        // - Relative: child offsets encoded relative to parent (1-2 bytes vs 8 bytes)
-        // - Full: absolute (arena_id, slot_id) for each child (9 bytes per child)
-        //
-        // IMPORTANT: If parent_slot.slot_id is small (especially 0), children serialized
-        // in the previous arena(s) would have "negative" relative offsets, causing
-        // decode underflow. Use full encoding to avoid this.
-        let ctx = if parent_slot.slot_id < child_disk_ptrs.len() as u32 {
-            // Parent slot is near the start of an arena - children likely in previous arena
-            // Use full encoding to avoid relative offset underflow during decode
-            SerializationContext::full_encoding(parent_slot)
-        } else if let Some(first_child) =
-            Self::check_sequential_char_children(child_disk_ptrs, parent_arena_id, arena_node_count)
-        {
-            // Children are consecutive in same arena: use sequential sibling encoding
-            SerializationContext::sequential(parent_slot, first_child)
-        } else {
-            // Children are not consecutive: use relative encoding only
-            SerializationContext::new(parent_slot)
-        };
-
-        // Build a CharNode with disk pointers for serialization
-        let disk_node = self.build_disk_char_node(&node.node, child_disk_ptrs)?;
+        // Borrow the already-projected node after exact durable-child validation.
+        let disk_node = node
+            .validated_node_for_serialization(child_disk_ptrs)
+            .map_err(|error| {
+                PersistentARTrieError::internal(format!(
+                    "failed to project sealed char node for serialization: {error}"
+                ))
+            })?;
 
         // Serialize the value using bincode (needed regardless of encoding)
         let value_bytes: Vec<u8> = if let Some(ref value) = node.value {
@@ -914,134 +919,167 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             Vec::new()
         };
 
-        // Serialize the CharNode to a buffer using v2 format with relative offsets
-        let mut node_buffer = Vec::new();
-        serialize_char_node_v2(&disk_node, &mut node_buffer, &ctx)?;
-
         // Build complete serialized data:
         // [node_buffer] + [value_len: u32] + [value_bytes]
-        let build_data = |node_buf: &[u8], value_buf: &[u8]| -> Vec<u8> {
-            let total_size = node_buf.len() + 4 + value_buf.len();
-            let mut data = Vec::with_capacity(total_size);
+        let build_data = |node_buf: &[u8], value_buf: &[u8], data: &mut Vec<u8>| -> Result<()> {
+            let value_len = u32::try_from(value_buf.len()).map_err(|_| {
+                PersistentARTrieError::internal(
+                    "serialized char value exceeds the u32 record-length range",
+                )
+            })?;
+            let total_size = node_buf
+                .len()
+                .checked_add(std::mem::size_of::<u32>())
+                .and_then(|size| size.checked_add(value_buf.len()))
+                .ok_or_else(|| {
+                    PersistentARTrieError::internal("serialized char record byte-count overflow")
+                })?;
+            data.clear();
+            data.try_reserve_exact(total_size).map_err(|source| {
+                PersistentARTrieError::allocation_failed(
+                    "serialized char record buffer",
+                    total_size,
+                    source,
+                )
+            })?;
             data.extend_from_slice(node_buf);
-            data.extend_from_slice(&(value_buf.len() as u32).to_le_bytes());
+            data.extend_from_slice(&value_len.to_le_bytes());
             data.extend_from_slice(value_buf);
-            data
-        };
-
-        let data = build_data(&node_buffer, &value_bytes);
-
-        // Allocate in arena (space-efficient: packs many nodes per 256KB block)
-        let slot = arena_manager.write().allocate(&data)?;
-
-        // Check if arena overflow caused slot mismatch
-        // If so, re-serialize using the actual slot to prevent relative encoding underflow
-        let final_slot = if slot != ctx.parent_slot {
-            // Arena overflow detected - need to re-serialize with correct parent slot
-            // This happens when the predicted slot was in arena N, but allocation
-            // went to arena N+1 due to arena being full
-            //
-            // Children are now likely in a different arena than the parent, requiring
-            // cross-arena encoding (9 bytes per child) instead of relative encoding.
-            let corrected_ctx = SerializationContext::new(slot);
-            let mut corrected_buffer = Vec::new();
-            serialize_char_node_v2(&disk_node, &mut corrected_buffer, &corrected_ctx)?;
-            let corrected_data = build_data(&corrected_buffer, &value_bytes);
-
-            if corrected_data.len() == data.len() {
-                // Same size - can update in-place
-                arena_manager.write().update(slot, &corrected_data)?;
-                slot
-            } else {
-                // Different size (cross-arena encoding is larger) - allocate new slot
-                // The original slot becomes wasted space (acceptable for rare overflow cases)
-                arena_manager.write().allocate(&corrected_data)?
+            if data.len() != total_size {
+                return Err(PersistentARTrieError::internal(
+                    "serialized char record length diverged from its checked plan",
+                ));
             }
-        } else {
-            slot
+            Ok(())
         };
+
+        let child_count = u32::try_from(child_disk_ptrs.len()).map_err(|_| {
+            PersistentARTrieError::corrupted(
+                "char node child count exceeds the u32 arena-slot range",
+            )
+        })?;
+        let serialization_context = |parent_slot: super::arena_manager::ArenaSlot,
+                                     arena_node_count| {
+            // A parent near the arena start may have children in an earlier arena;
+            // full encoding prevents same-arena relative underflow.
+            if parent_slot.slot_id < child_count {
+                SerializationContext::full_encoding(parent_slot)
+            } else if let Some(first_child) = Self::check_sequential_char_children(
+                child_disk_ptrs,
+                parent_slot.arena_id,
+                arena_node_count,
+            ) {
+                SerializationContext::sequential(parent_slot, first_child)
+            } else {
+                SerializationContext::new(parent_slot)
+            }
+        };
+
+        // Hold one manager write guard across prediction, encoding, and commit.
+        // The exact-size planner is non-mutating, so a rollover re-encoding cannot
+        // strand a speculative record. Exactly one durable allocation follows.
+        let mut manager = arena_manager.write();
+        let initial_slot = manager.try_next_slot()?;
+        let initial_node_count = manager
+            .get_arena(initial_slot.arena_id)
+            .ok_or_else(|| {
+                PersistentARTrieError::corrupted(format!(
+                    "planned char parent arena {} is absent",
+                    initial_slot.arena_id
+                ))
+            })?
+            .node_count();
+        let initial_ctx = serialization_context(initial_slot, initial_node_count);
+        let mut node_buffer = Vec::new();
+        serialize_validated_char_node_v2(&disk_node, &mut node_buffer, &initial_ctx)?;
+        let mut data = Vec::new();
+        build_data(&node_buffer, &value_bytes, &mut data)?;
+
+        let planned_slot = manager.plan_next_allocation(data.len())?;
+        if planned_slot != initial_slot {
+            // The current arena cannot fit the exact initial encoding. The planned
+            // slot is slot zero of a fresh arena, so existing children necessarily
+            // use cross-arena encodings. Reuse both buffers; do not write or reserve
+            // a durable record until these corrected bytes are complete.
+            let corrected_ctx = SerializationContext::new(planned_slot);
+            node_buffer.clear();
+            serialize_validated_char_node_v2(&disk_node, &mut node_buffer, &corrected_ctx)?;
+            build_data(&node_buffer, &value_bytes, &mut data)?;
+            let corrected_plan = manager.plan_next_allocation(data.len())?;
+            if corrected_plan != planned_slot {
+                return Err(PersistentARTrieError::internal(format!(
+                    "corrected char rollover plan changed from {planned_slot:?} to {corrected_plan:?}"
+                )));
+            }
+        }
+
+        // Validate every fallible address conversion before committing arena
+        // bytes. An unrepresentable packed pointer therefore leaves the arena
+        // manager unchanged.
+        let node_type = disk_node.representation_type();
+        let block_id = planned_slot.arena_id.checked_add(1).ok_or_else(|| {
+            PersistentARTrieError::internal(
+                "char arena id exceeds the persistent block-address range",
+            )
+        })?;
+        let result_ptr = SwizzledPtr::try_on_disk(block_id, planned_slot.slot_id, node_type)?;
+
+        let mut owned_registry_path = if registry.is_some() && registry_path.is_none() {
+            let mut owned_path = Vec::new();
+            owned_path.try_reserve_exact(path.len()).map_err(|source| {
+                PersistentARTrieError::allocation_failed("char registry path", path.len(), source)
+            })?;
+            owned_path.extend_from_slice(path);
+            Some(owned_path)
+        } else {
+            None
+        };
+
+        let serialized_bytes = data.len();
+        let committed_slot = manager.allocate_at_planned_slot(planned_slot, &data)?;
+        if committed_slot != planned_slot {
+            return Err(PersistentARTrieError::corrupted(
+                "char arena commit diverged from its exact allocation plan",
+            ));
+        }
+        drop(manager);
 
         // Return pointer using arena addressing:
         // - block_id = arena_id + 1 (block 0 is file header, arena N is in block N+1)
         // - offset = slot_id
-        let node_type = self.char_node_to_node_type(&disk_node);
-        let result_ptr =
-            SwizzledPtr::on_disk(final_slot.arena_id + 1, final_slot.slot_id, node_type);
-
         // Register this node's on-disk location so the eviction coordinator can
         // later reclaim its in-memory box (unswizzling it to this location).
         // Pure side-effect: `result_ptr` and the bytes written above are
         // identical whether or not the registry is present.
         if let Some(reg) = registry {
-            reg.register_char(
-                path.to_vec(),
-                result_ptr.clone(),
-                data.len(),
-                path.len(),
-                node_type,
-            );
+            match registry_path {
+                Some(path_id) => reg
+                    .register_char_path(
+                        path_id,
+                        result_ptr.clone(),
+                        serialized_bytes,
+                        path_depth,
+                        node_type,
+                    )
+                    .map_err(PersistentARTrieError::internal)?,
+                None => {
+                    let owned_path = owned_registry_path.take().ok_or_else(|| {
+                        PersistentARTrieError::internal(
+                            "char registry path was not prepared before arena commit",
+                        )
+                    })?;
+                    reg.register_char(
+                        owned_path,
+                        result_ptr.clone(),
+                        serialized_bytes,
+                        path_depth,
+                        node_type,
+                    );
+                }
+            }
         }
 
         Ok(result_ptr)
-    }
-
-    /// Build a CharNode with disk SwizzledPtrs for serialization.
-    ///
-    /// Creates a new CharNode of the same type as the original, but with
-    /// children pointing to disk locations instead of in-memory nodes.
-    ///
-    /// Returns `Err` only if the rebuilt node's `add_child_growing` exceeds
-    /// capacity — that indicates corruption (the original held that many
-    /// children, so a same-type rebuild cannot fail to hold them) and the
-    /// caller propagates the error up the serialization stack rather than
-    /// crashing.
-    fn build_disk_char_node(
-        &self,
-        original: &CharNode,
-        disk_children: &[(u32, SwizzledPtr)],
-    ) -> Result<CharNode> {
-        // Create a new node of the same type
-        let mut new_node = match original {
-            CharNode::N4(_) => CharNode::N4(Box::default()),
-            CharNode::N16(_) => CharNode::N16(Box::default()),
-            CharNode::N48(_) => CharNode::N48(Box::default()),
-            CharNode::Bucket(_) => CharNode::Bucket(Box::default()),
-        };
-
-        // Copy header properties
-        {
-            let new_header = new_node.header_mut();
-            let orig_header = original.header();
-            new_header.prefix_len = orig_header.prefix_len;
-            new_header.flags = orig_header.flags;
-            new_header.version = orig_header.version;
-        }
-
-        // Copy prefix
-        *new_node.prefix_mut() = *original.prefix();
-
-        // Add disk children
-        for &(key, ref ptr) in disk_children {
-            new_node.add_child_growing(key, ptr.clone()).map_err(|e| {
-                PersistentARTrieError::internal(format!(
-                    "build_disk_char_node: rebuilt node rejected child key {:#x} (Node type same \
-                     as source): {:?} — indicates corruption in source node's child count",
-                    key, e
-                ))
-            })?;
-        }
-
-        Ok(new_node)
-    }
-
-    /// Map CharNode type to NodeType for SwizzledPtr
-    fn char_node_to_node_type(&self, node: &CharNode) -> NodeType {
-        match node {
-            CharNode::N4(_) => NodeType::CharNode4,
-            CharNode::N16(_) => NodeType::CharNode16,
-            CharNode::N48(_) => NodeType::CharNode48,
-            CharNode::Bucket(_) => NodeType::CharBucket,
-        }
     }
 
     /// Serialize the IMMUTABLE overlay rooted at `root` to disk with an ITERATIVE
@@ -1065,7 +1103,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// # Image-equivalence
     ///
     /// For each node the prior recursive path produced `child_disk_ptrs` (in
-    /// `iter_children()` order) and fed them, with `node.node` (type/header/prefix)
+    /// `iter_children()` order) and fed them through the sealed node projection
+    /// (preserving type/header/prefix)
     /// and `node.value`, into the SAME `serialize_one_char_node_to_disk` core. This
     /// walk produces the SAME `child_disk_ptrs` in the SAME order and the SAME
     /// post-order arena-allocation sequence, and builds the per-node
@@ -1207,11 +1246,13 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 .collect();
             // Build the single-node `CharTrieNodeInner` (disk children) and encode it
             // through the shared NON-recursive core at THIS node's path.
-            let inner = overlay_inner_single_node::<V>(frame.node.as_ref(), &child_disk_ptrs);
+            let inner = overlay_inner_single_node::<V>(frame.node.as_ref(), &child_disk_ptrs)?;
             let node_ptr = self.serialize_one_char_node_to_disk(
                 &inner,
                 &child_disk_ptrs,
                 &path,
+                path.len(),
+                None,
                 registry.as_deref_mut(),
             )?;
 
@@ -1247,8 +1288,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// CX (#43) CX.1 — SERIALIZE the immutable overlay rooted at `root` into a PATH-COMPRESSED dense
     /// image, returning the root `SwizzledPtr`. Maximal single-child non-final no-value chains are
     /// collapsed into `prefix_len > 0` dense nodes, CHUNKED across multiple nodes when longer than
-    /// `CHAR_MAX_PREFIX_LEN` (via the proven [`crate::persistent_artrie::core::overlay::codec::chain_chunks`],
-    /// which NEVER truncates). The exact inverse of [`inner_to_overlay`]'s expand-on-load.
+    /// `CHAR_MAX_PREFIX_LEN` (using the same checked chunk-bound arithmetic as the production
+    /// generic serializer, which never truncates). The exact inverse of [`inner_to_overlay`]'s
+    /// expand-on-load.
     ///
     /// **EVICTION-OFF only** (no registry): this is the round-trip / density path. The eviction-ON
     /// variant (the #6 `durable_stamp`/registry threading across a compressed node's expansion, which
@@ -1259,12 +1301,23 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// ITERATIVE post-order (work-stack) so it does not recurse with branching depth; each chain
     /// spine is peeled iteratively by [`peel_chain`]. DORMANT/reversible — nothing in production calls
     /// this yet (L2/L3 wire it later).
+    #[cfg(test)]
     pub(crate) fn serialize_overlay_snapshot_compressed(
         &self,
         root: &std::sync::Arc<super::nodes::PersistentCharNode<V>>,
         registry: Option<&mut DiskLocationRegistry>,
     ) -> Result<SwizzledPtr> {
-        self.serialize_compressed_loop(root, registry)
+        match registry {
+            Some(registry) => {
+                try_analysis_registry_transaction::<CharKey, V, _, _>(registry, |serialization| {
+                    self.serialize_compressed_loop(root, serialization)
+                })
+            }
+            None => {
+                let mut serialization = OverlaySerializationBuild::dag_disabled();
+                self.serialize_compressed_loop(root, &mut serialization)
+            }
+        }
     }
 }
 
@@ -1282,7 +1335,7 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCompressedSerialize<CharKey, V>
         node: &super::nodes::PersistentCharNode<V>,
         child_disk_ptrs: &[(u32, SwizzledPtr)],
     ) -> Result<Self::Projected> {
-        Ok(overlay_inner_single_node(node, child_disk_ptrs))
+        overlay_inner_single_node(node, child_disk_ptrs)
     }
 
     fn project_chunk(
@@ -1290,11 +1343,7 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCompressedSerialize<CharKey, V>
         child_disk_ptrs: &[(u32, SwizzledPtr)],
         prefix: &[u32],
     ) -> Result<Self::Projected> {
-        Ok(overlay_inner_single_node_with_prefix::<V>(
-            synth,
-            child_disk_ptrs,
-            prefix,
-        ))
+        overlay_inner_single_node_with_prefix::<V>(synth, child_disk_ptrs, prefix)
     }
 
     fn serialize_projected_node(
@@ -1302,70 +1351,166 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCompressedSerialize<CharKey, V>
         projected: &Self::Projected,
         child_disk_ptrs: &[(u32, SwizzledPtr)],
         path: &[u32],
+        registry_path: RegistryPathId,
         registry: Option<&mut DiskLocationRegistry>,
     ) -> Result<SwizzledPtr> {
-        // char-trie units are valid codepoints; lower the u32 path to `char` for the registry hash.
-        let path_chars: Vec<char> = path
-            .iter()
-            .map(|&u| char::from_u32(u).expect("char-trie unit is a valid codepoint"))
-            .collect();
-        self.serialize_one_char_node_to_disk(projected, child_disk_ptrs, &path_chars, registry)
+        self.serialize_one_char_node_to_disk(
+            projected,
+            child_disk_ptrs,
+            &[],
+            path.len(),
+            Some(registry_path),
+            registry,
+        )
+    }
+
+    fn reserve_registry_path(
+        registry: &mut DiskLocationRegistry,
+        parent: RegistryPathId,
+        segment: &[u32],
+    ) -> Result<RegistryPathId> {
+        registry
+            .try_reserve_char_units(parent, segment)
+            .map_err(|message| {
+                if message == "char overlay path contains a non-Unicode-scalar unit" {
+                    PersistentARTrieError::corrupted(message)
+                } else {
+                    PersistentARTrieError::internal(message)
+                }
+            })
+    }
+
+    fn begin_registry_subtree(
+        registry: &mut DiskLocationRegistry,
+        root: RegistryPathId,
+    ) -> Result<RegistryBuilderSubtreeStart> {
+        registry
+            .try_begin_char_builder_subtree(root)
+            .map(RegistryBuilderSubtreeStart::Char)
+            .map_err(|error| {
+                PersistentARTrieError::internal(format!("begin char builder subtree: {error}"))
+            })
+    }
+
+    fn prepare_registry_subtree_start(registry: &mut DiskLocationRegistry) -> Result<()> {
+        registry
+            .try_prepare_char_builder_subtree_start()
+            .map_err(|error| {
+                PersistentARTrieError::internal(format!(
+                    "prepare char builder-subtree start: {error}"
+                ))
+            })
+    }
+
+    fn cancel_registry_subtree(
+        registry: &mut DiskLocationRegistry,
+        start: RegistryBuilderSubtreeStart,
+    ) -> Result<()> {
+        let RegistryBuilderSubtreeStart::Char(start) = start else {
+            return Err(PersistentARTrieError::internal(
+                "char serializer received a byte builder-subtree start",
+            ));
+        };
+        registry
+            .try_cancel_char_builder_subtree(start)
+            .map_err(|error| {
+                PersistentARTrieError::internal(format!("cancel char builder subtree: {error}"))
+            })
+    }
+
+    fn finish_registry_subtree(
+        registry: &mut DiskLocationRegistry,
+        start: RegistryBuilderSubtreeStart,
+    ) -> Result<RegistryBuilderSubtree> {
+        let RegistryBuilderSubtreeStart::Char(start) = start else {
+            return Err(PersistentARTrieError::internal(
+                "char serializer received a byte builder-subtree start",
+            ));
+        };
+        registry
+            .try_finish_char_builder_subtree(start)
+            .map(RegistryBuilderSubtree::Char)
+            .map_err(|error| {
+                PersistentARTrieError::internal(format!("finish char builder subtree: {error}"))
+            })
+    }
+
+    fn graft_registry_subtree(
+        registry: &mut DiskLocationRegistry,
+        source: &RegistryBuilderSubtree,
+        destination: RegistryPathId,
+        expected_root: &SwizzledPtr,
+        expected_root_resident: bool,
+    ) -> Result<LocalRegistryGraftStats> {
+        let RegistryBuilderSubtree::Char(source) = source else {
+            return Err(PersistentARTrieError::internal(
+                "char serializer received a byte builder-subtree handle",
+            ));
+        };
+        registry
+            .try_graft_char_builder_subtree(
+                source,
+                destination,
+                expected_root,
+                expected_root_resident,
+            )
+            .map_err(|error| {
+                PersistentARTrieError::internal(format!("graft char builder subtree: {error}"))
+            })
     }
 
     fn new_synth_node() -> super::nodes::PersistentCharNode<V> {
         super::nodes::PersistentCharNode::<V>::new()
     }
 
-    fn stamp_durable(live: &super::nodes::PersistentCharNode<V>, raw: u64) {
-        live.set_durable_stamp(raw);
-    }
-
-    fn register_reused(
+    fn try_reuse_durable_subtree(
         &self,
         ptr: &SwizzledPtr,
-        path: &[u32],
+        _path: &[u32],
+        registry_path: RegistryPathId,
         registry: &mut DiskLocationRegistry,
-    ) -> Result<()> {
-        // The live node is durable-clean: its bytes already sit at `ptr` from a prior checkpoint
-        // (the arena is append-only, so the slot is still valid). Record it in the freshly rebuilt
-        // registry with the EXACT on-disk size so the resident census — and hence resident-budget
-        // eviction — stays faithful, WITHOUT re-appending (dirty-skip's growth fix).
-        let arena_manager = self
-            .arena_manager
-            .as_ref()
-            .ok_or_else(|| PersistentARTrieError::internal("register_reused: no arena manager"))?;
-        let loc = ptr.disk_location().ok_or_else(|| {
-            PersistentARTrieError::internal(
-                "register_reused: reused ptr is not an on-disk location",
-            )
-        })?;
-        // Canonical arena id (arena N ⇔ block N+1).
-        let arena_id = loc.block_id.checked_sub(1).ok_or_else(|| {
-            PersistentARTrieError::internal("register_reused: reused ptr names block 0 (header)")
-        })?;
-        // `slot_data_range` returns (offset_in_arena, length); the length is the exact byte count
-        // `allocate` stored == what `serialize_one_char_node_to_disk` originally registered.
-        let size_bytes = {
-            let mgr = arena_manager.read();
-            let arena = mgr.get_arena(arena_id).ok_or_else(|| {
-                PersistentARTrieError::internal("register_reused: reused ptr names a missing arena")
-            })?;
-            let (_offset, len) = arena.slot_data_range(loc.offset)?;
-            len
-        };
-        // char-trie units are valid codepoints; lower the u32 path to `char` for the registry hash.
-        let path_chars: Vec<char> = path
-            .iter()
-            .map(|&u| char::from_u32(u).expect("char-trie unit is a valid codepoint"))
-            .collect();
-        registry.register_char(
-            path_chars,
-            ptr.clone(),
-            size_bytes,
-            path.len(),
-            loc.node_type,
-        );
-        Ok(())
+        structural_source: Option<&RegistryStructuralSource>,
+        root_resident: bool,
+    ) -> Result<bool> {
+        if let Some(structural_source) = structural_source {
+            match registry
+                .try_graft_char_subtree(structural_source, registry_path, ptr, root_resident)
+                .map_err(|error| {
+                    PersistentARTrieError::internal(format!(
+                        "char durable-registry graft failed: {error}"
+                    ))
+                })? {
+                RegistryGraftOutcome::Grafted { .. } => return Ok(true),
+                RegistryGraftOutcome::FallbackRequired => {}
+            }
+        }
+
+        if root_resident {
+            return Ok(false);
+        }
+
+        let root_ref = DurableRecordRef::from_typed_pointer(ptr)?;
+        scan_durable_registry_subtree(
+            root_ref,
+            registry_path,
+            root_resident,
+            |record_ref| self.read_char_registry_record(record_ref),
+            |path, event| match event {
+                DurableRegistryScanEvent::ReservePath { prefix, edge } => registry
+                    .try_reserve_char_units_parts(path, prefix, edge)
+                    .map_err(|message| {
+                        if message == "char overlay path contains a non-Unicode-scalar unit" {
+                            PersistentARTrieError::corrupted(message)
+                        } else {
+                            PersistentARTrieError::internal(message)
+                        }
+                    }),
+                DurableRegistryScanEvent::RegisterRecord { resident, record } => {
+                    registry.apply_char_scan_record(path, None, resident, record)
+                }
+            },
+        )?;
+        Ok(true)
     }
 }
 
@@ -1384,25 +1529,41 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCompressedSerialize<CharKey, V>
 fn overlay_inner_single_node<V>(
     node: &super::nodes::PersistentCharNode<V>,
     child_disk_ptrs: &[(u32, SwizzledPtr)],
-) -> CharTrieNodeInner<V>
+) -> Result<CharTrieNodeInner<V>>
 where
     V: DictionaryValue,
 {
     let mut inner = CharTrieNodeInner::<V>::default();
-    inner.node.header_mut().set_final(node.is_final());
+    inner.set_final(node.is_final());
     // G1: the overlay node carries `Option<V>` directly (no `u64 → V` bridge). For
     // `V = ()` membership the overlay never stores a value, so this is `None`.
     inner.value = node.get_value();
-    for &(key, ref ptr) in child_disk_ptrs {
-        if let Some(grown) = inner
-            .node
-            .add_child_growing(key, ptr.clone())
-            .expect("overlay_inner_single_node: add on-disk child within capacity")
-        {
-            inner.node = grown;
+    for &(key, ref pointer) in child_disk_ptrs {
+        let character = char::from_u32(key).ok_or_else(|| {
+            PersistentARTrieError::internal(format!(
+                "overlay serialization produced non-Unicode child key {key:#x}"
+            ))
+        })?;
+        if pointer.disk_location().is_none() {
+            return Err(PersistentARTrieError::internal(format!(
+                "overlay serialization child {character:?} is not a disk location"
+            )));
         }
+        let child =
+            super::types::NonResidentCharChild::try_from(pointer.clone()).map_err(|error| {
+                PersistentARTrieError::internal(format!(
+                    "overlay serialization child {character:?} is invalid: {error}"
+                ))
+            })?;
+        inner
+            .try_add_nonresident_child(character, child)
+            .map_err(|error| {
+                PersistentARTrieError::internal(format!(
+                    "overlay serialization child {character:?} could not be projected: {error}"
+                ))
+            })?;
     }
-    inner
+    Ok(inner)
 }
 
 /// CX (#43): [`overlay_inner_single_node`] PLUS a path-compression `prefix` stamped onto the
@@ -1414,7 +1575,7 @@ pub(crate) fn overlay_inner_single_node_with_prefix<V>(
     node: &super::nodes::PersistentCharNode<V>,
     child_disk_ptrs: &[(u32, SwizzledPtr)],
     prefix: &[u32],
-) -> CharTrieNodeInner<V>
+) -> Result<CharTrieNodeInner<V>>
 where
     V: DictionaryValue,
 {
@@ -1424,10 +1585,13 @@ where
         prefix.len(),
         super::nodes::CHAR_MAX_PREFIX_LEN
     );
-    let mut inner = overlay_inner_single_node(node, child_disk_ptrs);
-    inner.node.header_mut().prefix_len = prefix.len() as u8;
-    *inner.node.prefix_mut() = super::nodes::CharCompressedPrefix::from_chars(prefix);
-    inner
+    let mut inner = overlay_inner_single_node(node, child_disk_ptrs)?;
+    inner.set_compressed_prefix(prefix).map_err(|error| {
+        PersistentARTrieError::internal(format!(
+            "overlay serialization produced an invalid compressed prefix: {error}"
+        ))
+    })?;
+    Ok(inner)
 }
 
 /// Convert ONE owned production `CharTrieNodeInner<V>` back into an immutable
@@ -1469,7 +1633,7 @@ where
 /// MAINTENANCE COUPLING: mirrors [`overlay_to_inner`]; keep the two in lockstep.
 pub(super) fn inner_to_overlay<V>(
     inner: &CharTrieNodeInner<V>,
-) -> super::nodes::PersistentCharNode<V>
+) -> Result<super::nodes::PersistentCharNode<V>>
 where
     V: DictionaryValue,
 {
@@ -1484,12 +1648,15 @@ where
     if let Some(v) = inner.value.clone() {
         real = real.with_value(v);
     }
-    for (key, ptr) in inner.node.iter_children() {
+    for child in inner.nonresident_children() {
+        let (key, child) = child.map_err(|error| {
+            PersistentARTrieError::corrupted(format!(
+                "decoded char projection contains a resident/transitional child: {error}"
+            ))
+        })?;
+        let ptr = child.into_pointer();
         if !ptr.is_null() {
-            real = real.with_child(
-                key,
-                super::nodes::persistent_node::Child::OnDisk(ptr.clone()),
-            );
+            real = real.with_child(key, super::nodes::persistent_node::Child::OnDisk(ptr));
         }
     }
 
@@ -1500,10 +1667,9 @@ where
     // `real` by `prefix[p-1]`. p == 0 ⇒ zero intermediates ⇒ `real` only (no-op; the prior
     // behavior for every uncompressed production image). Built bottom-up so the returned node is
     // intermediate_0 (what the parent points to).
-    let prefix_len = inner.node.header().prefix_len as usize;
-    let prefix = inner.node.prefix().as_slice(prefix_len);
+    let prefix = inner.compressed_prefix();
     let mut cur = real;
-    for i in (0..prefix_len).rev() {
+    for i in (0..prefix.len()).rev() {
         cur = super::nodes::PersistentCharNode::<V>::new().with_child(
             prefix[i],
             super::nodes::persistent_node::Child::InMem(std::sync::Arc::new(cur)),
@@ -1513,7 +1679,7 @@ where
             "CX #43 (4A): an expanded prefix intermediate must be prefix_len=0, non-final, single-child"
         );
     }
-    cur
+    Ok(cur)
 }
 
 #[cfg(test)]
@@ -1856,7 +2022,7 @@ mod multi_writer_checkpointer_soak {
             assert!(trie.insert_cas_durable("survivor").expect("durable insert"));
             // Durable UNRANKED orphan: an Insert with NO following CommitRank — the
             // two-append-window crash state recovery must drop under Overlay.
-            trie.append_to_wal_returning_lsn(WalRecord::Insert {
+            trie.append_wal_record(WalRecord::Insert {
                 term: b"orphan".to_vec(),
                 value: None,
             })
@@ -2166,9 +2332,9 @@ mod immutable_eviction_checkpoint_correspondence {
                 .capture_snapshot_immutable()
                 .expect("capture immutable snapshot");
             let registry_len = snapshot
-                .eviction_registry
+                .registry_publication
                 .as_ref()
-                .map(|r| r.char_len())
+                .map(|publication| publication.char_len())
                 .expect("eviction enabled ⇒ snapshot carries a registry");
             assert!(
                 registry_len > 0,
@@ -2192,9 +2358,10 @@ mod immutable_eviction_checkpoint_correspondence {
 
             // Force an eviction over the published registry. Phase 7.5 (GO-LIVE): under
             // route_overlay() `force_eviction` now reclaims the OVERLAY — the
-            // route_overlay-gated callback routes to `evict_overlay_nodes`, which
-            // path-copies the `lockfree_root` spine InMem→OnDisk via loser-safe root CAS
-            // (the 1c `durable_stamp` guard keeps it safe under concurrent writers). The
+            // route-overlay path retains the compact batch generation while it
+            // path-copies the `lockfree_root` spine InMem→OnDisk via an exact,
+            // loser-safe root transition (the 1c `durable_stamp` guard keeps it
+            // safe under concurrent writers). The
             // OWNED `self.root` is `Empty` here, so the OLD owned walk (`evict_char_nodes`)
             // was a no-op; the new overlay evictor actually reclaims. (The eviction-OFF /
             // owned-tree path still uses `evict_char_nodes`; see eviction_registry_tests.rs.)
@@ -2368,7 +2535,6 @@ mod cx_expand_load {
     //! prefix-drop bug is fixed. The `p == 0` no-op is covered by the 152 existing fault/reopen
     //! tests staying green.
     use super::inner_to_overlay;
-    use crate::persistent_artrie::char::nodes::CharCompressedPrefix;
     use crate::persistent_artrie::char::types::CharTrieNodeInner;
 
     #[test]
@@ -2376,11 +2542,11 @@ mod cx_expand_load {
         // A compressed dense node: prefix "xyz" (3 units), FINAL terminus, no children.
         let mut inner = CharTrieNodeInner::<()>::new();
         inner.set_final(true);
-        inner.node.header_mut().prefix_len = 3;
-        *inner.node.prefix_mut() =
-            CharCompressedPrefix::from_chars(&['x' as u32, 'y' as u32, 'z' as u32]);
+        inner
+            .set_compressed_prefix(&['x' as u32, 'y' as u32, 'z' as u32])
+            .expect("valid test prefix");
 
-        let top = inner_to_overlay::<()>(&inner);
+        let top = inner_to_overlay::<()>(&inner).expect("valid nonresident projection");
 
         // Walk top --x--> i1 --y--> i2 --z--> real(final): each intermediate is prefix_len 0,
         // non-final, exactly one child keyed by the prefix unit.
@@ -2406,7 +2572,7 @@ mod cx_expand_load {
         // prefix_len == 0 ⇒ no intermediates ⇒ the real node only (the production no-op path).
         let mut inner = CharTrieNodeInner::<()>::new();
         inner.set_final(true);
-        let node = inner_to_overlay::<()>(&inner);
+        let node = inner_to_overlay::<()>(&inner).expect("valid nonresident projection");
         assert_eq!(node.prefix_len(), 0);
         assert!(node.is_final());
         assert_eq!(node.num_children(), 0);
@@ -2423,6 +2589,7 @@ mod cx_compressed_serialize {
     use crate::persistent_artrie::char::PersistentARTrieChar;
     use crate::persistent_artrie::core::block_storage::BlockStorage;
     use crate::persistent_artrie::core::overlay::node::Child;
+    use crate::persistent_artrie::core::overlay::test_support::{insert_path, visit_paths};
     use std::sync::Arc;
 
     fn scratch(prefix: &str) -> tempfile::TempDir {
@@ -2436,22 +2603,10 @@ mod cx_compressed_serialize {
     /// Build an UNCOMPRESSED overlay (one node per char) for the given terms — exactly the shape the
     /// overlay write path builds. Shared prefixes share nodes (immutable path-copy via `with_child`).
     fn build_overlay(terms: &[&str]) -> Arc<PersistentCharNode<()>> {
-        fn insert(node: Arc<PersistentCharNode<()>>, chars: &[u32]) -> Arc<PersistentCharNode<()>> {
-            match chars.split_first() {
-                None => Arc::new((*node).clone().as_final()),
-                Some((&edge, rest)) => {
-                    let child = match node.find_child(edge).and_then(|c| c.as_in_mem()) {
-                        Some(existing) => insert(existing.clone(), rest),
-                        None => insert(Arc::new(PersistentCharNode::<()>::new()), rest),
-                    };
-                    Arc::new((*node).clone().with_child(edge, Child::InMem(child)))
-                }
-            }
-        }
         let mut root = Arc::new(PersistentCharNode::<()>::new());
         for t in terms {
             let chars: Vec<u32> = t.chars().map(|c| c as u32).collect();
-            root = insert(root, &chars);
+            root = insert_path(root, &chars);
         }
         root
     }
@@ -2460,29 +2615,27 @@ mod cx_compressed_serialize {
     fn collect_terms<S: BlockStorage>(
         trie: &PersistentARTrieChar<(), S>,
         node: &Arc<PersistentCharNode<()>>,
-        pfx: &mut String,
         out: &mut Vec<String>,
     ) {
-        if node.is_final() {
-            out.push(pfx.clone());
-        }
-        let kids: Vec<(u32, Arc<PersistentCharNode<()>>)> = node
-            .iter_children()
-            .map(|(&k, child)| {
-                let n = match child.as_in_mem() {
-                    Some(a) => a.clone(),
-                    None => trie
-                        .load_overlay_node_from_disk(child.as_on_disk().expect("on-disk child"))
-                        .expect("fault child"),
-                };
-                (k, n)
-            })
-            .collect();
-        for (k, child) in kids {
-            pfx.push(char::from_u32(k).expect("valid char key"));
-            collect_terms(trie, &child, pfx, out);
-            pfx.pop();
-        }
+        visit_paths(
+            node,
+            &mut Vec::new(),
+            |child| match child.as_in_mem() {
+                Some(node) => node.clone(),
+                None => trie
+                    .load_overlay_node_from_disk(child.as_on_disk().expect("on-disk child"))
+                    .expect("fault child"),
+            },
+            |path, node| {
+                if node.is_final() {
+                    out.push(
+                        path.iter()
+                            .map(|&unit| char::from_u32(unit).expect("valid char key"))
+                            .collect(),
+                    );
+                }
+            },
+        );
     }
 
     fn roundtrip(name: &str, terms: &[&str]) {
@@ -2497,7 +2650,7 @@ mod cx_compressed_serialize {
             .load_overlay_node_from_disk(&root_ptr)
             .expect("load compressed root");
         let mut got = Vec::new();
-        collect_terms(&trie, &loaded, &mut String::new(), &mut got);
+        collect_terms(&trie, &loaded, &mut got);
         got.sort();
         let mut expect: Vec<String> = terms.iter().map(|s| s.to_string()).collect();
         expect.sort();
@@ -2541,6 +2694,53 @@ mod cx_compressed_serialize {
         roundtrip("cx-rt-single", &["q"]);
     }
 
+    /// The production compressed post-order machine, compressed loader, lazy
+    /// fault path, and overlay destruction must consume no native stack per
+    /// character. The depth is intentionally not a library limit: consumers
+    /// retain authority over their own resource policy.
+    #[test]
+    fn cx_compressed_roundtrip_and_fault_walk_are_stack_safe_at_100k_characters() {
+        const DEPTH: usize = 100_000;
+        const EDGE: u32 = 'λ' as u32;
+
+        let dir = scratch("cx-stack-safe-100k");
+        let trie = PersistentARTrieChar::<()>::create(dir.path().join("t.artc"))
+            .expect("create disk trie");
+        let units = vec![EDGE; DEPTH];
+        let root = insert_path(Arc::new(PersistentCharNode::<()>::new()), &units);
+        let root_ptr = trie
+            .serialize_overlay_snapshot_compressed(&root, None)
+            .expect("serialize the 100,000-character overlay");
+
+        // Drop the fully resident source before loading so the remainder of
+        // the test cannot accidentally traverse it.
+        drop(root);
+        let loaded = trie
+            .load_overlay_node_from_disk(&root_ptr)
+            .expect("load compressed root");
+        let mut current = loaded.clone();
+        let mut faults = 0usize;
+        for depth in 0..DEPTH {
+            let child = current
+                .find_child(EDGE)
+                .unwrap_or_else(|| panic!("missing edge at depth {depth}"));
+            current = match child {
+                Child::InMem(child) => child.clone(),
+                Child::OnDisk(pointer) => {
+                    faults += 1;
+                    trie.load_overlay_node_from_disk(pointer)
+                        .unwrap_or_else(|error| panic!("fault failed at depth {depth}: {error}"))
+                }
+            };
+        }
+        assert!(current.is_final(), "the 100,000th node is final");
+        assert_eq!(current.num_children(), 0, "the path has an exact terminus");
+        assert!(
+            faults > 0,
+            "the walk must exercise production lazy faults, not only resident expansion"
+        );
+    }
+
     /// Prove the serializer genuinely EMITS `prefix_len > 0` chunk nodes (not a trivially-uncompressed
     /// image that would also round-trip): for a 21-char single chain, the root's child is a dense node
     /// with `prefix_len == CHAR_MAX_PREFIX_LEN` (the first full chunk).
@@ -2558,21 +2758,21 @@ mod cx_compressed_serialize {
             .load_char_node_from_disk_lazy(bm, &root_ptr)
             .expect("raw root");
         // The root itself is uncompressed (prefix_len 0); its single child is the top chunk node.
-        assert_eq!(
-            raw_root.node.header().prefix_len,
-            0,
+        assert!(
+            raw_root.compressed_prefix().is_empty(),
             "root carries no prefix"
         );
-        let (_k, child_ptr) = raw_root
-            .node
-            .iter_children()
+        let (_k, child) = raw_root
+            .nonresident_children()
             .next()
-            .expect("root has one child (the chain head)");
+            .expect("root has one child (the chain head)")
+            .expect("decoded root child is nonresident");
+        let child_ptr = child.into_pointer();
         let raw_child = trie
-            .load_char_node_from_disk_lazy(bm, &child_ptr.clone())
+            .load_char_node_from_disk_lazy(bm, &child_ptr)
             .expect("raw chunk node");
         assert_eq!(
-            raw_child.node.header().prefix_len as usize,
+            raw_child.compressed_prefix().len(),
             crate::persistent_artrie::char::nodes::CHAR_MAX_PREFIX_LEN,
             "the chain head must be a COMPRESSED chunk node carrying a full prefix"
         );
@@ -2595,8 +2795,9 @@ mod cx_compressed_serialize {
                 .load_char_node_from_disk_lazy(bm, &ptr)
                 .expect("raw node");
             count += 1;
-            for (_k, child) in inner.node.iter_children() {
-                stack.push(child.clone());
+            for child in inner.nonresident_children() {
+                let (_key, child) = child.expect("decoded child is nonresident");
+                stack.push(child.into_pointer());
             }
         }
         count
@@ -2627,7 +2828,7 @@ mod cx_compressed_serialize {
         );
     }
 
-    /// Recursively fault the loaded overlay and assert it is STRUCTURALLY IDENTICAL to `oracle` (a
+    /// Iteratively fault the loaded overlay and assert it is STRUCTURALLY IDENTICAL to `oracle` (a
     /// fully-InMem uncompressed overlay): same finality, same child-edge set, and `prefix_len == 0`
     /// at EVERY node (the expanded overlay must be uncompressed). Catches any edge↔prefix convention
     /// drift the term-set check might miss (red-team B1).
@@ -2636,36 +2837,39 @@ mod cx_compressed_serialize {
         loaded: &Arc<PersistentCharNode<()>>,
         oracle: &Arc<PersistentCharNode<()>>,
     ) {
-        assert_eq!(
-            loaded.prefix_len(),
-            0,
-            "expanded overlay node must be uncompressed"
-        );
-        assert_eq!(loaded.is_final(), oracle.is_final(), "finality mismatch");
         use std::collections::BTreeSet;
-        let lk: BTreeSet<u32> = loaded.iter_children().map(|(&k, _)| k).collect();
-        let ok: BTreeSet<u32> = oracle.iter_children().map(|(&k, _)| k).collect();
-        assert_eq!(lk, ok, "child-edge set mismatch");
-        for &k in &lk {
-            let lc = match loaded.find_child(k).expect("loaded child").as_in_mem() {
-                Some(a) => a.clone(),
-                None => trie
-                    .load_overlay_node_from_disk(
-                        loaded
-                            .find_child(k)
-                            .expect("loaded child")
-                            .as_on_disk()
-                            .expect("on-disk"),
-                    )
-                    .expect("fault child"),
-            };
-            let oc = oracle
-                .find_child(k)
-                .expect("oracle child")
-                .as_in_mem()
-                .expect("oracle is fully InMem")
-                .clone();
-            assert_expanded_eq(trie, &lc, &oc);
+        let mut pending = vec![(Arc::clone(loaded), Arc::clone(oracle))];
+        while let Some((loaded, oracle)) = pending.pop() {
+            assert_eq!(
+                loaded.prefix_len(),
+                0,
+                "expanded overlay node must be uncompressed"
+            );
+            assert_eq!(loaded.is_final(), oracle.is_final(), "finality mismatch");
+            let loaded_keys: BTreeSet<u32> = loaded.iter_children().map(|(&key, _)| key).collect();
+            let oracle_keys: BTreeSet<u32> = oracle.iter_children().map(|(&key, _)| key).collect();
+            assert_eq!(loaded_keys, oracle_keys, "child-edge set mismatch");
+            for key in loaded_keys {
+                let loaded_child = match loaded.find_child(key).expect("loaded child").as_in_mem() {
+                    Some(child) => Arc::clone(child),
+                    None => trie
+                        .load_overlay_node_from_disk(
+                            loaded
+                                .find_child(key)
+                                .expect("loaded child")
+                                .as_on_disk()
+                                .expect("on-disk"),
+                        )
+                        .expect("fault child"),
+                };
+                let oracle_child = oracle
+                    .find_child(key)
+                    .expect("oracle child")
+                    .as_in_mem()
+                    .expect("oracle is fully InMem")
+                    .clone();
+                pending.push((loaded_child, oracle_child));
+            }
         }
     }
 
@@ -2718,7 +2922,7 @@ mod cx_compressed_serialize {
     /// the #6/#39 regression this catches) AND the prefix must refault LOSSLESSLY.
     #[test]
     fn cx_6_evict_then_refault_compressed_chunk() {
-        use crate::persistent_artrie::eviction::{DiskLocationRegistry, EvictionConfig};
+        use crate::persistent_artrie::eviction::EvictionConfig;
         let dir = scratch("cx6-evict-refault");
         let path = dir.path().join("t.artc");
         let mut owned = PersistentARTrieChar::<()>::create(&path).expect("create");
@@ -2733,18 +2937,10 @@ mod cx_compressed_serialize {
         }
         let trie = std::sync::Arc::new(owned);
 
-        // Build a COMPRESSED image + eviction registry from the LIVE overlay.
-        let root = trie
-            .lockfree_root
-            .as_ref()
-            .and_then(|r| r.load())
-            .expect("overlay root present");
-        let mut registry = DiskLocationRegistry::new();
-        let _ = trie
-            .serialize_overlay_snapshot_compressed(&root, Some(&mut registry))
-            .expect("serialize compressed (eviction-ON)");
-
-        // Publish the compressed registry to the coordinator.
+        // Exercise the real compressed checkpoint transaction: serialization,
+        // exact root binding, registry publication, and deferred stamps.
+        trie.bench_immutable_checkpoint_with_eviction()
+            .expect("compressed checkpoint with eviction");
         let coordinator = trie
             .eviction_coordinator
             .lock()
@@ -2752,16 +2948,17 @@ mod cx_compressed_serialize {
             .as_ref()
             .expect("eviction enabled")
             .clone();
-        coordinator.update_disk_registry(registry);
         assert!(
             trie.evictable_node_count().unwrap_or(0) > 0,
             "the compressed registry must be published"
         );
 
         // Evict everything reachable.
-        let (evicted, _) = coordinator.force_eviction_char(usize::MAX, |cands| {
-            crate::persistent_artrie::char::evict_overlay_nodes(&*trie, cands, 4)
-        });
+        let root = trie.lockfree_root.as_ref().expect("published overlay root");
+        let (evicted, _) =
+            coordinator.force_eviction_compact_char_root(root, usize::MAX, |batch| {
+                crate::persistent_artrie::char::evict_overlay_compact_batch(&trie, batch, 4)
+            });
         assert!(
             evicted > 0,
             "CX #6: a compressed chunk node MUST evict (NotEvictable ⇒ wrong registry depth/stamp = #39 regression)"
@@ -2779,48 +2976,41 @@ mod cx_compressed_serialize {
         );
     }
 
-    /// **CX #6 (F.3 — the gate no-op) load-side `prefix_len>0` stamp gate.** A faulted node gets a
-    /// `durable_stamp` IFF it was a compressed (`prefix_len>0`) chunk on disk. This proves the two
-    /// halves of Finding 3: (a) an UNCOMPRESSED (`prefix_len==0`) image yields ZERO stamps on fault —
-    /// byte-for-byte the pre-#6 production behavior (#39 unchanged); (b) a COMPRESSED chunk's expanded
-    /// top carries `stamp == its disk_ptr`, the exact predicate the eviction guard needs to RE-evict a
-    /// refaulted chunk (`evict iff durable_stamp() == disk_ptr.to_raw()`).
+    /// Every exact disk decode stamps the top-level result with its source pointer. For a compressed
+    /// record this is the top of the expanded span; for an uncompressed record it is the decoded node
+    /// itself. Thus both shapes are re-evictable after a winning exact fault transaction.
     #[test]
-    fn cx_6_load_stamp_gate_uncompressed_noop_compressed_stamps() {
-        // Fault-walk a loaded image; on every FAULTED node assert the stamp invariant:
-        //   prefix_len==0 on disk → stamp 0 (production no-op); prefix_len>0 → stamp == its disk_ptr.
+    fn exact_fault_load_stamps_uncompressed_and_compressed_records() {
         fn walk<S: BlockStorage>(
             trie: &PersistentARTrieChar<(), S>,
             node: &Arc<PersistentCharNode<()>>,
-            stamped: &mut usize,
-            unstamped: &mut usize,
+            fault_count: &mut usize,
         ) {
-            let kids: Vec<Child<crate::persistent_artrie::core::key_encoding::CharKey>> =
-                node.iter_children().map(|(_, c)| c.clone()).collect();
-            for child in kids {
-                if let Some(on_disk) = child.as_on_disk() {
-                    let raw = on_disk.to_raw();
-                    let faulted = trie
-                        .load_overlay_node_from_disk(on_disk)
-                        .expect("fault child");
-                    match faulted.durable_stamp() {
-                        0 => *unstamped += 1,
-                        stamp => {
-                            assert_eq!(
-                                stamp, raw,
-                                "a stamped (compressed-chunk) node's stamp must equal the disk_ptr it faulted from"
-                            );
-                            *stamped += 1;
-                        }
+            let mut pending = vec![node.clone()];
+            while let Some(node) = pending.pop() {
+                let kids: Vec<Child<crate::persistent_artrie::core::key_encoding::CharKey>> =
+                    node.iter_children().map(|(_, c)| c.clone()).collect();
+                for child in kids {
+                    if let Some(on_disk) = child.as_on_disk() {
+                        let raw = on_disk.to_raw();
+                        let loaded = trie
+                            .load_overlay_node_from_disk(on_disk)
+                            .expect("fault child");
+                        assert_eq!(
+                            loaded.durable_stamp(),
+                            raw,
+                            "every exact fault decode must retain its source disk pointer"
+                        );
+                        *fault_count += 1;
+                        pending.push(loaded);
+                    } else if let Some(in_mem) = child.as_in_mem() {
+                        pending.push(in_mem.clone());
                     }
-                    walk(trie, &faulted, stamped, unstamped);
-                } else if let Some(in_mem) = child.as_in_mem() {
-                    walk(trie, in_mem, stamped, unstamped);
                 }
             }
         }
 
-        // (a) UNCOMPRESSED: all-short branching terms → every chunk prefix_len=0 → ZERO stamps.
+        // Uncompressed branching records are exact disk decodes and must be re-evictable.
         let dir = scratch("cx6-noop-uncompressed");
         let trie = PersistentARTrieChar::<()>::create(dir.path().join("t.artc")).expect("create");
         let root = build_overlay(&["a", "b", "ca", "cb"]);
@@ -2830,18 +3020,13 @@ mod cx_compressed_serialize {
         let loaded = trie
             .load_overlay_node_from_disk(&root_ptr)
             .expect("load uncompressed root");
-        assert_eq!(
-            loaded.durable_stamp(),
-            0,
-            "the uncompressed root itself must be unstamped on fault"
+        assert_eq!(loaded.durable_stamp(), root_ptr.to_raw());
+        let mut uncompressed_faults = 0usize;
+        walk(&trie, &loaded, &mut uncompressed_faults);
+        assert!(
+            uncompressed_faults > 0,
+            "sanity: at least one node was faulted"
         );
-        let (mut s, mut u) = (0usize, 0usize);
-        walk(&trie, &loaded, &mut s, &mut u);
-        assert_eq!(
-            s, 0,
-            "CX #6: an UNCOMPRESSED (prefix_len=0) image must yield ZERO durable stamps on fault (production no-op)"
-        );
-        assert!(u > 0, "sanity: at least one node was faulted");
 
         // (b) COMPRESSED: a long chain below a branch → ≥1 prefix_len>0 chunk → ≥1 stamp == its disk_ptr.
         let dir2 = scratch("cx6-stamp-compressed");
@@ -2853,13 +3038,13 @@ mod cx_compressed_serialize {
         let loaded2 = trie2
             .load_overlay_node_from_disk(&root2_ptr)
             .expect("load compressed root");
-        let (mut s2, mut u2) = (0usize, 0usize);
-        walk(&trie2, &loaded2, &mut s2, &mut u2);
+        assert_eq!(loaded2.durable_stamp(), root2_ptr.to_raw());
+        let mut compressed_faults = 0usize;
+        walk(&trie2, &loaded2, &mut compressed_faults);
         assert!(
-            s2 > 0,
-            "CX #6: a COMPRESSED (prefix_len>0) chunk must be stamped == its disk_ptr on fault (re-evictable)"
+            compressed_faults > 0,
+            "sanity: compressed image has faulted children"
         );
-        let _ = u2;
     }
 }
 

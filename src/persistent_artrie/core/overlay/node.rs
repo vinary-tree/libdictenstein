@@ -56,10 +56,14 @@
 //! so dropping a superseded node version decrements its children's refcounts —
 //! reclamation falls out of ordinary `Arc` refcounting, with no leak.
 
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::persistent_artrie::core::adaptive_edge_store::{AdaptiveEdgeStore, SortedUniqueEntries};
+use smallvec::SmallVec;
+
+use crate::persistent_artrie::core::adaptive_edge_store::{
+    AdaptiveEdgeStore, ExistingReplacementError, SortedUniqueEntries,
+};
 use crate::persistent_artrie::core::key_encoding::KeyEncoding;
 use crate::persistent_artrie::core::swizzled_ptr::SwizzledPtr;
 // `DictionaryValue` is the bound callers supply for the genericized value `V`; it
@@ -68,6 +72,11 @@ use crate::persistent_artrie::core::swizzled_ptr::SwizzledPtr;
 // trait bound is supplied by callers in the variants' `lockfree_cas.rs`.
 #[allow(unused_imports)]
 use crate::value::DictionaryValue;
+
+/// A compact set of existing child slots replaced by one immutable path-copy step.
+///
+/// The inline singleton preserves the common unary-path case without allocating.
+pub(crate) type ChildReplacements<K, V> = SmallVec<[(<K as KeyEncoding>::Unit, Child<K, V>); 1]>;
 
 /// Node flags (same as existing node flags for compatibility)
 pub mod flags {
@@ -184,6 +193,20 @@ struct ChildStore<K: KeyEncoding, V = ()> {
     inner: AdaptiveEdgeStore<K::Unit, Child<K, V>>,
 }
 
+/// A precondition, arithmetic, or adaptive-store failure while rebuilding an
+/// immutable node from existing child-label replacements.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ChildReplacementError {
+    #[error("overlay child replacement version delta is zero")]
+    ZeroVersionDelta,
+    #[error("overlay child replacement version delta does not fit u64")]
+    VersionDeltaOverflow,
+    #[error("overlay child replacement version overflow")]
+    VersionOverflow,
+    #[error(transparent)]
+    Store(#[from] ExistingReplacementError),
+}
+
 impl<K: KeyEncoding, V: Clone> Clone for ChildStore<K, V> {
     fn clone(&self) -> Self {
         Self {
@@ -288,6 +311,15 @@ impl<K: KeyEncoding, V: Clone> ChildStore<K, V> {
     fn without_child(&self, key: K::Unit) -> Option<Self> {
         self.inner.without_edge(key).map(|inner| Self { inner })
     }
+
+    fn try_with_replacements(
+        &self,
+        replacements: ChildReplacements<K, V>,
+    ) -> Result<Self, ExistingReplacementError> {
+        Ok(Self {
+            inner: self.inner.try_with_existing_replacements(replacements)?,
+        })
+    }
 }
 
 // ============================================================================
@@ -322,10 +354,13 @@ pub struct OverlayNode<K: KeyEncoding, V = ()> {
 
     /// Durable on-disk location stamp (`SwizzledPtr::to_raw()`) recording WHERE this
     /// exact immutable node content was last serialized into a checkpoint image;
-    /// `0` = none. Written `Release` ONLY by [`Self::set_durable_stamp`] at the
-    /// serialize/register site (on the live node the checkpoint just proved durable).
-    /// EVERY other construction path — `new`, all `with_*`/`as_*` path-copies, `Clone`,
-    /// fault-in, recovery — leaves it `0`. This is the eviction-safety lynchpin (M-2a):
+    /// `0` = none. Written `Release` ONLY by [`Self::set_durable_stamp`] at either the
+    /// serialize/register site (on the live node the checkpoint just proved durable) or
+    /// the exact decoder (on the top-level node loaded from that precise disk pointer
+    /// before publication). Every fresh or structural construction path — `new`, all
+    /// `with_*`/`as_*` path-copies, and `Clone` — leaves it `0`; synthetic descendants
+    /// expanded from a compressed record also remain `0`. This is the eviction-safety
+    /// lynchpin (M-2a):
     /// a node is safe to unswizzle to its registered `disk_ptr` IFF its stamp still
     /// equals `disk_ptr.to_raw()` (⟺, by the immutable path-copy invariant that any
     /// write bumps every ancestor, neither it nor any descendant was overwritten since
@@ -338,9 +373,9 @@ pub struct OverlayNode<K: KeyEncoding, V = ()> {
     /// Tiered child storage (Inline for 0-4 children, Heap for 5+)
     store: ChildStore<K, V>,
 
-    /// Node flags (IS_FINAL, IS_DIRTY, IS_LEAF, HAS_VALUE)
-    /// Atomic to allow setting final flag during concurrent insert race
-    flags: AtomicU8,
+    /// Immutable node flags (IS_FINAL, IS_DIRTY, IS_LEAF, HAS_VALUE).
+    /// Concurrent changes path-copy the node and publish a fresh root revision.
+    flags: u8,
 
     /// Value for final nodes. **Immutable** (set at node construction / path-copy):
     /// arbitrary `V` cannot live in an atomic, so finalization+value are baked into
@@ -376,7 +411,7 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
             version: AtomicU64::new(0),
             serial_disk_ptr: AtomicU64::new(0),
             store: ChildStore::new(),
-            flags: AtomicU8::new(0),
+            flags: 0,
             value: None,
             prefix: Arc::new([]),
             prefix_len: 0,
@@ -392,7 +427,7 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
             version: AtomicU64::new(0),
             serial_disk_ptr: AtomicU64::new(0),
             store: ChildStore::new(),
-            flags: AtomicU8::new(0),
+            flags: 0,
             value: None,
             prefix: prefix_data,
             prefix_len,
@@ -422,7 +457,7 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
             version: AtomicU64::new(version),
             serial_disk_ptr: AtomicU64::new(0),
             store: build_store(children)?,
-            flags: AtomicU8::new(node_flags),
+            flags: node_flags,
             value,
             prefix: Arc::new([]),
             prefix_len: 0,
@@ -476,7 +511,8 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
 
     /// Read the durable-location stamp (`Acquire`): the `SwizzledPtr::to_raw()` of the
     /// checkpoint image this exact node content lives at, or `0` if this node has not
-    /// been serialized as-is (any write/evict path-copy, fault-in, or fresh node).
+    /// been serialized as-is or decoded exactly from such an image (any write/evict
+    /// path-copy or fresh node).
     ///
     /// The eviction guard (M-2a) evicts a node to its registered `disk_ptr` ONLY when
     /// `durable_stamp() == disk_ptr.to_raw()` — see [`Self::set_durable_stamp`].
@@ -485,11 +521,13 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
         self.serial_disk_ptr.load(Ordering::Acquire)
     }
 
-    /// Record (`Release`) that this exact node content was serialized to `raw`
-    /// (= `SwizzledPtr::to_raw()` of its on-disk image). Called ONLY at the
-    /// serialize/register site, on the live node the checkpoint just proved durable.
-    /// MUST NOT be called from any other construction path (doing so would falsely
-    /// authorize eviction to a location not in the current registry — the M-2a hazard).
+    /// Record (`Release`) that this exact node content is represented by `raw`
+    /// (= `SwizzledPtr::to_raw()` of its on-disk image). Called either at the
+    /// serialize/register site on the live node the checkpoint just proved durable,
+    /// or on the exact top-level result of decoding `raw` before a fault publication.
+    /// It MUST NOT be copied through any structural construction path. A stamp alone
+    /// never authorizes eviction: the exact registry generation, path, disk pointer,
+    /// and residency are revalidated in the coordinator lifecycle transaction.
     /// The `Release` here pairs with the `Acquire` in [`Self::durable_stamp`] and rides
     /// the checkpoint's registry-publish happens-before edge to the evictor.
     #[inline]
@@ -524,7 +562,7 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
     /// Check if this node is final (represents a complete word).
     #[inline]
     pub fn is_final(&self) -> bool {
-        self.flags.load(Ordering::Acquire) & flags::IS_FINAL != 0
+        self.flags & flags::IS_FINAL != 0
     }
 
     /// Check if this node has a value assigned.
@@ -537,34 +575,6 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
     #[inline]
     pub fn get_value(&self) -> Option<V> {
         self.value.clone()
-    }
-
-    /// Atomically try to set the final flag.
-    ///
-    /// This is used during concurrent insertion when multiple threads
-    /// race to finalize the same node. Only one thread will succeed.
-    ///
-    /// # Returns
-    ///
-    /// - `true` if this call set the flag (winner of the race)
-    /// - `false` if the flag was already set (lost the race)
-    #[inline]
-    pub fn try_set_final(&self) -> bool {
-        let old = self.flags.fetch_or(flags::IS_FINAL, Ordering::AcqRel);
-        let newly_final = (old & flags::IS_FINAL) == 0;
-        if newly_final {
-            // M-2a (defensive close of the non-durable-insert NIT): an IN-PLACE
-            // finalization (the only stamp-non-clearing mutation — used by the
-            // non-durable `insert_cas` proper-prefix path) makes this live node DIVERGE
-            // from its durable image (which had IS_FINAL=0). Clear the stamp so the
-            // eviction guard (`durable_stamp() == disk_ptr.to_raw()`) REFUSES to evict
-            // it to the now-stale on-disk image until it is re-serialized. Release pairs
-            // with the evictor's Acquire read. (Durable writes already path-copy via
-            // `as_final`, a fresh stamp-0 node, so this only matters for the non-durable
-            // API mixed with eviction; cheap + robust regardless.)
-            self.serial_disk_ptr.store(0, Ordering::Release);
-        }
-        newly_final
     }
 
     /// Find a child by key (lock-free read).
@@ -608,11 +618,60 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
             // M-2a: a path-copy is NOT a durable image — never evictable until re-serialized.
             serial_disk_ptr: AtomicU64::new(0),
             store: self.store.with_child(key, child),
-            flags: AtomicU8::new(self.flags.load(Ordering::Acquire)),
+            flags: self.flags,
             value: self.value.clone(),
             prefix: self.prefix.clone(),
             prefix_len: self.prefix_len,
         }
+    }
+
+    /// Replace several existing child slots in one linear merge and one optimal
+    /// adaptive-store rebuild. `version_delta` preserves the observable version
+    /// increments of the equivalent sequence of immutable path copies.
+    pub(crate) fn try_with_child_replacements(
+        &self,
+        replacements: ChildReplacements<K, V>,
+        version_delta: usize,
+    ) -> Result<Self, ChildReplacementError> {
+        if version_delta == 0 {
+            return Err(ChildReplacementError::ZeroVersionDelta);
+        }
+        let delta = u64::try_from(version_delta)
+            .map_err(|_| ChildReplacementError::VersionDeltaOverflow)?;
+        let version = self
+            .version
+            .load(Ordering::Acquire)
+            .checked_add(delta)
+            .ok_or(ChildReplacementError::VersionOverflow)?;
+        Ok(Self {
+            version: AtomicU64::new(version),
+            serial_disk_ptr: AtomicU64::new(0),
+            store: self.store.try_with_replacements(replacements)?,
+            flags: self.flags,
+            value: self.value.clone(),
+            prefix: Arc::clone(&self.prefix),
+            prefix_len: self.prefix_len,
+        })
+    }
+
+    /// Rebuild one existing child slot through the production eviction merge.
+    ///
+    /// This deliberately narrow benchmark-control seam lets the external
+    /// allocation harness measure the exact per-level operation used by the
+    /// eviction path. It is absent from ordinary builds and performs no
+    /// instrumentation of its own, so enabling it cannot add counters or
+    /// conditional work to the measured implementation.
+    #[cfg(feature = "benchmark-controls")]
+    #[doc(hidden)]
+    #[inline]
+    pub fn benchmark_rebuild_existing_child(
+        &self,
+        key: K::Unit,
+        child: Child<K, V>,
+    ) -> Option<Self> {
+        let mut replacements = SmallVec::<[(K::Unit, Child<K, V>); 1]>::new();
+        replacements.push((key, child));
+        self.try_with_child_replacements(replacements, 1).ok()
     }
 
     /// Create a new version with a child removed.
@@ -627,7 +686,7 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
             // M-2a: a path-copy is NOT a durable image — never evictable until re-serialized.
             serial_disk_ptr: AtomicU64::new(0),
             store: new_store,
-            flags: AtomicU8::new(self.flags.load(Ordering::Acquire)),
+            flags: self.flags,
             value: self.value.clone(),
             prefix: self.prefix.clone(),
             prefix_len: self.prefix_len,
@@ -644,7 +703,7 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
             // M-2a: a path-copy is NOT a durable image — never evictable until re-serialized.
             serial_disk_ptr: AtomicU64::new(0),
             store: self.store.clone(),
-            flags: AtomicU8::new(self.flags.load(Ordering::Acquire)),
+            flags: self.flags,
             value: self.value.clone(),
             prefix: prefix_data,
             prefix_len,
@@ -658,7 +717,7 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
             // M-2a: a path-copy is NOT a durable image — never evictable until re-serialized.
             serial_disk_ptr: AtomicU64::new(0),
             store: self.store.clone(),
-            flags: AtomicU8::new(self.flags.load(Ordering::Acquire) | flags::IS_FINAL),
+            flags: self.flags | flags::IS_FINAL,
             value: self.value.clone(),
             prefix: self.prefix.clone(),
             prefix_len: self.prefix_len,
@@ -680,16 +739,15 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
     ///
     /// # Why a fresh copy, never an in-place clear (design §3.5)
     ///
-    /// [`Self::try_set_final`]'s in-place `fetch_or(IS_FINAL)` is monotone-safe
-    /// (an early observer of a 0→1 flip is benign — membership only ever grows on
-    /// that path). A 1→0 clear is NOT monotone: an in-place `fetch_and(!IS_FINAL)`
-    /// racing an in-place `fetch_or(IS_FINAL)` on the SAME shared node has no
-    /// serialization point and could resurrect or lose a write. By producing a
-    /// fresh cleared node version here and publishing it ONLY via the overlay's
-    /// single root CAS, the clear is atomic with one specific published root and
-    /// the root-CAS arbiter linearizes it. The node's `flags` is therefore only
-    /// ever flipped in-place 0→1 (by `try_set_final`); the 1→0 transition happens
-    /// solely on a fresh copy via this method, arbitrated by the root CAS. The
+    /// [`Self::as_final`] creates a fresh node version with `IS_FINAL` set. A
+    /// 1→0 clear must preserve the same immutability discipline: mutating a
+    /// shared node in place while another writer publishes a final copy would
+    /// have no common serialization point and could resurrect or lose a write.
+    /// By producing a fresh cleared node version here and publishing it ONLY via
+    /// the overlay's single root CAS, the clear is atomic with one specific
+    /// published root and the root-CAS arbiter linearizes it. Both 0→1 and 1→0
+    /// transitions therefore occur on fresh copies and become visible only
+    /// through the root CAS. The
     /// `LockFreeOverlayRemoveCas_Unsafe.cfg` negative control proves the in-place
     /// alternative violates last-writer-wins.
     ///
@@ -702,9 +760,7 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
             serial_disk_ptr: AtomicU64::new(0),
             // SUBTREE RETAINED: remove "cat" must keep "cats" reachable.
             store: self.store.clone(),
-            flags: AtomicU8::new(
-                self.flags.load(Ordering::Acquire) & !(flags::IS_FINAL | flags::HAS_VALUE),
-            ),
+            flags: self.flags & !(flags::IS_FINAL | flags::HAS_VALUE),
             // Drop the value (mirror owned remove).
             value: None,
             prefix: self.prefix.clone(),
@@ -719,7 +775,7 @@ impl<K: KeyEncoding, V: Clone> OverlayNode<K, V> {
             // M-2a: a path-copy is NOT a durable image — never evictable until re-serialized.
             serial_disk_ptr: AtomicU64::new(0),
             store: self.store.clone(),
-            flags: AtomicU8::new(self.flags.load(Ordering::Acquire) | flags::HAS_VALUE),
+            flags: self.flags | flags::HAS_VALUE,
             value: Some(value),
             prefix: self.prefix.clone(),
             prefix_len: self.prefix_len,
@@ -775,7 +831,7 @@ impl<K: KeyEncoding, V: Clone> Clone for OverlayNode<K, V> {
             // M-2a: a Clone is a fresh node, not a re-serialized durable image → stamp 0.
             serial_disk_ptr: AtomicU64::new(0),
             store: self.store.clone(),
-            flags: AtomicU8::new(self.flags.load(Ordering::Acquire)),
+            flags: self.flags,
             value: self.value.clone(),
             prefix: self.prefix.clone(),
             prefix_len: self.prefix_len,
@@ -943,6 +999,88 @@ mod tests {
     }
 
     #[test]
+    fn owned_child_replacements_preserve_node_semantics_and_exact_version_delta() {
+        let original_a = Arc::new(ByteValuedNode::new().with_value(11));
+        let original_b = SwizzledPtr::on_disk(2, 200, NodeType::Node4);
+        let untouched_c = Arc::new(ByteValuedNode::new().with_value(33));
+        let node = ByteValuedNode::with_prefix(b"prefix")
+            .with_child(b'a', Child::InMem(Arc::clone(&original_a)))
+            .with_child(b'b', Child::OnDisk(original_b.clone()))
+            .with_child(b'c', Child::InMem(Arc::clone(&untouched_c)))
+            .as_final()
+            .with_value(77);
+        let durable = SwizzledPtr::on_disk(9, 900, NodeType::Node4).to_raw();
+        node.set_durable_stamp(durable);
+
+        let replacement_a = SwizzledPtr::on_disk(4, 400, NodeType::Node4);
+        let replacement_b = Arc::new(ByteValuedNode::new().with_value(22));
+        let mut replacements = SmallVec::new();
+        replacements.push((b'a', Child::OnDisk(replacement_a.clone())));
+        replacements.push((b'b', Child::InMem(Arc::clone(&replacement_b))));
+
+        let replaced = node
+            .try_with_child_replacements(replacements, 2)
+            .expect("existing child replacements");
+
+        assert_eq!(replaced.version(), node.version() + 2);
+        assert_eq!(replaced.durable_stamp(), 0);
+        assert_eq!(node.durable_stamp(), durable);
+        assert!(replaced.is_final());
+        assert!(replaced.has_value());
+        assert_eq!(replaced.get_value(), Some(77));
+        assert_eq!(replaced.prefix(), node.prefix());
+        assert_eq!(replaced.num_children(), node.num_children());
+        assert_eq!(
+            replaced
+                .find_child(b'a')
+                .and_then(Child::as_on_disk)
+                .map(SwizzledPtr::to_raw),
+            Some(replacement_a.to_raw())
+        );
+        assert!(Arc::ptr_eq(
+            replaced
+                .find_child(b'b')
+                .and_then(Child::as_in_mem)
+                .expect("replacement b is resident"),
+            &replacement_b,
+        ));
+        assert!(Arc::ptr_eq(
+            replaced
+                .find_child(b'c')
+                .and_then(Child::as_in_mem)
+                .expect("untouched c remains resident"),
+            &untouched_c,
+        ));
+
+        assert!(Arc::ptr_eq(
+            node.find_child(b'a')
+                .and_then(Child::as_in_mem)
+                .expect("source a remains resident"),
+            &original_a,
+        ));
+        assert_eq!(
+            node.find_child(b'b')
+                .and_then(Child::as_on_disk)
+                .map(SwizzledPtr::to_raw),
+            Some(original_b.to_raw())
+        );
+    }
+
+    #[test]
+    fn owned_child_replacements_reject_zero_version_delta_without_mutation() {
+        let child = SwizzledPtr::on_disk(1, 100, NodeType::Node4);
+        let node = ByteValuedNode::new().with_child(b'a', Child::OnDisk(child.clone()));
+        let replacements = SmallVec::from_buf([(b'a', Child::OnDisk(child))]);
+
+        assert!(matches!(
+            node.try_with_child_replacements(replacements, 0),
+            Err(ChildReplacementError::ZeroVersionDelta)
+        ));
+        assert_eq!(node.num_children(), 1);
+        assert_eq!(node.version(), 1);
+    }
+
+    #[test]
     fn test_with_prefix_byte() {
         let prefix: Vec<u8> = b"hello".to_vec();
         let node = ByteNode::with_prefix(&prefix);
@@ -1048,12 +1186,11 @@ mod tests {
     }
 
     #[test]
-    fn test_try_set_final_byte() {
+    fn finalization_path_copies_without_mutating_the_source() {
         let node = ByteNode::new();
-        assert!(node.try_set_final());
-        assert!(node.is_final());
-        assert!(!node.try_set_final());
-        assert!(node.is_final());
+        let final_node = node.as_final();
+        assert!(!node.is_final());
+        assert!(final_node.is_final());
     }
 
     #[test]
@@ -1428,10 +1565,11 @@ mod tests {
         assert!(valued.has_value());
         assert_eq!(valued.get_value(), Some(7));
         assert_eq!(valued.num_children(), 1);
-        // try_set_final is a single-winner arbiter on a FRESH node.
+        // Finalization is immutable even on a fresh node.
         let fresh = OverlayNode::<K, u64>::new();
-        assert!(fresh.try_set_final());
-        assert!(!fresh.try_set_final());
+        let final_fresh = fresh.as_final();
+        assert!(!fresh.is_final());
+        assert!(final_fresh.is_final());
         // Original membership node is unchanged.
         assert!(!node.is_final());
         assert!(node.get_value().is_none());

@@ -1,0 +1,10 @@
+[package]
+name = "libdictenstein-api-feature-on"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+libdictenstein = { path = "__LIBDICTENSTEIN_PATH__", default-features = false, features = ["perf-instrumentation"] }

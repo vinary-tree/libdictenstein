@@ -703,12 +703,12 @@ impl crate::artrie_trait::EvictableARTrie for SharedVocabARTrie {
             epoch_manager,
         );
 
-        // Start the eviction coordinator with a no-op char callback. Overlay-only (V6): the
+        // Start the coordinator with a no-op compact callback. Overlay-only (V6): the
         // overlay never evicts finals to disk (OverlayFaulter::fault_overlay_slot -> None), so
         // there is nothing to unswizzle; the coordinator lifecycle is retained for
         // memory-pressure accounting + API parity with byte/char.
         coordinator
-            .start_char(move |_nodes_to_evict| (0, 0))
+            .start_root_compact_char(move |_max_count| (0, 0))
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
         // Start memory pressure monitor if configured

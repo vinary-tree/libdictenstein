@@ -10,7 +10,7 @@
 //! unit `K::Unit` (`u8` vs `u32`). This module lifts the COMMON descent ONCE,
 //! generic over `<K: KeyEncoding, V>`:
 //!
-//!   * [`find_leaf_recursive`] / [`find_in_lockfree_trie`] — the non-faulting
+//!   * [`find_leaf_iterative`] / [`find_in_lockfree_trie`] — the non-faulting
 //!     in-memory point-read walks (membership `bool` + leaf `Arc`).
 //!   * [`create_spine`] — the bottom-up "build the remaining spine for a key
 //!     suffix" path builder, parameterized by a leaf-maker closure (so a
@@ -19,7 +19,7 @@
 //!     per-variant `create_lockfree_path` / `create_lockfree_path_final` — the
 //!     on-disk serializer consumes node-build order, so this is format-preserving.
 //!   * [`build_value_spine`] — the iterative valued path-copy (lifted from the
-//!     already-iterative per-variant `build_value_path_recursive`).
+//!     per-variant `build_value_path_iterative`).
 //!   * [`resolve_or_fault`] — the single OnDisk-child resolution primitive (the
 //!     copy-pasted fault-in), returning a RICH [`ChildResolution`] so each
 //!     (variant × method) keeps its OWN error/null/absent → enum mapping.
@@ -31,8 +31,8 @@
 //!   * the byte DUAL-method (non-durable two-phase `try_set_final` arbiter +
 //!     durable single-phase) vs char single `finalize`-flag method;
 //!   * the per-(variant × method) OnDisk/IO/null/missing mapping (see the table
-//!     in [`resolve_or_fault`]'s doc) — byte non-durable-insert's
-//!     `FaultFailed/Null → AlreadyExists` (TERMINAL, NOT a retry) is preserved;
+//!     in [`resolve_or_fault`]'s doc): typed fault errors propagate, null and
+//!     absence retain operation-specific semantics, and only root-CAS loss retries;
 //!   * the recovery generation (the durable global `commit_seq`, claimed by the
 //!     CALLER's retry loop via [`OverlayCasWalk::claim_generation`] — NEVER the
 //!     walk's `root.version()`; see the §MANDATORY-FIX-1 note below).
@@ -52,10 +52,9 @@
 //!
 //! # MANDATORY FIX 2 (correctness) — the rich `ChildResolution`
 //!
-//! byte has FOUR distinct OnDisk/IO mappings; char is uniform (fault-in, only a
-//! real I/O failure surfaces). [`resolve_or_fault`] returns the RICH
-//! [`ChildResolution`] so the (variant × method) mapping stays per-variant — see
-//! the table in its doc.
+//! [`resolve_or_fault`] returns the rich [`ChildResolution`] so typed fault
+//! failures cannot collapse into absence or contention and each operation keeps
+//! its exact null/missing semantics. See the table in its documentation.
 //!
 //! # REC 3 — descent shared, the `try_set_final` arbiter NEVER inherited by durable
 //!
@@ -72,6 +71,9 @@ use std::sync::Arc;
 
 use crate::persistent_artrie::core::error::PersistentARTrieError;
 use crate::persistent_artrie::core::key_encoding::KeyEncoding;
+use crate::persistent_artrie::core::overlay::durable_write::{
+    PendingDurableMutation, RegistryEligibleMutation, SemanticMutationPublicationPermit,
+};
 use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
 use crate::persistent_artrie::core::overlay::node::{Child, OverlayNode};
 use crate::value::DictionaryValue;
@@ -84,28 +86,29 @@ use crate::value::DictionaryValue;
 /// either an already-in-memory child, a freshly-faulted-in child, an I/O failure
 /// faulting an evicted (`OnDisk`) child, a null filler slot, or a missing edge.
 ///
-/// **Why a RICH enum (FIX 2).** byte has FOUR distinct OnDisk/IO mappings (see the
-/// table in [`resolve_or_fault`]) and char is uniform; collapsing them to a single
-/// `→ Conflict` would silently change byte's non-durable-insert behavior
-/// (`FaultFailed/Null → AlreadyExists`, TERMINAL — a livelock if turned into a
-/// retry) and lose char's `IoError`. So the resolution primitive returns this and
-/// each (variant × method) maps the cells itself.
+/// **Why a RICH enum (FIX 2).** The operation-specific null/absence semantics differ
+/// (corruption, create, already present, or already absent), while every exact
+/// fault error must retain its typed cause. Collapsing these outcomes to `Conflict`
+/// would retry permanent failures indefinitely. The resolution primitive therefore
+/// returns this enum and each operation maps every cell explicitly; only a failed
+/// root compare-exchange is a retryable conflict.
 ///
-/// `InMem` and `Faulted` are distinguished so a caller could (today none do) tell a
-/// resident child from a freshly-faulted one; both carry the descend target.
-/// `FaultFailed` boxes the error so the common arms stay pointer-sized.
+/// `InMem` and `Faulted` are distinguished both for causal accounting and because
+/// a faulted subtree must retain owned handles. `FaultFailed` boxes the error so
+/// the common arms stay pointer-sized.
 ///
-pub(crate) enum ChildResolution<K: KeyEncoding, V> {
-    /// The edge exists and the child is resident in memory — descend into it.
-    InMem(Arc<OverlayNode<K, V>>),
+pub(crate) enum ChildResolution<'root, K: KeyEncoding, V> {
+    /// The edge exists and the child is resident in memory. A child below the
+    /// retained root remains borrowed; a child below a fault-owned node is cloned
+    /// into an owned handle before the parent can move into its return frame.
+    InMem(super::OverlayNodeHandle<'root, K, V>),
     /// The edge exists, the child was evicted (`OnDisk`), and the fault-in SUCCEEDED
     /// — descend into the freshly-loaded child (spliced `Child::InMem` by the
     /// caller, so the single root CAS stays the sole arbiter).
     Faulted(Arc<OverlayNode<K, V>>),
     /// The edge exists, the child was evicted, and the fault-in FAILED with a
-    /// buffer-manager I/O error. Boxed so the common (pointer-sized) arms are not
-    /// widened. Each method maps this per-variant (byte non-durable-insert: TERMINAL
-    /// `AlreadyExists`; byte durable / char: retry `Conflict` / surface `IoError`).
+    /// storage or decode error. Boxed so the common (pointer-sized) arms are not
+    /// widened. Every durable builder propagates the original error unchanged.
     FaultFailed(Box<PersistentARTrieError>),
     /// The edge exists but holds a null filler slot (never a real child).
     Null,
@@ -115,7 +118,7 @@ pub(crate) enum ChildResolution<K: KeyEncoding, V> {
 
 /// Whether to fault an evicted (`OnDisk`) child back in during [`resolve_or_fault`].
 ///
-/// The byte VALUE path (`build_value_path_recursive`) historically returned `None`
+/// The byte VALUE path (`build_value_path_iterative`) historically returned `None`
 /// on an OnDisk child WITHOUT faulting (the `as_in_mem()?` short-circuit). The byte
 /// value path now DOES fault (it was migrated; the in-mem-only contract is gone),
 /// so both variants' value paths fault — but the mode is retained so a caller that
@@ -149,11 +152,11 @@ pub(crate) enum FaultMode {
 /// lock-free overlay cannot traverse a disk ref without a faulter — the per-variant
 /// faulting walk `find_leaf_faulting` handles eviction).
 ///
-/// Token-for-token the prior per-variant `find_leaf_recursive` (byte
+/// Token-for-token the prior per-variant leaf find (byte
 /// `lockfree_cas.rs:555`, char `:1293`), now generic over `K::Unit`.
 ///
 #[inline]
-pub(crate) fn find_leaf_recursive<K: KeyEncoding, V: Clone>(
+pub(crate) fn find_leaf_iterative<K: KeyEncoding, V: Clone>(
     node: &Arc<OverlayNode<K, V>>,
     key: &[K::Unit],
     depth: usize,
@@ -239,7 +242,7 @@ where
 /// parent back to the root.
 ///
 /// This is the return transition of the explicit CAS-walk pushdown machine:
-/// descent pushes `(parent, unit)` frames into [`super::OverlaySpine`], the
+/// descent pushes `(parent, unit)` frames into [`super::OverlayPathSpine`], the
 /// terminal transition constructs or transforms one child, and this loop pops
 /// the frames while path-copying each immutable ancestor. Native call-stack use
 /// is therefore independent of key depth.
@@ -249,15 +252,20 @@ where
 /// compare-and-swap remains the sole linearization point.
 #[inline]
 pub(crate) fn unwind_spine<K, V>(
-    spine: super::OverlaySpine<K, V>,
+    spine: super::OverlayPathSpine<'_, K, V>,
     mut child: Arc<OverlayNode<K, V>>,
 ) -> Arc<OverlayNode<K, V>>
 where
     K: KeyEncoding,
     V: Clone,
 {
-    for (parent, unit) in spine.into_iter().rev() {
-        child = Arc::new(parent.with_child(unit, Child::InMem(child)));
+    for frame in spine.into_iter().rev() {
+        child = Arc::new(
+            frame
+                .node
+                .node()
+                .with_child(frame.unit, Child::InMem(child)),
+        );
     }
     child
 }
@@ -265,20 +273,20 @@ where
 /// The ITERATIVE valued path-copy: descend `key[depth..]` from `node` collecting the
 /// `(parent, unit)` spine (faulting `OnDisk` children in per `fault`), then rebuild
 /// it bottom-up with a fresh `as_final().with_value(value)` leaf. Returns the new
-/// root `Arc`, or `None` if an `OnDisk` child blocked the copy (a fault failure, or
-/// a null filler, or [`FaultMode::NoFaultIn`]) — the caller's increment/value seam
-/// treats `None` as a transient conflict / a durable error reported by the caller.
+/// root `Arc`, or a typed persistent-trie error if the bounded worklist cannot be
+/// reserved, an evicted child cannot be faulted in, or the path contains an invalid
+/// null edge. Construction failure is never a CAS conflict: callers retry only when
+/// the subsequent root compare-exchange actually loses.
 ///
-/// Lifted from the already-iterative per-variant `build_value_path_recursive` (byte
+/// Lifted from the per-variant `build_value_path_iterative` (byte
 /// `lockfree_cas.rs:1069`, char `:1348`) — SAME path-copy / absent-spine / valued-leaf
 /// semantics and SAME bottom-up build order; only the recursion was already an
 /// explicit `Vec`. ITERATIVE because the overlay spine is UN-path-compressed (one
 /// node per unit), so a very long key would overflow a recursive stack.
 ///
 /// `fault_in` is the per-variant loader (`load_overlay_node_from_disk`) threaded as a
-/// closure so this free function names no `S`; it returns `Result<Arc, _>` and the
-/// `.ok()?` collapses an I/O error to `None` (the EXACT prior value-path behavior:
-/// both variants' value paths return `None` on a fault-in I/O error — no rich error).
+/// closure so this free function names no `S`; its original error is propagated
+/// unchanged.
 ///
 #[inline]
 pub(crate) fn build_value_spine<K, V, Fault>(
@@ -288,7 +296,7 @@ pub(crate) fn build_value_spine<K, V, Fault>(
     value: V,
     fault: FaultMode,
     fault_in: Fault,
-) -> Option<Arc<OverlayNode<K, V>>>
+) -> crate::persistent_artrie::core::error::Result<Arc<OverlayNode<K, V>>>
 where
     K: KeyEncoding,
     V: Clone,
@@ -296,41 +304,75 @@ where
         &crate::persistent_artrie::core::swizzled_ptr::SwizzledPtr,
     ) -> crate::persistent_artrie::core::error::Result<Arc<OverlayNode<K, V>>>,
 {
-    let mut spine: super::OverlaySpine<K, V> = Vec::with_capacity(key.len().saturating_sub(depth));
-    let mut current = Arc::clone(node);
+    let remaining = key.len().checked_sub(depth).ok_or_else(|| {
+        PersistentARTrieError::internal(format!(
+            "valued overlay path depth {depth} exceeds key length {}",
+            key.len()
+        ))
+    })?;
+    let mut spine = super::OverlayPathSpine::<K, V>::new();
+    let mut current = super::OverlayNodeHandle::Borrowed(node);
     let mut d = depth;
     loop {
         if d == key.len() {
             // Reached the leaf: bake finality + value into a fresh copy, then rebuild
             // every ancestor bottom-up (the path copy).
-            let new_node = Arc::new(current.as_final().with_value(value));
-            return Some(unwind_spine(spine, new_node));
+            let new_node = Arc::new(current.node().as_final().with_value(value));
+            return Ok(unwind_spine(spine, new_node));
         }
 
         let unit = key[d];
-        match current.find_child(unit) {
-            Some(child) => {
-                let child_arc = if let Some(child_arc) = child.as_in_mem() {
-                    // In-memory child: descend (path-copy on the way back up).
-                    Arc::clone(child_arc)
-                } else {
-                    // WRITE-PATH FAULT-IN: the child was EVICTED to OnDisk. Fault it
-                    // back in then descend, splicing it InMem — the single root CAS
-                    // stays the sole arbiter. On I/O error (or NoFaultIn / null) return
-                    // `None` (the prior `as_in_mem()? ` / `.ok()?` semantics).
-                    match fault {
-                        FaultMode::NoFaultIn => return None,
-                        FaultMode::Fault => {
-                            let on_disk = child.as_on_disk().filter(|p| !p.is_null())?;
-                            fault_in(on_disk).ok()?
-                        }
-                    }
-                };
-                spine.push((current, unit));
-                current = child_arc;
+        match resolve_or_fault(&current, unit, fault, |pointer| fault_in(pointer)) {
+            ChildResolution::InMem(next) => {
+                super::try_push_overlay_path_spine(
+                    &mut spine,
+                    super::OverlayPathFrame {
+                        node: current,
+                        unit,
+                    },
+                    remaining,
+                )
+                .map_err(|source| {
+                    PersistentARTrieError::allocation_failed(
+                        "valued overlay path-copy spine",
+                        remaining,
+                        source,
+                    )
+                })?;
+                current = next;
                 d += 1;
             }
-            None => {
+            ChildResolution::Faulted(next) => {
+                super::try_push_overlay_path_spine(
+                    &mut spine,
+                    super::OverlayPathFrame {
+                        node: current,
+                        unit,
+                    },
+                    remaining,
+                )
+                .map_err(|source| {
+                    PersistentARTrieError::allocation_failed(
+                        "valued overlay path-copy spine",
+                        remaining,
+                        source,
+                    )
+                })?;
+                current = super::OverlayNodeHandle::Owned(next);
+                d += 1;
+            }
+            ChildResolution::FaultFailed(error) => return Err(*error),
+            ChildResolution::Null => {
+                return Err(match fault {
+                    FaultMode::NoFaultIn => PersistentARTrieError::internal(
+                        "valued overlay path-copy encountered an evicted child while fault-in was disabled",
+                    ),
+                    FaultMode::Fault => PersistentARTrieError::corrupted(
+                        "valued overlay path-copy encountered a null child edge",
+                    ),
+                });
+            }
+            ChildResolution::Absent => {
                 // Child absent: build the remaining spine bottom-up (valued leaf),
                 // splice at `unit`, then rebuild the collected spine.
                 let leaf = Arc::new(OverlayNode::<K, V>::new().as_final().with_value(value));
@@ -338,10 +380,247 @@ where
                 for &u in key[d + 1..].iter().rev() {
                     sub = Arc::new(OverlayNode::<K, V>::new().with_child(u, Child::InMem(sub)));
                 }
-                let new_node = Arc::new(current.with_child(unit, Child::InMem(sub)));
-                return Some(unwind_spine(spine, new_node));
+                let new_node = Arc::new(current.node().with_child(unit, Child::InMem(sub)));
+                return Ok(unwind_spine(spine, new_node));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod valued_path_tests {
+    use super::{
+        build_value_spine, resolve_or_fault, Child, ChildResolution, FaultMode, OverlayNode,
+    };
+    use crate::persistent_artrie::core::error::PersistentARTrieError;
+    use crate::persistent_artrie::core::key_encoding::ByteKey;
+    use crate::persistent_artrie::core::overlay::OverlayNodeHandle;
+    use crate::persistent_artrie::core::swizzled_ptr::{NodeType, SwizzledPtr};
+    use std::sync::Arc;
+
+    #[test]
+    fn resident_resolution_borrows_without_arc_traffic() {
+        let child = Arc::new(OverlayNode::<ByteKey>::new());
+        let root = Arc::new(
+            OverlayNode::<ByteKey>::new().with_child(b'x', Child::InMem(Arc::clone(&child))),
+        );
+        let strong_before = Arc::strong_count(&child);
+        let current = OverlayNodeHandle::Borrowed(&root);
+
+        let resolution = resolve_or_fault(&current, b'x', FaultMode::Fault, |_| {
+            unreachable!("resident resolution must not invoke the faulter")
+        });
+
+        match resolution {
+            ChildResolution::InMem(OverlayNodeHandle::Borrowed(resolved)) => {
+                assert!(Arc::ptr_eq(resolved, &child));
+            }
+            _ => panic!("resident child must remain borrowed"),
+        }
+        assert_eq!(Arc::strong_count(&child), strong_before);
+    }
+
+    #[test]
+    fn descendants_of_fault_owned_nodes_remain_owned() {
+        let child = Arc::new(OverlayNode::<ByteKey>::new());
+        let parent = Arc::new(
+            OverlayNode::<ByteKey>::new().with_child(b'x', Child::InMem(Arc::clone(&child))),
+        );
+        let strong_before = Arc::strong_count(&child);
+        let current = OverlayNodeHandle::Owned(parent);
+
+        let resolution = resolve_or_fault(&current, b'x', FaultMode::Fault, |_| {
+            unreachable!("resident resolution must not invoke the faulter")
+        });
+
+        match resolution {
+            ChildResolution::InMem(OverlayNodeHandle::Owned(resolved)) => {
+                assert!(Arc::ptr_eq(&resolved, &child));
+                assert_eq!(Arc::strong_count(&child), strong_before + 1);
+            }
+            _ => panic!("a child below a fault-owned node must be owned"),
+        }
+        assert_eq!(Arc::strong_count(&child), strong_before);
+    }
+
+    #[test]
+    fn successful_fault_is_distinguished_from_a_resident_child() {
+        let root = Arc::new(OverlayNode::<ByteKey>::new().with_child(
+            b'x',
+            Child::OnDisk(SwizzledPtr::on_disk(7, 11, NodeType::Node4)),
+        ));
+        let loaded = Arc::new(OverlayNode::<ByteKey>::new().as_final());
+        let current = OverlayNodeHandle::Borrowed(&root);
+
+        let resolution = resolve_or_fault(&current, b'x', FaultMode::Fault, |observed| {
+            let location = observed.disk_location().expect("on-disk location");
+            assert_eq!(location.block_id, 7);
+            assert_eq!(location.offset, 11);
+            assert_eq!(location.node_type, NodeType::Node4);
+            Ok(Arc::clone(&loaded))
+        });
+
+        match resolution {
+            ChildResolution::Faulted(resolved) => assert!(Arc::ptr_eq(&resolved, &loaded)),
+            _ => panic!("a successful on-disk load must remain a Faulted outcome"),
+        }
+    }
+
+    #[test]
+    fn failed_fault_preserves_its_typed_error() {
+        let root = Arc::new(OverlayNode::<ByteKey>::new().with_child(
+            b'x',
+            Child::OnDisk(SwizzledPtr::on_disk(7, 11, NodeType::Node4)),
+        ));
+        let current = OverlayNodeHandle::Borrowed(&root);
+
+        let resolution = resolve_or_fault(&current, b'x', FaultMode::Fault, |_| {
+            Err(PersistentARTrieError::BufferPoolExhausted {
+                pinned_pages: 4,
+                total_pages: 4,
+            })
+        });
+
+        assert!(matches!(
+            resolution,
+            ChildResolution::FaultFailed(error)
+                if matches!(
+                    *error,
+                    PersistentARTrieError::BufferPoolExhausted {
+                        pinned_pages: 4,
+                        total_pages: 4
+                    }
+                )
+        ));
+    }
+
+    #[test]
+    fn null_and_absent_edges_remain_distinct() {
+        let root = Arc::new(
+            OverlayNode::<ByteKey>::new().with_child(b'x', Child::OnDisk(SwizzledPtr::null())),
+        );
+        let current = OverlayNodeHandle::Borrowed(&root);
+
+        let null = resolve_or_fault(&current, b'x', FaultMode::Fault, |_| {
+            unreachable!("a null edge must not invoke the faulter")
+        });
+        let absent = resolve_or_fault(&current, b'y', FaultMode::Fault, |_| {
+            unreachable!("an absent edge must not invoke the faulter")
+        });
+
+        assert!(matches!(null, ChildResolution::Null));
+        assert!(matches!(absent, ChildResolution::Absent));
+    }
+
+    #[test]
+    fn no_fault_mode_classifies_an_on_disk_edge_without_loading_it() {
+        let root = Arc::new(OverlayNode::<ByteKey>::new().with_child(
+            b'x',
+            Child::OnDisk(SwizzledPtr::on_disk(7, 11, NodeType::Node4)),
+        ));
+        let current = OverlayNodeHandle::Borrowed(&root);
+
+        let resolution = resolve_or_fault(&current, b'x', FaultMode::NoFaultIn, |_| {
+            unreachable!("NoFaultIn must never invoke the loader")
+        });
+
+        assert!(matches!(resolution, ChildResolution::Null));
+    }
+
+    #[test]
+    fn invalid_start_depth_is_a_typed_error() {
+        let root = Arc::new(OverlayNode::<ByteKey>::new());
+        let result = build_value_spine(
+            &root,
+            b"x",
+            2,
+            (),
+            FaultMode::Fault,
+            |_| -> crate::persistent_artrie::core::error::Result<_> {
+                unreachable!("invalid depth must fail before fault-in")
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(PersistentARTrieError::InternalError { .. })
+        ));
+    }
+
+    #[test]
+    fn fault_in_error_is_not_reclassified_as_contention() {
+        let root = Arc::new(OverlayNode::<ByteKey>::new().with_child(
+            b'x',
+            Child::OnDisk(SwizzledPtr::on_disk(1, 1, NodeType::Node4)),
+        ));
+        let result = build_value_spine(&root, b"x", 0, (), FaultMode::Fault, |_| {
+            Err(PersistentARTrieError::BufferPoolExhausted {
+                pinned_pages: 8,
+                total_pages: 8,
+            })
+        });
+
+        assert!(matches!(
+            result,
+            Err(PersistentARTrieError::BufferPoolExhausted {
+                pinned_pages: 8,
+                total_pages: 8
+            })
+        ));
+    }
+
+    #[test]
+    fn null_child_is_reported_as_corruption() {
+        let root = Arc::new(
+            OverlayNode::<ByteKey>::new().with_child(b'x', Child::OnDisk(SwizzledPtr::null())),
+        );
+        let result = build_value_spine(
+            &root,
+            b"x",
+            0,
+            (),
+            FaultMode::Fault,
+            |_| -> crate::persistent_artrie::core::error::Result<_> {
+                unreachable!("null child must fail before fault-in")
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(PersistentARTrieError::CorruptedFile { .. })
+        ));
+    }
+
+    #[test]
+    fn valued_path_spill_failure_is_typed_and_does_not_mutate_the_root() {
+        use crate::persistent_artrie::core::overlay::{
+            overlay_spine_failpoint, INLINE_OVERLAY_DEPTH,
+        };
+
+        let key = vec![b'x'; INLINE_OVERLAY_DEPTH + 1];
+        let mut root = Arc::new(OverlayNode::<ByteKey>::new().as_final());
+        for &unit in key.iter().rev() {
+            root = Arc::new(OverlayNode::<ByteKey>::new().with_child(unit, Child::InMem(root)));
+        }
+        let root_before = Arc::clone(&root);
+        let _failpoint = overlay_spine_failpoint::fail_next_spill();
+
+        let result = build_value_spine(
+            &root,
+            &key,
+            0,
+            (),
+            FaultMode::Fault,
+            |_| -> crate::persistent_artrie::core::error::Result<_> {
+                unreachable!("resident path must not fault")
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(PersistentARTrieError::AllocationFailed { .. })
+        ));
+        assert!(Arc::ptr_eq(&root, &root_before));
     }
 }
 
@@ -351,50 +630,47 @@ where
 ///
 /// `fault_in` is the per-variant loader (`load_overlay_node_from_disk`) as a closure
 /// so this names no `S`; it returns `Result<Arc, PersistentARTrieError>` so a real
-/// I/O failure is distinguishable from a missing/null edge (which is what
-/// distinguishes byte's `FaultFailed → AlreadyExists` from char's `Io → IoError`).
+/// I/O failure is distinguishable from a missing/null edge. Permanent fault errors
+/// are propagated; they are never reclassified as retryable root-CAS conflicts.
 ///
 /// # The (variant × method × resolution) mapping table (FIX 2 — assert each cell matches today)
 ///
 /// Each cell is how that method maps the [`ChildResolution`] variant. `descend`
-/// means recurse into the resolved child. Verified against source at the cited lines.
+/// means descend into the resolved child. Verified against source at the cited lines.
 ///
 /// ```text
 ///                                       │ InMem   │ Faulted │ FaultFailed       │ Null              │ Absent
 /// ──────────────────────────────────────┼─────────┼─────────┼───────────────────┼───────────────────┼───────────────────
-/// byte non-durable insert               │ descend │ descend │ AlreadyExists     │ AlreadyExists     │ create_spine
-///   build_path_recursive (byte:395-421) │         │         │  (TERMINAL, false)│  (TERMINAL, false)│  (non-final leaf)
-/// byte durable insert                   │ descend │ descend │ Conflict (retry)  │ Conflict (retry)  │ create_spine
-///   build_final_path_recursive          │         │         │                   │                   │  (final leaf)
-///   (byte:920-952)                      │         │         │                   │                   │
-/// byte durable remove                   │ descend │ descend │ Conflict (retry)  │ AlreadyExists     │ AlreadyExists
-///   build_remove_path_recursive         │         │         │                   │  (= absent)       │  (= absent)
-///   (byte:1030-1059)                    │         │         │                   │                   │
-/// byte VALUE path                       │ descend │ descend │ None              │ None              │ create valued
-///   build_value_path_recursive          │         │         │  (no rich error)  │  (no rich error)  │  spine
+/// byte durable insert                   │ descend │ descend │ propagate error   │ corruption        │ create_spine
+///   build_final_path_iterative          │         │         │                   │                   │  (final leaf)
+/// byte durable remove                   │ descend │ descend │ propagate error   │ AlreadyAbsent     │ AlreadyAbsent
+///   build_remove_path_iterative         │         │         │                   │                   │
+/// byte VALUE path                       │ descend │ descend │ propagate error   │ corruption        │ create valued
+///   build_value_path_iterative          │         │         │                   │                   │  spine
 ///   (byte:1100-1132)                    │         │         │                   │                   │
 /// char insert                           │ descend │ descend │ Io(e) → IoError   │ AlreadyExists     │ create_spine
-///   build_path_recursive (char:1040-)   │         │         │                   │                   │  (finalize flag)
+///   build_path_iterative                │         │         │                   │                   │  (finalize flag)
 /// char remove                           │ descend │ descend │ Io(e) → IoError   │ AlreadyAbsent     │ AlreadyAbsent
-///   build_remove_path_recursive         │         │         │                   │                   │
-///   (char:911-954)                      │         │         │                   │                   │
-/// char VALUE path                       │ descend │ descend │ None              │ None              │ create valued
-///   build_value_path_recursive          │         │         │  (no rich error)  │  (no rich error)  │  spine
+///   build_remove_path_iterative         │         │         │                   │                   │
+/// char VALUE path                       │ descend │ descend │ propagate error   │ corruption        │ create valued
+///   build_value_path_iterative          │         │         │                   │                   │  spine
 ///   (char:1379-1414)                    │         │         │                   │                   │
+/// vocabulary insert (NoFaultIn)         │ descend │ impossible │ impossible       │ Unavailable       │ create_spine
+///   try_insert_lockfree_path            │         │ by mode │ by mode           │                   │  (valued leaf)
 /// ```
 ///
-/// NOTE the VALUE paths use [`build_value_spine`] (which already folds resolution +
-/// the `None`-on-fault-failure mapping) rather than this primitive directly, so
-/// their two cells are realized there; this primitive serves the membership/remove
-/// builders (which need the RICH `FaultFailed` distinction).
+/// NOTE the VALUE paths use [`build_value_spine`] rather than this primitive
+/// directly; that machine propagates construction and fault failures. This
+/// primitive serves the membership/remove builders, which need the richer
+/// per-operation `FaultFailed` distinction.
 ///
 #[inline]
-pub(crate) fn resolve_or_fault<K, V, Fault>(
-    node: &OverlayNode<K, V>,
+pub(crate) fn resolve_or_fault<'root, K, V, Fault>(
+    node: &super::OverlayNodeHandle<'root, K, V>,
     unit: K::Unit,
     fault: FaultMode,
     fault_in: Fault,
-) -> ChildResolution<K, V>
+) -> ChildResolution<'root, K, V>
 where
     K: KeyEncoding,
     V: Clone,
@@ -402,24 +678,43 @@ where
         &crate::persistent_artrie::core::swizzled_ptr::SwizzledPtr,
     ) -> crate::persistent_artrie::core::error::Result<Arc<OverlayNode<K, V>>>,
 {
-    match node.find_child(unit) {
-        Some(child) => {
-            if let Some(child_arc) = child.as_in_mem() {
-                ChildResolution::InMem(Arc::clone(child_arc))
-            } else if let Some(on_disk) = child.as_on_disk().filter(|p| !p.is_null()) {
-                match fault {
-                    FaultMode::NoFaultIn => ChildResolution::Null,
-                    FaultMode::Fault => match fault_in(on_disk) {
-                        Ok(loaded) => ChildResolution::Faulted(loaded),
-                        Err(e) => ChildResolution::FaultFailed(Box::new(e)),
-                    },
+    match node {
+        super::OverlayNodeHandle::Borrowed(node) => match node.find_child(unit) {
+            Some(child) => {
+                if let Some(child_arc) = child.as_in_mem() {
+                    ChildResolution::InMem(super::OverlayNodeHandle::Borrowed(child_arc))
+                } else if let Some(on_disk) = child.as_on_disk().filter(|p| !p.is_null()) {
+                    match fault {
+                        FaultMode::NoFaultIn => ChildResolution::Null,
+                        FaultMode::Fault => match fault_in(on_disk) {
+                            Ok(loaded) => ChildResolution::Faulted(loaded),
+                            Err(e) => ChildResolution::FaultFailed(Box::new(e)),
+                        },
+                    }
+                } else {
+                    ChildResolution::Null
                 }
-            } else {
-                // Null filler (never a real child).
-                ChildResolution::Null
             }
-        }
-        None => ChildResolution::Absent,
+            None => ChildResolution::Absent,
+        },
+        super::OverlayNodeHandle::Owned(node) => match node.find_child(unit) {
+            Some(child) => {
+                if let Some(child_arc) = child.as_in_mem() {
+                    ChildResolution::InMem(super::OverlayNodeHandle::Owned(Arc::clone(child_arc)))
+                } else if let Some(on_disk) = child.as_on_disk().filter(|p| !p.is_null()) {
+                    match fault {
+                        FaultMode::NoFaultIn => ChildResolution::Null,
+                        FaultMode::Fault => match fault_in(on_disk) {
+                            Ok(loaded) => ChildResolution::Faulted(loaded),
+                            Err(e) => ChildResolution::FaultFailed(Box::new(e)),
+                        },
+                    }
+                } else {
+                    ChildResolution::Null
+                }
+            }
+            None => ChildResolution::Absent,
+        },
     }
 }
 
@@ -576,20 +871,24 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
     // ========================================================================
     // P2 — DURABLE REMOVE skeleton (shared retry loop + Order-A tail).
     // The DESCENT stays in the per-variant `try_remove_path_attempt` hook
-    // (it names the variant's `build_remove_path_recursive` + result enum); the
+    // (it names the variant's iterative remove builder + result enum); the
     // skeleton owns ONLY the retry structure, the FIX-1 generation claim, the
     // cache-invalidate, and the data-loss-critical commit-rank/watermark ORDER.
     // ========================================================================
 
     /// **Per-variant remove SEAM hook — ONE durable membership-clear CAS attempt.**
     /// Loads the published root, builds a NEW spine whose target leaf is a FRESH
-    /// `as_non_final` copy (the variant's `build_remove_path_recursive` —
+    /// `as_non_final` copy (the variant's iterative remove builder —
     /// `units`/`chars` decode + the per-(variant×method) OnDisk mapping live here),
     /// and CAS-publishes it via the root pointer. Returns the UNIFORM
     /// [`RemoveAttempt`] — the per-variant `LockfreeRemoveResult` is mapped to it at
     /// the boundary, DROPPING any per-attempt `root.version()` (FIX 1). NO WAL
     /// append (the skeleton owns Order-A step 1), NO commit rank (step 3).
-    fn try_remove_path_attempt(&self, key_bytes: &[u8]) -> RemoveAttempt;
+    fn try_remove_path_attempt(
+        &self,
+        key_bytes: &[u8],
+        permit: &SemanticMutationPublicationPermit<'_, RegistryEligibleMutation>,
+    ) -> RemoveAttempt;
 
     /// **Per-variant cache-invalidate SEAM hook.** Remove `key_bytes`'s positive
     /// lookup-cache entry (the §3.4 DATA-CORRECTNESS guard: a remove that cleared
@@ -619,10 +918,15 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
     fn drive_remove_cas(
         &self,
         key_bytes: &[u8],
-        data_lsn: crate::persistent_artrie::core::wal::Lsn,
+        pending: PendingDurableMutation<'_, RegistryEligibleMutation>,
     ) -> crate::persistent_artrie::core::error::Result<bool>
     where
-        Self: crate::persistent_artrie::core::overlay::durable_write::DurableOverlayWrite<K, V, S>,
+        Self: crate::persistent_artrie::core::overlay::durable_write::DurableOverlayWrite<
+            K,
+            V,
+            S,
+            PublicationEligibility = RegistryEligibleMutation,
+        >,
     {
         // P6: delegate to the unified `drive_cas` core (REC 3-safe — durable
         // single-phase). The remove attempt maps to the UNIFIED `CasOutcome`
@@ -631,9 +935,9 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
         // record mutated.
         self.drive_cas(
             key_bytes,
-            data_lsn,
+            pending,
             CacheDirection::Invalidate,
-            |this| match this.try_remove_path_attempt(key_bytes) {
+            |this, permit| match this.try_remove_path_attempt(key_bytes, permit) {
                 RemoveAttempt::Removed => CasOutcome::Applied,
                 RemoveAttempt::AlreadyAbsent => CasOutcome::Idempotent,
                 RemoveAttempt::Conflict => CasOutcome::Conflict,
@@ -652,12 +956,15 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
     /// **Per-variant durable-insert SEAM hook — ONE single-phase membership-insert
     /// CAS attempt.** Loads the published root, builds a NEW spine whose target leaf
     /// is a FRESH `as_final` copy (published FINAL inside the root CAS — the sole LP,
-    /// the variant's durable `build_path_recursive(finalize=true)` /
-    /// `build_final_path_recursive`; the `units`/`chars` decode + the
+    /// the variant's durable iterative final-path builder; the `units`/`chars` decode + the
     /// per-(variant×method) OnDisk mapping live here), and CAS-publishes it. Returns
     /// the UNIFORM [`InsertAttempt`] — DROPPING any per-attempt leaf + `root.version()`
     /// (FIX 1, REC 3). NO WAL append (the skeleton owns Order-A step 1), NO rank.
-    fn try_insert_path_attempt(&self, key_bytes: &[u8]) -> InsertAttempt;
+    fn try_insert_path_attempt(
+        &self,
+        key_bytes: &[u8],
+        permit: &SemanticMutationPublicationPermit<'_, RegistryEligibleMutation>,
+    ) -> InsertAttempt;
 
     /// **Per-variant positive-cache mark SEAM hook.** Record `key_bytes` PRESENT in
     /// the positive lookup cache (the durable insert caches on BOTH the `Inserted`
@@ -686,10 +993,15 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
     fn drive_insert_cas(
         &self,
         key_bytes: &[u8],
-        data_lsn: crate::persistent_artrie::core::wal::Lsn,
+        pending: PendingDurableMutation<'_, RegistryEligibleMutation>,
     ) -> crate::persistent_artrie::core::error::Result<bool>
     where
-        Self: crate::persistent_artrie::core::overlay::durable_write::DurableOverlayWrite<K, V, S>,
+        Self: crate::persistent_artrie::core::overlay::durable_write::DurableOverlayWrite<
+            K,
+            V,
+            S,
+            PublicationEligibility = RegistryEligibleMutation,
+        >,
     {
         // P6: delegate to the unified `drive_cas` core (REC 3-safe — durable
         // single-phase, NO `try_set_final`). The insert attempt maps to the UNIFIED
@@ -698,9 +1010,9 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
         // Applied and Idempotent arm).
         self.drive_cas(
             key_bytes,
-            data_lsn,
+            pending,
             CacheDirection::MarkPresent,
-            |this| match this.try_insert_path_attempt(key_bytes) {
+            |this, permit| match this.try_insert_path_attempt(key_bytes, permit) {
                 InsertAttempt::Inserted => CasOutcome::Applied,
                 InsertAttempt::AlreadyExists => CasOutcome::Idempotent,
                 InsertAttempt::Conflict => CasOutcome::Conflict,
@@ -733,12 +1045,20 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
     fn drive_cas(
         &self,
         key_bytes: &[u8],
-        data_lsn: crate::persistent_artrie::core::wal::Lsn,
+        pending: PendingDurableMutation<'_, RegistryEligibleMutation>,
         cache: CacheDirection,
-        attempt: impl Fn(&Self) -> CasOutcome,
+        attempt: impl Fn(
+            &Self,
+            &SemanticMutationPublicationPermit<'_, RegistryEligibleMutation>,
+        ) -> CasOutcome,
     ) -> crate::persistent_artrie::core::error::Result<bool>
     where
-        Self: crate::persistent_artrie::core::overlay::durable_write::DurableOverlayWrite<K, V, S>,
+        Self: crate::persistent_artrie::core::overlay::durable_write::DurableOverlayWrite<
+            K,
+            V,
+            S,
+            PublicationEligibility = RegistryEligibleMutation,
+        >,
     {
         // The positive-cache effect for the current direction (insert MARKs present,
         // remove INVALIDATEs — §3.4), applied FIRST on every state-changing arm
@@ -754,12 +1074,13 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
             // in the global root-CAS order AND durable across restart — the recovery
             // generation `reconcile_lww` orders by, NEVER the walk's `root.version()`.
             let committed_generation = self.claim_generation();
-            match attempt(self) {
+            match attempt(self, pending.permit()) {
                 CasOutcome::Applied => {
                     // Cache effect FIRST (before mark): the op is now visible.
                     touch_cache(self);
                     // Order-A step 2.5 + 3: bind the CALLER-claimed generation durable,
                     // then advance the watermark over BOTH LSNs.
+                    let data_lsn = pending.commit_visible();
                     self.commit_rank_and_mark(data_lsn, key_bytes, committed_generation)?;
                     return Ok(true);
                 }
@@ -769,6 +1090,7 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
                     // LIVENESS (cover the burned LSN or the contiguous watermark stalls;
                     // the Overlay-regime replay drops the unranked record — no resurrect).
                     touch_cache(self);
+                    let data_lsn = pending.cancel_unpublished();
                     self.mark_committed_burned(data_lsn);
                     return Ok(false);
                 }
@@ -780,9 +1102,9 @@ pub(crate) trait OverlayCasWalk<K: KeyEncoding, V: DictionaryValue, S>:
                     // The WAL record is durable; we could not make the op visible.
                     // Surface it; do NOT advance the watermark (the contiguous prefix
                     // correctly stalls at `data_lsn` until a later retry / recovery).
-                    // Recovery replays the logged record — NOT a lost write.
-                    self.note_cas_retry();
-                    let _ = data_lsn;
+                    // Recovery replays the logged record — NOT a lost write. This is
+                    // a terminal publication/fault/allocation failure, not a root-CAS
+                    // conflict, so it must not inflate the contention counter.
                     return Err(*e);
                 }
             }

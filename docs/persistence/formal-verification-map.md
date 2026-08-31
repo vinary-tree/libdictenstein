@@ -25,8 +25,8 @@ The map is drawn as two companion figures — one per prong — so each fits the
 | ① Model checking | TLA⁺ / TLC | temporal **safety + liveness** under concurrency and crashes | *bounded* instances, *all* interleavings |
 | ② Theorem proving | Rocq / Coq | **functional correctness** + abstract-data-type (ADT) refinement | *all* inputs, machine-checked `Qed.` |
 
-**Aggregate:** 72 Rocq `.v` files, 1,348 propositions (1,027 Theorem + 313 Lemma + 8
-Corollary), **0 Admitted / 0 Axiom / 0 Parameter**; 57 TLA⁺ modules, 69 `.cfg` TLC configs,
+**Aggregate:** 75 Rocq `.v` files, 1,449 propositions (1,095 Theorem + 340 Lemma + 14
+Corollary), **0 Admitted / 0 Axiom / 0 Parameter**; 60 TLA⁺ modules, 84 `.cfg` TLC configs,
 all SANY-clean (SANY = the TLA⁺ syntactic analyzer). Many models ship a paired **`_Unsafe.cfg` negative control** that must
 *violate* the named invariant, proving the checker has teeth. The correspondence
 harness gives every TLC invocation a distinct on-disk state directory. A
@@ -69,13 +69,19 @@ masquerading as successful negative controls.
 |-----------|-----------|-------------|-----|
 | Shared-handle linearizability (byte + char + **vocab**), reads observe completed visible state | `SharedPersistentConcurrency.tla`, `ConcurrentVocabLinearizability.tla` | `Spec/SharedPersistentConcurrencySpec.v` | [concurrency-model](concurrency-model.md) |
 | F4 deadlock-freedom (`CK > merge_lock > EC`, drop-before-join) | — | `tests/persistent_lockfree_f4_lock_hierarchy_loom.rs`, `tests/vocab_lockfree_f4_lock_hierarchy_loom.rs` | [concurrency-model](concurrency-model.md) |
+| Character-node V2/V3 writer-reader compatibility, exact child-type preservation, committed-arena publication, and crash/reopen | `CharV3ArenaPublication.tla` (+ seven named unsafe controls) | `Spec/CharV3TypeEncodingSpec.v`, `tests/char_node_format_compatibility.rs`, `tests/char_v3_crash_reopen_correspondence.rs` | [char-node-format](char-node-format.md) |
+| Public API feature visibility | — | `Spec/ApiFeatureVisibilitySpec.v`, downstream compile fixtures exercised by `scripts/verify-api-feature-visibility.sh` | [persistence overview](README.md) |
 
 ### Eviction & epoch reclamation
 
 | Invariant | TLA⁺ model | Rocq proof | Doc |
 |-----------|-----------|-----------|-----|
-| Eviction-CAS overwrite-race + stale-image safety (`serial_disk_ptr` stamp) | `OverlayEvictionCas.tla`, `OverlayEvictionStale.tla` (+ `_Unsafe` each) | — | [eviction](eviction.md), [concurrency-model](concurrency-model.md) |
-| Eviction-walk epoch reclamation + registry publish | `EvictionWalkEBR.tla`, `EvictionRegistryPublication.tla` | `Spec/PersistentCharEpochReclamationSpec.v` | [eviction](eviction.md) |
+| Eviction-CAS overwrite-race, stale-image safety, and exact fault provenance | `OverlayEvictionCas.tla`, `OverlayEvictionStale.tla` (+ stale-eviction and fault-stamp unsafe controls) | `Spec/OverlayFaultProvenanceSpec.v`, `tests/persistent_artrie_loom_correspondence.rs` | [eviction](eviction.md), [concurrency-model](concurrency-model.md) |
+| Exact resident-budget closure, ancestor suppression, cap enforcement, and snapshot revalidation | `ResidentBudgetEviction.tla` (+ local-descendant and stale-snapshot unsafe controls) | `Spec/ResidentBudgetEvictionSpec.v`, resident-budget property/unit tests in `src/persistent_artrie/core/eviction/coordinator.rs` | [eviction](eviction.md), [concurrency-model](concurrency-model.md) |
+| Eviction-walk epoch reclamation; lock-free exact-root publication and helped residency; detached callback separation; irreversible coordinator retirement and re-enable | `EvictionWalkEBR.tla`, `EvictionExactRootPublication.tla`, `HelpedRootResidency.tla`, `DetachedCallbackSeparation.tla` (+ exact-root, helped-residency, and capability-separation unsafe controls) | `Spec/PersistentCharEpochReclamationSpec.v`, `Spec/EvictionExactRootPublicationSpec.v`, `Spec/HelpedRootResidencySpec.v`, `Spec/DetachedCallbackSeparationSpec.v`, `tests/persistent_eviction_publication_gate_loom.rs` | [eviction](eviction.md), [concurrency-model](concurrency-model.md) |
+| Detached compatibility authority and cacheless owned lookup/removal: last-collision selection, read-only lookup, materialize-before-mutation failure atomicity, exact accounting, and detached results | `DetachedCallbackSeparation.tla`, `CachelessOwnedRegistry.tla` (+ five authority-separation controls and first-collision/mutate-before-materialize controls) | `Spec/DetachedCallbackSeparationSpec.v`, focused unit tests in `src/persistent_artrie/core/eviction/disk_registry.rs`, `tests/public_eviction_registry_api_correspondence.rs` | [eviction](eviction.md), [concurrency-model](concurrency-model.md) |
+| Packed-residency ordinal exhaustion: one exact root winner, distinct fresh address domain, complete payload materialization, and old-helper isolation | `PackedResidencyFreshCatalog.tla` (+ reuse, wrong-helper, partial-copy, and non-exact-root unsafe controls) | `Spec/PackedResidencyRefinementSpec.v`, fresh-catalog Loom and byte/char parity regressions in `tests/persistent_lockfree_overlay_loom.rs` and `src/persistent_artrie/core/eviction/coordinator.rs` | [eviction](eviction.md), [concurrency-model](concurrency-model.md) |
+| Stack-safe overlay serialization specialization: revision-bound arborescence authority, tree/DAG trace equivalence, guarded deferred stamps, and zero census work | `OverlayTreeWitness.tla` (+ forged-DAG, stale-witness, unwitnessed-fast-path, and admitted-cycle unsafe controls) | `Spec/OverlayArborescenceSerializationSpec.v`, focused policy/ownership regressions in `src/persistent_artrie/core/overlay/compressed_serialize.rs` | [eviction](eviction.md), [concurrency-model](concurrency-model.md) |
 | Version-GC reader-guard reclaim safety | `VersionLifecycle.tla` | — | [concurrency-model](concurrency-model.md) |
 
 ### WAL, storage & group commit

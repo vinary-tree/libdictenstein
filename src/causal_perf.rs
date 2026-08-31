@@ -68,6 +68,29 @@ pub struct CausalConstructionStats {
     pub resource_reclaim_max_nanos: u64,
 }
 
+/// Logical work performed while importing and reproducing durable ARTrie DAGs.
+///
+/// These counters are compiled in only with `perf-instrumentation`; ordinary
+/// and timing-benchmark builds return an all-zero snapshot and execute no
+/// counter operations in persistent serialization paths.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PersistentSerializationStats {
+    /// Typed on-disk child occurrences consulted by the serializer memo.
+    pub durable_alias_lookups: u64,
+    /// Distinct durable record graphs imported from the structural source.
+    pub durable_source_imports: u64,
+    /// Additional local registry occurrences reproduced from completed imports.
+    pub local_registry_grafts: u64,
+    /// Path-topology entries appended by those local grafts.
+    pub local_graft_topology_entries: u64,
+    /// Durable registry records reproduced by those local grafts.
+    pub local_graft_durable_records: u64,
+    /// Serialized bytes represented by those reproduced records.
+    pub local_graft_serialized_bytes: u64,
+    /// Completed builds whose local observation saturated at least one counter.
+    pub observation_overflows: u64,
+}
+
 #[cfg(feature = "perf-instrumentation")]
 macro_rules! counter {
     ($name:ident) => {
@@ -133,6 +156,20 @@ counter!(RESOURCE_NODES_RECLAIMED);
 counter!(RESOURCE_RECLAIM_NANOS);
 #[cfg(feature = "perf-instrumentation")]
 counter!(RESOURCE_RECLAIM_MAX_NANOS);
+#[cfg(feature = "perf-instrumentation")]
+counter!(PERSISTENT_DURABLE_ALIAS_LOOKUPS);
+#[cfg(feature = "perf-instrumentation")]
+counter!(PERSISTENT_DURABLE_SOURCE_IMPORTS);
+#[cfg(feature = "perf-instrumentation")]
+counter!(PERSISTENT_LOCAL_REGISTRY_GRAFTS);
+#[cfg(feature = "perf-instrumentation")]
+counter!(PERSISTENT_LOCAL_GRAFT_TOPOLOGY_ENTRIES);
+#[cfg(feature = "perf-instrumentation")]
+counter!(PERSISTENT_LOCAL_GRAFT_DURABLE_RECORDS);
+#[cfg(feature = "perf-instrumentation")]
+counter!(PERSISTENT_LOCAL_GRAFT_SERIALIZED_BYTES);
+#[cfg(feature = "perf-instrumentation")]
+counter!(PERSISTENT_OBSERVATION_OVERFLOWS);
 
 #[inline(always)]
 fn add(counter: Counter, value: u64) {
@@ -140,6 +177,14 @@ fn add(counter: Counter, value: u64) {
     counter.fetch_add(value, Ordering::Relaxed);
     #[cfg(not(feature = "perf-instrumentation"))]
     let _ = (counter, value);
+}
+
+#[cfg(feature = "perf-instrumentation")]
+#[inline]
+fn add_saturating(counter: &AtomicU64, value: u64) {
+    let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.saturating_add(value))
+    });
 }
 
 #[cfg(feature = "perf-instrumentation")]
@@ -209,6 +254,40 @@ recorder!(
 recorder!(record_resource_nodes_reclaimed, RESOURCE_NODES_RECLAIMED);
 recorder!(record_resource_reclaim_nanos, RESOURCE_RECLAIM_NANOS);
 
+/// Publish one completed serializer build's local observation. Keeping the
+/// hot loop's counters build-local avoids an atomic operation per DAG edge.
+#[cfg(feature = "perf-instrumentation")]
+pub(crate) fn record_persistent_serialization(stats: PersistentSerializationStats) {
+    add_saturating(
+        &PERSISTENT_DURABLE_ALIAS_LOOKUPS,
+        stats.durable_alias_lookups,
+    );
+    add_saturating(
+        &PERSISTENT_DURABLE_SOURCE_IMPORTS,
+        stats.durable_source_imports,
+    );
+    add_saturating(
+        &PERSISTENT_LOCAL_REGISTRY_GRAFTS,
+        stats.local_registry_grafts,
+    );
+    add_saturating(
+        &PERSISTENT_LOCAL_GRAFT_TOPOLOGY_ENTRIES,
+        stats.local_graft_topology_entries,
+    );
+    add_saturating(
+        &PERSISTENT_LOCAL_GRAFT_DURABLE_RECORDS,
+        stats.local_graft_durable_records,
+    );
+    add_saturating(
+        &PERSISTENT_LOCAL_GRAFT_SERIALIZED_BYTES,
+        stats.local_graft_serialized_bytes,
+    );
+    add_saturating(
+        &PERSISTENT_OBSERVATION_OVERFLOWS,
+        stats.observation_overflows,
+    );
+}
+
 #[inline(always)]
 pub(crate) fn record_resource_reclaim_max_nanos(value: u64) {
     #[cfg(feature = "perf-instrumentation")]
@@ -228,6 +307,18 @@ pub fn reset_causal_construction_stats() {
 /// No-op reset for timing/profile builds where counters are compiled out.
 #[cfg(not(feature = "perf-instrumentation"))]
 pub fn reset_causal_construction_stats() {}
+
+/// Reset persistent-serialization work counters to zero.
+#[cfg(feature = "perf-instrumentation")]
+pub fn reset_persistent_serialization_stats() {
+    for counter in persistent_serialization_counters() {
+        counter.store(0, Ordering::Relaxed);
+    }
+}
+
+/// No-op reset when persistent-serialization instrumentation is compiled out.
+#[cfg(not(feature = "perf-instrumentation"))]
+pub fn reset_persistent_serialization_stats() {}
 
 /// Snapshot all construction counters.
 #[cfg(feature = "perf-instrumentation")]
@@ -272,6 +363,27 @@ pub fn causal_construction_stats() -> CausalConstructionStats {
     CausalConstructionStats::default()
 }
 
+/// Snapshot persistent-serialization work counters.
+#[cfg(feature = "perf-instrumentation")]
+pub fn persistent_serialization_stats() -> PersistentSerializationStats {
+    let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
+    PersistentSerializationStats {
+        durable_alias_lookups: load(&PERSISTENT_DURABLE_ALIAS_LOOKUPS),
+        durable_source_imports: load(&PERSISTENT_DURABLE_SOURCE_IMPORTS),
+        local_registry_grafts: load(&PERSISTENT_LOCAL_REGISTRY_GRAFTS),
+        local_graft_topology_entries: load(&PERSISTENT_LOCAL_GRAFT_TOPOLOGY_ENTRIES),
+        local_graft_durable_records: load(&PERSISTENT_LOCAL_GRAFT_DURABLE_RECORDS),
+        local_graft_serialized_bytes: load(&PERSISTENT_LOCAL_GRAFT_SERIALIZED_BYTES),
+        observation_overflows: load(&PERSISTENT_OBSERVATION_OVERFLOWS),
+    }
+}
+
+/// Return an all-zero snapshot when instrumentation is compiled out.
+#[cfg(not(feature = "perf-instrumentation"))]
+pub fn persistent_serialization_stats() -> PersistentSerializationStats {
+    PersistentSerializationStats::default()
+}
+
 #[cfg(feature = "perf-instrumentation")]
 fn counters() -> [&'static AtomicU64; 29] {
     [
@@ -304,5 +416,18 @@ fn counters() -> [&'static AtomicU64; 29] {
         &RESOURCE_NODES_RECLAIMED,
         &RESOURCE_RECLAIM_NANOS,
         &RESOURCE_RECLAIM_MAX_NANOS,
+    ]
+}
+
+#[cfg(feature = "perf-instrumentation")]
+fn persistent_serialization_counters() -> [&'static AtomicU64; 7] {
+    [
+        &PERSISTENT_DURABLE_ALIAS_LOOKUPS,
+        &PERSISTENT_DURABLE_SOURCE_IMPORTS,
+        &PERSISTENT_LOCAL_REGISTRY_GRAFTS,
+        &PERSISTENT_LOCAL_GRAFT_TOPOLOGY_ENTRIES,
+        &PERSISTENT_LOCAL_GRAFT_DURABLE_RECORDS,
+        &PERSISTENT_LOCAL_GRAFT_SERIALIZED_BYTES,
+        &PERSISTENT_OBSERVATION_OVERFLOWS,
     ]
 }

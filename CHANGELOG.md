@@ -55,6 +55,21 @@ Date format is ISO-8601 (YYYY-MM-DD).
 
 ### Changed
 
+- **Breaking prerelease eviction-registry lookup migration.**
+  `DiskLocationRegistry::get` and `get_char` have been replaced by the explicit
+  owned-result methods `get_owned` and `get_char_owned`. Each call reconstructs
+  one independent absolute path from the compact topology; retain that result
+  when repeated inspection is needed. This removes a 72-byte `OnceLock` cache
+  from every byte and character registry occurrence: entries and their dense
+  optional slots are now exactly 48 bytes on 64-bit targets rather than 120
+  bytes (68.7 MiB saved per million occurrences). Registration also loses the
+  cache branch and pointer clone; exact selection remains path-allocation-free.
+  Lookup and removal preserve last-occurrence collision ordering, and removal
+  materializes before its first mutation so failure is atomic. Rocq refinement
+  proofs, bounded TLA+ models with required negative controls, layout gates,
+  collision regressions, malformed-character failure tests, and a public
+  external-consumer correspondence test pin the contract.
+
 - **`SharedVocabARTrie` is now lock-free (`Arc<PersistentVocabARTrie>`).** The F4
   lock-collapse (already shipped for byte/char) now covers vocab: the alias dropped
   its outer `parking_lot::RwLock`, so concurrent readers and writers on a shared

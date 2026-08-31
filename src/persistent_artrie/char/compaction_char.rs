@@ -238,6 +238,15 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
                 estimated_total: terms_processed,
                 percent_complete: 100.0,
             });
+            // A published registry names records in this trie's CURRENT backing
+            // address space. Join the eviction worker before releasing those file
+            // handles or recycling their block/slot addresses through the atomic
+            // rename. The public worker retains a strong trie `Arc` for the whole
+            // callback and `compact(&mut self)` excludes that alias in safe code;
+            // the explicit close also covers the bare-trie bench/test coordinator
+            // and makes the teardown order independently auditable, with no
+            // per-batch lease overhead on the eviction hot path.
+            self.close();
             // Release this trie's file handles BEFORE renaming over its file.
             self.buffer_manager = None;
             self.wal_writer = None;

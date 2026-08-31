@@ -5,13 +5,13 @@
 This document records the results of formal verification efforts for the
 Persistent Adaptive Radix Trie (PART) implementation in libdictenstein.
 
-**Originally written:** 2026-01-20. **Last reconciled:** 2026-08-19.
+**Originally written:** 2026-01-20. **Last reconciled:** 2026-08-30.
 
-As of the live tree the corpus is **72** Rocq `.v` files (**1,348**
-propositions = 1,027 `Theorem` + 313 `Lemma` + 8 `Corollary` + 0 `Proposition`,
+As of the live tree the corpus is **83** Rocq `.v` files (**1,738**
+propositions = 1,364 `Theorem` + 356 `Lemma` + 18 `Corollary` + 0 `Proposition`,
 all `Qed.`/`Defined.`-closed, **0** `Admitted` / **0** `Axiom` / **0**
-`Parameter`) and **57** TLA⁺ modules with **69** `.cfg` TLC configurations. The
-`unsafe` surface is pinned by **43** inventory rows and **31** safety contracts,
+`Parameter`) and **75** TLA⁺ modules with **142** `.cfg` TLC configurations. The
+`unsafe` surface is pinned by **268** grouped inventory patterns and **43** safety contracts,
 both CI-gated by `scripts/verify-unsafe-boundary-inventory.sh` (set-equality).
 
 ### Change history
@@ -19,6 +19,89 @@ both CI-gated by `scripts/verify-unsafe-boundary-inventory.sh` (set-equality).
 Newest first. Each entry is a dated milestone; the per-module tables below carry
 the detailed proof/state-count data captured at each step.
 
+- **2026-08-30** — Completed the final API and assurance-harness closure.
+  `ApiFeatureVisibilitySpec.v` proves that established causal APIs remain
+  available in every feature profile while persistent serialization statistics
+  are exported exactly with `perf-instrumentation`; downstream feature-on and
+  feature-off compile fixtures enforce that boundary. TLC invariant negative
+  controls now recognize both transition-state and initial-state diagnostics,
+  require the exact declared invariant name, and are backed by
+  `TlcDiagnosticClassifierSpec.v` plus executable positive/wrong-name/non-exact
+  classifier regressions. The complete `RUN_TLC=1` correspondence gate passed
+  with all 83 Rocq files, 75 TLA⁺ modules, and 142 TLC configurations.
+- **2026-08-30** — Replaced the superseded runtime publication-permit protocol
+  with immutable exact-root authority. Semantic writes clear the exact binding
+  in their existing lock-free root CAS; exact eviction and fault-in publish
+  packed residency in that same root revision; only checkpoint, retirement,
+  and detached installation use the cold lifecycle mutex. The
+  `EvictionExactRootPublication` safe model completed with 6,851,056 generated /
+  1,431,810 distinct states, depth 29, and no errors; all six named unsafe
+  controls returned TLC status 12 for their required invariant. The
+  `HelpedRootResidency` safe model completed with 33,066 generated / 13,746
+  distinct states, depth 13, and no errors; all five named controls exposed the
+  intended early-frontier, retirement-fence, unfenced-word, unstamped, or
+  catalog-authority defect. `DetachedCallbackSeparation` completed with 10,821
+  generated / 2,751 distinct states, depth 11, and no errors; its five controls
+  reject exact-catalog leakage/authority and semantic binding preservation.
+  Three constructive Rocq specifications prove the corresponding transition
+  laws without admitted assumptions. Ten focused Loom checks pass, including
+  three expected-panicking unsafe controls.
+- **2026-08-30** — Added an executable character-node V2/V3 compatibility
+  contract. `CharV3TypeEncodingSpec.v` proves the complete writer × reader ×
+  mode × node-kind matrix, exact compact type semantics, migration
+  preservation, and streamed emission. `CharV3ArenaPublication` completed the
+  final gate with 92 generated / 26 distinct states, depth 8, and no errors;
+  all seven controls reached their exact intended invariant violations,
+  including current-reader V2 acceptance and committed-V3 crash/reopen. Immutable
+  12-case baseline/current corpora are regenerated with the exact historical
+  writer and checked in both reader directions; an ordinary-stack deep test and
+  a process-boundary crash/reopen test cover production serialization.
+- **2026-08-29** — Added revision-bound arborescence specialization for the
+  shared stack-safe overlay serializer. `OverlayTreeWitness` completed with 61
+  generated / 9 distinct states, depth 4, and no errors. Its forged-DAG,
+  stale-witness, fast-without-witness, and admitted-cycle controls each returned
+  TLC status 12 while violating their required named invariant.
+  `OverlayArborescenceSerializationSpec.v` proves certification rejects aliases
+  and cycles, checked-DAG and certified-tree policies emit identical projected
+  traces, the certified policy performs zero census work, structural
+  publication preserves uniqueness, and the loop-invariant deferred-stamp
+  guard preserves enabled ownership while performing no disabled/analysis
+  retains. Focused Rust regressions cover zero-sized policy state, exact
+  tree/DAG write parity, shared-DAG retention, and exact stamp ownership.
+- **2026-08-29** — Added total packed-residency ordinal exhaustion by exact
+  root-CAS publication of a fully materialized fresh catalog. The safe
+  `PackedResidencyFreshCatalog` model completed with 14 generated / 10 distinct
+  states, depth 4, and no errors. Its catalog-reuse, wrong-generation-helper,
+  partial-copy, and non-exact-root controls each returned TLC status 12 while
+  violating their required named invariant. `PackedResidencyRefinementSpec.v`
+  proves exact fresh payloads, zero tagging, delayed-helper isolation, exact
+  winner/loser behavior, sealed prepared targets, and observationally exact
+  removal of unobserved catalog metadata. Focused Rust and Loom regressions
+  cover byte/character fault and eviction symmetry, preservation of a nonempty
+  inactive family, one winner, delayed old helpers, and immediate ordinary
+  advancement after rollover.
+- **2026-08-27** — Added retained immutable edge-range and optimized-protobuf
+  V2 event-transaction verification. `SerializationRoundtripSpec.v` now proves
+  recursive-DFS/range-worklist equivalence, exact nonempty range progression,
+  reservation-before-descent, cold-growth refinement, and failure-atomic
+  authorization/commit of the optional final-node word plus three edge words.
+  `RetainedEdgeRangeTraversal.tla` completed with 7,968 generated / 2,245
+  distinct states, depth 19, and no errors; its reclaim, partial-publication,
+  and out-of-range-advance controls violate the exact named invariants.
+  Strict-provenance Miri passed four inline/spilled/retention/no-clone range
+  tests and five V2 capacity/failure/property tests. The ordinary Rust suite
+  passes a 100,000-level V1/V2 round trip without stack-size changes. These
+  paths impose no library traversal-depth ceiling; optional resource budgets
+  are consumer policy.
+- **2026-08-25** — Added exact resident-budget and overlay-fault-provenance
+  formalization. All 75 Rocq files compile with 1,449 closed propositions and
+  no proof escape hatches. `ResidentBudgetEviction` completed with 7 generated /
+  7 distinct states and both intended negative controls; the expanded
+  `OverlayEvictionStale` completed with 128,468 generated / 48,511 distinct
+  states and both intended negative controls. The formal harness now uses cgroup-v2 memory,
+  swap, task, CPU, and wall-time controls through `systemd-run`, retains TLC
+  state directories after unexpected nonzero exits, and assigns four fixed
+  workers to the publication model without quotienting or reducing it.
 - **2026-08-19** — The complete `RUN_TLC=1` correspondence gate passed with
   72 Rocq files (1,348 closed propositions), 57 TLA⁺ modules, and 69 TLC
   configurations. The harness now assigns every TLC invocation a unique
@@ -159,15 +242,15 @@ the detailed proof/state-count data captured at each step.
 | ByzantineStorage.tla | ~70 | TLC passed |
 | HotStuffConsensus.tla | ~91 | TLC passed |
 
-**Snapshot table total (these rows):** 11,141 TLA⁺ LOC. **Live tree:** **59**
-TLA⁺ modules totalling **13,311** LOC with **73** `.cfg` TLC configurations
-(verified 2026-08-18). The rows above are the long-standing, individually
+**Snapshot table total (these rows):** 11,141 TLA⁺ LOC. **Live tree:** **62**
+TLA⁺ modules totalling **15,323** LOC with **91** `.cfg` TLC configurations
+(verified 2026-08-27). The rows above are the long-standing, individually
 LOC-audited modules; the live tree additionally carries the lock-free overlay
 durable-replay/value-CAS/remove-CAS/eviction-CAS family, durable-checkpoint and
 eviction-registry-publication models, char-node-v2-layout, persistent-SCDAWG /
 suffix-automaton / suffix-tree, public read-snapshot / dictionary-node
 traversal, and concurrent-checkpoint-serialization models introduced in the
-L-campaign and eviction work. SANY parses all 59.
+L-campaign and eviction work. SANY parses all 62.
 
 ### Model Checking Configuration
 
@@ -216,7 +299,7 @@ NodeIds = {1, 2, 3, 4, 5, 6}
 | PROPERTY_CrashRecovery | Liveness | No violations in explored states |
 | Deadlock Freedom | Safety | No deadlocks found |
 
-#### Focused TLC Runs Added 2026-05-22 Through 2026-08-18
+#### Focused TLC Runs Added 2026-05-22 Through 2026-08-25
 
 | Module | Config | States Generated | Distinct States | Depth | Result |
 |--------|--------|-----------------:|----------------:|------:|--------|
@@ -247,8 +330,46 @@ NodeIds = {1, 2, 3, 4, 5, 6}
 | AbiSnapshotQuiescence.tla | AbiSnapshotQuiescence.cfg | 11 | 7 | 4 | No errors; ungated control violates `SnapshotEventuallyCompletes` |
 | ByzantineStorage.tla | ByzantineStorage.cfg | 11,059,201 | 331,776 | 21 | No errors |
 | HotStuffConsensus.tla | HotStuffConsensus.cfg | 17,991 | 2,940 | 12 | No errors |
+| ResidentBudgetEviction.tla | ResidentBudgetEviction.cfg | 7 | 7 | 5 | No errors; controls violate `PlannedReclamationIsReal` and `AcceptedSnapshotsWereRevalidated` |
+| OverlayEvictionStale.tla | OverlayEvictionStale.cfg | 128,468 | 48,511 | 15 | No errors; controls violate `NoStaleEvict` and `FaultInstalledCarriesExactStamp` |
+| EvictionExactRootPublication.tla | EvictionExactRootPublication.cfg | 6,851,056 | 1,431,810 | 29 | No errors; six controls violate `ExactRootRegistryAgreement`, `NoInexactCommit`, `NoRetainedGenerationABA`, or `FailedPublicationPreservesRegistry` as required |
+| HelpedRootResidency.tla | HelpedRootResidency.cfg | 33,066 | 13,746 | 13 | No errors; five controls violate `MaterializedResidencyMatchesPublishedRoot`, `RootIsSoleLogicalAuthority`, `NoUnstampedPublication`, or `CatalogNeverAuthorizes` as required |
+| DetachedCallbackSeparation.tla | DetachedCallbackSeparation.cfg | 10,821 | 2,751 | 11 | No errors; five controls reject exact-catalog leakage/authority, checkpoint-created detached state, and semantic binding preservation |
+| HelpedResidencyScan.tla | HelpedResidencyScan.cfg | 1,116 | 745 | 13 | No errors; liveness configuration completed with 83 generated / 56 distinct states, depth 9; control violates `NoAcceptedTornScan` |
+| HelpedCheckpointStamps.tla | HelpedCheckpointStamps.cfg | 2,045 | 525 | 13 | No errors; controls violate `NoEarlyActivation` and `NoStampBeforePublication` |
+| PackedResidencyRollover.tla | PackedResidencyRollover.cfg | 7 | 7 | 6 | No errors; controls violate `CurrentCellMatchesRoot` |
+| ResidencyRevisionOrdinalABA.tla | ResidencyRevisionOrdinalABA.cfg | 7 | 7 | 4 | No errors; control violates `NoDelayedHelperABA` |
+| RootOwnerFence.tla | RootOwnerFence.cfg | 178 | 142 | 9 | No errors; control violates `RootNeverNamesRetiredOwner` |
+| SparseResidencyWinnerAuthority.tla | SparseResidencyWinnerAuthority.cfg | 9 | 9 | 9 | No errors; control violates `SettledMaterializationMatchesRoot` |
+| ResidentRankingDepth.tla | ResidentRankingDepth.cfg | 2 | 1 | 1 | No errors; control violates `ConcreteChildStrictDepth` |
+| CharV3ArenaPublication.tla | CharV3ArenaPublication.cfg | 92 | 26 | 8 | No errors; all seven controls reached their exact named invariant violations with TLC status 12 |
+| PackedResidencyFreshCatalog.tla | PackedResidencyFreshCatalog.cfg | 14 | 10 | 4 | No errors; reuse, wrong-helper, partial-copy, and non-exact-root controls violate their required named invariants with TLC status 12 |
+| OverlayTreeWitness.tla | OverlayTreeWitness.cfg | 61 | 9 | 4 | No errors; forged-DAG, stale-witness, fast-without-witness, and admitted-cycle controls violate their required named invariants with TLC status 12 |
+| RetainedEdgeRangeTraversal.tla | RetainedEdgeRangeTraversal.cfg | 7,968 | 2,245 | 19 | No errors; controls violate `RetainedReaderRevisionIsAllocated`, `NoPartialExternalPublication`, and `RangeBounds` |
 
 All listed focused modules also passed `tla2sany` syntax/semantic checking.
+
+The exact-root publication results above are bound to these SHA-256 identities
+so they cannot be confused with the retired permit-counter protocol:
+
+| Artifact | SHA-256 |
+|----------|---------|
+| `tla+/EvictionExactRootPublication.tla` | `63dc1b2d39ca03b4fca3991dfe5b4e99f4aa500f2eddcb0f5c1703febed45c1a` |
+| `tla+/EvictionExactRootPublication.cfg` | `490547fb05d78161f6eec5f5409e589dabd4cce3db3ac6758f5e461370c6e2f0` |
+| `tla+/HelpedRootResidency.tla` | `189725433a637b04cea25a697a5465d4f56262346165520f6037387f72962be5` |
+| `tla+/HelpedRootResidency.cfg` | `ae8872679434b3e62adcda019263f8c592bb8dca07727f033e2e33ab5e3733e4` |
+| `tla+/DetachedCallbackSeparation.tla` | `f05daa44d4fcb5e0c5ac10986bd7ef8b61d2651eb24f670b8937d375a219458a` |
+| `tla+/DetachedCallbackSeparation.cfg` | `3eccdba95b1c4ec1d1ddfe7c80edba85b93fb1c76196a11466fdac6d33aa614e` |
+| `rocq/Spec/EvictionExactRootPublicationSpec.v` | `84cc5f74686ccc8e96535ea6a319044f9ec258c33709dfc421aeb7e74a0bc117` |
+| `rocq/Spec/HelpedRootResidencySpec.v` | `71f175fb09f1f4fbc921bbe108d4e60c8cdb0bd07947d7011e65f36bfeda5be1` |
+| `rocq/Spec/DetachedCallbackSeparationSpec.v` | `c4408a9d72545d16ff1da194bfc5c25b1961b2bae56a56da4d2bb2bddd759fd0` |
+| `tla+/CharV3ArenaPublication.tla` | `ca83238fd1b1e9740c33864db23557ee3a78b7489c891b94604bc433499b4aaa` |
+| `tla+/CharV3ArenaPublication.cfg` | `868f020e5d2d3990e745418bf9ce7adcbff419daffd6d05f725df556745ddeee` |
+| `rocq/Spec/CharV3TypeEncodingSpec.v` | `470bb0f9acfb302c96a376ab32504eb4796a7ae6c832bff7038674a8dd5b9294` |
+| `rocq/Spec/ApiFeatureVisibilitySpec.v` | `1bd08fbd70333e2dfe3afe265db01d881a63bce8fe0af274fca63033111afe57` |
+| `rocq/Spec/TlcDiagnosticClassifierSpec.v` | `378362e659abf9ebd6f866610e5de01f42a77dce8de8481dbeb5e270ba145bbb` |
+| `tests/fixtures/char-node-format/baseline-v2-6a1b267.txt` | `344376ee2753b70cdb4825c09fb5a5980c27a315fdfee77f5127d52585bc6e49` |
+| `tests/fixtures/char-node-format/current-writer.txt` | `5bf013663732a2c3eee4c91e16b93642a2fa3446134034f925332f42c361b8c4` |
 
 #### Implementation Correspondence Runs Added 2026-05-22
 
@@ -278,6 +399,14 @@ implementation surface.
 | Group-commit ordered durable LSN prefix | `AsyncWalGroupCommit.tla` to `group_commit.rs`/async WAL | Passed, including FIFO queue/returned-LSN correspondence |
 | Proof-carrying trace replay | `ProofCarryingExtraction.v` to certified trace checker behavior | Passed |
 | Corrupt certificate rejection | `invalid_step_rejected` to Rust certificate checker fail-closed behavior | Passed |
+| Exact resident-budget closure | `ResidentBudgetEvictionSpec.v` and `ResidentBudgetEviction.tla` to `core/eviction/coordinator.rs` | Passed, 17 focused resident-budget tests plus 2 root-advance tests; bounded safe model and both negative controls passed their expected outcomes |
+| Exact overlay fault provenance | `OverlayFaultProvenanceSpec.v` and `OverlayEvictionStale.tla` to byte/char fault installation and re-eviction | Passed, exact-stamp, fault-thrash, exact-residency, detached-registry, and Loom fault-publication checks; both stale and fault-stamp negative controls passed their expected outcomes |
+| Exact-root eviction publication | `EvictionExactRootPublicationSpec.v`, `HelpedRootResidencySpec.v`, `DetachedCallbackSeparationSpec.v`, and their TLA⁺ models to immutable-root authority, packed residency, detached callbacks, and coordinator retirement | Passed focused deterministic and ten Loom checks; exact-root, helped-residency, and detached-capability safe models completed exhaustively, and all sixteen unsafe controls reached their required named invariant violations |
+| Character-node V2/V3 format | `CharV3TypeEncodingSpec.v` and `CharV3ArenaPublication.tla` to the immutable cross-version corpus, exact old/current readers, committed-arena publication, ordinary-stack deep serialization, and crash/reopen | Passed the complete static compatibility proof, final 92/26-state safe model, all seven required negative controls, exact cross-version corpus, and crash/reopen/deep-stack regressions |
+| API feature visibility | `ApiFeatureVisibilitySpec.v` to root re-exports and downstream compile fixtures | Passed: established causal APIs compile without optional features; persistent serialization instrumentation compiles with `perf-instrumentation` and is unresolvable without it |
+| TLC negative-control diagnostics | `TlcDiagnosticClassifierSpec.v` to the exact-line classifier in `verify-formal-correspondence.sh` | Passed: transition-state and initial-state violations are accepted only for the required exact invariant name; wrong-name and non-exact lines are rejected |
+| Packed residency fresh-catalog rollover | `PackedResidencyRefinementSpec.v` and `PackedResidencyFreshCatalog.tla` to `atomic_residency.rs`, `disk_registry.rs`, `atomic_ptr.rs`, and `coordinator.rs` | Passed safe TLC and all four required unsafe controls; focused Rust parity tests cover byte/character fault and eviction, inactive-family preservation, delayed-helper isolation, and ordinary post-rollover advancement; Loom covers competing fresh-catalog candidates and an old-catalog helper |
+| Overlay arborescence specialization | `OverlayArborescenceSerializationSpec.v` and `OverlayTreeWitness.tla` to `core/overlay/compressed_serialize.rs` and byte/char/vocabulary/native-u64 call sites | Passed Rocq, safe TLC, and all four required unsafe controls; focused Rust tests preserve exact unique-tree output, shared-DAG behavior, and enabled/disabled stamp ownership while release code generation removes the DAG census from production arborescent checkpointing |
 | Swizzled-pointer state contract | unsafe pointer encoding boundary to `SwizzledPtr` | Passed, including pure raw disk-pointer roundtrip, raw extraction only after confirmed published in-memory state, strict-provenance memory sentinels that cannot reconstruct pointers from integers, and lazy-load loser reclamation |
 | Atomic node pointer CAS ownership | former unsafe raw `Arc` slot boundary to lock-guarded `AtomicNodePtr` | Passed |
 | Optimistic-cell writer serialization | unsafe interior-mutability boundary to `OptimisticCell` | Passed |
@@ -329,7 +458,7 @@ implementation surface.
 | Substring candidate spec | `SubstringSearchSpec.v` to public `SubstringDictionary` exact candidate APIs for byte and Unicode SCDAWG | Passed, 5 default-feature tests |
 | SCDAWG occurrence spec | `ScdawgOccurrenceSpec.v` to byte and Unicode SCDAWG `find`/`freq`/`locations`, handle-based occurrence APIs, and left-extension traversal | Passed, 7 default-feature tests |
 | Fuzzy candidate coverage spec | `FuzzyCandidateCoverageSpec.v` to WallBreaker-style byte/Unicode SCDAWG query-piece candidate coverage | Passed, 5 default-feature tests |
-| Public serialization roundtrip spec | `SerializationRoundtripSpec.v` to public Bincode/JSON/plaintext/gzip/protobuf serializer APIs | Passed, 8 correspondence tests plus 9 existing value-roundtrip regression tests under `--features serialization`, and 6 protobuf/compression correspondence tests under `--features "serialization protobuf compression"` |
+| Public serialization roundtrip, retained-range traversal, and V2 event transaction | `SerializationRoundtripSpec.v` and `RetainedEdgeRangeTraversal.tla` to public Bincode/JSON/plaintext/gzip/protobuf APIs, retained DynamicDawg range adapters, and `src/serialization/protobuf_impl.rs` | Passed: existing serialization correspondence suites plus 34 focused protobuf tests, 4 strict-provenance retained-range Miri tests, and 5 strict-provenance V2 sink Miri tests. Coverage includes exact inline/spilled ranges, retention across root publication, no child-`Arc` cloning, allocation-failure atomicity, a 256-case event oracle, exact commit counting, and ordinary-stack 100,000-level V1/V2 round trips. |
 | ABI producer immutable snapshot, paging, status, and progress boundary | `AbiProducerSnapshot.tla`, `AbiSnapshotQuiescence.tla`, `AbiTraversalSnapshotSpec.v`, `AbiPagingProducerSpec.v`, and `AbiStatusMappingSpec.v` to `src/bindings.rs` and the `ffi_*` correspondence suites | Passed, 62 focused ABI integration/property/concurrency/checkpoint tests plus the deterministic writer-admission unit test; 12,000 captures under sustained mutation complete without a torn root/count pair, the unsafe live-alias model violates `CapturedRevisionImmutable`, and the ungated fallback violates `SnapshotEventuallyCompletes` as intended |
 | Mmap concurrent allocation | `MmapBlockStorage.tla` to `MmapDiskManager::allocate_block` | Passed, 32 concurrent allocations |
 | Mmap sub-block bounds | `BlockStorage` range contract to `MmapDiskManager::{read_bytes,write_bytes}` | Passed |
@@ -468,16 +597,16 @@ also passed on 2026-05-23 with 8 storage correspondence tests.
 
 ### Modules Compiled
 
-All **72** `.v` files compile end-to-end with Rocq 9.1.0. Every proposition is
+All **83** `.v` files compile end-to-end with Rocq 9.1.0. Every proposition is
 closed by `Qed.` (or `Defined.` for a transparent definition) — **0 `Axiom`,
-0 `Admitted`, 0 `Parameter`** across the tree (verified 2026-08-18 by
-`grep -rnE '^\s*(Axiom|Parameter|Admitted)\b' formal-verification --include='*.v'`,
+0 `Admitted`, 0 `Parameter`** across the tree (verified 2026-08-30 by
+`rg -n '^\s*(Axiom|Parameter|Admitted)\b' formal-verification -g '*.v'`,
 which returns nothing; the only word-mentions are comments asserting their
 absence).
 
 > The per-module table that follows is a dated snapshot covering **66** of the
-> **72** files (it was last LOC-audited 2026-06-11). The six uncounted files
-> are later additions; the headline aggregate **1,348** below is the live total.
+> **83** files (it was last LOC-audited 2026-06-11). The 17 uncounted files
+> are later additions; the headline aggregate **1,738** above is the live total.
 
 The prior 15-module core compiled with Rocq 9.1.0 (~72 s wall clock under
 `make -j1`). Every theorem is closed by `Qed.` — **0 `Axiom`, 0 `Admitted`, 0
@@ -528,7 +657,7 @@ The prior 15-module core compiled with Rocq 9.1.0 (~72 s wall clock under
 | Spec/SubstringSearchSpec.v | 344 | 21 | 2 | 23 | Complete |
 | Spec/ScdawgOccurrenceSpec.v | 395 | 14 | 0 | 14 | Complete |
 | Spec/FuzzyCandidateCoverageSpec.v | 292 | 7 | 3 | 10 | Complete |
-| Spec/SerializationRoundtripSpec.v | 668 | 45 | 4 | 49 | Complete |
+| Spec/SerializationRoundtripSpec.v | 3359 | 167 | 5 | 173 (including 1 `Corollary`) | Complete |
 | Spec/ARTrieSpec.v | 1195 | 7 | 42 | 49 | Complete |
 | Spec/ReplicatedMapSpec.v | 91 | 4 | 0 | 4 | Complete |
 | Invariants/ArenaInvariants.v | 299 | 11 | 6 | 18 | Complete |
@@ -546,11 +675,11 @@ The prior 15-module core compiled with Rocq 9.1.0 (~72 s wall clock under
 **Snapshot table total (66 modules listed above):** 26,329 Rocq LOC; 974
 `Theorem` + 301 `Lemma` + 8 `Corollary` = 1,283 propositions.
 
-**Live tree total (all 72 `.v` files, verified 2026-08-19):** **27,689** Rocq
-LOC; **1,027** `Theorem` + **313** `Lemma` + **8** `Corollary` + **0**
-`Proposition` = **1,348** propositions, all closed (`Qed.`/`Defined.`; no escape
-hatches — 0 `Admitted` / 0 `Axiom` / 0 `Parameter`). The 65-proposition delta
-(+53 `Theorem`, +12 `Lemma`) over the snapshot comprises the persistent suffix
+**Live tree total (all 83 `.v` files, verified 2026-08-30):** **35,844** Rocq
+LOC; **1,364** `Theorem` + **356** `Lemma` + **18** `Corollary` + **0**
+`Proposition` = **1,738** propositions, all closed (`Qed.`/`Defined.`; no escape
+hatches — 0 `Admitted` / 0 `Axiom` / 0 `Parameter`). The 455-proposition delta
+(+390 `Theorem`, +55 `Lemma`, +10 `Corollary`) over the snapshot comprises the persistent suffix
 automaton, persistent u64 ARTrie, persistent SCDAWG, ABI traversal/paging/status,
 and related specifications not yet folded into the dated per-module table above.
 
@@ -595,7 +724,7 @@ obligations were resolved as follows:
 
 ### Proven Theorems (selected highlights)
 
-A non-exhaustive sample of the **1,348** theorem/lemma/corollary propositions.
+A non-exhaustive sample of the **1,738** theorem/lemma/corollary propositions.
 See each per-module file for the complete list, and
 [README.md](README.md) for the module-by-module status table.
 

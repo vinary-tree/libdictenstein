@@ -105,6 +105,8 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             epoch_manager: Arc::new(super::concurrency::EpochManager::new()),
             stats: Arc::new(super::concurrency::TrieStats::new()),
             eviction_coordinator: std::sync::Mutex::new(None),
+            registry_publication_gate:
+                crate::persistent_artrie::core::eviction::RegistryPublicationGate::new(),
             #[cfg(feature = "persistent-artrie")]
             lockfree_root: None,
             #[cfg(feature = "persistent-artrie")]
@@ -325,6 +327,8 @@ impl<V: DictionaryValue> PersistentARTrie<V, IoUringDiskManager> {
             epoch_manager: Arc::new(super::concurrency::EpochManager::new()),
             stats: Arc::new(super::concurrency::TrieStats::new()),
             eviction_coordinator: std::sync::Mutex::new(None),
+            registry_publication_gate:
+                crate::persistent_artrie::core::eviction::RegistryPublicationGate::new(),
             #[cfg(feature = "persistent-artrie")]
             lockfree_root: None,
             #[cfg(feature = "persistent-artrie")]

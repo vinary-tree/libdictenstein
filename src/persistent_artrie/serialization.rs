@@ -73,8 +73,7 @@ use std::io::{Read, Write};
 // Relative encoding support (feature-gated)
 use super::arena_manager::ArenaSlot;
 use super::relative_encoding::{
-    encode_children, encode_sequential_siblings, try_decode_children,
-    try_decode_sequential_siblings, RelativeEncodingError,
+    encode_children, encode_sequential_siblings, try_decode_child_pointer, RelativeEncodingError,
 };
 
 /// Helper to convert io::Error to PersistentARTrieError for serialization operations
@@ -231,11 +230,17 @@ impl SerializedNodeHeader {
                 ]),
             });
         }
-        if self.version > FORMAT_VERSION_V2 {
+        if self.version < FORMAT_VERSION || self.version > FORMAT_VERSION_V2 {
             return Err(PersistentARTrieError::UnsupportedVersion {
                 max_supported: FORMAT_VERSION_V2 as u32,
                 found: self.version as u32,
             });
+        }
+        if self._padding != 0 {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "node header contains nonzero reserved byte {:#04x}",
+                self._padding
+            )));
         }
         match self.node_type {
             node_types::NODE4 | node_types::NODE16 | node_types::NODE48 | node_types::NODE256 => {}
@@ -251,6 +256,56 @@ impl SerializedNodeHeader {
                 "prefix length {} exceeds maximum {}",
                 self.prefix_len, MAX_PREFIX_LEN
             )));
+        }
+        let maximum_children = match self.node_type {
+            node_types::NODE4 => 4,
+            node_types::NODE16 => 16,
+            node_types::NODE48 => 48,
+            node_types::NODE256 => 256,
+            _ => unreachable!("node type was validated above"),
+        };
+        if self.num_children as usize > maximum_children {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "node type {} declares {} children, exceeding capacity {}",
+                self.node_type, self.num_children, maximum_children
+            )));
+        }
+
+        const KNOWN_NODE_FLAGS: u8 = super::nodes::flags::IS_FINAL
+            | super::nodes::flags::IS_DIRTY
+            | super::nodes::flags::IS_LEAF
+            | super::nodes::flags::HAS_DIRTY_DESCENDANTS;
+        let unknown_node_flags = self.flags & !KNOWN_NODE_FLAGS;
+        if unknown_node_flags != 0 {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "unknown byte node flags {unknown_node_flags:#04x}"
+            )));
+        }
+
+        const KNOWN_ENCODING_FLAGS: u8 = encoding_flags::RELATIVE_OFFSETS
+            | encoding_flags::SEQUENTIAL_SIBLINGS
+            | encoding_flags::HAS_VALUE;
+        let unknown_flags = self.encoding_flags & !KNOWN_ENCODING_FLAGS;
+        if unknown_flags != 0 {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "unknown node encoding flags {unknown_flags:#04x}"
+            )));
+        }
+        if self.version < FORMAT_VERSION_V2 && self.encoding_flags != 0 {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "format version {} cannot carry encoding flags {:#04x}",
+                self.version, self.encoding_flags
+            )));
+        }
+        if self.uses_sequential_siblings() && !self.uses_relative_offsets() {
+            return Err(PersistentARTrieError::corrupted(
+                "sequential sibling encoding requires relative offsets",
+            ));
+        }
+        if self.uses_sequential_siblings() && self.num_children == 0 {
+            return Err(PersistentARTrieError::corrupted(
+                "sequential sibling encoding requires at least one child",
+            ));
         }
         Ok(())
     }
@@ -606,20 +661,77 @@ pub mod v2 {
         PersistentARTrieError::corrupted(format!("invalid relative child encoding: {}", err))
     }
 
-    fn decode_v2_child_slots(
-        data: &[u8],
-        parent: ArenaSlot,
-        count: usize,
-        uses_sequential: bool,
-    ) -> Result<(Vec<ArenaSlot>, usize)> {
-        if uses_sequential {
-            try_decode_sequential_siblings(data, parent, count).map_err(relative_decode_err)
-        } else {
-            try_decode_children(data, parent, count).map_err(relative_decode_err)
-        }
+    fn checked_end(offset: usize, len: usize, section: &str) -> Result<usize> {
+        offset.checked_add(len).ok_or_else(|| {
+            PersistentARTrieError::corrupted(format!(
+                "{section} byte-range arithmetic overflow: offset {offset}, length {len}"
+            ))
+        })
     }
 
-    fn read_v2_node_type(data: &[u8], offset: usize) -> Result<NodeType> {
+    fn checked_slice<'a>(
+        data: &'a [u8],
+        offset: usize,
+        len: usize,
+        section: &str,
+    ) -> Result<&'a [u8]> {
+        let end = checked_end(offset, len, section)?;
+        data.get(offset..end).ok_or_else(|| {
+            PersistentARTrieError::corrupted(format!(
+                "truncated {section}: need byte range {offset}..{end}, record has {} bytes",
+                data.len()
+            ))
+        })
+    }
+
+    fn checked_u64(data: &[u8], offset: usize, section: &str) -> Result<u64> {
+        let bytes = checked_slice(data, offset, 8, section)?;
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(bytes);
+        Ok(u64::from_le_bytes(raw))
+    }
+
+    fn require_exact_payload_len(data: &[u8], expected: usize, section: &str) -> Result<()> {
+        if data.len() != expected {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "invalid {section} payload length: header provides {} bytes, layout consumes {expected}",
+                data.len()
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_sorted_keys(keys: &[u8], count: usize, section: &str) -> Result<()> {
+        let active = keys.get(..count).ok_or_else(|| {
+            PersistentARTrieError::corrupted(format!(
+                "{section} declares {count} keys but stores only {}",
+                keys.len()
+            ))
+        })?;
+        if active.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "{section} active keys are not strictly increasing"
+            )));
+        }
+        let inactive = keys.get(count..).ok_or_else(|| {
+            PersistentARTrieError::corrupted(format!(
+                "{section} active-key count exceeds its fixed key storage"
+            ))
+        })?;
+        if let Some(index) = inactive.iter().position(|&key| key != 0) {
+            let slot = count.checked_add(index).ok_or_else(|| {
+                PersistentARTrieError::corrupted(format!(
+                    "{section} inactive-key slot index overflows usize"
+                ))
+            })?;
+            return Err(PersistentARTrieError::corrupted(format!(
+                "{section} unused key slot {slot} is nonzero"
+            )));
+        }
+        Ok(())
+    }
+
+    fn checked_byte_child_type(data: &[u8], offset: usize) -> Result<NodeType> {
         let byte = *data.get(offset).ok_or_else(|| {
             PersistentARTrieError::corrupted(format!(
                 "missing relative child node type at offset {} in {} byte node payload",
@@ -627,7 +739,161 @@ pub mod v2 {
                 data.len()
             ))
         })?;
-        Ok(NodeType::try_from(byte).unwrap_or(NodeType::Node4))
+        let node_type = NodeType::try_from(byte).map_err(|_| {
+            PersistentARTrieError::corrupted(format!(
+                "invalid relative child node type {byte} at offset {offset}"
+            ))
+        })?;
+        if !node_type.is_byte_level() {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "byte node references non-byte child type {node_type:?} at offset {offset}"
+            )));
+        }
+        Ok(node_type)
+    }
+
+    fn checked_arena_child(slot: ArenaSlot, node_type: NodeType) -> Result<SwizzledPtr> {
+        SwizzledPtr::try_from_arena_slot(slot, node_type).map_err(|error| {
+            PersistentARTrieError::corrupted(format!(
+                "relative child slot {slot:?} is not representable: {error}"
+            ))
+        })
+    }
+
+    fn checked_fixed_child(data: &[u8], offset: usize, section: &str) -> Result<SwizzledPtr> {
+        let raw = checked_u64(data, offset, section)?;
+        let pointer = SwizzledPtr::from_raw(raw);
+        let location = pointer.disk_location().ok_or_else(|| {
+            PersistentARTrieError::corrupted(format!(
+                "{section} contains null, in-memory, transitional, or invalid pointer {raw:#018x}"
+            ))
+        })?;
+        if location.block_id == 0 {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "{section} references reserved block zero"
+            )));
+        }
+        if !location.node_type.is_byte_level() {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "{section} references non-byte node type {:?}",
+                location.node_type
+            )));
+        }
+        Ok(pointer)
+    }
+
+    struct ValidatedRecordEnvelope<'a> {
+        header: SerializedNodeHeader,
+        structural: &'a [u8],
+        value: Option<&'a [u8]>,
+    }
+
+    fn validated_record_envelope(data: &[u8]) -> Result<ValidatedRecordEnvelope<'_>> {
+        let header_slice = checked_slice(data, 0, SERIALIZED_HEADER_SIZE, "node header")?;
+        let mut header_bytes = [0u8; SERIALIZED_HEADER_SIZE];
+        header_bytes.copy_from_slice(header_slice);
+        let header = SerializedNodeHeader::from_bytes(&header_bytes);
+        header.validate()?;
+
+        let structural_end = checked_end(
+            SERIALIZED_HEADER_SIZE,
+            header.data_size as usize,
+            "node structural payload",
+        )?;
+        let structural = data
+            .get(SERIALIZED_HEADER_SIZE..structural_end)
+            .ok_or_else(|| {
+                PersistentARTrieError::corrupted(format!(
+                    "truncated node structural payload: header declares {} bytes, record has {} bytes",
+                    header.data_size,
+                    data.len()
+                ))
+            })?;
+
+        let value = if header.encoding_flags & encoding_flags::HAS_VALUE != 0 {
+            let length_bytes = checked_slice(data, structural_end, 4, "node value length")?;
+            let mut encoded_length = [0u8; 4];
+            encoded_length.copy_from_slice(length_bytes);
+            let value_len = u32::from_le_bytes(encoded_length) as usize;
+            let value_start = checked_end(structural_end, 4, "node value prefix")?;
+            let value_end = checked_end(value_start, value_len, "node value")?;
+            let value = data.get(value_start..value_end).ok_or_else(|| {
+                PersistentARTrieError::corrupted(format!(
+                    "truncated node value: length prefix declares {value_len} bytes, record has {} bytes",
+                    data.len()
+                ))
+            })?;
+            if value_end != data.len() {
+                return Err(PersistentARTrieError::corrupted(format!(
+                    "valued node record has {} trailing bytes after its declared value",
+                    data.len() - value_end
+                )));
+            }
+            Some(value)
+        } else {
+            if structural_end != data.len() {
+                return Err(PersistentARTrieError::corrupted(format!(
+                    "value-less node record has {} trailing bytes",
+                    data.len() - structural_end
+                )));
+            }
+            None
+        };
+
+        Ok(ValidatedRecordEnvelope {
+            header,
+            structural,
+            value,
+        })
+    }
+
+    fn decode_v2_child_slots(
+        data: &[u8],
+        parent: ArenaSlot,
+        count: usize,
+        uses_sequential: bool,
+    ) -> Result<(Vec<ArenaSlot>, usize)> {
+        let mut children = Vec::new();
+        children.try_reserve_exact(count).map_err(|error| {
+            PersistentARTrieError::allocation_failed("byte v2 child-slot decoding", count, error)
+        })?;
+
+        if count == 0 {
+            return Ok((children, 0));
+        }
+
+        if uses_sequential {
+            let (first_child, bytes_consumed) =
+                try_decode_child_pointer(data, parent).map_err(relative_decode_err)?;
+            for index in 0..count {
+                let offset = u32::try_from(index).map_err(|_| {
+                    relative_decode_err(RelativeEncodingError::SequentialIndexTooLarge { index })
+                })?;
+                let slot_id = first_child.slot_id.checked_add(offset).ok_or_else(|| {
+                    relative_decode_err(RelativeEncodingError::SequentialOverflow {
+                        first_child,
+                        index,
+                    })
+                })?;
+                children.push(ArenaSlot::new(first_child.arena_id, slot_id));
+            }
+            return Ok((children, bytes_consumed));
+        }
+
+        let mut offset = 0usize;
+        for _ in 0..count {
+            let encoded = data.get(offset..).ok_or_else(|| {
+                PersistentARTrieError::corrupted(format!(
+                    "relative child offset {offset} exceeds {} byte payload",
+                    data.len()
+                ))
+            })?;
+            let (child, consumed) =
+                try_decode_child_pointer(encoded, parent).map_err(relative_decode_err)?;
+            offset = checked_end(offset, consumed, "relative child list")?;
+            children.push(child);
+        }
+        Ok((children, offset))
     }
 
     /// Collect child slots from a node for relative encoding
@@ -992,14 +1258,48 @@ pub mod v2 {
     /// `encoding_flags` byte (offset 7) and append `value_len: u32` (LE) + the bytes.
     /// The value sits AFTER the node-type data, at offset
     /// `SERIALIZED_HEADER_SIZE + data_size`, so it never perturbs the node parse.
-    pub fn append_node_value(mut node_bytes: Vec<u8>, value_bytes: Option<&[u8]>) -> Vec<u8> {
-        if let Some(vb) = value_bytes {
-            // encoding_flags lives at byte 7 (see SerializedNodeHeader::to_bytes).
-            node_bytes[7] |= encoding_flags::HAS_VALUE;
-            node_bytes.extend_from_slice(&(vb.len() as u32).to_le_bytes());
-            node_bytes.extend_from_slice(vb);
+    pub fn try_append_node_value(
+        mut node_bytes: Vec<u8>,
+        value_bytes: Option<&[u8]>,
+    ) -> Result<Vec<u8>> {
+        let Some(value_bytes) = value_bytes else {
+            return Ok(node_bytes);
+        };
+
+        let existing_value = validated_record_envelope(&node_bytes)?.value;
+        if existing_value.is_some() {
+            return Err(PersistentARTrieError::corrupted(
+                "cannot append a second value to an already-valued node record",
+            ));
         }
-        node_bytes
+        let value_len =
+            u32::try_from(value_bytes.len()).map_err(|_| PersistentARTrieError::ValueTooLarge {
+                size: value_bytes.len(),
+                max_size: u32::MAX as usize,
+            })?;
+        let additional = 4usize.checked_add(value_bytes.len()).ok_or_else(|| {
+            PersistentARTrieError::corrupted("node value record length overflows usize")
+        })?;
+        node_bytes.try_reserve_exact(additional).map_err(|error| {
+            PersistentARTrieError::allocation_failed("byte v2 node value append", additional, error)
+        })?;
+        let encoding_byte = node_bytes.get_mut(7).ok_or_else(|| {
+            PersistentARTrieError::corrupted("node record is missing encoding-flags byte")
+        })?;
+        *encoding_byte |= encoding_flags::HAS_VALUE;
+        node_bytes.extend_from_slice(&value_len.to_le_bytes());
+        node_bytes.extend_from_slice(value_bytes);
+        Ok(node_bytes)
+    }
+
+    /// Compatibility wrapper around [`try_append_node_value`].
+    ///
+    /// Persistent write paths use the fallible API. This wrapper preserves the
+    /// original public signature for callers that already possess a valid v2
+    /// record and a value representable by the on-disk `u32` length field.
+    pub fn append_node_value(node_bytes: Vec<u8>, value_bytes: Option<&[u8]>) -> Vec<u8> {
+        try_append_node_value(node_bytes, value_bytes)
+            .expect("append_node_value requires a canonical node record and representable value")
     }
 
     /// Read the optional value blob from a node record (the inverse of
@@ -1007,48 +1307,406 @@ pub mod v2 {
     /// pre-M4a record) or the trailing bytes are absent/truncated. The value starts
     /// at `SERIALIZED_HEADER_SIZE + data_size` (`data_size` is the node-data size from
     /// the header at bytes 12..16; `encoding_flags` is byte 7).
+    pub fn try_read_node_value(data: &[u8]) -> Result<Option<Vec<u8>>> {
+        let value = validated_record_envelope(data)?.value;
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let mut owned = Vec::new();
+        owned.try_reserve_exact(value.len()).map_err(|error| {
+            PersistentARTrieError::allocation_failed("byte v2 node value read", value.len(), error)
+        })?;
+        owned.extend_from_slice(value);
+        Ok(Some(owned))
+    }
+
+    /// Compatibility reader that maps malformed records to `None`.
+    ///
+    /// Persistent fault and recovery paths use [`try_read_node_value`] so
+    /// corruption is never mistaken for an absent value.
     pub fn read_node_value(data: &[u8]) -> Option<Vec<u8>> {
-        if data.len() < SERIALIZED_HEADER_SIZE {
-            return None;
+        try_read_node_value(data).ok().flatten()
+    }
+
+    /// Structural metadata decoded from one exact byte-arena record.
+    ///
+    /// The value payload is validated and skipped but never copied or
+    /// deserialized. This is the representation used to reconstruct eviction
+    /// topology without faulting application values into memory.
+    #[derive(Debug)]
+    pub(crate) struct DecodedByteNodeMetadata {
+        pub(crate) node_type: NodeType,
+        pub(crate) serialized_bytes: usize,
+        pub(crate) prefix: Vec<u8>,
+        pub(crate) children: Vec<(u8, SwizzledPtr)>,
+    }
+
+    fn decode_metadata_pointer_list(
+        header: &SerializedNodeHeader,
+        data: &[u8],
+        children_start: usize,
+        ctx: &DeserializationContext,
+        legacy_capacity: usize,
+        section: &'static str,
+    ) -> Result<Vec<SwizzledPtr>> {
+        let num_children = header.num_children as usize;
+        let mut pointers = Vec::new();
+        pointers.try_reserve_exact(num_children).map_err(|error| {
+            PersistentARTrieError::allocation_failed(section, num_children, error)
+        })?;
+
+        if header.uses_relative_offsets() {
+            let encoded = data.get(children_start..).ok_or_else(|| {
+                PersistentARTrieError::corrupted(format!(
+                    "{section} starts beyond its node payload"
+                ))
+            })?;
+            let (slots, bytes_consumed) = decode_v2_child_slots(
+                encoded,
+                ctx.parent_slot,
+                num_children,
+                header.uses_sequential_siblings(),
+            )?;
+            let types_start = checked_end(children_start, bytes_consumed, section)?;
+            let expected = checked_end(types_start, num_children, section)?;
+            require_exact_payload_len(data, expected, section)?;
+            for (index, slot) in slots.into_iter().enumerate() {
+                let type_offset = checked_end(types_start, index, section)?;
+                let node_type = checked_byte_child_type(data, type_offset)?;
+                pointers.push(checked_arena_child(slot, node_type)?);
+            }
+            return Ok(pointers);
         }
-        if data[7] & encoding_flags::HAS_VALUE == 0 {
-            return None;
+
+        let stored_children = if header.version == FORMAT_VERSION {
+            legacy_capacity
+        } else {
+            num_children
+        };
+        if stored_children < num_children {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "{section} stores {stored_children} pointer slots for {num_children} children"
+            )));
         }
-        let data_size = u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
-        let off = SERIALIZED_HEADER_SIZE + data_size;
-        if data.len() < off + 4 {
-            return None;
+        let child_bytes = stored_children.checked_mul(8).ok_or_else(|| {
+            PersistentARTrieError::corrupted(format!("{section} byte count overflows usize"))
+        })?;
+        let expected = checked_end(children_start, child_bytes, section)?;
+        require_exact_payload_len(data, expected, section)?;
+        for index in 0..stored_children {
+            let relative_offset = index.checked_mul(8).ok_or_else(|| {
+                PersistentARTrieError::corrupted(format!("{section} offset overflows usize"))
+            })?;
+            let offset = checked_end(children_start, relative_offset, section)?;
+            if index < num_children {
+                pointers.push(checked_fixed_child(data, offset, section)?);
+            } else if checked_u64(data, offset, section)? != 0 {
+                return Err(PersistentARTrieError::corrupted(format!(
+                    "{section} unused pointer slot {index} is non-null"
+                )));
+            }
         }
-        let len =
-            u32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]) as usize;
-        if data.len() < off + 4 + len {
-            return None;
+        Ok(pointers)
+    }
+
+    fn decode_node48_metadata_pointers(
+        header: &SerializedNodeHeader,
+        data: &[u8],
+        ctx: &DeserializationContext,
+        used_slots: &[u8],
+    ) -> Result<Vec<SwizzledPtr>> {
+        if header.version != FORMAT_VERSION || header.uses_relative_offsets() {
+            return decode_metadata_pointer_list(
+                header,
+                data,
+                256,
+                ctx,
+                header.num_children as usize,
+                "node48 metadata children",
+            );
         }
-        Some(data[off + 4..off + 4 + len].to_vec())
+
+        let expected = checked_end(256, 48usize * 8, "node48 legacy metadata children")?;
+        require_exact_payload_len(data, expected, "node48 legacy metadata")?;
+        let mut active_slots = [false; 48];
+        for &slot in used_slots {
+            active_slots[slot as usize] = true;
+        }
+        let mut pointers = Vec::new();
+        pointers
+            .try_reserve_exact(used_slots.len())
+            .map_err(|error| {
+                PersistentARTrieError::allocation_failed(
+                    "node48 legacy metadata children",
+                    used_slots.len(),
+                    error,
+                )
+            })?;
+        for (slot, active) in active_slots.into_iter().enumerate() {
+            let offset = checked_end(
+                256,
+                slot.checked_mul(8).ok_or_else(|| {
+                    PersistentARTrieError::corrupted("node48 legacy metadata child offset overflow")
+                })?,
+                "node48 legacy metadata child",
+            )?;
+            if active {
+                pointers.push(checked_fixed_child(
+                    data,
+                    offset,
+                    "node48 legacy metadata child",
+                )?);
+            } else if checked_u64(data, offset, "node48 legacy metadata unused child")? != 0 {
+                return Err(PersistentARTrieError::corrupted(format!(
+                    "node48 legacy metadata unused child slot {slot} is non-null"
+                )));
+            }
+        }
+        Ok(pointers)
+    }
+
+    fn try_pair_dense_metadata_children(
+        keys: &[u8],
+        pointers: Vec<SwizzledPtr>,
+        section: &'static str,
+    ) -> Result<Vec<(u8, SwizzledPtr)>> {
+        validate_sorted_keys(keys, pointers.len(), section)?;
+        let mut children = Vec::new();
+        children
+            .try_reserve_exact(pointers.len())
+            .map_err(|error| {
+                PersistentARTrieError::allocation_failed(section, pointers.len(), error)
+            })?;
+        for (&key, pointer) in keys.iter().zip(pointers) {
+            children.push((key, pointer));
+        }
+        Ok(children)
+    }
+
+    /// Decode only path and child metadata from one exact persistent byte-node
+    /// record. The optional value envelope is checked for canonical length but
+    /// its bytes are not allocated, copied, or deserialized.
+    pub(crate) fn decode_node_metadata(
+        data: &[u8],
+        ctx: &DeserializationContext,
+        expected_type: Option<NodeType>,
+    ) -> Result<DecodedByteNodeMetadata> {
+        let ValidatedRecordEnvelope {
+            header, structural, ..
+        } = validated_record_envelope(data)?;
+        let node_type = NodeType::try_from(header.node_type).map_err(|_| {
+            PersistentARTrieError::corrupted(format!(
+                "invalid byte-node metadata type {}",
+                header.node_type
+            ))
+        })?;
+        if !node_type.is_byte_level() || node_type == NodeType::Bucket {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "byte-node record has non-ART type {node_type:?}"
+            )));
+        }
+        if let Some(expected_type) = expected_type {
+            if !expected_type.is_byte_level() || expected_type != node_type {
+                return Err(PersistentARTrieError::NodeTypeMismatch {
+                    expected: format!("{expected_type:?}"),
+                    found: format!("{node_type:?}"),
+                });
+            }
+        }
+
+        let prefix_storage_len = if header.prefix_len > 0 {
+            MAX_PREFIX_LEN
+        } else {
+            0
+        };
+        let stored_prefix = checked_slice(
+            structural,
+            0,
+            prefix_storage_len,
+            "byte-node metadata prefix",
+        )?;
+        let logical_prefix_len = header.prefix_len as usize;
+        let logical_prefix = stored_prefix.get(..logical_prefix_len).ok_or_else(|| {
+            PersistentARTrieError::corrupted(
+                "byte-node logical prefix exceeds its fixed prefix storage",
+            )
+        })?;
+        let mut prefix = Vec::new();
+        prefix
+            .try_reserve_exact(logical_prefix_len)
+            .map_err(|error| {
+                PersistentARTrieError::allocation_failed(
+                    "byte-node metadata prefix",
+                    logical_prefix_len,
+                    error,
+                )
+            })?;
+        prefix.extend_from_slice(logical_prefix);
+        let payload = structural.get(prefix_storage_len..).ok_or_else(|| {
+            PersistentARTrieError::corrupted("byte-node metadata prefix exceeds structural payload")
+        })?;
+
+        let children = match node_type {
+            NodeType::Node4 => {
+                let keys = checked_slice(payload, 0, 4, "node4 metadata keys")?;
+                let pointers = decode_metadata_pointer_list(
+                    &header,
+                    payload,
+                    4,
+                    ctx,
+                    4,
+                    "node4 metadata children",
+                )?;
+                try_pair_dense_metadata_children(keys, pointers, "node4 metadata")?
+            }
+            NodeType::Node16 => {
+                let keys = checked_slice(payload, 0, 16, "node16 metadata keys")?;
+                let pointers = decode_metadata_pointer_list(
+                    &header,
+                    payload,
+                    16,
+                    ctx,
+                    16,
+                    "node16 metadata children",
+                )?;
+                try_pair_dense_metadata_children(keys, pointers, "node16 metadata")?
+            }
+            NodeType::Node48 => {
+                let index_bytes = checked_slice(payload, 0, 256, "node48 metadata index")?;
+                let mut index = [NO_CHILD; 256];
+                index.copy_from_slice(index_bytes);
+                let used_slots = collect_node48_used_slots(&index, header.num_children as usize)?;
+                let pointers = decode_node48_metadata_pointers(&header, payload, ctx, &used_slots)?;
+                let mut by_slot: [Option<SwizzledPtr>; 48] = std::array::from_fn(|_| None);
+                for (&slot, pointer) in used_slots.iter().zip(pointers) {
+                    by_slot[slot as usize] = Some(pointer);
+                }
+                let mut children = Vec::new();
+                children
+                    .try_reserve_exact(header.num_children as usize)
+                    .map_err(|error| {
+                        PersistentARTrieError::allocation_failed(
+                            "node48 metadata edges",
+                            header.num_children as usize,
+                            error,
+                        )
+                    })?;
+                for (key, &slot) in index.iter().enumerate() {
+                    if slot == NO_CHILD {
+                        continue;
+                    }
+                    let pointer = by_slot[slot as usize].take().ok_or_else(|| {
+                        PersistentARTrieError::corrupted(format!(
+                            "node48 metadata slot {slot} is referenced more than once"
+                        ))
+                    })?;
+                    children.push((key as u8, pointer));
+                }
+                children
+            }
+            NodeType::Node256 => {
+                let mut bitmap = [0u64; 4];
+                for (index, word) in bitmap.iter_mut().enumerate() {
+                    let offset = index.checked_mul(8).ok_or_else(|| {
+                        PersistentARTrieError::corrupted("node256 metadata bitmap offset overflow")
+                    })?;
+                    *word = checked_u64(payload, offset, "node256 metadata bitmap")?;
+                }
+                let bitmap_children = bitmap.iter().try_fold(0usize, |count, word| {
+                    count.checked_add(word.count_ones() as usize)
+                });
+                if bitmap_children != Some(header.num_children as usize) {
+                    return Err(PersistentARTrieError::corrupted(format!(
+                        "node256 metadata bitmap count {:?} differs from header count {}",
+                        bitmap_children, header.num_children
+                    )));
+                }
+                let pointers = decode_metadata_pointer_list(
+                    &header,
+                    payload,
+                    32,
+                    ctx,
+                    header.num_children as usize,
+                    "node256 metadata children",
+                )?;
+                let mut pointers = pointers.into_iter();
+                let mut children = Vec::new();
+                children
+                    .try_reserve_exact(header.num_children as usize)
+                    .map_err(|error| {
+                        PersistentARTrieError::allocation_failed(
+                            "node256 metadata edges",
+                            header.num_children as usize,
+                            error,
+                        )
+                    })?;
+                for key in 0..256usize {
+                    if bitmap[key / 64] & (1u64 << (key % 64)) == 0 {
+                        continue;
+                    }
+                    let pointer = pointers.next().ok_or_else(|| {
+                        PersistentARTrieError::corrupted(
+                            "node256 metadata bitmap exceeds decoded child pointers",
+                        )
+                    })?;
+                    children.push((key as u8, pointer));
+                }
+                if pointers.next().is_some() {
+                    return Err(PersistentARTrieError::corrupted(
+                        "node256 metadata decoded more pointers than its bitmap references",
+                    ));
+                }
+                children
+            }
+            NodeType::Bucket
+            | NodeType::CharNode4
+            | NodeType::CharNode16
+            | NodeType::CharNode48
+            | NodeType::CharBucket => {
+                return Err(PersistentARTrieError::corrupted(
+                    "non-ART node type reached byte metadata decoder",
+                ));
+            }
+        };
+
+        Ok(DecodedByteNodeMetadata {
+            node_type,
+            serialized_bytes: data.len(),
+            prefix,
+            children,
+        })
     }
 
     /// Deserialize a node with v2 encoding (handles both relative and fixed)
     pub fn deserialize_node_v2(data: &[u8], ctx: &DeserializationContext) -> Result<Node> {
-        let mut reader = std::io::Cursor::new(data);
-
-        // Read header
-        let mut header_bytes = [0u8; SERIALIZED_HEADER_SIZE];
-        reader.read_exact(&mut header_bytes).map_err(io_err)?;
-        let header = SerializedNodeHeader::from_bytes(&header_bytes);
-        header.validate()?;
-
-        // Read prefix if present
-        let prefix = if header.prefix_len > 0 {
+        let ValidatedRecordEnvelope {
+            header, structural, ..
+        } = validated_record_envelope(data)?;
+        let prefix_storage_len = if header.prefix_len > 0 {
+            MAX_PREFIX_LEN
+        } else {
+            0
+        };
+        let prefix = if prefix_storage_len > 0 {
+            let stored = checked_slice(
+                structural,
+                0,
+                prefix_storage_len,
+                "compressed byte-node prefix",
+            )?;
             let mut prefix_bytes = [0u8; MAX_PREFIX_LEN];
-            reader.read_exact(&mut prefix_bytes).map_err(io_err)?;
+            prefix_bytes.copy_from_slice(stored);
             CompressedPrefix {
                 bytes: prefix_bytes,
             }
         } else {
             CompressedPrefix::empty()
         };
-
-        let remaining = &data[reader.position() as usize..];
+        let remaining = structural.get(prefix_storage_len..).ok_or_else(|| {
+            PersistentARTrieError::corrupted(
+                "compressed byte-node prefix exceeds structural payload",
+            )
+        })?;
 
         // Decode based on node type and encoding flags
         match header.node_type {
@@ -1073,36 +1731,56 @@ pub mod v2 {
         node.header = header.to_node_header();
         node.prefix = prefix;
 
-        // Read keys
-        node.keys.copy_from_slice(&data[..4]);
-
         let num_children = header.num_children as usize;
+        let key_bytes = checked_slice(data, 0, 4, "node4 keys")?;
+        node.keys.copy_from_slice(key_bytes);
+        validate_sorted_keys(&node.keys, num_children, "node4")?;
 
         // Decode children based on encoding mode
-        if header.uses_sequential_siblings() {
-            let (children, bytes_consumed) =
-                decode_v2_child_slots(&data[4..], ctx.parent_slot, num_children, true)?;
-            // Read node types after encoded children
-            let types_start = 4 + bytes_consumed;
+        if header.uses_relative_offsets() {
+            let encoded = data.get(4..).ok_or_else(|| {
+                PersistentARTrieError::corrupted("node4 child payload starts beyond record")
+            })?;
+            let (children, bytes_consumed) = decode_v2_child_slots(
+                encoded,
+                ctx.parent_slot,
+                num_children,
+                header.uses_sequential_siblings(),
+            )?;
+            let types_start = checked_end(4, bytes_consumed, "node4 child encodings")?;
+            let expected = checked_end(types_start, num_children, "node4 child types")?;
+            require_exact_payload_len(data, expected, "node4")?;
             for (i, slot) in children.into_iter().enumerate() {
-                let node_type = read_v2_node_type(data, types_start + i)?;
-                node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
-            }
-        } else if header.uses_relative_offsets() {
-            let (children, bytes_consumed) =
-                decode_v2_child_slots(&data[4..], ctx.parent_slot, num_children, false)?;
-            // Read node types after encoded children
-            let types_start = 4 + bytes_consumed;
-            for (i, slot) in children.into_iter().enumerate() {
-                let node_type = read_v2_node_type(data, types_start + i)?;
-                node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
+                let type_offset = checked_end(types_start, i, "node4 child type index")?;
+                let node_type = checked_byte_child_type(data, type_offset)?;
+                node.children[i] = checked_arena_child(slot, node_type)?;
             }
         } else {
-            // Fixed 8-byte pointers (node type is in the pointer itself)
-            for i in 0..num_children {
-                let offset = 4 + i * 8;
-                let raw = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-                node.children[i] = SwizzledPtr::from_raw(raw);
+            let stored_children = if header.version == FORMAT_VERSION {
+                4usize
+            } else {
+                num_children
+            };
+            let child_bytes = stored_children.checked_mul(8).ok_or_else(|| {
+                PersistentARTrieError::corrupted("node4 fixed child byte count overflow")
+            })?;
+            let expected = checked_end(4, child_bytes, "node4 fixed children")?;
+            require_exact_payload_len(data, expected, "node4")?;
+            for i in 0..stored_children {
+                let offset = checked_end(
+                    4,
+                    i.checked_mul(8).ok_or_else(|| {
+                        PersistentARTrieError::corrupted("node4 child offset overflow")
+                    })?,
+                    "node4 child pointer",
+                )?;
+                if i < num_children {
+                    node.children[i] = checked_fixed_child(data, offset, "node4 child")?;
+                } else if checked_u64(data, offset, "node4 unused child")? != 0 {
+                    return Err(PersistentARTrieError::corrupted(format!(
+                        "node4 unused child slot {i} is non-null"
+                    )));
+                }
             }
         }
 
@@ -1119,36 +1797,56 @@ pub mod v2 {
         node.header = header.to_node_header();
         node.prefix = prefix;
 
-        // Read keys
-        node.keys.copy_from_slice(&data[..16]);
-
         let num_children = header.num_children as usize;
+        let key_bytes = checked_slice(data, 0, 16, "node16 keys")?;
+        node.keys.copy_from_slice(key_bytes);
+        validate_sorted_keys(&node.keys, num_children, "node16")?;
 
         // Decode children based on encoding mode
-        if header.uses_sequential_siblings() {
-            let (children, bytes_consumed) =
-                decode_v2_child_slots(&data[16..], ctx.parent_slot, num_children, true)?;
-            // Read node types after encoded children
-            let types_start = 16 + bytes_consumed;
+        if header.uses_relative_offsets() {
+            let encoded = data.get(16..).ok_or_else(|| {
+                PersistentARTrieError::corrupted("node16 child payload starts beyond record")
+            })?;
+            let (children, bytes_consumed) = decode_v2_child_slots(
+                encoded,
+                ctx.parent_slot,
+                num_children,
+                header.uses_sequential_siblings(),
+            )?;
+            let types_start = checked_end(16, bytes_consumed, "node16 child encodings")?;
+            let expected = checked_end(types_start, num_children, "node16 child types")?;
+            require_exact_payload_len(data, expected, "node16")?;
             for (i, slot) in children.into_iter().enumerate() {
-                let node_type = read_v2_node_type(data, types_start + i)?;
-                node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
-            }
-        } else if header.uses_relative_offsets() {
-            let (children, bytes_consumed) =
-                decode_v2_child_slots(&data[16..], ctx.parent_slot, num_children, false)?;
-            // Read node types after encoded children
-            let types_start = 16 + bytes_consumed;
-            for (i, slot) in children.into_iter().enumerate() {
-                let node_type = read_v2_node_type(data, types_start + i)?;
-                node.children[i] = SwizzledPtr::from_arena_slot(slot, node_type);
+                let type_offset = checked_end(types_start, i, "node16 child type index")?;
+                let node_type = checked_byte_child_type(data, type_offset)?;
+                node.children[i] = checked_arena_child(slot, node_type)?;
             }
         } else {
-            // Fixed 8-byte pointers (node type is in the pointer itself)
-            for i in 0..num_children {
-                let offset = 16 + i * 8;
-                let raw = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-                node.children[i] = SwizzledPtr::from_raw(raw);
+            let stored_children = if header.version == FORMAT_VERSION {
+                16usize
+            } else {
+                num_children
+            };
+            let child_bytes = stored_children.checked_mul(8).ok_or_else(|| {
+                PersistentARTrieError::corrupted("node16 fixed child byte count overflow")
+            })?;
+            let expected = checked_end(16, child_bytes, "node16 fixed children")?;
+            require_exact_payload_len(data, expected, "node16")?;
+            for i in 0..stored_children {
+                let offset = checked_end(
+                    16,
+                    i.checked_mul(8).ok_or_else(|| {
+                        PersistentARTrieError::corrupted("node16 child offset overflow")
+                    })?,
+                    "node16 child pointer",
+                )?;
+                if i < num_children {
+                    node.children[i] = checked_fixed_child(data, offset, "node16 child")?;
+                } else if checked_u64(data, offset, "node16 unused child")? != 0 {
+                    return Err(PersistentARTrieError::corrupted(format!(
+                        "node16 unused child slot {i} is non-null"
+                    )));
+                }
             }
         }
 
@@ -1157,7 +1855,16 @@ pub mod v2 {
 
     fn collect_node48_used_slots(index: &[u8; 256], num_children: usize) -> Result<Vec<u8>> {
         let mut seen_slots = 0u64;
-        let mut used_slots = Vec::with_capacity(num_children.min(48));
+        let mut used_slots = Vec::new();
+        used_slots
+            .try_reserve_exact(num_children.min(48))
+            .map_err(|error| {
+                PersistentARTrieError::allocation_failed(
+                    "node48 used-slot decoding",
+                    num_children.min(48),
+                    error,
+                )
+            })?;
 
         for &slot in index {
             if slot == NO_CHILD {
@@ -1178,6 +1885,12 @@ pub mod v2 {
         }
 
         used_slots.sort_unstable();
+        if used_slots.len() != num_children {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "node48 index contains {} unique child slots but header declares {num_children}",
+                used_slots.len()
+            )));
+        }
         Ok(used_slots)
     }
 
@@ -1191,10 +1904,9 @@ pub mod v2 {
         node.header = header.to_node_header();
         node.prefix = prefix;
 
-        // Read index array
-        node.index.copy_from_slice(&data[..256]);
-
         let num_children = header.num_children as usize;
+        let index_bytes = checked_slice(data, 0, 256, "node48 index")?;
+        node.index.copy_from_slice(index_bytes);
 
         // Build a sorted list of used slots from the index array.
         // During serialization, children are collected in slot order (0..48),
@@ -1202,54 +1914,68 @@ pub mod v2 {
         let used_slots = collect_node48_used_slots(&node.index, num_children)?;
 
         // Decode children based on encoding mode
-        if header.uses_sequential_siblings() {
-            let (children, bytes_consumed) =
-                decode_v2_child_slots(&data[256..], ctx.parent_slot, num_children, true)?;
-            // Read node types after encoded children
-            let types_start = 256 + bytes_consumed;
+        if header.uses_relative_offsets() {
+            let encoded = data.get(256..).ok_or_else(|| {
+                PersistentARTrieError::corrupted("node48 child payload starts beyond record")
+            })?;
+            let (children, bytes_consumed) = decode_v2_child_slots(
+                encoded,
+                ctx.parent_slot,
+                num_children,
+                header.uses_sequential_siblings(),
+            )?;
+            let types_start = checked_end(256, bytes_consumed, "node48 child encodings")?;
+            let expected = checked_end(types_start, num_children, "node48 child types")?;
+            require_exact_payload_len(data, expected, "node48")?;
             for (i, child_slot) in children.into_iter().enumerate() {
-                if i >= used_slots.len() {
-                    return Err(PersistentARTrieError::corrupted(format!(
-                        "node48 relative child count {} exceeds index entries {}",
-                        num_children,
-                        used_slots.len()
-                    )));
-                }
                 let actual_slot = used_slots[i] as usize;
-                let node_type = read_v2_node_type(data, types_start + i)?;
-                node.children[actual_slot] = SwizzledPtr::from_arena_slot(child_slot, node_type);
+                let type_offset = checked_end(types_start, i, "node48 child type index")?;
+                let node_type = checked_byte_child_type(data, type_offset)?;
+                node.children[actual_slot] = checked_arena_child(child_slot, node_type)?;
             }
-        } else if header.uses_relative_offsets() {
-            let (children, bytes_consumed) =
-                decode_v2_child_slots(&data[256..], ctx.parent_slot, num_children, false)?;
-            // Read node types after encoded children
-            let types_start = 256 + bytes_consumed;
-            for (i, child_slot) in children.into_iter().enumerate() {
-                if i >= used_slots.len() {
+        } else if header.version == FORMAT_VERSION {
+            let child_bytes = 48usize.checked_mul(8).ok_or_else(|| {
+                PersistentARTrieError::corrupted("node48 legacy child byte count overflow")
+            })?;
+            let expected = checked_end(256, child_bytes, "node48 legacy children")?;
+            require_exact_payload_len(data, expected, "node48")?;
+            let mut active_slots = [false; 48];
+            for &slot in &used_slots {
+                active_slots[slot as usize] = true;
+            }
+            for (slot, active) in active_slots.into_iter().enumerate() {
+                let offset = checked_end(
+                    256,
+                    slot.checked_mul(8).ok_or_else(|| {
+                        PersistentARTrieError::corrupted("node48 legacy child offset overflow")
+                    })?,
+                    "node48 legacy child pointer",
+                )?;
+                if active {
+                    node.children[slot] = checked_fixed_child(data, offset, "node48 legacy child")?;
+                } else if checked_u64(data, offset, "node48 legacy unused child")? != 0 {
                     return Err(PersistentARTrieError::corrupted(format!(
-                        "node48 relative child count {} exceeds index entries {}",
-                        num_children,
-                        used_slots.len()
+                        "node48 unused child slot {slot} is non-null"
                     )));
                 }
-                let actual_slot = used_slots[i] as usize;
-                let node_type = read_v2_node_type(data, types_start + i)?;
-                node.children[actual_slot] = SwizzledPtr::from_arena_slot(child_slot, node_type);
             }
         } else {
-            // Fixed 8-byte pointers (node type is in the pointer itself)
-            for i in 0..num_children {
-                if i >= used_slots.len() {
-                    return Err(PersistentARTrieError::corrupted(format!(
-                        "node48 fixed child count {} exceeds index entries {}",
-                        num_children,
-                        used_slots.len()
-                    )));
-                }
-                let actual_slot = used_slots[i] as usize;
-                let offset = 256 + i * 8;
-                let raw = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-                node.children[actual_slot] = SwizzledPtr::from_raw(raw);
+            let child_bytes = num_children.checked_mul(8).ok_or_else(|| {
+                PersistentARTrieError::corrupted("node48 fixed child byte count overflow")
+            })?;
+            let expected = checked_end(256, child_bytes, "node48 fixed children")?;
+            require_exact_payload_len(data, expected, "node48")?;
+            for (i, &actual_slot) in used_slots.iter().take(num_children).enumerate() {
+                let actual_slot = actual_slot as usize;
+                let offset = checked_end(
+                    256,
+                    i.checked_mul(8).ok_or_else(|| {
+                        PersistentARTrieError::corrupted("node48 fixed child offset overflow")
+                    })?,
+                    "node48 fixed child pointer",
+                )?;
+                node.children[actual_slot] =
+                    checked_fixed_child(data, offset, "node48 fixed child")?;
             }
         }
 
@@ -1266,71 +1992,72 @@ pub mod v2 {
         node.header = header.to_node_header();
         node.prefix = prefix;
 
-        // Read bitmap
         let mut bitmap = [0u64; 4];
         for (i, word) in bitmap.iter_mut().enumerate() {
-            let offset = i * 8;
-            *word = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+            let offset = i.checked_mul(8).ok_or_else(|| {
+                PersistentARTrieError::corrupted("node256 bitmap offset overflow")
+            })?;
+            *word = checked_u64(data, offset, "node256 bitmap")?;
         }
 
         let num_children = header.num_children as usize;
         let children_start = 32; // After bitmap
+        let bitmap_children = bitmap
+            .iter()
+            .try_fold(0usize, |count, word| {
+                count.checked_add(word.count_ones() as usize)
+            })
+            .ok_or_else(|| {
+                PersistentARTrieError::corrupted("node256 bitmap child count overflow")
+            })?;
+        if bitmap_children != num_children {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "node256 bitmap contains {bitmap_children} children but header declares {num_children}"
+            )));
+        }
 
         // Decode children based on encoding mode
-        if header.uses_sequential_siblings() {
+        if header.uses_relative_offsets() {
+            let encoded = data.get(children_start..).ok_or_else(|| {
+                PersistentARTrieError::corrupted("node256 child payload starts beyond record")
+            })?;
             let (children, bytes_consumed) = decode_v2_child_slots(
-                &data[children_start..],
+                encoded,
                 ctx.parent_slot,
                 num_children,
-                true,
+                header.uses_sequential_siblings(),
             )?;
-            // Read node types after encoded children
-            let types_start = children_start + bytes_consumed;
-            let mut child_idx = 0;
+            let types_start =
+                checked_end(children_start, bytes_consumed, "node256 child encodings")?;
+            let expected = checked_end(types_start, num_children, "node256 child types")?;
+            require_exact_payload_len(data, expected, "node256")?;
+            let mut child_idx = 0usize;
             for i in 0..256 {
                 if bitmap[i / 64] & (1u64 << (i % 64)) != 0 {
-                    if child_idx >= children.len() {
-                        return Err(PersistentARTrieError::corrupted(format!(
-                            "node256 bitmap references more children than header count {}",
-                            num_children
-                        )));
-                    }
-                    let node_type = read_v2_node_type(data, types_start + child_idx)?;
-                    node.children[i] = SwizzledPtr::from_arena_slot(children[child_idx], node_type);
-                    child_idx += 1;
-                }
-            }
-        } else if header.uses_relative_offsets() {
-            let (children, bytes_consumed) = decode_v2_child_slots(
-                &data[children_start..],
-                ctx.parent_slot,
-                num_children,
-                false,
-            )?;
-            // Read node types after encoded children
-            let types_start = children_start + bytes_consumed;
-            let mut child_idx = 0;
-            for i in 0..256 {
-                if bitmap[i / 64] & (1u64 << (i % 64)) != 0 {
-                    if child_idx >= children.len() {
-                        return Err(PersistentARTrieError::corrupted(format!(
-                            "node256 bitmap references more children than header count {}",
-                            num_children
-                        )));
-                    }
-                    let node_type = read_v2_node_type(data, types_start + child_idx)?;
-                    node.children[i] = SwizzledPtr::from_arena_slot(children[child_idx], node_type);
+                    let type_offset =
+                        checked_end(types_start, child_idx, "node256 child type index")?;
+                    let node_type = checked_byte_child_type(data, type_offset)?;
+                    node.children[i] = checked_arena_child(children[child_idx], node_type)?;
                     child_idx += 1;
                 }
             }
         } else {
-            // Fixed 8-byte pointers (node type is in the pointer itself)
-            let mut child_idx = 0;
+            let child_bytes = num_children.checked_mul(8).ok_or_else(|| {
+                PersistentARTrieError::corrupted("node256 fixed child byte count overflow")
+            })?;
+            let expected = checked_end(children_start, child_bytes, "node256 fixed children")?;
+            require_exact_payload_len(data, expected, "node256")?;
+            let mut child_idx = 0usize;
             for i in 0..256 {
                 if bitmap[i / 64] & (1u64 << (i % 64)) != 0 {
-                    let offset = children_start + child_idx * 8;
-                    let raw = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
-                    node.children[i] = SwizzledPtr::from_raw(raw);
+                    let offset = checked_end(
+                        children_start,
+                        child_idx.checked_mul(8).ok_or_else(|| {
+                            PersistentARTrieError::corrupted("node256 fixed child offset overflow")
+                        })?,
+                        "node256 fixed child pointer",
+                    )?;
+                    node.children[i] = checked_fixed_child(data, offset, "node256 fixed child")?;
                     child_idx += 1;
                 }
             }
@@ -1348,6 +2075,7 @@ pub use v2::{
 
 #[cfg(test)]
 mod tests {
+    use super::v2::decode_node_metadata;
     use super::*;
     use crate::persistent_artrie::nodes::{flags, ArtNode};
     use crate::persistent_artrie::NodeType;
@@ -1721,6 +2449,111 @@ mod tests {
             deserialize_node_v2(&bytes, &DeserializationContext::new(parent)),
             Err(PersistentARTrieError::CorruptedFile { .. })
         ));
+    }
+
+    fn metadata_node4_record() -> (ArenaSlot, Vec<u8>) {
+        let parent = ArenaSlot::new(0, 100);
+        let mut node4 = Node4::new();
+        node4.prefix = CompressedPrefix::from_bytes(b"xy");
+        node4.header.prefix_len = 2;
+        node4
+            .add_child(
+                b'a',
+                SwizzledPtr::from_arena_slot(ArenaSlot::new(0, 90), NodeType::Node4),
+            )
+            .expect("add metadata child a");
+        node4
+            .add_child(
+                b'b',
+                SwizzledPtr::from_arena_slot(ArenaSlot::new(0, 91), NodeType::Node16),
+            )
+            .expect("add metadata child b");
+        let bytes = serialize_node_v2(
+            &Node::N4(Box::new(node4)),
+            &SerializationContext::new(parent),
+        )
+        .expect("serialize metadata fixture");
+        (parent, bytes)
+    }
+
+    #[test]
+    fn metadata_decoder_matches_full_decoder_without_deserializing_values() {
+        let (parent, bytes) = metadata_node4_record();
+        let context = DeserializationContext::new(parent);
+        let metadata =
+            decode_node_metadata(&bytes, &context, Some(NodeType::Node4)).expect("decode metadata");
+        let node = deserialize_node_v2(&bytes, &context).expect("decode full node");
+        let full_children: Vec<(u8, u64)> = node
+            .iter_children()
+            .map(|(edge, pointer)| (edge, pointer.to_raw()))
+            .collect();
+        let metadata_children: Vec<(u8, u64)> = metadata
+            .children
+            .iter()
+            .map(|(edge, pointer)| (*edge, pointer.to_raw()))
+            .collect();
+
+        assert_eq!(metadata.node_type, NodeType::Node4);
+        assert_eq!(metadata.serialized_bytes, bytes.len());
+        assert_eq!(metadata.prefix, b"xy");
+        assert_eq!(metadata_children, full_children);
+    }
+
+    #[test]
+    fn metadata_decoder_rejects_every_truncation_and_trailing_data() {
+        let (parent, bytes) = metadata_node4_record();
+        let context = DeserializationContext::new(parent);
+        for end in 0..bytes.len() {
+            assert!(
+                decode_node_metadata(&bytes[..end], &context, Some(NodeType::Node4)).is_err(),
+                "truncation at byte {end} was accepted"
+            );
+        }
+        assert!(decode_node_metadata(&bytes, &context, Some(NodeType::Node4)).is_ok());
+
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(decode_node_metadata(&trailing, &context, Some(NodeType::Node4)).is_err());
+    }
+
+    #[test]
+    fn metadata_decoder_rejects_type_and_key_corruption() {
+        let (parent, bytes) = metadata_node4_record();
+        let context = DeserializationContext::new(parent);
+        assert!(matches!(
+            decode_node_metadata(&bytes, &context, Some(NodeType::Node16)),
+            Err(PersistentARTrieError::NodeTypeMismatch { .. })
+        ));
+
+        let mut invalid_child_type = bytes.clone();
+        *invalid_child_type
+            .last_mut()
+            .expect("relative metadata fixture has child type bytes") = 0xff;
+        assert!(
+            decode_node_metadata(&invalid_child_type, &context, Some(NodeType::Node4)).is_err()
+        );
+
+        let mut unsorted = bytes;
+        let key_start = SERIALIZED_HEADER_SIZE + MAX_PREFIX_LEN;
+        unsorted[key_start] = b'b';
+        unsorted[key_start + 1] = b'a';
+        assert!(decode_node_metadata(&unsorted, &context, Some(NodeType::Node4)).is_err());
+    }
+
+    #[test]
+    fn metadata_decoder_never_panics_on_bounded_arbitrary_bytes() {
+        let context = DeserializationContext::new(ArenaSlot::new(0, 17));
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        for len in 0..=512usize {
+            let mut bytes = Vec::with_capacity(len);
+            for _ in 0..len {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                bytes.push(state as u8);
+            }
+            let _ = decode_node_metadata(&bytes, &context, None);
+        }
     }
 
     // =========================================================================

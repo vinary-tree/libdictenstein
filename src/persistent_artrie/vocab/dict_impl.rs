@@ -61,6 +61,14 @@ use crate::persistent_artrie::wal::WalConfig;
 use crate::persistent_artrie::wal_managed::WalManaged;
 use dashmap::DashMap;
 
+#[cfg(debug_assertions)]
+type BorrowedVocabOverlayFrames<'root, K, V> = smallvec::SmallVec<
+    [(
+        &'root Arc<crate::persistent_artrie::core::overlay::node::OverlayNode<K, V>>,
+        usize,
+    ); crate::persistent_artrie::core::overlay::INLINE_OVERLAY_DEPTH],
+>;
+
 // `VocabSyncHandle` was relocated to `super::sync_handle`; re-exported here
 // under its original path.
 pub use super::sync_handle::VocabSyncHandle;
@@ -266,22 +274,32 @@ impl<S: BlockStorage> Drop for PersistentVocabARTrie<S> {
     }
 }
 
-/// B1 debug tripwire: recursively verify a frozen overlay subtree is fully in-memory (no
+/// B1 debug tripwire: iteratively verify a frozen overlay subtree is fully in-memory (no
 /// `Child::OnDisk`). The vocab overlay never evicts, so this always holds — but if a future change
 /// enables overlay eviction, the snapshot `Clone` (share-root + detach-storage) would silently
-/// drop evicted paths; this assertion fails loudly instead of returning a lossy snapshot.
+/// drop evicted paths; this assertion fails loudly instead of returning a lossy snapshot. The
+/// explicit heap worklist keeps native-stack use independent of trie depth.
 #[cfg(debug_assertions)]
-fn overlay_subtree_all_in_mem<
+pub(super) fn overlay_subtree_all_in_mem<
     K: crate::persistent_artrie::core::key_encoding::KeyEncoding,
     V: Clone,
 >(
     node: &Arc<crate::persistent_artrie::core::overlay::node::OverlayNode<K, V>>,
 ) -> bool {
-    node.iter_children()
-        .all(|(_, child)| match child.as_in_mem() {
-            Some(child_node) => overlay_subtree_all_in_mem(child_node),
-            None => false,
-        })
+    let mut frames: BorrowedVocabOverlayFrames<'_, K, V> = smallvec::SmallVec::new();
+    frames.push((node, 0));
+    while let Some((current, next_child)) = frames.last_mut() {
+        let Some((_, child)) = current.child_at(*next_child) else {
+            frames.pop();
+            continue;
+        };
+        *next_child += 1;
+        match child.as_in_mem() {
+            Some(child_node) => frames.push((child_node, 0)),
+            None => return false,
+        }
+    }
+    true
 }
 
 impl<S: BlockStorage> Clone for PersistentVocabARTrie<S> {
@@ -720,12 +738,11 @@ mod tests {
         }
     }
 
-    /// Regression test for Bug #3: Node growth during serialization.
+    /// Regression test for Bug #3: adaptive node growth during projection.
     ///
-    /// Bug #3: build_disk_char_node_static must handle Ok(Some(grown)) from add_child_growing
-    ///
-    /// This test creates a trie with many children that may trigger node growth during
-    /// the serialization phase in build_disk_char_node_static.
+    /// This test creates a trie with enough siblings to cross adaptive-node
+    /// boundaries, then verifies that sealed serialization projection preserves
+    /// every edge across checkpoint and reopen.
     #[test]
     fn test_regression_node_growth_during_serialization() {
         let dir = tempdir().unwrap();

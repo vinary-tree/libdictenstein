@@ -38,7 +38,16 @@ pub use node48_char::CharNode48;
 pub use node4_char::CharNode4;
 pub use persistent_node::PersistentCharNode;
 
-use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
+use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr};
+
+/// Canonical on-disk and in-memory header tag for [`CharNode4`].
+pub const CHAR_NODE4_TAG: u8 = NodeType::CharNode4 as u8;
+/// Canonical on-disk and in-memory header tag for [`CharNode16`].
+pub const CHAR_NODE16_TAG: u8 = NodeType::CharNode16 as u8;
+/// Canonical on-disk and in-memory header tag for [`CharNode48`].
+pub const CHAR_NODE48_TAG: u8 = NodeType::CharNode48 as u8;
+/// Canonical on-disk and in-memory header tag for [`CharBucket`].
+pub const CHAR_BUCKET_TAG: u8 = NodeType::CharBucket as u8;
 
 /// Maximum path compression prefix length for char nodes (6 chars = 24 bytes)
 pub const CHAR_MAX_PREFIX_LEN: usize = 6;
@@ -60,7 +69,7 @@ pub mod flags {
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct CharNodeHeader {
-    /// Node type discriminant (4, 16, 48, 49 for bucket)
+    /// Character-node type discriminant (104, 116, 148, 101 for bucket)
     pub node_type: u8,
     /// Length of the compressed prefix (0-6 chars)
     pub prefix_len: u8,
@@ -245,7 +254,94 @@ pub enum CharNode {
     Bucket(Box<CharBucket>),
 }
 
+/// Allocation-free cursor over one node's native child-slot order.
+pub(crate) enum CharNodeChildCursor<'a> {
+    N4 {
+        node: &'a CharNode4,
+        index: usize,
+        end: usize,
+    },
+    N16 {
+        node: &'a CharNode16,
+        index: usize,
+        end: usize,
+    },
+    N48 {
+        node: &'a CharNode48,
+        index: usize,
+        end: usize,
+    },
+    Bucket(std::collections::hash_map::Iter<'a, u32, SwizzledPtr>),
+}
+
+impl<'a> Iterator for CharNodeChildCursor<'a> {
+    type Item = (u32, &'a SwizzledPtr);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::N4 { node, index, end } => {
+                if *index == *end {
+                    return None;
+                }
+                let slot = *index;
+                *index += 1;
+                Some((node.keys[slot], &node.children[slot]))
+            }
+            Self::N16 { node, index, end } => {
+                if *index == *end {
+                    return None;
+                }
+                let slot = *index;
+                *index += 1;
+                Some((node.keys[slot], &node.children[slot]))
+            }
+            Self::N48 { node, index, end } => {
+                if *index == *end {
+                    return None;
+                }
+                let slot = *index;
+                *index += 1;
+                Some((node.keys[slot], &node.children[slot]))
+            }
+            Self::Bucket(entries) => entries.next().map(|(&key, child)| (key, child)),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = match self {
+            Self::N4 { index, end, .. }
+            | Self::N16 { index, end, .. }
+            | Self::N48 { index, end, .. } => end - index,
+            Self::Bucket(entries) => entries.len(),
+        };
+        (remaining, Some(remaining))
+    }
+}
+
+impl std::iter::ExactSizeIterator for CharNodeChildCursor<'_> {}
+impl std::iter::FusedIterator for CharNodeChildCursor<'_> {}
+
 impl CharNode {
+    /// Return the node type implied by this enum variant.
+    ///
+    /// The enum variant is authoritative: a mutable header byte must never be
+    /// used to reinterpret one representation as another.
+    #[inline]
+    pub const fn representation_type(&self) -> NodeType {
+        match self {
+            Self::N4(_) => NodeType::CharNode4,
+            Self::N16(_) => NodeType::CharNode16,
+            Self::N48(_) => NodeType::CharNode48,
+            Self::Bucket(_) => NodeType::CharBucket,
+        }
+    }
+
+    /// Check that the stored header tag agrees with the enum representation.
+    #[inline]
+    pub fn has_consistent_representation_type(&self) -> bool {
+        self.header().node_type == self.representation_type() as u8
+    }
+
     /// Get the node header
     pub fn header(&self) -> &CharNodeHeader {
         match self {
@@ -314,11 +410,32 @@ impl CharNode {
 
     /// Get an iterator over all (key, child) pairs
     pub fn iter_children(&self) -> Box<dyn Iterator<Item = (u32, &SwizzledPtr)> + '_> {
+        Box::new(self.child_cursor())
+    }
+
+    /// Iterate in the node's native slot order without allocating.
+    ///
+    /// Fixed-width nodes are key-sorted. `CharBucket` deliberately retains its
+    /// `HashMap` iteration order, which is not a public ordering contract.
+    #[inline]
+    pub(crate) fn child_cursor(&self) -> CharNodeChildCursor<'_> {
         match self {
-            CharNode::N4(n) => Box::new(n.iter_children()),
-            CharNode::N16(n) => Box::new(n.iter_children()),
-            CharNode::N48(n) => Box::new(n.iter_children()),
-            CharNode::Bucket(n) => Box::new(n.iter_children()),
+            CharNode::N4(node) => CharNodeChildCursor::N4 {
+                node,
+                index: 0,
+                end: node.header.num_children as usize,
+            },
+            CharNode::N16(node) => CharNodeChildCursor::N16 {
+                node,
+                index: 0,
+                end: node.header.num_children as usize,
+            },
+            CharNode::N48(node) => CharNodeChildCursor::N48 {
+                node,
+                index: 0,
+                end: node.header.num_children as usize,
+            },
+            CharNode::Bucket(node) => CharNodeChildCursor::Bucket(node.entries.iter()),
         }
     }
 
@@ -615,6 +732,53 @@ impl ChildStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_representation(node: &CharNode, expected: NodeType) {
+        assert_eq!(node.representation_type(), expected);
+        assert_eq!(node.header().node_type, expected as u8);
+        assert!(node.has_consistent_representation_type());
+    }
+
+    #[test]
+    fn adaptive_transitions_preserve_character_node_type_tags() {
+        let mut node = CharNode::new_node4();
+        assert_representation(&node, NodeType::CharNode4);
+
+        for key in 0..49u32 {
+            let child = SwizzledPtr::on_disk(1, key + 1, NodeType::CharNode4);
+            if let Some(grown) = node
+                .add_child_growing(key, child)
+                .expect("distinct child must be inserted")
+            {
+                node = grown;
+            }
+
+            let expected = match key + 1 {
+                0..=4 => NodeType::CharNode4,
+                5..=16 => NodeType::CharNode16,
+                17..=48 => NodeType::CharNode48,
+                _ => NodeType::CharBucket,
+            };
+            assert_representation(&node, expected);
+        }
+
+        for key in (0..49u32).rev() {
+            let (_, shrunk) = node
+                .remove_child_shrinking(key)
+                .expect("inserted child must be removable");
+            if let Some(replacement) = shrunk {
+                node = replacement;
+            }
+
+            let expected = match key {
+                0..=4 => NodeType::CharNode4,
+                5..=16 => NodeType::CharNode16,
+                17..=48 => NodeType::CharNode48,
+                _ => unreachable!("loop bound is 49"),
+            };
+            assert_representation(&node, expected);
+        }
+    }
 
     #[test]
     fn test_char_node_header_flags() {

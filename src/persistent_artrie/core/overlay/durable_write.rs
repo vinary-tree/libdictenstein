@@ -82,6 +82,13 @@ use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
 use crate::persistent_artrie::core::wal::{Lsn, WalRecord};
 use crate::value::DictionaryValue;
 
+/// Type-level brand for byte/char writes that must publish through the exact
+/// semantic root-CAS path.
+pub(crate) enum RegistryEligibleMutation {}
+
+/// Type-level brand for vocab writes, whose representation cannot be evicted.
+pub(crate) enum EvictionIneligibleMutation {}
+
 /// The write-semantics discriminator the generic value publish seam
 /// ([`DurableOverlayWrite::value_publish_inner`]) honors per CAS iteration
 /// (G5/F0). The three durable value writes share ONE seam (the path-copy +
@@ -120,6 +127,231 @@ pub(crate) enum ValuePublishOutcome {
     NotApplied,
 }
 
+/// Zero-sized witness that a write publishes through the semantic root-CAS path.
+///
+/// The exact root revision is the sole authority: byte and char semantic CASes
+/// clear its eviction binding in the same atomic transition that publishes the
+/// new root.  This marker enforces that call graph at compile time without a
+/// runtime counter, lock, registry write, allocation, branch, or failure mode.
+/// Vocab remains explicitly eviction-ineligible through its distinct marker.
+pub(crate) struct SemanticMutationPublicationPermit<'a, Eligibility> {
+    lifetime: std::marker::PhantomData<&'a ()>,
+    eligibility: std::marker::PhantomData<fn() -> Eligibility>,
+}
+
+impl<'a> SemanticMutationPublicationPermit<'a, RegistryEligibleMutation> {
+    #[inline(always)]
+    pub(crate) fn exact_root_cas() -> Self {
+        Self {
+            lifetime: std::marker::PhantomData,
+            eligibility: std::marker::PhantomData,
+        }
+    }
+}
+
+impl SemanticMutationPublicationPermit<'static, EvictionIneligibleMutation> {
+    pub(crate) fn eviction_ineligible() -> Self {
+        Self {
+            lifetime: std::marker::PhantomData,
+            eligibility: std::marker::PhantomData,
+        }
+    }
+}
+
+/// Durable data-WAL record whose semantic visibility decision is still pending.
+///
+/// Ownership of this value keeps the root-CAS witness attached to every retry.
+/// A terminal Applied or Idempotent decision must consume it explicitly before
+/// CommitRank I/O. Error and unwind paths discard the zero-sized witness through
+/// ordinary Drop; no runtime publication resource is held.
+#[must_use = "a durable mutation must reach a terminal visibility decision"]
+pub(crate) struct PendingDurableMutation<'a, Eligibility> {
+    lsn: Lsn,
+    permit: SemanticMutationPublicationPermit<'a, Eligibility>,
+}
+
+impl<'a> PendingDurableMutation<'a, RegistryEligibleMutation> {
+    pub(crate) fn guarded(
+        lsn: Lsn,
+        permit: SemanticMutationPublicationPermit<'a, RegistryEligibleMutation>,
+    ) -> Self {
+        Self { lsn, permit }
+    }
+}
+
+impl PendingDurableMutation<'static, EvictionIneligibleMutation> {
+    pub(crate) fn eviction_ineligible(lsn: Lsn) -> Self {
+        Self {
+            lsn,
+            permit: SemanticMutationPublicationPermit::eviction_ineligible(),
+        }
+    }
+}
+
+impl<'a, Eligibility> PendingDurableMutation<'a, Eligibility> {
+    pub(crate) fn permit(&self) -> &SemanticMutationPublicationPermit<'a, Eligibility> {
+        &self.permit
+    }
+
+    pub(crate) fn commit_visible(self) -> Lsn {
+        let Self {
+            lsn,
+            permit: _permit,
+        } = self;
+        lsn
+    }
+
+    pub(crate) fn cancel_unpublished(self) -> Lsn {
+        let Self {
+            lsn,
+            permit: _permit,
+        } = self;
+        lsn
+    }
+}
+
+#[cfg(test)]
+mod publication_witness_tests {
+    use super::{
+        EvictionIneligibleMutation, RegistryEligibleMutation, SemanticMutationPublicationPermit,
+    };
+
+    #[test]
+    fn semantic_publication_witnesses_are_zero_sized() {
+        assert_eq!(
+            std::mem::size_of::<SemanticMutationPublicationPermit<'static, RegistryEligibleMutation>>(
+            ),
+            0
+        );
+        assert_eq!(
+            std::mem::size_of::<
+                SemanticMutationPublicationPermit<'static, EvictionIneligibleMutation>,
+            >(),
+            0
+        );
+    }
+}
+
+/// Test-only rendezvous at the exact semantic-data-WAL/visibility boundary.
+///
+/// The hook is thread-local so independently running tests and unrelated writer
+/// threads cannot intercept one another. Production builds contain neither the
+/// storage nor a branch at the append chokepoint.
+#[cfg(test)]
+pub(crate) type SemanticWalRendezvousHook = Box<dyn Fn()>;
+
+#[cfg(test)]
+thread_local! {
+    static SEMANTIC_WAL_RENDEZVOUS: std::cell::RefCell<Option<SemanticWalRendezvousHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install or clear this thread's semantic-WAL rendezvous hook.
+#[cfg(test)]
+pub(crate) fn set_semantic_wal_rendezvous(hook: Option<SemanticWalRendezvousHook>) {
+    SEMANTIC_WAL_RENDEZVOUS.with(|slot| *slot.borrow_mut() = hook);
+}
+
+/// Fire after a semantic data record is durable and before its pending root-CAS
+/// witness is handed to the visibility machine.
+#[cfg(test)]
+pub(crate) fn semantic_wal_rendezvous() {
+    SEMANTIC_WAL_RENDEZVOUS.with(|slot| {
+        if let Some(hook) = slot.borrow().as_ref() {
+            hook();
+        }
+    });
+}
+
+/// Deterministic test-only failures at three semantic-WAL boundaries. The
+/// storage and branches are absent from production.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SemanticWalFaultPoint {
+    /// The mutation began, but the semantic data record was not appended.
+    DataAppend,
+    /// The semantic data record was appended, but its policy sync did not complete.
+    DataSync,
+    /// Visibility landed, but CommitRank append failed.
+    CommitRankAppend,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SEMANTIC_WAL_FAULT: std::cell::Cell<Option<SemanticWalFaultPoint>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Arm one one-shot WAL boundary failure for this thread.
+#[cfg(test)]
+pub(crate) fn set_semantic_wal_fault(point: Option<SemanticWalFaultPoint>) {
+    SEMANTIC_WAL_FAULT.with(|slot| slot.set(point));
+}
+
+/// Fail exactly once when the armed boundary is reached.
+#[cfg(test)]
+pub(crate) fn inject_semantic_wal_fault(point: SemanticWalFaultPoint) -> Result<()> {
+    let armed = SEMANTIC_WAL_FAULT.with(|slot| slot.get());
+    if armed != Some(point) {
+        return Ok(());
+    }
+    SEMANTIC_WAL_FAULT.with(|slot| slot.set(None));
+    Err(
+        crate::persistent_artrie::core::error::PersistentARTrieError::Wal(format!(
+            "injected semantic WAL boundary failure at {point:?}"
+        )),
+    )
+}
+
+/// Test-only rendezvous immediately before a production membership root CAS.
+#[cfg(test)]
+pub(crate) type SemanticCasRendezvousHook = Box<dyn Fn()>;
+
+#[cfg(test)]
+thread_local! {
+    static SEMANTIC_CAS_RENDEZVOUS: std::cell::RefCell<Option<SemanticCasRendezvousHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_semantic_cas_rendezvous(hook: Option<SemanticCasRendezvousHook>) {
+    SEMANTIC_CAS_RENDEZVOUS.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+pub(crate) fn semantic_cas_rendezvous() {
+    SEMANTIC_CAS_RENDEZVOUS.with(|slot| {
+        if let Some(hook) = slot.borrow().as_ref() {
+            hook();
+        }
+    });
+}
+
+/// Test-only observation point after semantic visibility released its permit and
+/// immediately before CommitRank I/O.
+#[cfg(test)]
+pub(crate) type SemanticCommitRendezvousHook = Box<dyn Fn()>;
+
+#[cfg(test)]
+thread_local! {
+    static SEMANTIC_COMMIT_RENDEZVOUS: std::cell::RefCell<Option<SemanticCommitRendezvousHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_semantic_commit_rendezvous(hook: Option<SemanticCommitRendezvousHook>) {
+    SEMANTIC_COMMIT_RENDEZVOUS.with(|slot| *slot.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+fn semantic_commit_rendezvous() {
+    SEMANTIC_COMMIT_RENDEZVOUS.with(|slot| {
+        if let Some(hook) = slot.borrow().as_ref() {
+            hook();
+        }
+    });
+}
+
 /// The SHARED GENERIC Order-A durable-write surface (design trait 2).
 ///
 /// `K` is the key encoding (`ByteKey`/`CharKey`), `V` the value, `S` the block
@@ -134,6 +366,9 @@ pub(crate) enum ValuePublishOutcome {
 pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
     LockFreeOverlay<K, V, S>
 {
+    /// Compile-time proof of whether this overlay participates in eviction.
+    type PublicationEligibility;
+
     // ========================================================================
     // REQUIRED SEAM (variant provides) — the WAL/watermark accessors + the
     // increment's value-domain bound / record builder / proven publish inner.
@@ -150,7 +385,10 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
     /// when no WAL writer is installed (no durability available). The shared
     /// [`WalRecord`] is the K-agnostic boundary; the variant constructs it from the
     /// raw key bytes (`str`→bytes for char).
-    fn append_durable_wal(&self, record: WalRecord) -> Result<Lsn>;
+    fn append_durable_wal(
+        &self,
+        record: WalRecord,
+    ) -> Result<PendingDurableMutation<'_, Self::PublicationEligibility>>;
 
     /// **Order-A step 2.5** — append + sync a [`WalRecord::CommitRank`] binding the
     /// durable data record at `data_lsn` to the commit `generation` its visibility
@@ -190,6 +428,7 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
         &self,
         key: &str,
         delta: Self::CounterValue,
+        permit: &SemanticMutationPublicationPermit<'_, Self::PublicationEligibility>,
     ) -> Result<(Self::CounterValue, u64)>;
 
     // ========================================================================
@@ -230,6 +469,8 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
     /// with NEITHER LSN marked — correct, the write is durable+visible but not yet
     /// acked (recovery replays the data record; the watermark stalls at `data_lsn`).
     fn commit_rank_and_mark(&self, data_lsn: Lsn, key_bytes: &[u8], generation: u64) -> Result<()> {
+        #[cfg(test)]
+        semantic_commit_rendezvous();
         let rank_lsn = self.append_commit_rank(data_lsn, key_bytes, generation)?;
         self.mark_committed(data_lsn);
         self.mark_committed(rank_lsn);
@@ -282,7 +523,7 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
         // Empty-string support (H4): the empty key "" now flows through the template
         // like any other key — `increment_publish_inner` → the variant's
         // `try_increment_cas_inner` handles "" via fresh-root-CAS at depth 0
-        // (`build_value_path_recursive` reads the existing root counter and republishes
+        // (`build_value_path_iterative` reads the existing root counter and republishes
         // a fresh `as_final().with_value` root), and bound/append/rank below are
         // key-length-agnostic. (The former empty short-circuit + `empty_value` param are
         // removed — "" now carries a real durable, RANKED root counter, not a dropped 0
@@ -295,7 +536,7 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
         // ORDER A — step 1: append + sync the DELTA record DURABLE, before any
         // visibility. Single-entry `BatchIncrement` (delta-based, commutative on
         // replay). Returned LSN is durable-per-policy here.
-        let lsn = self.append_durable_wal(self.build_increment_record(key_bytes, bounded))?;
+        let pending = self.append_durable_wal(self.build_increment_record(key_bytes, bounded))?;
 
         // ORDER A — step 2: publish via the PROVEN path-copy increment inner (its
         // CAS-retry loop is the formally-checked no-lost-update arbiter; we do not
@@ -306,10 +547,11 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
         // durably logged but not made visible (the documented Order-A
         // "durable-but-visible-only-after-reopen" window, not a lost write); `?`
         // early-returns leaving the already-appended delta UNRANKED (benign).
-        let (new_val, generation) = self.increment_publish_inner(key, delta)?;
+        let (new_val, generation) = self.increment_publish_inner(key, delta, pending.permit())?;
 
         // ORDER A — step 3: durable AND visible — bind the commit rank, then advance
         // the committed watermark over both LSNs.
+        let lsn = pending.commit_visible();
         self.commit_rank_and_mark(lsn, key_bytes, generation)?;
         Ok(new_val)
     }
@@ -322,10 +564,10 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
     // data-loss-critical Order-A skeleton (gate → present-hoist → append durable
     // WAL → publish via the value seam → rank-or-burn); the per-variant node
     // building lives in the SEAMS below (they name the concrete `OverlayNode<K,V>`
-    // via `build_value_path_recursive`, just like `increment_publish_inner`).
+    // via `build_value_path_iterative`, just like `increment_publish_inner`).
     //
     // EMPTY TERM "": carries NO special case here — the seam's
-    // `build_value_path_recursive(&root, &units, 0, value)` at `units == []` IS
+    // `build_value_path_iterative(&root, &units, 0, value)` at `units == []` IS
     // the RANKED depth-0 root publish (G5-NEW-4). The UNRANKED
     // `overlay_publish_root_value` is reserved for the no-WAL reestablish fold.
     // ========================================================================
@@ -353,6 +595,7 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
         key_bytes: &[u8],
         value: V,
         mode: ValueWriteMode,
+        permit: &SemanticMutationPublicationPermit<'_, Self::PublicationEligibility>,
     ) -> Result<ValuePublishOutcome>;
 
     // ---- generic durable value-write defaults (the Order-A skeleton) ----
@@ -386,21 +629,28 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
                 e
             ))
         })?;
-        let lsn = self.append_durable_wal(WalRecord::Insert {
+        let pending = self.append_durable_wal(WalRecord::Insert {
             term: key_bytes.to_vec(),
             value: Some(value_bytes),
         })?;
         // ORDER A — step 2: publish via the value seam (insert-once: re-checks
         // finality per iteration on the freshly-loaded root).
-        match self.value_publish_inner(key_bytes, value, ValueWriteMode::InsertOnce)? {
+        match self.value_publish_inner(
+            key_bytes,
+            value,
+            ValueWriteMode::InsertOnce,
+            pending.permit(),
+        )? {
             // ORDER A — step 3: durable AND visible — rank.
             ValuePublishOutcome::Published(generation) => {
+                let lsn = pending.commit_visible();
                 self.commit_rank_and_mark(lsn, key_bytes, generation)?;
                 Ok(true)
             }
             // Raced: a concurrent insert won. The appended Insert acked NO new
             // state (Ok(false)); burn the LSN for liveness, NEVER rank it.
             ValuePublishOutcome::NotApplied => {
+                let lsn = pending.cancel_unpublished();
                 self.mark_committed_burned(lsn);
                 Ok(false)
             }
@@ -429,13 +679,19 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
                 e
             ))
         })?;
-        let lsn = self.append_durable_wal(WalRecord::Upsert {
+        let pending = self.append_durable_wal(WalRecord::Upsert {
             term: key_bytes.to_vec(),
             value: value_bytes,
         })?;
         // ORDER A — step 2: publish (always-write).
-        match self.value_publish_inner(key_bytes, value, ValueWriteMode::Upsert)? {
+        match self.value_publish_inner(
+            key_bytes,
+            value,
+            ValueWriteMode::Upsert,
+            pending.permit(),
+        )? {
             ValuePublishOutcome::Published(generation) => {
+                let lsn = pending.commit_visible();
                 self.commit_rank_and_mark(lsn, key_bytes, generation)?;
                 Ok(!existed)
             }
@@ -443,6 +699,7 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
             // leave a durable-but-invisible Upsert — surface it (do NOT silently
             // ack), burning the LSN so the watermark does not stall.
             ValuePublishOutcome::NotApplied => {
+                let lsn = pending.cancel_unpublished();
                 self.mark_committed_burned(lsn);
                 Err(
                     crate::persistent_artrie::core::error::PersistentARTrieError::internal(
@@ -511,7 +768,7 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
                 e
             ))
         })?;
-        let lsn = self.append_durable_wal(WalRecord::Upsert {
+        let pending = self.append_durable_wal(WalRecord::Upsert {
             term: key_bytes.to_vec(),
             value: new_bytes,
         })?;
@@ -520,8 +777,10 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
             key_bytes,
             new,
             ValueWriteMode::CompareAndSwap { expected_bytes },
+            pending.permit(),
         )? {
             ValuePublishOutcome::Published(generation) => {
+                let lsn = pending.commit_visible();
                 self.commit_rank_and_mark(lsn, key_bytes, generation)?;
                 Ok(true)
             }
@@ -530,6 +789,7 @@ pub(crate) trait DurableOverlayWrite<K: KeyEncoding, V: DictionaryValue, S>:
             // unranked record is dropped on Overlay reopen, so recovery cannot
             // apply a swap the caller was told failed).
             ValuePublishOutcome::NotApplied => {
+                let lsn = pending.cancel_unpublished();
                 self.mark_committed_burned(lsn);
                 Ok(false)
             }

@@ -56,8 +56,11 @@ pub(crate) mod evict;
 // (`build_overlay_root_from_terms`) used by the F5 dense-image reopen loaders
 // (`load_overlay_root_compressed` / `load_overlay_char_root_compressed`).
 pub(crate) mod f5_build;
-// CX (task #43): the path-compressing overlay↔dense codec's shared, K-generic, PURE
-// no-truncation core (`chain_chunks`). DORMANT until L2/L3 wire the codec.
+// CX (task #43): the path-compressing overlay↔dense codec's shared, K-generic,
+// pure no-truncation reference law. Production uses the allocation-free checked
+// chunk-bound arithmetic in `compressed_serialize`; this module is the exhaustive
+// differential oracle for those bounds.
+#[cfg(test)]
 pub(crate) mod codec;
 // CX-universal: the ONE generic path-compressed overlay serializer (`OverlayCompressedSerialize<K,V>`
 // default-method loop + `peel_chain_generic`); per-variant seams cover the format-specific leaves.
@@ -69,8 +72,14 @@ pub(crate) mod compressed_serialize;
 // `try_set_final` two-phase publish stay per-variant. See
 // `docs/design/slice3-g5-overlay-genericization-2026-06-09.md` §G5.3'.
 pub(crate) mod cas_walk;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 pub use atomic_ptr::AtomicNodePtr;
+pub(crate) use atomic_ptr::{
+    DeferredDurableStamp, EvictionBinding, PreparedBoundRootTransition, PreparedRootBinding,
+    PreparedRootDetachment, RootRevision,
+};
 pub use dict_node::OverlayDictionaryNode;
 pub use faulter::OverlayFaulter;
 pub use node::{flags, Child, OverlayNode};
@@ -85,17 +94,134 @@ use std::sync::Arc;
 
 use crate::persistent_artrie::core::key_encoding::KeyEncoding;
 
-/// A root-to-node path recorded during a CAS walk, innermost last.
+/// Number of path-machine frames retained inline before a fallible heap spill.
 ///
-/// Each element pairs a node with the key unit that leads to the *next* node, so a
-/// copy-on-write republish can rebuild the path from the leaf back to the root. Used
-/// by the CAS walk and by both eviction paths.
-pub type OverlaySpine<K, V> = Vec<(Arc<OverlayNode<K, V>>, <K as KeyEncoding>::Unit)>;
+/// This covers the common shallow-key regime without heap traffic while leaving
+/// arbitrary-depth walks stack-safe. All overlay path machines use the same
+/// boundary so mutation, eviction, and enumeration have consistent behavior.
+pub(crate) const INLINE_OVERLAY_DEPTH: usize = 16;
+
+/// A node retained by an iterative path-copy machine.
+///
+/// Resident nodes borrow from the immutable root snapshot held by the caller, so
+/// descending a resident path performs no atomic reference-count operation. Once
+/// a disk fault creates a detached node, the machine switches that subtree to
+/// owned handles; no reference borrowed from an owned handle survives an
+/// iteration, which keeps the representation lifetime-safe without pinning,
+/// arenas, raw pointers, or self-references.
+pub(crate) enum OverlayNodeHandle<'root, K: KeyEncoding, V> {
+    /// Node reachable from the caller-retained immutable root snapshot.
+    Borrowed(&'root Arc<OverlayNode<K, V>>),
+    /// Node loaded by a fault or descended from a fault-owned subtree.
+    Owned(Arc<OverlayNode<K, V>>),
+}
+
+impl<'root, K: KeyEncoding, V> OverlayNodeHandle<'root, K, V> {
+    /// Borrow the immutable node independently of how the machine retains it.
+    #[inline]
+    pub(crate) fn node(&self) -> &OverlayNode<K, V> {
+        match self {
+            Self::Borrowed(node) => node.as_ref(),
+            Self::Owned(node) => node.as_ref(),
+        }
+    }
+
+    /// Produce an owned handle only when the caller's result contract requires
+    /// node identity beyond the retained root snapshot. Resident descent itself
+    /// never calls this method, so it performs at most one `Arc` clone per result.
+    #[inline]
+    pub(crate) fn into_arc(self) -> Arc<OverlayNode<K, V>> {
+        match self {
+            Self::Borrowed(node) => Arc::clone(node),
+            Self::Owned(node) => node,
+        }
+    }
+}
+
+/// One return frame in the borrowed/owned overlay path-copy machine.
+pub(crate) struct OverlayPathFrame<'root, K: KeyEncoding, V> {
+    pub(crate) node: OverlayNodeHandle<'root, K, V>,
+    pub(crate) unit: K::Unit,
+}
+
+/// Root-to-node return frames for mutation paths.
+pub(crate) type OverlayPathSpine<'root, K, V> =
+    smallvec::SmallVec<[OverlayPathFrame<'root, K, V>; INLINE_OVERLAY_DEPTH]>;
+
+#[cfg(test)]
+pub(crate) mod overlay_spine_failpoint {
+    use std::cell::Cell;
+    use std::marker::PhantomData;
+    use std::rc::Rc;
+
+    thread_local! {
+        static FAIL_NEXT_SPILL: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Thread-local, test-only reservation failure injection.
+    ///
+    /// The guard is deliberately `!Send`: the armed state and the exercised
+    /// overlay walk must remain on the same thread. Dropping the guard disarms
+    /// an injection that was not consumed because an earlier assertion failed.
+    pub(crate) struct Guard {
+        _not_send: PhantomData<Rc<()>>,
+    }
+
+    pub(crate) fn fail_next_spill() -> Guard {
+        FAIL_NEXT_SPILL.with(|armed| {
+            assert!(
+                !armed.replace(true),
+                "overlay-spine failpoint already armed"
+            );
+        });
+        Guard {
+            _not_send: PhantomData,
+        }
+    }
+
+    pub(super) fn take() -> bool {
+        FAIL_NEXT_SPILL.with(|armed| armed.replace(false))
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            FAIL_NEXT_SPILL.with(|armed| armed.set(false));
+        }
+    }
+}
+
+/// Append one path-copy frame, retaining shallow paths inline and performing at
+/// most one fallible, exact-capacity spill for a known-bounded walk.
+///
+/// `maximum_frames` is the caller's proven upper bound for the complete walk.
+/// Reservation is delayed until the first frame beyond
+/// [`INLINE_OVERLAY_DEPTH`], so an early missing edge neither allocates nor
+/// reserves memory it will never use. Once a spill is required, the exact
+/// remaining capacity is reserved in one operation.
+pub(crate) fn try_push_overlay_path_spine<'root, K: KeyEncoding, V>(
+    spine: &mut OverlayPathSpine<'root, K, V>,
+    frame: OverlayPathFrame<'root, K, V>,
+    maximum_frames: usize,
+) -> Result<(), smallvec::CollectionAllocErr> {
+    if spine.len() == spine.capacity() {
+        let additional = maximum_frames
+            .checked_sub(spine.len())
+            .filter(|additional| *additional > 0)
+            .expect("overlay path spine upper bound must exceed its current length");
+        #[cfg(test)]
+        if overlay_spine_failpoint::take() {
+            return Err(smallvec::CollectionAllocErr::CapacityOverflow);
+        }
+        spine.try_reserve_exact(additional)?;
+    }
+    spine.push(frame);
+    Ok(())
+}
 
 /// Child slots keyed by their incoming key unit, in insertion order.
 ///
-/// The inverse pairing of [`OverlaySpine`]: here the unit *precedes* the node it
-/// reaches. Used when staging children before a node is published.
+/// The inverse pairing of the internal `OverlayPathSpine`: here the unit *precedes* the node
+/// it reaches. Used when staging children before a node is published.
 pub type OverlayChildren<K, V> = Vec<(<K as KeyEncoding>::Unit, Arc<OverlayNode<K, V>>)>;
 
 /// A single `(key unit, child)` slot, as produced by a completed subtree build.
@@ -141,5 +267,65 @@ impl<K: KeyEncoding, V: Clone + Send + Sync + 'static> TrieRoot for OverlayNode<
 
     fn get_value(&self) -> Option<V> {
         OverlayNode::get_value(self)
+    }
+}
+
+#[cfg(test)]
+mod stack_safety_tests {
+    use super::{
+        try_push_overlay_path_spine, OverlayNode, OverlayNodeHandle, OverlayPathFrame,
+        OverlayPathSpine, INLINE_OVERLAY_DEPTH,
+    };
+    use crate::persistent_artrie::core::key_encoding::ByteKey;
+    use std::sync::Arc;
+
+    #[test]
+    fn overlay_spine_stays_inline_then_reserves_its_complete_bound_once() {
+        const MAXIMUM_FRAMES: usize = 64;
+        let node = Arc::new(OverlayNode::<ByteKey>::new());
+        let strong_before = Arc::strong_count(&node);
+        let mut spine = OverlayPathSpine::<ByteKey, ()>::new();
+
+        for unit in 0..INLINE_OVERLAY_DEPTH {
+            try_push_overlay_path_spine(
+                &mut spine,
+                OverlayPathFrame {
+                    node: OverlayNodeHandle::Borrowed(&node),
+                    unit: unit as u8,
+                },
+                MAXIMUM_FRAMES,
+            )
+            .expect("inline pushes cannot allocate");
+        }
+        assert!(!spine.spilled());
+        assert_eq!(Arc::strong_count(&node), strong_before);
+
+        try_push_overlay_path_spine(
+            &mut spine,
+            OverlayPathFrame {
+                node: OverlayNodeHandle::Borrowed(&node),
+                unit: INLINE_OVERLAY_DEPTH as u8,
+            },
+            MAXIMUM_FRAMES,
+        )
+        .expect("the exact spill fits the proven bound");
+        assert!(spine.spilled());
+        assert!(spine.capacity() >= MAXIMUM_FRAMES);
+        let spilled_capacity = spine.capacity();
+
+        for unit in INLINE_OVERLAY_DEPTH + 1..MAXIMUM_FRAMES {
+            try_push_overlay_path_spine(
+                &mut spine,
+                OverlayPathFrame {
+                    node: OverlayNodeHandle::Borrowed(&node),
+                    unit: unit as u8,
+                },
+                MAXIMUM_FRAMES,
+            )
+            .expect("the first spill reserved the complete bound");
+        }
+        assert_eq!(spine.len(), MAXIMUM_FRAMES);
+        assert_eq!(spine.capacity(), spilled_capacity);
+        assert_eq!(Arc::strong_count(&node), strong_before);
     }
 }

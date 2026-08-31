@@ -28,7 +28,7 @@
 
 #![cfg(feature = "persistent-artrie")]
 
-use loom::sync::atomic::{AtomicBool, Ordering};
+use loom::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use loom::sync::{Arc, RwLock};
 use loom::thread;
 use std::collections::BTreeMap;
@@ -324,6 +324,7 @@ enum ModelChild {
 struct FaultModelNode {
     is_final: AtomicBool,
     children: BTreeMap<u8, ModelChild>,
+    candidate_drop_count: Option<Arc<AtomicUsize>>,
 }
 
 impl FaultModelNode {
@@ -331,6 +332,15 @@ impl FaultModelNode {
         Arc::new(Self {
             is_final: AtomicBool::new(is_final),
             children: BTreeMap::new(),
+            candidate_drop_count: None,
+        })
+    }
+
+    fn loaded_candidate(is_final: bool, drop_count: Arc<AtomicUsize>) -> Arc<Self> {
+        Arc::new(Self {
+            is_final: AtomicBool::new(is_final),
+            children: BTreeMap::new(),
+            candidate_drop_count: Some(drop_count),
         })
     }
 
@@ -340,11 +350,20 @@ impl FaultModelNode {
         Arc::new(Self {
             is_final: AtomicBool::new(self.is_final.load(Ordering::Acquire)),
             children,
+            candidate_drop_count: None,
         })
     }
 
     fn find_child(&self, key: u8) -> Option<&ModelChild> {
         self.children.get(&key)
+    }
+}
+
+impl Drop for FaultModelNode {
+    fn drop(&mut self) {
+        if let Some(drop_count) = &self.candidate_drop_count {
+            drop_count.fetch_add(1, Ordering::AcqRel);
+        }
     }
 }
 
@@ -381,14 +400,22 @@ impl FaultRootSlot {
 /// Model `find_leaf_faulting` for a length-1 key: if the slot is OnDisk, LOAD our
 /// own InMem copy (the per-faulter Arc) and CAS-install it; on loss, rebase and
 /// retry (now possibly already InMem ⇒ done). Bounded retries (liveness).
-fn faultin_one_char(root: &FaultRootSlot, key: u8, max_retries: usize) -> bool {
+fn faultin_one_char(
+    root: &FaultRootSlot,
+    key: u8,
+    max_retries: usize,
+    candidate_count: &AtomicUsize,
+    candidate_drop_count: &Arc<AtomicUsize>,
+) -> bool {
     for _ in 0..=max_retries {
         let cur = root.load();
         match cur.find_child(key) {
             Some(ModelChild::InMem(_)) => return true, // already faulted (by a racer)
             Some(ModelChild::OnDisk { is_final }) => {
                 // Load OUR OWN Arc (each faulter independently) and install it.
-                let loaded = FaultModelNode::leaf(*is_final);
+                candidate_count.fetch_add(1, Ordering::AcqRel);
+                let loaded =
+                    FaultModelNode::loaded_candidate(*is_final, Arc::clone(candidate_drop_count));
                 let new_root = cur.with_child(key, ModelChild::InMem(loaded));
                 match root.compare_exchange(&cur, new_root) {
                     Ok(()) => return true, // we published the fault-in
@@ -428,14 +455,24 @@ fn faultin_double_install_one_wins() {
         let root = Arc::new(FaultRootSlot::new(
             FaultModelNode::leaf(false).with_child(b'a', ModelChild::OnDisk { is_final: true }),
         ));
+        let candidate_count = Arc::new(AtomicUsize::new(0));
+        let candidate_drop_count = Arc::new(AtomicUsize::new(0));
 
         let f1 = {
             let root = Arc::clone(&root);
-            thread::spawn(move || faultin_one_char(&root, b'a', 4))
+            let candidate_count = Arc::clone(&candidate_count);
+            let candidate_drop_count = Arc::clone(&candidate_drop_count);
+            thread::spawn(move || {
+                faultin_one_char(&root, b'a', 4, &candidate_count, &candidate_drop_count)
+            })
         };
         let f2 = {
             let root = Arc::clone(&root);
-            thread::spawn(move || faultin_one_char(&root, b'a', 4))
+            let candidate_count = Arc::clone(&candidate_count);
+            let candidate_drop_count = Arc::clone(&candidate_drop_count);
+            thread::spawn(move || {
+                faultin_one_char(&root, b'a', 4, &candidate_count, &candidate_drop_count)
+            })
         };
         let w = {
             let root = Arc::clone(&root);
@@ -470,6 +507,30 @@ fn faultin_double_install_one_wins() {
         assert!(
             matches!(final_root.find_child(b'z'), Some(ModelChild::InMem(_))),
             "writer sibling 'z' must be present and InMem"
+        );
+
+        let loaded = candidate_count.load(Ordering::Acquire);
+        assert!(loaded >= 1, "at least one durable candidate must be loaded");
+        assert_eq!(
+            candidate_drop_count.load(Ordering::Acquire),
+            loaded - 1,
+            "every loaded candidate except the published winner must be reclaimed"
+        );
+
+        // `final_root` is the reader-held immutable snapshot. Dropping the global
+        // publication slot must not reclaim its winning child while this snapshot
+        // remains live; releasing the snapshot then reclaims the last candidate.
+        drop(root);
+        assert_eq!(
+            candidate_drop_count.load(Ordering::Acquire),
+            loaded - 1,
+            "a reader-held root snapshot keeps the published candidate alive"
+        );
+        drop(final_root);
+        assert_eq!(
+            candidate_drop_count.load(Ordering::Acquire),
+            loaded,
+            "the published candidate is reclaimed after the last snapshot drops"
         );
     });
 }
@@ -885,8 +946,10 @@ fn empty_term_root_in_place_finalize_is_lost_negative_control() {
 //   * evictor evicts first (stamp was still 1) → writer re-links v2 (its CAS retries);
 //   * the dangerous window (evictor reads stamp==1, writer overwrites, evictor commits)
 //     → the evictor's CAS on the stale root-version FAILS → no stale evict.
-// This is exactly the production `evict_overlay_node_at_path` guard
-// (`durable_stamp() == disk_ptr.to_raw()`) + its loser-safe root CAS.
+// This mirrors the stamp guard retained by the production compact-batch eviction
+// machine (`durable_stamp() == disk_ptr.to_raw()`) and its generation-bound,
+// loser-safe root transition. The former per-node counted-CAS eviction API has
+// been removed from production.
 mod stamp_guard_model {
     use loom::sync::{Arc, RwLock};
     use loom::thread;
@@ -1002,6 +1065,403 @@ mod stamp_guard_model {
                 "1c STALE-EVICT: acked v2 not observable (leaf={:?}, evicted_to={})",
                 g.leaf.as_ref().map(|l| l.version),
                 g.evicted_to
+            );
+        });
+    }
+}
+
+mod exact_registry_transition_model {
+    use loom::sync::atomic::{AtomicUsize, Ordering};
+    use loom::sync::{Arc, Mutex};
+    use loom::thread;
+
+    const GENERATION: usize = 7;
+    const ANCESTOR_PTR: usize = 11;
+    const DESCENDANT_PTR: usize = 13;
+
+    #[derive(Clone, Copy)]
+    enum SuccessfulEndpoint {
+        Ancestor,
+        Descendant,
+    }
+
+    #[derive(Clone, Copy)]
+    struct PreparedEviction {
+        generation: usize,
+        root_revision: usize,
+        endpoint: SuccessfulEndpoint,
+    }
+
+    struct EvictionState {
+        authority: bool,
+        generation: usize,
+        root_generation: usize,
+        root_revision: usize,
+        ancestor_stamp: usize,
+        descendant_stamp: usize,
+        ancestor_resident: bool,
+        descendant_resident: bool,
+    }
+
+    struct EvictionRace {
+        state: Mutex<EvictionState>,
+    }
+
+    impl EvictionRace {
+        fn new(ancestor_is_exact: bool) -> Arc<Self> {
+            Arc::new(Self {
+                state: Mutex::new(EvictionState {
+                    authority: true,
+                    generation: GENERATION,
+                    root_generation: GENERATION,
+                    root_revision: 1,
+                    ancestor_stamp: if ancestor_is_exact { ANCESTOR_PTR } else { 0 },
+                    descendant_stamp: DESCENDANT_PTR,
+                    ancestor_resident: true,
+                    descendant_resident: true,
+                }),
+            })
+        }
+
+        fn prepare(&self) -> PreparedEviction {
+            let state = self.state.lock().expect("prepare exact eviction lock");
+            let endpoint = if state.ancestor_stamp == ANCESTOR_PTR {
+                SuccessfulEndpoint::Ancestor
+            } else {
+                assert_eq!(state.descendant_stamp, DESCENDANT_PTR);
+                SuccessfulEndpoint::Descendant
+            };
+            PreparedEviction {
+                generation: state.generation,
+                root_revision: state.root_revision,
+                endpoint,
+            }
+        }
+
+        fn commit(&self, prepared: PreparedEviction) -> bool {
+            let mut state = self.state.lock().expect("commit exact eviction lock");
+            if !state.authority
+                || state.generation != prepared.generation
+                || state.root_generation != prepared.generation
+                || state.root_revision != prepared.root_revision
+            {
+                return false;
+            }
+            match prepared.endpoint {
+                SuccessfulEndpoint::Ancestor => {
+                    assert_eq!(state.ancestor_stamp, ANCESTOR_PTR);
+                    state.ancestor_resident = false;
+                    state.descendant_resident = false;
+                }
+                SuccessfulEndpoint::Descendant => {
+                    assert_eq!(state.descendant_stamp, DESCENDANT_PTR);
+                    state.descendant_resident = false;
+                }
+            }
+            state.root_revision += 1;
+            true
+        }
+
+        fn advance_bound_root(&self) {
+            let mut state = self.state.lock().expect("advance exact root lock");
+            assert!(state.authority);
+            assert_eq!(state.generation, state.root_generation);
+            state.root_revision += 1;
+        }
+    }
+
+    #[test]
+    fn resident_ancestor_transition_is_atomic_across_root_advance() {
+        for ancestor_is_exact in [true, false] {
+            let mut builder = loom::model::Builder::new();
+            builder.preemption_bound = Some(3);
+            builder.check(move || {
+                let race = EvictionRace::new(ancestor_is_exact);
+                let prepared = race.prepare();
+                let outcome = Arc::new(AtomicUsize::new(0));
+
+                let evict_race = Arc::clone(&race);
+                let evict_outcome = Arc::clone(&outcome);
+                let evictor = thread::spawn(move || {
+                    thread::yield_now();
+                    evict_outcome.store(
+                        if evict_race.commit(prepared) { 1 } else { 2 },
+                        Ordering::SeqCst,
+                    );
+                });
+                let writer_race = Arc::clone(&race);
+                let writer = thread::spawn(move || {
+                    thread::yield_now();
+                    writer_race.advance_bound_root();
+                });
+
+                evictor.join().expect("exact evictor joins");
+                writer.join().expect("bound-root writer joins");
+                let state = race.state.lock().expect("final exact eviction lock");
+                match outcome.load(Ordering::SeqCst) {
+                    1 if ancestor_is_exact => {
+                        assert!(!state.ancestor_resident);
+                        assert!(!state.descendant_resident);
+                    }
+                    1 => {
+                        assert!(state.ancestor_resident);
+                        assert!(!state.descendant_resident);
+                    }
+                    2 => {
+                        assert!(state.ancestor_resident);
+                        assert!(state.descendant_resident);
+                    }
+                    other => panic!("unexpected exact eviction outcome {other}"),
+                }
+            });
+        }
+    }
+
+    const FAULT_PTR: usize = 29;
+
+    #[derive(Clone, Copy)]
+    struct PreparedFault {
+        generation: usize,
+        root_revision: usize,
+        candidate_id: usize,
+        candidate_stamp: usize,
+    }
+
+    struct FaultState {
+        authority: bool,
+        generation: usize,
+        root_generation: usize,
+        root_revision: usize,
+        resident: bool,
+        published_candidate: Option<usize>,
+        published_stamp: usize,
+        wins: usize,
+    }
+
+    struct FaultRace {
+        state: Mutex<FaultState>,
+    }
+
+    impl FaultRace {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                state: Mutex::new(FaultState {
+                    authority: true,
+                    generation: GENERATION,
+                    root_generation: GENERATION,
+                    root_revision: 1,
+                    resident: false,
+                    published_candidate: None,
+                    published_stamp: 0,
+                    wins: 0,
+                }),
+            })
+        }
+
+        fn prepare(&self, candidate_id: usize) -> PreparedFault {
+            let state = self.state.lock().expect("prepare exact fault lock");
+            PreparedFault {
+                generation: state.generation,
+                root_revision: state.root_revision,
+                candidate_id,
+                candidate_stamp: FAULT_PTR,
+            }
+        }
+
+        fn commit(&self, prepared: PreparedFault) -> bool {
+            let mut state = self.state.lock().expect("commit exact fault lock");
+            if !state.authority
+                || state.generation != prepared.generation
+                || state.root_generation != prepared.generation
+                || state.root_revision != prepared.root_revision
+            {
+                return false;
+            }
+            assert_eq!(prepared.candidate_stamp, FAULT_PTR);
+            state.root_revision += 1;
+            state.resident = true;
+            state.published_candidate = Some(prepared.candidate_id);
+            state.published_stamp = prepared.candidate_stamp;
+            state.wins += 1;
+            true
+        }
+
+        fn reevict_exact_fault(&self) -> bool {
+            let mut state = self.state.lock().expect("re-evict exact fault lock");
+            if !state.authority
+                || state.root_generation != state.generation
+                || !state.resident
+                || state.published_stamp != FAULT_PTR
+            {
+                return false;
+            }
+            state.root_revision += 1;
+            state.resident = false;
+            true
+        }
+    }
+
+    #[test]
+    fn exact_fault_race_publishes_only_the_winner_with_exact_stamp() {
+        let mut builder = loom::model::Builder::new();
+        builder.preemption_bound = Some(3);
+        builder.check(|| {
+            let race = FaultRace::new();
+            let first = race.prepare(1);
+            let second = race.prepare(2);
+
+            let first_race = Arc::clone(&race);
+            let first_thread = thread::spawn(move || first_race.commit(first));
+            let second_race = Arc::clone(&race);
+            let second_thread = thread::spawn(move || second_race.commit(second));
+            let first_won = first_thread.join().expect("first exact faulter joins");
+            let second_won = second_thread.join().expect("second exact faulter joins");
+
+            assert_ne!(
+                first_won, second_won,
+                "exact fault CAS must have one winner"
+            );
+            {
+                let state = race.state.lock().expect("final exact fault lock");
+                assert_eq!(state.wins, 1);
+                assert!(state.resident);
+                assert!(matches!(state.published_candidate, Some(1 | 2)));
+                assert_eq!(state.published_stamp, FAULT_PTR);
+            }
+            assert!(race.reevict_exact_fault());
+            let state = race.state.lock().expect("post re-eviction lock");
+            assert!(!state.resident);
+            assert_eq!(state.wins, 1);
+        });
+    }
+
+    struct RolloverCatalog {
+        identity: usize,
+        first_payload: AtomicUsize,
+        second_payload: AtomicUsize,
+    }
+
+    struct RolloverRoot {
+        revision: usize,
+        ordinal: usize,
+        logical_first: usize,
+        logical_second: usize,
+        catalog: Arc<RolloverCatalog>,
+    }
+
+    struct RolloverSlot {
+        root: Mutex<Arc<RolloverRoot>>,
+        wins: AtomicUsize,
+    }
+
+    impl RolloverSlot {
+        fn new() -> (Arc<Self>, Arc<RolloverRoot>) {
+            let predecessor = Arc::new(RolloverRoot {
+                revision: 1,
+                ordinal: usize::MAX,
+                logical_first: 7,
+                logical_second: 11,
+                catalog: Arc::new(RolloverCatalog {
+                    identity: 1,
+                    first_payload: AtomicUsize::new(7),
+                    second_payload: AtomicUsize::new(11),
+                }),
+            });
+            (
+                Arc::new(Self {
+                    root: Mutex::new(Arc::clone(&predecessor)),
+                    wins: AtomicUsize::new(0),
+                }),
+                predecessor,
+            )
+        }
+
+        fn prepare(
+            predecessor: &Arc<RolloverRoot>,
+            identity: usize,
+            first_payload: usize,
+            second_payload: usize,
+        ) -> Arc<RolloverRoot> {
+            assert_eq!(predecessor.ordinal, usize::MAX);
+            Arc::new(RolloverRoot {
+                revision: predecessor.revision + 1,
+                ordinal: 0,
+                logical_first: first_payload,
+                logical_second: second_payload,
+                catalog: Arc::new(RolloverCatalog {
+                    identity,
+                    first_payload: AtomicUsize::new(first_payload),
+                    second_payload: AtomicUsize::new(second_payload),
+                }),
+            })
+        }
+
+        fn publish(&self, expected: &Arc<RolloverRoot>, candidate: Arc<RolloverRoot>) -> bool {
+            let mut root = self.root.lock().expect("rollover root CAS lock");
+            if !Arc::ptr_eq(&root, expected) {
+                return false;
+            }
+            *root = candidate;
+            self.wins.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+    }
+
+    #[test]
+    fn fresh_catalog_rollover_has_one_root_winner_and_isolates_old_helpers() {
+        let mut builder = loom::model::Builder::new();
+        builder.preemption_bound = Some(3);
+        builder.check(|| {
+            let (slot, predecessor) = RolloverSlot::new();
+            let first = RolloverSlot::prepare(&predecessor, 2, 5, 11);
+            let second = RolloverSlot::prepare(&predecessor, 3, 7, 13);
+
+            let first_slot = Arc::clone(&slot);
+            let first_expected = Arc::clone(&predecessor);
+            let first_thread = thread::spawn(move || first_slot.publish(&first_expected, first));
+            let second_slot = Arc::clone(&slot);
+            let second_expected = Arc::clone(&predecessor);
+            let second_thread =
+                thread::spawn(move || second_slot.publish(&second_expected, second));
+
+            let old_catalog = Arc::clone(&predecessor.catalog);
+            let old_helper = thread::spawn(move || {
+                old_catalog.first_payload.store(17, Ordering::Release);
+                old_catalog.second_payload.store(19, Ordering::Release);
+            });
+
+            let first_won = first_thread.join().expect("first rollover publisher joins");
+            let second_won = second_thread
+                .join()
+                .expect("second rollover publisher joins");
+            old_helper.join().expect("delayed old helper joins");
+            assert_ne!(first_won, second_won, "exact root CAS has one winner");
+            assert_eq!(slot.wins.load(Ordering::SeqCst), 1);
+
+            let published = slot
+                .root
+                .lock()
+                .expect("published rollover root lock")
+                .clone();
+            assert_eq!(published.ordinal, 0);
+            assert!(!Arc::ptr_eq(&published.catalog, &predecessor.catalog));
+            assert!(matches!(published.catalog.identity, 2 | 3));
+            assert_eq!(
+                published.catalog.first_payload.load(Ordering::Acquire),
+                published.logical_first
+            );
+            assert_eq!(
+                published.catalog.second_payload.load(Ordering::Acquire),
+                published.logical_second
+            );
+            assert_eq!(predecessor.catalog.identity, 1);
+            assert_eq!(
+                predecessor.catalog.first_payload.load(Ordering::Acquire),
+                17
+            );
+            assert_eq!(
+                predecessor.catalog.second_payload.load(Ordering::Acquire),
+                19
             );
         });
     }

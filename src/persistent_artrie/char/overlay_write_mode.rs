@@ -35,9 +35,10 @@ use crate::persistent_artrie::core::durability::DurabilityPolicy;
 use crate::persistent_artrie::core::key_encoding::{CharKey, KeyEncoding};
 use crate::persistent_artrie::core::overlay::checkpoint::OverlayCheckpoint;
 use crate::persistent_artrie::core::overlay::durable_write::{
-    DurableOverlayWrite, ValuePublishOutcome, ValueWriteMode,
+    DurableOverlayWrite, PendingDurableMutation, RegistryEligibleMutation,
+    SemanticMutationPublicationPermit, ValuePublishOutcome, ValueWriteMode,
 };
-use crate::persistent_artrie::error::Result;
+use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 // Phase 4 (DRY K-generic lift): `find_leaf_faulting` (called on the value read-fault
 // path below) is now a default method of the shared `OverlayEvictable` trait.
 use crate::persistent_artrie::core::overlay::evict::OverlayEvictable;
@@ -120,41 +121,41 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
         self.contains_lockfree(&term)
     }
 
-    fn overlay_publish_value(&self, units: &[u32], value: V) {
+    fn overlay_publish_value(&self, units: &[u32], value: V) -> Result<()> {
         // G5/F1: no-WAL path-copy value SET (recovered terms are already durable).
         // The overlay is FRESH at reestablish, so the path-copy never hits an OnDisk
         // child and the CAS contends with nothing — but the retry loop is kept for
         // uniformity with the durable publishers. `units` ARE the chars for char.
         use super::nodes::persistent_node::PersistentCharNode;
-        let lockfree_root = match self.lockfree_root.as_ref() {
-            Some(r) => r,
-            None => return,
-        };
+        let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
+            PersistentARTrieError::internal(
+                "recovery value publish requires an installed char overlay",
+            )
+        })?;
         let _epoch = self.epoch_manager.enter_read();
         loop {
-            let root = match lockfree_root.load() {
-                Some(r) => r,
+            let root_revision = match lockfree_root.load_revision() {
+                Some(revision) => revision,
                 None => {
                     let _ = lockfree_root.try_init(Arc::new(PersistentCharNode::<V>::new()));
                     continue;
                 }
             };
-            let term_count_delta = isize::from(self.find_leaf_recursive(&root, units, 0).is_none());
-            match self.build_value_path_recursive(&root, units, 0, value.clone()) {
-                Some(new_root) => {
-                    match lockfree_root.compare_exchange_counted(&root, new_root, term_count_delta)
-                    {
-                        Ok(_) => {
-                            if let Some(ref cache) = self.lockfree_cache {
-                                cache.insert(CharKey::units_to_term(units), true);
-                            }
-                            return;
-                        }
-                        Err(_) => continue,
+            let root = Arc::clone(root_revision.node());
+            let term_count_delta = isize::from(self.find_leaf_iterative(&root, units, 0).is_none());
+            let new_root = self.build_value_path_iterative(&root, units, 0, value.clone())?;
+            match lockfree_root.compare_exchange_revision_counted(
+                &root_revision,
+                new_root,
+                term_count_delta,
+            ) {
+                Ok(_) => {
+                    if let Some(ref cache) = self.lockfree_cache {
+                        cache.insert(CharKey::units_to_term(units), true);
                     }
+                    return Ok(());
                 }
-                // OnDisk-blocked: impossible on a fresh reestablish overlay; bail.
-                None => return,
+                Err(_) => continue,
             }
         }
     }
@@ -227,6 +228,8 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<CharKey, V, S>
 impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
     for super::PersistentARTrieChar<V, S>
 {
+    type PublicationEligibility = RegistryEligibleMutation;
+
     #[inline]
     fn durability_policy(&self) -> DurabilityPolicy {
         // The inherent accessor (wal_helpers.rs) — unchanged value.
@@ -234,7 +237,10 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
     }
 
     #[inline]
-    fn append_durable_wal(&self, record: WalRecord) -> Result<Lsn> {
+    fn append_durable_wal(
+        &self,
+        record: WalRecord,
+    ) -> Result<PendingDurableMutation<'_, RegistryEligibleMutation>> {
         // Order-A step 1: char's existing append+sync-durable helper (wal_helpers.rs).
         self.append_to_wal_returning_lsn(record)
     }
@@ -279,7 +285,12 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
         }
     }
 
-    fn increment_publish_inner(&self, key: &str, delta: u64) -> Result<(u64, u64)> {
+    fn increment_publish_inner(
+        &self,
+        key: &str,
+        delta: u64,
+        _permit: &SemanticMutationPublicationPermit<'_, RegistryEligibleMutation>,
+    ) -> Result<(u64, u64)> {
         // `try_increment_cas_inner` is u64-specialized (`impl<S> ...<u64, S>`), so
         // downcast `self` to the nameable `<u64, S>` monomorph via a SAFE `Any`
         // (the same zero-`unsafe` pattern as `overlay_counter_get`). The
@@ -288,14 +299,14 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
         // empty result (the durable increment is never reached for non-u64 `V`).
         use std::any::Any;
         match (self as &dyn Any).downcast_ref::<super::PersistentARTrieChar<u64, S>>() {
-            Some(trie_u64) => trie_u64.try_increment_cas_inner(key, delta),
+            Some(trie_u64) => trie_u64.try_increment_cas_inner(key, delta, _permit),
             None => Ok((0, 0)),
         }
     }
 
     // ---- G5/F0 value seams (char): faulting present/read + the mode-aware
     // path-copy CAS publish. They name the concrete `OverlayNode<CharKey,V>` via
-    // the (now generic) `build_value_path_recursive` / `find_leaf_*`. ----
+    // the (now generic) `build_value_path_iterative` / `find_leaf_*`. ----
 
     fn value_present_faulting(&self, key_bytes: &[u8]) -> Result<bool> {
         let term = std::str::from_utf8(key_bytes).map_err(|e| {
@@ -359,6 +370,7 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
         key_bytes: &[u8],
         value: V,
         mode: ValueWriteMode,
+        _permit: &SemanticMutationPublicationPermit<'_, RegistryEligibleMutation>,
     ) -> Result<ValuePublishOutcome> {
         use super::nodes::persistent_node::PersistentCharNode;
         let term = std::str::from_utf8(key_bytes).map_err(|e| {
@@ -378,17 +390,18 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
             // S4 commit_seq CLAIM (loop-top, re-claimed per iteration) — the winning
             // claim is strictly monotone in the global root-CAS order + durable.
             let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
-            let root = match lockfree_root.load() {
-                Some(r) => r,
+            let root_revision = match lockfree_root.load_revision() {
+                Some(revision) => revision,
                 None => {
                     let new_root = Arc::new(PersistentCharNode::<V>::new());
                     let _ = lockfree_root.try_init(new_root);
                     continue;
                 }
             };
+            let root = Arc::clone(root_revision.node());
             // Mode pre-check on the FRESHLY-loaded root (so a concurrent change
             // between the caller's initial read and this CAS is observed).
-            let was_present = self.find_leaf_recursive(&root, &chars, 0).is_some();
+            let was_present = self.find_leaf_iterative(&root, &chars, 0).is_some();
             match &mode {
                 ValueWriteMode::InsertOnce => {
                     // Already final ⇒ a concurrent insert won (the caller's hoist
@@ -402,7 +415,7 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
                     // Re-check `expected` against the current leaf value (bincode
                     // bytes, NOT PartialEq). Mismatch ⇒ the CAS fails this round.
                     let cur = self
-                        .find_leaf_recursive(&root, &chars, 0)
+                        .find_leaf_iterative(&root, &chars, 0)
                         .and_then(|leaf| leaf.get_value());
                     let cur_bytes = match &cur {
                         Some(v) => {
@@ -421,21 +434,12 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
             }
             // Build the valued spine (clone `value` per iteration — V: Clone — since
             // build_value_path consumes it and we may retry).
-            let new_root = match self.build_value_path_recursive(&root, &chars, 0, value.clone()) {
-                Some(r) => r,
-                // I/O error faulting an evicted prefix: the WAL record is ALREADY
-                // durable, but we cannot make the write visible. Surface it (the
-                // record replays on reopen) — same as the prior inline valued path.
-                None => {
-                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
-                    return Err(crate::persistent_artrie::core::error::PersistentARTrieError::internal(
-                        "value_publish_inner: could not fault an evicted prefix in to publish the \
-                         valued leaf; the record is durable and replays on reopen",
-                    ));
-                }
-            };
-            match lockfree_root.compare_exchange_counted(&root, new_root, isize::from(!was_present))
-            {
+            let new_root = self.build_value_path_iterative(&root, &chars, 0, value.clone())?;
+            match lockfree_root.compare_exchange_revision_counted(
+                &root_revision,
+                new_root,
+                isize::from(!was_present),
+            ) {
                 Ok(_) => {
                     if let Some(ref cache) = self.lockfree_cache {
                         cache.insert(term.to_string(), true);
@@ -464,7 +468,7 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
 impl<V: DictionaryValue, S: BlockStorage> OverlayCheckpoint<CharKey, V, S>
     for super::PersistentARTrieChar<V, S>
 {
-    type CheckpointSnapshot = CheckpointSnapshot;
+    type CheckpointSnapshot = CheckpointSnapshot<V>;
 
     #[inline]
     fn has_eviction_coordinator(&self) -> bool {
@@ -475,21 +479,21 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCheckpoint<CharKey, V, S>
     }
 
     #[inline]
-    fn capture_overlay_snapshot(&self) -> Result<CheckpointSnapshot> {
+    fn capture_overlay_snapshot(&self) -> Result<CheckpointSnapshot<V>> {
         // The overlay arm — char's existing immutable-overlay capture (persist.rs)
         // with its data-loss-critical watermark-before-root capture ordering.
         self.capture_snapshot_immutable()
     }
 
     #[inline]
-    fn publish_overlay_snapshot_retaining(&self, snapshot: &CheckpointSnapshot) -> Result<()> {
+    fn publish_overlay_snapshot_retaining(&self, snapshot: &CheckpointSnapshot<V>) -> Result<()> {
         self.publish_immutable_snapshot_retaining_wal(snapshot)
     }
 
     #[inline]
     fn publish_overlay_snapshot_retaining_with_eviction(
         &self,
-        snapshot: CheckpointSnapshot,
+        snapshot: CheckpointSnapshot<V>,
     ) -> Result<()> {
         self.publish_immutable_snapshot_retaining_wal_with_eviction(snapshot)
     }

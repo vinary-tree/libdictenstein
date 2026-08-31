@@ -2,9 +2,8 @@
 //! char's `overlay_eviction_driver_correspondence` OE3 / OE5 / OE8.
 //!
 //! These live in-crate (not in `tests/`) because they drive the lifted `pub(crate)`
-//! `OverlayEvictable` primitives (`evict_overlay_node_at_path` — the M-2a 1c-guarded
-//! per-node evict — and `find_leaf_faulting` via `get_lockfree`), the `pub(crate)`
-//! `evict_overlay_nodes` byte batch driver, and the `bench_*` eviction surface, and
+//! compact generation-bound eviction, exact fault-in via `get_lockfree`, and the
+//! `bench_*` eviction surface, and
 //! they inspect overlay-internal state (an OnDisk overlay child after eviction; the
 //! stamp guard). They are the byte witness for the shared
 //! `formal-verification/tla+/OverlayEvictionStale.tla` (the 1c lost-update guard) and
@@ -23,14 +22,16 @@
 //!
 //! Scratch is real disk (`target/test-tmp`), never `/tmp` (tmpfs on this host).
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::persistent_artrie::core::durability::DurabilityPolicy;
-use crate::persistent_artrie::core::overlay::evict::OverlayEvictable;
+use crate::persistent_artrie::core::eviction::CompactEvictionBatch;
 use crate::persistent_artrie::eviction::EvictionConfig;
-use crate::persistent_artrie::overlay_fault::evict_overlay_nodes;
+use crate::persistent_artrie::node_impl::PersistentARTrieNode;
+use crate::persistent_artrie::overlay_fault::evict_overlay_compact_batch;
 use crate::persistent_artrie::PersistentARTrie;
-use crate::MappedDictionary;
+use crate::{Dictionary, DictionaryNode, MappedDictionary};
 
 /// A scratch directory on real disk (`target/test-tmp`), never tmpfs `/tmp`.
 fn scratch(prefix: &str) -> tempfile::TempDir {
@@ -41,15 +42,55 @@ fn scratch(prefix: &str) -> tempfile::TempDir {
         .expect("scratch tempdir under target/test-tmp")
 }
 
+fn byte_root_resident_totals<V, S>(trie: &PersistentARTrie<V, S>) -> (usize, usize)
+where
+    V: crate::value::DictionaryValue,
+    S: crate::persistent_artrie::block_storage::BlockStorage,
+{
+    let coordinator = trie
+        .eviction_coordinator
+        .lock()
+        .expect("eviction_coordinator mutex poisoned")
+        .as_ref()
+        .cloned()
+        .expect("eviction enabled");
+    let root = trie.lockfree_root.as_ref().expect("overlay root");
+    coordinator.root_resident_totals(root).unwrap_or_default()
+}
+
 /// COLD-prefix predicate: a registry byte-path is cold iff it starts with `b'c'` (the
 /// `cold-*` term family). Only COLD subtrees are fed to the evictor.
 fn is_cold(path: &[u8]) -> bool {
     path.first() == Some(&b'c')
 }
 
+fn retain_byte_candidates<F>(batch: &mut CompactEvictionBatch<u8>, predicate: F)
+where
+    F: Fn(&[u8]) -> bool,
+{
+    let mut retained = Vec::new();
+    if retained.try_reserve_exact(batch.candidates.len()).is_err() {
+        batch.candidates.clear();
+        return;
+    }
+    for candidate in &batch.candidates {
+        retained.push(
+            batch
+                .materialize_path(candidate.path_id)
+                .is_some_and(|path| predicate(&path)),
+        );
+    }
+    let mut retained_index = 0usize;
+    batch.candidates.retain(|_| {
+        let keep = retained[retained_index];
+        retained_index += 1;
+        keep
+    });
+}
+
 /// Drive ONE round of cold-only overlay eviction via the coordinator's byte selection
 /// (coldest-first, registry-gated) filtered to COLD paths, reclaimed via the lifted
-/// driver `evict_overlay_nodes`. Returns the number of overlay nodes evicted.
+/// compact batch driver. Returns the number of overlay nodes evicted.
 fn evict_cold_overlay<V, S>(trie: &PersistentARTrie<V, S>, budget_bytes: usize) -> usize
 where
     V: crate::value::DictionaryValue,
@@ -64,12 +105,40 @@ where
         Some(c) => Arc::clone(c),
         None => return 0,
     };
+    let Some(root) = trie.lockfree_root.as_ref() else {
+        return 0;
+    };
     coordinator
-        .force_eviction_bytes(budget_bytes, |cands| {
-            let filtered: Vec<_> = cands.into_iter().filter(|(_, p, _)| is_cold(p)).collect();
-            evict_overlay_nodes(trie, filtered, 4)
+        .force_eviction_compact_bytes_root(root, budget_bytes, |mut batch| {
+            retain_byte_candidates(&mut batch, is_cold);
+            evict_overlay_compact_batch(trie, batch, 4)
         })
         .0
+}
+
+/// Traverse a detached byte `DictionaryNode` snapshot without using the machine
+/// stack for trie depth. Each frame owns its node and prefix; production traversal
+/// cursors use denser state, while this explicit test worklist keeps the witness
+/// simple and stack-safe at arbitrary depth.
+fn walk_byte_terms<V>(root: &PersistentARTrieNode<V>) -> BTreeSet<Vec<u8>>
+where
+    V: crate::value::DictionaryValue,
+{
+    let mut terms = BTreeSet::new();
+    let mut work = vec![(root.clone(), Vec::<u8>::new())];
+
+    while let Some((node, prefix)) = work.pop() {
+        if node.is_final() {
+            terms.insert(prefix.clone());
+        }
+        for (unit, child) in node.edges() {
+            let mut child_prefix = prefix.clone();
+            child_prefix.push(unit);
+            work.push((child, child_prefix));
+        }
+    }
+
+    terms
 }
 
 // ───────────────────────── OE3-twin (evict → reload exact values) ─────────────────────────
@@ -136,8 +205,8 @@ fn byte_evict_then_reload_returns_exact_values() {
 // ───────────── OE5-twin (the 1c overwrite-guard witness — M-2a serial_disk_ptr) ─────────────
 
 /// **OE5-twin — the round-3 1c lost-update guard (the M-2a `serial_disk_ptr` stamp) for
-/// byte.** DETERMINISTIC witness that the lifted `evict_overlay_node_at_path` REFUSES to
-/// evict a node OVERWRITTEN since the checkpoint that registered it — preventing the
+/// byte.** Deterministic witness that compact eviction refuses to evict a node
+/// overwritten since the checkpoint that registered it, preventing the
 /// evictor from unswizzling the NEWER in-memory value onto the OLDER on-disk image (the
 /// lost update).
 ///
@@ -148,8 +217,6 @@ fn byte_evict_then_reload_returns_exact_values() {
 ///   registry `disk_ptr` returns `NotEvictable`, and the NEW value survives.
 #[test]
 fn byte_overwrite_since_checkpoint_is_not_evicted_to_stale_image() {
-    use crate::persistent_artrie::core::overlay::evict::OverlayEvictOutcome;
-
     let dir = scratch("byte-oe5-overwrite-guard");
     let path = dir.path().join("oe5.part");
 
@@ -167,7 +234,8 @@ fn byte_overwrite_since_checkpoint_is_not_evicted_to_stale_image() {
     trie.bench_immutable_checkpoint_with_eviction()
         .expect("checkpoint with eviction");
 
-    // Capture each LEAF node's registry `disk_ptr` WITHOUT evicting (callback → (0,0)).
+    // Positive control: exact compact eviction of the unmodified registered
+    // leaf succeeds and faults back to the durable value.
     let coordinator = trie
         .eviction_coordinator
         .lock()
@@ -175,24 +243,29 @@ fn byte_overwrite_since_checkpoint_is_not_evicted_to_stale_image() {
         .as_ref()
         .map(Arc::clone)
         .expect("coordinator present");
-    let captured: std::cell::RefCell<
-        std::collections::HashMap<Vec<u8>, crate::persistent_artrie::swizzled_ptr::SwizzledPtr>,
-    > = std::cell::RefCell::new(std::collections::HashMap::new());
-    coordinator.force_eviction_bytes(1 << 20, |cands| {
-        for (_, p, ptr) in cands {
-            captured.borrow_mut().insert(p, ptr);
-        }
+    let root = trie.lockfree_root.as_ref().expect("published overlay root");
+    let stable_evicted =
+        coordinator.force_eviction_compact_bytes_root(root, 1 << 20, |mut batch| {
+            retain_byte_candidates(&mut batch, |path| path == b"cold-stable");
+            evict_overlay_compact_batch(&trie, batch, 4)
+        });
+    assert_eq!(
+        stable_evicted.0, 1,
+        "unmodified leaf must evict exactly once"
+    );
+    assert_eq!(trie.get_lockfree(b"cold-stable"), Some(10));
+
+    // Capture the generation-bearing candidate for the other leaf without
+    // publishing a root change. The later overwrite invalidates this batch.
+    let captured = std::cell::RefCell::new(None);
+    coordinator.force_eviction_compact_bytes_root(root, 1 << 20, |mut batch| {
+        retain_byte_candidates(&mut batch, |path| path == b"cold-rewritten");
+        *captured.borrow_mut() = Some(batch);
         (0, 0)
     });
-    let caps = captured.into_inner();
-    let stable_ptr = caps
-        .get(b"cold-stable".as_slice())
-        .expect("cold-stable leaf registered")
-        .clone();
-    let rewritten_ptr = caps
-        .get(b"cold-rewritten".as_slice())
-        .expect("cold-rewritten leaf registered")
-        .clone();
+    let stale_batch = captured
+        .into_inner()
+        .expect("cold-rewritten compact candidate registered");
 
     // OVERWRITE cold-rewritten (counter +5 ⇒ path-copy ⇒ fresh stamp-0 leaf at its path).
     trie.try_increment_cas_durable(b"cold-rewritten", 5)
@@ -203,28 +276,17 @@ fn byte_overwrite_since_checkpoint_is_not_evicted_to_stale_image() {
         "overwrite stuck (20+5)"
     );
 
-    // THE WITNESS: evicting the overwritten node to its STALE disk_ptr is REFUSED.
+    // THE WITNESS: the stale generation cannot prepare an exact residency
+    // transition and therefore publishes no root change.
     assert_eq!(
-        trie.evict_overlay_node_at_path(b"cold-rewritten", rewritten_ptr),
-        OverlayEvictOutcome::NotEvictable,
-        "1c guard: a node overwritten since checkpoint must NOT be evicted to its stale image"
+        evict_overlay_compact_batch(&trie, stale_batch, 4),
+        (0, 0),
+        "a node overwritten since selection must not be evicted to its stale image"
     );
     assert_eq!(
         trie.get_lockfree(b"cold-rewritten"),
         Some(25),
         "the NEW value survives (not lost to a stale-image eviction)"
-    );
-
-    // POSITIVE CONTROL: the UN-overwritten node still evicts and faults back exactly.
-    assert_eq!(
-        trie.evict_overlay_node_at_path(b"cold-stable", stable_ptr),
-        OverlayEvictOutcome::Evicted,
-        "an un-overwritten registered node still evicts (guard does not over-reject)"
-    );
-    assert_eq!(
-        trie.get_lockfree(b"cold-stable"),
-        Some(10),
-        "the evicted node faults back to its exact durable value"
     );
 }
 
@@ -265,6 +327,10 @@ fn byte_evict_faultin_evict_thrash_terminates() {
         for _ in 0..8 {
             evicted += evict_cold_overlay(&*trie, 1 << 20);
         }
+        assert!(
+            evicted > 0,
+            "OE8-twin: round {round} did not re-evict any record faulted in by the prior round"
+        );
         total_evicted += evicted;
         for (t, v) in &cold {
             assert_eq!(
@@ -278,6 +344,163 @@ fn byte_evict_faultin_evict_thrash_terminates() {
         total_evicted > 0,
         "OE8-twin: thrash never evicted anything (vacuous — re-faulted nodes must become \
          re-evictable for the thrash to be meaningful)"
+    );
+}
+
+#[test]
+fn winning_byte_faults_restore_exact_registry_residency() {
+    let dir = scratch("byte-fault-residency");
+    let path = dir.path().join("fault-residency.part");
+    let terms: Vec<(Vec<u8>, u64)> = (0..48)
+        .map(|index| {
+            (
+                format!("fault-residency-{index:03}").into_bytes(),
+                10_000 + index,
+            )
+        })
+        .collect();
+
+    let mut trie = PersistentARTrie::<u64>::create(&path).expect("create");
+    trie.set_durability_policy(DurabilityPolicy::Immediate);
+    trie.install_overlay();
+    trie.bench_enable_eviction(EvictionConfig::without_memory_monitor())
+        .expect("enable eviction");
+    for (term, value) in &terms {
+        trie.try_increment_cas_durable(term, *value)
+            .expect("durable increment");
+    }
+    trie.bench_immutable_checkpoint_with_eviction()
+        .expect("checkpoint with eviction registry");
+
+    let coordinator = trie
+        .eviction_coordinator
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map(Arc::clone)
+        .expect("coordinator");
+    let root = trie.lockfree_root.as_ref().expect("published overlay root");
+    let (resident_before, serialized_before) = byte_root_resident_totals(&trie);
+    assert!(resident_before > 0);
+    assert!(serialized_before > 0);
+
+    let evicted = coordinator.force_eviction_compact_bytes_root(root, usize::MAX, |batch| {
+        evict_overlay_compact_batch(&trie, batch, 4)
+    });
+    assert!(
+        evicted.0 > 0,
+        "compact eviction must publish at least one disk edge"
+    );
+    let (resident_after_eviction, serialized_after_eviction) = byte_root_resident_totals(&trie);
+    assert!(resident_after_eviction < resident_before);
+    assert!(serialized_after_eviction < serialized_before);
+
+    for (term, value) in &terms {
+        assert_eq!(trie.get_lockfree(term), Some(*value));
+    }
+    assert_eq!(
+        byte_root_resident_totals(&trie),
+        (resident_before, serialized_before)
+    );
+}
+
+#[test]
+fn detached_byte_dictionary_node_faults_do_not_change_published_residency() {
+    let dir = scratch("byte-detached-fault-residency");
+    let path = dir.path().join("detached-fault-residency.part");
+    let cold_terms: Vec<Vec<u8>> = (0..40)
+        .map(|index| format!("cold-detached-{index:03}").into_bytes())
+        .collect();
+    let warm_terms: Vec<Vec<u8>> = (0..20)
+        .map(|index| format!("warm-detached-{index:03}").into_bytes())
+        .collect();
+    let all_terms: BTreeSet<Vec<u8>> = cold_terms
+        .iter()
+        .chain(warm_terms.iter())
+        .cloned()
+        .collect();
+    let terms_with_values: Vec<(Vec<u8>, u64)> = all_terms
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, term)| (term, 50_000 + index as u64))
+        .collect();
+
+    let mut owned = PersistentARTrie::<u64>::create(&path).expect("create");
+    owned.set_durability_policy(DurabilityPolicy::Immediate);
+    owned.install_overlay();
+    owned
+        .bench_enable_eviction(EvictionConfig::without_memory_monitor())
+        .expect("enable eviction");
+    for (term, value) in &terms_with_values {
+        owned
+            .try_increment_cas_durable(term, *value)
+            .expect("durable valued insert");
+    }
+    owned
+        .bench_immutable_checkpoint_with_eviction()
+        .expect("checkpoint with eviction registry");
+
+    let (resident_before, serialized_before) = byte_root_resident_totals(&owned);
+
+    let mut evicted = 0usize;
+    for _ in 0..8 {
+        evicted += evict_cold_overlay(&owned, usize::MAX);
+    }
+    assert!(evicted > 0, "cold byte subtrees must be evicted");
+    let (resident_after_eviction, serialized_after_eviction) = byte_root_resident_totals(&owned);
+    assert!(resident_after_eviction < resident_before);
+    assert!(serialized_after_eviction < serialized_before);
+
+    let trie = Arc::new(owned);
+    let detached_root = Dictionary::root(&trie);
+    assert_eq!(
+        walk_byte_terms(&detached_root),
+        all_terms,
+        "the detached public byte DictionaryNode must fault every durable term"
+    );
+    assert_eq!(
+        byte_root_resident_totals(&trie),
+        (resident_after_eviction, serialized_after_eviction),
+        "detached byte loads must not change current-root residency"
+    );
+    drop(detached_root);
+
+    for (term, value) in &terms_with_values {
+        assert_eq!(
+            trie.get_lockfree(term),
+            Some(*value),
+            "faulting current-root value read lost {term:?}"
+        );
+    }
+    assert_eq!(
+        byte_root_resident_totals(&trie),
+        (resident_before, serialized_before)
+    );
+
+    // A detached root owns its faulter, and the faulter owns the trie. Therefore
+    // the backing mmap/arena outlives every lazy OnDisk load even after the caller
+    // releases its last explicit shared-trie handle.
+    let mut reevicted = 0usize;
+    for _ in 0..8 {
+        reevicted += evict_cold_overlay(&trie, usize::MAX);
+    }
+    assert!(
+        reevicted > 0,
+        "the lifetime witness must retain actual OnDisk byte children"
+    );
+    let lifetime_root = Dictionary::root(&trie);
+    let trie_lifetime = Arc::downgrade(&trie);
+    drop(trie);
+    assert!(
+        trie_lifetime.upgrade().is_some(),
+        "the detached byte root must lease the backing trie address space"
+    );
+    assert_eq!(walk_byte_terms(&lifetime_root), all_terms);
+    drop(lifetime_root);
+    assert!(
+        trie_lifetime.upgrade().is_none(),
+        "dropping the final detached byte root must release its trie lease"
     );
 }
 
@@ -314,13 +537,14 @@ fn oe9_byte_iter_prefix_faults_evicted_subtree_no_under_report() {
         .as_ref()
         .map(std::sync::Arc::clone)
         .expect("coordinator present");
+    let root = owned
+        .lockfree_root
+        .as_ref()
+        .expect("published overlay root");
     let evicted = coordinator
-        .force_eviction_bytes(1 << 20, |cands| {
-            let filtered: Vec<_> = cands
-                .into_iter()
-                .filter(|(_, p, _)| p.starts_with(b"abc"))
-                .collect();
-            evict_overlay_nodes(&owned, filtered, 4)
+        .force_eviction_compact_bytes_root(root, 1 << 20, |mut batch| {
+            retain_byte_candidates(&mut batch, |path| path.starts_with(b"abc"));
+            evict_overlay_compact_batch(&owned, batch, 4)
         })
         .0;
     assert!(
@@ -368,11 +592,26 @@ fn oe9_byte_iter_prefix_faults_evicted_subtree_no_under_report() {
 // ───────────── Phase 7 byte twin (budget ACTIVATION — checkpoint tail evicts to budget) ─────────────
 
 /// Byte twin of `phase7_resident_budget_checkpoint_tail_evicts_to_budget`: with
-/// `resident_budget_bytes = Some(small)`, the byte checkpoint tail evicts cold overlay
-/// nodes down to budget LOSSLESSLY; a 2nd checkpoint re-registers fewer nodes.
+/// `resident_budget_bytes = Some(small)`, the byte checkpoint tail evicts cold
+/// resident nodes down to budget losslessly while retaining complete durable
+/// topology for exact fault-in.
 #[test]
 fn phase7_byte_resident_budget_checkpoint_tail_evicts_to_budget() {
-    fn run(budget: Option<usize>) -> (usize, usize, bool) {
+    #[derive(Debug)]
+    struct Observation {
+        resident: usize,
+        registered: usize,
+        resident_bytes: usize,
+    }
+
+    #[derive(Debug)]
+    struct Run {
+        first: Observation,
+        second: Observation,
+        all_present: bool,
+    }
+
+    fn run(budget: Option<usize>) -> Run {
         let dir = scratch("phase7-byte-budget");
         let path = dir.path().join("p7b.artb");
         let mut owned = PersistentARTrie::<u64>::create(&path).expect("create");
@@ -392,35 +631,70 @@ fn phase7_byte_resident_budget_checkpoint_tail_evicts_to_budget() {
                 .try_increment_cas_durable(t.as_bytes(), (i + 1) as u64)
                 .expect("inc");
         }
+        let observe = |trie: &PersistentARTrie<u64>| {
+            let coordinator = trie
+                .eviction_coordinator
+                .lock()
+                .expect("eviction_coordinator mutex poisoned");
+            let coordinator = coordinator.as_ref().expect("eviction enabled");
+            let root = trie.lockfree_root.as_ref().expect("overlay root");
+            Observation {
+                resident: coordinator.root_resident_totals(root).unwrap_or_default().0,
+                registered: coordinator.disk_registry_len(),
+                resident_bytes: coordinator
+                    .byte_root_resident_estimate_bytes(root)
+                    .unwrap_or(0),
+            }
+        };
+
         owned
             .bench_immutable_checkpoint_with_eviction()
             .expect("ckpt1");
-        let count1 = owned.evictable_node_count().unwrap_or(0);
+        let first = observe(&owned);
         owned
             .bench_immutable_checkpoint_with_eviction()
             .expect("ckpt2");
-        let count2 = owned.evictable_node_count().unwrap_or(0);
+        let second = observe(&owned);
         let all_present = terms
             .iter()
             .enumerate()
             .all(|(i, t)| MappedDictionary::get_value(&owned, t.as_str()) == Some((i + 1) as u64));
-        (count1, count2, all_present)
+        Run {
+            first,
+            second,
+            all_present,
+        }
     }
 
-    let (t1, t2, t_lossless) = run(Some(2000));
-    assert!(t1 > 0, "byte checkpoint #1 must register the full overlay");
+    let budget = 2_000;
+    let treatment = run(Some(budget));
     assert!(
-        t2 < t1,
-        "byte budget tail must evict cold nodes ({t1} → {t2})"
+        treatment.first.registered > 0,
+        "checkpoint must publish topology"
     );
-    assert!(t_lossless, "byte budget eviction must be LOSSLESS");
-
-    let (c1, c2, c_lossless) = run(None);
-    assert_eq!(c1, c2, "byte: no budget → no tail eviction");
-    assert!(c_lossless, "byte control: all terms present");
     assert!(
-        t2 < c2,
-        "byte budgeted retains fewer than control ({t2} < {c2})"
+        treatment.first.resident < treatment.first.registered,
+        "byte budget tail must make part of the topology nonresident: {treatment:?}"
+    );
+    assert!(
+        treatment.first.resident_bytes <= budget && treatment.second.resident_bytes <= budget,
+        "both byte checkpoint tails must enforce the {budget}-byte bound: {treatment:?}"
+    );
+    assert_eq!(treatment.first.registered, treatment.second.registered);
+    assert!(treatment.second.resident <= treatment.first.resident);
+    assert!(
+        treatment.all_present,
+        "byte budget eviction must be lossless"
+    );
+
+    let control = run(None);
+    assert_eq!(control.first.resident, control.second.resident);
+    assert_eq!(control.first.registered, control.second.registered);
+    assert_eq!(control.first.resident, control.first.registered);
+    assert!(control.all_present, "byte control must retain every term");
+    assert!(
+        treatment.first.resident < control.first.resident,
+        "byte treatment must retain fewer nodes than control: treatment={treatment:?}, control={control:?}"
     );
 }
 
@@ -464,9 +738,27 @@ fn byte_interleaved_checkpoint_with_resident_budget_eviction_preserves_all_terms
         owned.checkpoint().expect("final checkpoint");
 
         let resident = owned.evictable_node_count().unwrap_or(usize::MAX);
+        let (registered, resident_bytes) = {
+            let coordinator = owned
+                .eviction_coordinator
+                .lock()
+                .expect("eviction_coordinator mutex poisoned");
+            let coordinator = coordinator.as_ref().expect("eviction enabled");
+            let root = owned.lockfree_root.as_ref().expect("overlay root");
+            (
+                coordinator.disk_registry_len(),
+                coordinator
+                    .byte_root_resident_estimate_bytes(root)
+                    .unwrap_or(0),
+            )
+        };
         assert!(
-            resident < n as usize,
-            "byte resident-budget eviction must reclaim (resident {resident} well below {n} terms)"
+            resident < registered,
+            "byte eviction must leave nonresident topology ({resident} < {registered})"
+        );
+        assert!(
+            resident_bytes <= 64 * 1024,
+            "byte resident bytes exceed budget"
         );
 
         for i in 0..n {

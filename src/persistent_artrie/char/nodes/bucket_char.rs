@@ -20,7 +20,10 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
-use super::{AddChildError, CharArtNode, CharCompressedPrefix, CharNodeHeader};
+use super::{
+    AddChildError, CharArtNode, CharCompressedPrefix, CharNodeHeader, CHAR_BUCKET_TAG,
+    CHAR_NODE48_TAG,
+};
 use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
 /// Minimum children before shrinking to CharNode48
@@ -46,7 +49,7 @@ impl CharBucket {
     /// Create a new empty CharBucket
     pub fn new() -> Self {
         Self {
-            header: CharNodeHeader::new(101), // CHARBUCKET type
+            header: CharNodeHeader::new(CHAR_BUCKET_TAG),
             prefix: CharCompressedPrefix::empty(),
             entries: HashMap::with_capacity(64),
             value_ptr: SwizzledPtr::null(),
@@ -73,7 +76,7 @@ impl CharBucket {
 
         let mut node48 = super::CharNode48::new();
         node48.header = self.header.clone();
-        node48.header.node_type = 48;
+        node48.header.node_type = CHAR_NODE48_TAG;
         node48.prefix = self.prefix;
         node48.value_ptr = self.value_ptr.clone();
 
@@ -153,7 +156,7 @@ mod tests {
     #[test]
     fn test_new_charbucket() {
         let node = CharBucket::new();
-        assert_eq!(node.header.node_type, 101); // CHARBUCKET
+        assert_eq!(node.header.node_type, CHAR_BUCKET_TAG);
         assert_eq!(node.header.num_children, 0);
         assert!(!node.is_full()); // Never full
     }
@@ -243,7 +246,7 @@ mod tests {
         node.header.set_final(true);
         let node48 = node.shrink();
 
-        assert_eq!(node48.header.node_type, 48);
+        assert_eq!(node48.header.node_type, CHAR_NODE48_TAG);
         assert_eq!(node48.header.num_children, 48);
         assert!(node48.header.is_final());
 

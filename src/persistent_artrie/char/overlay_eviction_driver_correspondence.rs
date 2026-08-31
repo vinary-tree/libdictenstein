@@ -1,8 +1,8 @@
 //! **OE1–OE4 — correspondence tests for the REVERSIBLE overlay-eviction driver**
-//! (`evict_overlay_node_at_path` / `evict_overlay_nodes` in `super`).
+//! (the compact generation-bound batch driver in `super`).
 //!
 //! These live in-crate (not in `tests/`) because they drive the private overlay
-//! driver + the `pub(crate)` `OverlayEvictOutcome` directly, and inspect the
+//! driver directly and inspect the
 //! overlay-internal state (the `lockfree_root` slot turning a COLD child on-disk).
 //! They are the Rust witness for the TLC model
 //! `formal-verification/tla+/OverlayEvictionCas.tla`:
@@ -28,12 +28,9 @@ use std::thread;
 
 use crate::persistent_artrie::char::PersistentARTrieChar;
 use crate::persistent_artrie::core::durability::DurabilityPolicy;
+use crate::persistent_artrie::core::eviction::CompactEvictionBatch;
 use crate::persistent_artrie::eviction::EvictionConfig;
 use crate::persistent_artrie::WalConfig;
-// Phase 4 (DRY K-generic lift): `evict_overlay_node_at_path` (called directly in the
-// OE5 1c-guard witness) is now a default method of the shared `OverlayEvictable`
-// trait — bring it into scope so `owned.evict_overlay_node_at_path(..)` resolves.
-use crate::persistent_artrie::core::overlay::evict::OverlayEvictable;
 use crate::Dictionary;
 
 /// A scratch directory on real disk (`target/test-tmp`), never tmpfs `/tmp`.
@@ -45,6 +42,40 @@ fn scratch(prefix: &str) -> tempfile::TempDir {
         .expect("scratch tempdir under target/test-tmp")
 }
 
+fn char_root_resident_totals<V, S>(trie: &PersistentARTrieChar<V, S>) -> (usize, usize)
+where
+    V: crate::value::DictionaryValue,
+    S: crate::persistent_artrie::block_storage::BlockStorage,
+{
+    let coordinator = trie
+        .eviction_coordinator
+        .lock()
+        .expect("eviction_coordinator mutex poisoned")
+        .as_ref()
+        .cloned()
+        .expect("eviction enabled");
+    let root = trie.lockfree_root.as_ref().expect("overlay root");
+    coordinator.root_resident_totals(root).unwrap_or_default()
+}
+
+fn char_root_resident_estimate<V, S>(trie: &PersistentARTrieChar<V, S>) -> usize
+where
+    V: crate::value::DictionaryValue,
+    S: crate::persistent_artrie::block_storage::BlockStorage,
+{
+    let coordinator = trie
+        .eviction_coordinator
+        .lock()
+        .expect("eviction_coordinator mutex poisoned")
+        .as_ref()
+        .cloned()
+        .expect("eviction enabled");
+    let root = trie.lockfree_root.as_ref().expect("overlay root");
+    coordinator
+        .char_root_resident_estimate_bytes(root)
+        .unwrap_or(0)
+}
+
 /// COLD-prefix predicate: a registry path (`&[char]`) is cold iff it starts with
 /// `'c'` (the `c-*` term family). This is the `cold_filter` the bench accessor
 /// uses — only COLD subtrees are ever fed to the evictor (SF5(ii) faultin == 0).
@@ -52,10 +83,34 @@ fn is_cold(path: &[char]) -> bool {
     path.first() == Some(&'c')
 }
 
+fn retain_char_candidates<F>(batch: &mut CompactEvictionBatch<u32>, predicate: F)
+where
+    F: Fn(&[char]) -> bool,
+{
+    let mut retained = Vec::new();
+    if retained.try_reserve_exact(batch.candidates.len()).is_err() {
+        batch.candidates.clear();
+        return;
+    }
+    for candidate in &batch.candidates {
+        retained.push(
+            batch
+                .materialize_char_path(candidate.path_id)
+                .is_some_and(|path| predicate(&path)),
+        );
+    }
+    let mut retained_index = 0usize;
+    batch.candidates.retain(|_| {
+        let keep = retained[retained_index];
+        retained_index += 1;
+        keep
+    });
+}
+
 /// Drive ONE round of cold-only overlay eviction exactly as the Phase-3 bench
 /// accessor `bench_evict_overlay_cold_nodes` will: select via the coordinator
 /// (coldest-first, registry-gated), filter to COLD paths, and reclaim via the
-/// driver `evict_overlay_nodes`. Returns the number of overlay nodes evicted.
+/// compact batch driver. Returns the number of overlay nodes evicted.
 fn evict_cold_overlay<V, S>(trie: &PersistentARTrieChar<V, S>, budget_bytes: usize) -> usize
 where
     V: crate::value::DictionaryValue,
@@ -70,10 +125,13 @@ where
         Some(c) => std::sync::Arc::clone(c),
         None => return 0,
     };
+    let Some(root) = trie.lockfree_root.as_ref() else {
+        return 0;
+    };
     coordinator
-        .force_eviction_char(budget_bytes, |cands| {
-            let filtered: Vec<_> = cands.into_iter().filter(|(_, p, _)| is_cold(p)).collect();
-            super::evict_overlay_nodes(trie, filtered, 4)
+        .force_eviction_compact_char_root(root, budget_bytes, |mut batch| {
+            retain_char_candidates(&mut batch, is_cold);
+            super::evict_overlay_compact_batch(trie, batch, 4)
         })
         .0
 }
@@ -124,7 +182,7 @@ fn cold_eviction_under_concurrent_writers_reopens_losing_nothing() {
         // (A) REAL-reclamation sweep with the registry VALID (no writer has run
         // yet, so it is not invalidated). This is the headline: it MUST reclaim
         // cold overlay nodes (with the §E structural no-op this is 0). A
-        // concurrent `insert_cas_durable` invalidates the registry (the A1 fix,
+        // concurrent `insert_cas_durable` clears the exact root binding (the A1 fix,
         // `is_valid()` → zero evictions = liveness-not-safety), so real reclamation
         // is established in this valid window BEFORE the concurrent writers start.
         let mut evicted = 0usize;
@@ -140,7 +198,7 @@ fn cold_eviction_under_concurrent_writers_reopens_losing_nothing() {
 
         // (B) N concurrent writers on fresh `w2-*` ‖ repeated cold eviction. The
         // writers race the evictor's loser-safe root CAS. The cold subtrees are
-        // already on-disk from (A) and the writers invalidate the registry, so
+        // already on-disk from (A) and the writers clear exact root authority, so
         // these concurrent sweeps reclaim little/nothing — their job is to witness
         // that the evictor NEVER clobbers a concurrent insert (loser-safe) and
         // never UAFs, NOT to add reclamation.
@@ -622,6 +680,10 @@ fn evict_faultin_evict_thrash_terminates() {
         for _ in 0..8 {
             evicted += evict_cold_overlay(&*trie, 1 << 20);
         }
+        assert!(
+            evicted > 0,
+            "OE8: round {round} did not re-evict any record faulted in by the prior round"
+        );
         total_evicted += evicted;
         // Read every cold term back (faulting in). Must terminate + be exact.
         for (t, v) in &cold {
@@ -636,6 +698,65 @@ fn evict_faultin_evict_thrash_terminates() {
         total_evicted > 0,
         "OE8: thrash never evicted anything (vacuous — re-faulted nodes must become \
          re-evictable for the thrash to be meaningful)"
+    );
+}
+
+#[test]
+fn winning_char_faults_restore_exact_registry_residency() {
+    let dir = scratch("char-fault-residency");
+    let path = dir.path().join("fault-residency.artc");
+    let terms: Vec<(String, u64)> = (0..48)
+        .map(|index| (format!("fault-residency-{index:03}"), 20_000 + index as u64))
+        .collect();
+
+    let mut owned: PersistentARTrieChar<u64> =
+        PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive()).expect("create");
+    owned.set_durability_policy(DurabilityPolicy::Immediate);
+    owned.install_overlay();
+    owned
+        .bench_enable_eviction(EvictionConfig::without_memory_monitor())
+        .expect("enable eviction");
+    for (term, value) in &terms {
+        owned
+            .try_increment_cas_durable(term, *value)
+            .expect("durable increment");
+    }
+    owned
+        .bench_immutable_checkpoint_with_eviction()
+        .expect("checkpoint with eviction registry");
+
+    let coordinator = owned
+        .eviction_coordinator
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map(Arc::clone)
+        .expect("coordinator");
+    let root = owned
+        .lockfree_root
+        .as_ref()
+        .expect("published overlay root");
+    let (resident_before, serialized_before) = char_root_resident_totals(&owned);
+    assert!(resident_before > 0);
+    assert!(serialized_before > 0);
+
+    let evicted = coordinator.force_eviction_compact_char_root(root, usize::MAX, |batch| {
+        super::evict_overlay_compact_batch(&owned, batch, 4)
+    });
+    assert!(
+        evicted.0 > 0,
+        "compact eviction must publish at least one disk edge"
+    );
+    let (resident_after_eviction, serialized_after_eviction) = char_root_resident_totals(&owned);
+    assert!(resident_after_eviction < resident_before);
+    assert!(serialized_after_eviction < serialized_before);
+
+    for (term, value) in &terms {
+        assert_eq!(owned.get_lockfree(term), Some(*value));
+    }
+    assert_eq!(
+        char_root_resident_totals(&owned),
+        (resident_before, serialized_before)
     );
 }
 
@@ -698,13 +819,11 @@ fn evict_then_write_under_evicted_prefix_reopen_loses_nothing() {
                     .as_ref()
                     .map(std::sync::Arc::clone)
                     .expect("coordinator");
+                let root = trie.lockfree_root.as_ref().expect("published overlay root");
                 coordinator
-                    .force_eviction_char(1 << 20, |cands| {
-                        let filtered: Vec<_> = cands
-                            .into_iter()
-                            .filter(|(_, p, _)| p.first() == Some(&'n'))
-                            .collect();
-                        super::evict_overlay_nodes(&*trie, filtered, 4)
+                    .force_eviction_compact_char_root(root, 1 << 20, |mut batch| {
+                        retain_char_candidates(&mut batch, |path| path.first() == Some(&'n'));
+                        super::evict_overlay_compact_batch(&trie, batch, 4)
                     })
                     .0
             };
@@ -855,13 +974,13 @@ fn concurrent_reader_writer_evictor_faulter_no_uaf_and_complete() {
                         Some(c) => std::sync::Arc::clone(c),
                         None => break,
                     };
+                    let Some(root) = trie.lockfree_root.as_ref() else {
+                        break;
+                    };
                     coordinator
-                        .force_eviction_char(1 << 20, |cands| {
-                            let filtered: Vec<_> = cands
-                                .into_iter()
-                                .filter(|(_, p, _)| p.first() == Some(&'p'))
-                                .collect();
-                            super::evict_overlay_nodes(&*trie, filtered, 4)
+                        .force_eviction_compact_char_root(root, 1 << 20, |mut batch| {
+                            retain_char_candidates(&mut batch, |path| path.first() == Some(&'p'));
+                            super::evict_overlay_compact_batch(&trie, batch, 4)
                         })
                         .0
                 };
@@ -910,7 +1029,7 @@ fn concurrent_reader_writer_evictor_faulter_no_uaf_and_complete() {
 // ───────────────── OE5 (the 1c overwrite-guard witness — M-2a serial_disk_ptr) ─────────────────
 
 /// **OE5 — the round-3 1c lost-update guard (the M-2a `serial_disk_ptr` stamp).**
-/// DETERMINISTIC witness that `evict_overlay_node_at_path` REFUSES to evict a node that
+/// Deterministic witness that compact eviction refuses to evict a node that
 /// was OVERWRITTEN since the checkpoint that registered it — preventing the evictor from
 /// unswizzling the NEWER in-memory value onto the OLDER on-disk image (the lost update).
 ///
@@ -924,8 +1043,6 @@ fn concurrent_reader_writer_evictor_faulter_no_uaf_and_complete() {
 ///   is the discriminating proof the guard is load-bearing.)
 #[test]
 fn oe5_overwrite_since_checkpoint_is_not_evicted_to_stale_image() {
-    use super::OverlayEvictOutcome;
-
     let dir = scratch("oe5-overwrite-guard");
     let path = dir.path().join("oe5.artc");
 
@@ -948,7 +1065,8 @@ fn oe5_overwrite_since_checkpoint_is_not_evicted_to_stale_image() {
         .bench_immutable_checkpoint_with_eviction()
         .expect("checkpoint with eviction");
 
-    // Capture each LEAF node's registry `disk_ptr` WITHOUT evicting (callback → (0,0)).
+    // Positive control: exact compact eviction of the unmodified registered
+    // leaf succeeds and faults back to the durable value.
     let coordinator = owned
         .eviction_coordinator
         .lock()
@@ -956,28 +1074,36 @@ fn oe5_overwrite_since_checkpoint_is_not_evicted_to_stale_image() {
         .as_ref()
         .map(std::sync::Arc::clone)
         .expect("coordinator present");
-    let captured: std::cell::RefCell<
-        std::collections::HashMap<String, crate::persistent_artrie::swizzled_ptr::SwizzledPtr>,
-    > = std::cell::RefCell::new(std::collections::HashMap::new());
-    coordinator.force_eviction_char(1 << 20, |cands| {
-        for (_, p, ptr) in cands {
-            captured
-                .borrow_mut()
-                .insert(p.iter().collect::<String>(), ptr);
-        }
+    let root = owned
+        .lockfree_root
+        .as_ref()
+        .expect("published overlay root");
+    let stable_evicted =
+        coordinator.force_eviction_compact_char_root(root, 1 << 20, |mut batch| {
+            retain_char_candidates(&mut batch, |path| {
+                path.iter().copied().eq("cold-stable".chars())
+            });
+            super::evict_overlay_compact_batch(&owned, batch, 4)
+        });
+    assert_eq!(
+        stable_evicted.0, 1,
+        "unmodified leaf must evict exactly once"
+    );
+    assert_eq!(owned.get_value("cold-stable"), Some(10));
+
+    // Capture the exact generation-bearing candidate for the other leaf. The
+    // subsequent overwrite makes this batch stale.
+    let captured = std::cell::RefCell::new(None);
+    coordinator.force_eviction_compact_char_root(root, 1 << 20, |mut batch| {
+        retain_char_candidates(&mut batch, |path| {
+            path.iter().copied().eq("cold-rewritten".chars())
+        });
+        *captured.borrow_mut() = Some(batch);
         (0, 0)
     });
-    let caps = captured.into_inner();
-    let stable_ptr = caps
-        .get("cold-stable")
-        .expect("cold-stable leaf registered")
-        .clone();
-    let rewritten_ptr = caps
-        .get("cold-rewritten")
-        .expect("cold-rewritten leaf registered")
-        .clone();
-
-    let to_u32 = |s: &str| -> Vec<u32> { s.chars().map(|c| c as u32).collect() };
+    let stale_batch = captured
+        .into_inner()
+        .expect("cold-rewritten compact candidate registered");
 
     // OVERWRITE cold-rewritten (counter +5 ⇒ path-copy ⇒ fresh stamp-0 leaf at its path).
     owned
@@ -989,28 +1115,15 @@ fn oe5_overwrite_since_checkpoint_is_not_evicted_to_stale_image() {
         "overwrite stuck (20+5)"
     );
 
-    // THE WITNESS: evicting the overwritten node to its STALE disk_ptr is REFUSED.
     assert_eq!(
-        owned.evict_overlay_node_at_path(&to_u32("cold-rewritten"), rewritten_ptr),
-        OverlayEvictOutcome::NotEvictable,
-        "1c guard: a node overwritten since checkpoint must NOT be evicted to its stale image"
+        super::evict_overlay_compact_batch(&owned, stale_batch, 4),
+        (0, 0),
+        "a node overwritten since selection must not be evicted to its stale image"
     );
     assert_eq!(
         owned.get_value("cold-rewritten"),
         Some(25),
         "the NEW value survives (not lost to a stale-image eviction)"
-    );
-
-    // POSITIVE CONTROL: the UN-overwritten node still evicts and faults back exactly.
-    assert_eq!(
-        owned.evict_overlay_node_at_path(&to_u32("cold-stable"), stable_ptr),
-        OverlayEvictOutcome::Evicted,
-        "an un-overwritten registered node still evicts (guard does not over-reject)"
-    );
-    assert_eq!(
-        owned.get_value("cold-stable"),
-        Some(10),
-        "the evicted node faults back to its exact durable value"
     );
 }
 
@@ -1055,13 +1168,14 @@ fn oe9_iter_prefix_faults_evicted_subtree_no_under_report() {
         .as_ref()
         .map(std::sync::Arc::clone)
         .expect("coordinator present");
+    let root = owned
+        .lockfree_root
+        .as_ref()
+        .expect("published overlay root");
     let evicted = coordinator
-        .force_eviction_char(1 << 20, |cands| {
-            let filtered: Vec<_> = cands
-                .into_iter()
-                .filter(|(_, p, _)| p.starts_with(&['a', 'b', 'c']))
-                .collect();
-            super::evict_overlay_nodes(&owned, filtered, 4)
+        .force_eviction_compact_char_root(root, 1 << 20, |mut batch| {
+            retain_char_candidates(&mut batch, |path| path.starts_with(&['a', 'b', 'c']));
+            super::evict_overlay_compact_batch(&owned, batch, 4)
         })
         .0;
     assert!(
@@ -1111,15 +1225,28 @@ fn oe9_iter_prefix_faults_evicted_subtree_no_under_report() {
 // ───────────── Phase 7 (budget ACTIVATION — checkpoint tail evicts to resident_budget_bytes) ─────────────
 
 /// **Phase 7 GO-LIVE witness.** With `resident_budget_bytes = Some(small)`, the
-/// checkpoint TAIL must evict the COLDEST registered overlay nodes down to budget —
-/// LOSSLESSLY (terms fault back). Observable: a SECOND checkpoint (no writes between)
-/// re-registers only the still-resident nodes, so `evictable_node_count` shrinks after
-/// the tail eviction. Discriminating: with `None` (control) the count is unchanged.
+/// checkpoint tail must evict the coldest resident overlay nodes down to budget
+/// losslessly. Exact residency changes at the first checkpoint's publication
+/// boundary; the complete durable topology remains registered for fault-in.
 #[test]
 fn phase7_resident_budget_checkpoint_tail_evicts_to_budget() {
     use crate::persistent_artrie::eviction::EvictionConfig;
 
-    fn run(budget: Option<usize>) -> (usize, usize, bool) {
+    #[derive(Debug)]
+    struct Observation {
+        resident: usize,
+        registered: usize,
+        resident_bytes: usize,
+    }
+
+    #[derive(Debug)]
+    struct Run {
+        first: Observation,
+        second: Observation,
+        all_present: bool,
+    }
+
+    fn run(budget: Option<usize>) -> Run {
         let dir = scratch("phase7-budget");
         let path = dir.path().join("p7.artc");
         let mut owned: PersistentARTrieChar<u64> =
@@ -1142,49 +1269,78 @@ fn phase7_resident_budget_checkpoint_tail_evicts_to_budget() {
                 .try_increment_cas_durable(t, (i + 1) as u64)
                 .expect("inc");
         }
-        // Checkpoint #1: the tail evicts cold nodes down to budget (registry #1, published
-        // BEFORE the tail eviction, still lists the full set).
+        let observe = |trie: &PersistentARTrieChar<u64>| {
+            let coordinator = trie
+                .eviction_coordinator
+                .lock()
+                .expect("eviction_coordinator mutex poisoned");
+            let coordinator = coordinator.as_ref().expect("eviction enabled");
+            let root = trie.lockfree_root.as_ref().expect("overlay root");
+            Observation {
+                resident: coordinator.root_resident_totals(root).unwrap_or_default().0,
+                registered: coordinator.disk_registry_char_len(),
+                resident_bytes: coordinator
+                    .char_root_resident_estimate_bytes(root)
+                    .unwrap_or(0),
+            }
+        };
+
+        // Exact tail eviction is reflected immediately after checkpoint #1.
         owned
             .bench_immutable_checkpoint_with_eviction()
             .expect("ckpt1");
-        let count1 = owned.evictable_node_count().unwrap_or(0);
-        // Checkpoint #2 (no writes): re-registers only the still-resident nodes — the
-        // evicted (OnDisk) nodes are reused-by-ptr, NOT re-registered → registry shrinks.
+        let first = observe(&owned);
+        // An unchanged second checkpoint must preserve the same durable topology
+        // and must not increase residency beyond the configured bound.
         owned
             .bench_immutable_checkpoint_with_eviction()
             .expect("ckpt2");
-        let count2 = owned.evictable_node_count().unwrap_or(0);
+        let second = observe(&owned);
 
         // Lossless: every term still readable (faults back from disk).
         let all_present = terms
             .iter()
             .enumerate()
             .all(|(i, t)| owned.get_value(t) == Some((i + 1) as u64));
-        (count1, count2, all_present)
+        Run {
+            first,
+            second,
+            all_present,
+        }
     }
 
-    // Treatment: a tiny budget → the tail evicts → registry shrinks at checkpoint #2.
-    let (t1, t2, t_lossless) = run(Some(2000));
-    assert!(t1 > 0, "checkpoint #1 must register the full overlay");
+    let budget = 2_000;
+    let treatment = run(Some(budget));
     assert!(
-        t2 < t1,
-        "budget tail must evict cold nodes (registry shrank {t1} → {t2}); 0 shrink = tail no-op"
+        treatment.first.registered > 0,
+        "checkpoint must publish topology"
     );
     assert!(
-        t_lossless,
-        "budget eviction must be LOSSLESS (all terms fault back)"
+        treatment.first.resident < treatment.first.registered,
+        "budget tail must make part of the durable topology nonresident: {treatment:?}"
     );
-
-    // Control: no budget → no tail eviction → registry unchanged between checkpoints.
-    let (c1, c2, c_lossless) = run(None);
+    assert!(
+        treatment.first.resident_bytes <= budget && treatment.second.resident_bytes <= budget,
+        "both checkpoint tails must enforce the {budget}-byte bound: {treatment:?}"
+    );
     assert_eq!(
-        c1, c2,
-        "with no budget the tail evicts nothing (registry unchanged)"
+        treatment.first.registered, treatment.second.registered,
+        "an unchanged checkpoint must preserve complete durable topology"
     );
-    assert!(c_lossless, "control: all terms present");
+    assert!(treatment.second.resident <= treatment.first.resident);
+    assert!(treatment.all_present, "budget eviction must be lossless");
+
+    let control = run(None);
+    assert_eq!(
+        control.first.resident, control.second.resident,
+        "without a budget an unchanged checkpoint must not alter residency"
+    );
+    assert_eq!(control.first.registered, control.second.registered);
+    assert_eq!(control.first.resident, control.first.registered);
+    assert!(control.all_present, "control must retain every term");
     assert!(
-        t2 < c2,
-        "the budgeted run must retain fewer resident nodes than the unbudgeted control ({t2} < {c2})"
+        treatment.first.resident < control.first.resident,
+        "budgeted treatment must retain fewer nodes than control: treatment={treatment:?}, control={control:?}"
     );
 }
 
@@ -1199,6 +1355,13 @@ fn phase7_resident_budget_checkpoint_tail_evicts_to_budget() {
 // assert no corruption + full completeness after reopen. Pre-fix they panic; post-fix
 // they pass. The deterministic decision-function unit tests live in
 // `persist::sequential_sibling_decision_tests`.
+//
+// A later strict topology scanner exposed a second, independent format defect:
+// char-v2 relative/sequential records preserved child addresses but erased their
+// node types, reconstructing every child as CharNode4. Once a child grew to
+// CharNode16, a later checkpoint correctly rejected the fabricated type. The
+// deterministic minimized sequence below is retained alongside the generated
+// property regression and requires exact typed-child round trips.
 
 /// Incremental checkpointing interleaved with inserts under a small resident budget:
 /// eviction registers cold subtrees on disk, then a later checkpoint re-serializes
@@ -1247,10 +1410,25 @@ fn interleaved_checkpoint_with_resident_budget_eviction_preserves_all_terms() {
         // count (without eviction it would exceed it), so the cross-arena post-eviction
         // re-serialization path — the bug's trigger — was exercised.
         let resident = owned.evictable_node_count().unwrap_or(usize::MAX);
+        let (registered, resident_bytes) = {
+            let coordinator = owned
+                .eviction_coordinator
+                .lock()
+                .expect("eviction_coordinator mutex poisoned");
+            let coordinator = coordinator.as_ref().expect("eviction enabled");
+            let root = owned.lockfree_root.as_ref().expect("overlay root");
+            (
+                coordinator.disk_registry_char_len(),
+                coordinator
+                    .char_root_resident_estimate_bytes(root)
+                    .unwrap_or(0),
+            )
+        };
         assert!(
-            resident < n as usize,
-            "resident-budget eviction must reclaim (resident {resident} should be well below {n} terms)"
+            resident < registered,
+            "resident-budget eviction must leave nonresident topology ({resident} < {registered})"
         );
+        assert!(resident_bytes <= 64 * 1024, "resident bytes exceed budget");
 
         // Completeness in-process (faults evicted subtrees back).
         for i in 0..n {
@@ -1275,6 +1453,70 @@ fn interleaved_checkpoint_with_resident_budget_eviction_preserves_all_terms() {
                 "term {term} lost after reopen"
             );
         }
+    }
+}
+
+#[test]
+fn minimized_relative_child_type_regression_preserves_all_terms() {
+    let dir = scratch("seqsib-typed-child-minimized");
+    let path = dir.path().join("seqsib-typed-child-minimized.artc");
+    let mut inserted = Vec::new();
+
+    {
+        let mut owned: PersistentARTrieChar<i64> =
+            PersistentARTrieChar::create_with_config(&path, WalConfig::no_archive())
+                .expect("create minimized typed-child regression trie");
+        owned.set_durability_policy(DurabilityPolicy::Immediate);
+        owned.install_overlay();
+        owned
+            .bench_enable_eviction(EvictionConfig {
+                resident_budget_bytes: Some(4 * 1024),
+                ..EvictionConfig::without_memory_monitor()
+            })
+            .expect("enable eviction");
+
+        let mut next = 0i64;
+        for _ in 0..14 {
+            for _ in 0..8 {
+                let term = format!("symbol_{next:08}");
+                owned.insert_with_value(&term, next).expect("insert batch");
+                inserted.push((term, next));
+                next += 1;
+            }
+        }
+        for _ in 0..3 {
+            owned
+                .checkpoint()
+                .expect("unchanged checkpoint must preserve exact child types");
+        }
+        for _ in 0..8 {
+            let term = format!("symbol_{next:08}");
+            owned
+                .insert_with_value(&term, next)
+                .expect("insert final batch");
+            inserted.push((term, next));
+            next += 1;
+        }
+        owned
+            .checkpoint()
+            .expect("final checkpoint must accept typed relative children");
+        for (term, value) in &inserted {
+            assert_eq!(
+                owned.get_value(term),
+                Some(*value),
+                "lost {term} in-process"
+            );
+        }
+    }
+
+    let reopened: PersistentARTrieChar<i64> =
+        PersistentARTrieChar::open(&path).expect("reopen minimized typed-child regression trie");
+    for (term, value) in &inserted {
+        assert_eq!(
+            reopened.get_value(term),
+            Some(*value),
+            "lost {term} after reopen"
+        );
     }
 }
 
@@ -1437,14 +1679,7 @@ fn dirty_skip_keeps_resident_bytes_within_budget_across_interleaved_checkpoints(
         })
         .expect("enable eviction");
 
-    let resident_bytes = |t: &PersistentARTrieChar<i64>| -> usize {
-        t.eviction_coordinator
-            .lock()
-            .expect("eviction_coordinator mutex poisoned")
-            .as_ref()
-            .map(|c| c.char_resident_estimate_bytes())
-            .unwrap_or(0)
-    };
+    let resident_bytes = |t: &PersistentARTrieChar<i64>| char_root_resident_estimate(t);
 
     let mut max_resident = 0usize;
     for i in 0..6_000i64 {

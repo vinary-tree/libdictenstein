@@ -100,6 +100,8 @@ Configuration structure controlling eviction behavior.
 | `use_lru_tracking` | `bool` | `true` | Enable LRU-based node selection |
 | `enable_memory_pressure_monitor` | `bool` | `true` | Auto-start memory pressure monitoring |
 | `memory_pressure_config` | `Option<MemoryPressureConfig>` | `None` | Custom memory pressure thresholds |
+| `resident_budget_bytes` | `Option<usize>` | `None` | Post-checkpoint resident-overlay budget in serialized bytes plus the family-specific structural overhead |
+| `resident_budget_eviction_cap` | `Option<usize>` | `None` | Maximum positive-gain resident records admitted by one checkpoint-tail pass; `None` is uncapped |
 
 **Source:** `src/persistent_artrie/core/eviction/config.rs` (`EvictionConfig`)
 
@@ -130,20 +132,22 @@ The worker thread holds only a `Weak<EvictionCoordinator>` and polls `request_qu
 | Method | Description |
 |--------|-------------|
 | `new(config, epoch_manager)` | Create coordinator in stopped state |
-| `start(callback)` | Start eviction thread with byte-level callback |
-| `start_char(callback)` | Start eviction thread with char-level callback |
+| `start(callback)` | Deprecated detached byte-callback worker |
+| `start_char(callback)` | Deprecated detached character-callback worker |
 | `start_memory_monitor()` | Enable automatic memory pressure monitoring |
 | `request_eviction(urgency)` | Queue an eviction request |
 | `force_eviction(target_bytes)` | Synchronous eviction for testing |
-| `update_disk_registry(registry)` | Replace disk registry after checkpoint |
-| `invalidate_registry()` | Mark registry invalid on write operations |
+| `try_install_detached_compatibility_catalog(registry)` | Install an advisory, non-authoritative legacy catalog |
+| `clear_detached_compatibility_catalog()` | Atomically clear only the detached advisory catalog |
 | `shutdown()` | Stop eviction thread and memory monitor |
 
 **Source:** `src/persistent_artrie/core/eviction/coordinator.rs` (`EvictionCoordinator`)
 
 ### LruRegistry
 
-Lock-free registry for tracking node access patterns using DashMap.
+Concurrent sharded registry for tracking node access patterns using DashMap.
+DashMap operations may take internal shard locks; the planned exact path-ID
+tracker replaces this with atomic stamps for the scalable policy.
 
 ```rust
 pub struct LruRegistry {
@@ -192,38 +196,99 @@ Higher coldness scores indicate nodes that should be evicted first (older, less 
 
 ### DiskLocationRegistry
 
-Maps node paths to their disk locations after checkpoint.
+The registry is a generation-qualified structural index produced by checkpoint
+publication. It does not retain one independently allocated absolute path per
+record. Byte and character paths live in immutable, segmented preorder
+`PathTopology` tables; each entry stores only its parent, local segment, depth,
+hash, and finalized subtree end. Dense `Arc<Vec<Option<...>>>` record tables map
+topology identifiers to disk pointers, serialized sizes, and node types. Exact
+disk-address indexes support fault and graft resolution, while compact bitsets
+track point residency independently of durable structural metadata.
 
-```rust
-pub struct DiskLocationRegistry {
-    locations: HashMap<u64, EvictableNode>,       // Byte-level nodes
-    char_locations: HashMap<u64, EvictableCharNode>, // Char-level nodes
-    total_size_bytes: usize,
-    node_type_counts: HashMap<NodeType, usize>,
-    valid: bool,
-}
+The authority state is deliberately separate from structural validity:
+
+| Builder state | Structural inspection | Exact eviction/fault authority |
+|---------------|-----------------------|--------------------------------|
+| `Detached` | Allowed | None |
+| `Publishing` | Rejected | None |
+| `Valid` | Allowed | None by itself |
+| `Invalid` | Rejected | None |
+
+Exact authority lives only in the currently published root revision. Its
+immutable `PublishedRegistryCatalog`, generation identity, packed residency
+ordinal, and resident totals travel together in that revision. The mutable
+builder registry is retained for checkpoint construction, compatibility
+inspection, and cold lifecycle bookkeeping; no method on it can authorize an
+exact eviction or fault transition.
+
+A `CompactEvictionBatch` carries path identifiers plus the immutable topology
+and exact generation that give those identifiers meaning. Absolute paths are
+materialized only at compatibility boundaries. The exact byte/character
+checkpoint paths use compact batches throughout, so selection performs no
+per-candidate path allocation.
+
+#### Owned compatibility inspection
+
+`DiskLocationRegistry` exposes `get_owned(path_hash)` for byte paths and
+`get_char_owned(path_hash)` for character paths. These names make the ownership
+and cost boundary explicit: a successful call reconstructs one absolute path
+from the segmented topology and returns an independent `EvictableNode` or
+`EvictableCharNode`. The result remains valid after the registry changes or is
+dropped. It is not an authority token and cannot authorize an exact root
+transition.
+
+The registry deliberately does **not** cache that owned result in every entry.
+On a 64-bit target, a byte or character entry and its dense `Option<Entry>` slot
+are each 48 bytes. The rejected per-entry `OnceLock<...>` layout was 120 bytes,
+an additional 72 bytes per occurrence (68.7 MiB per million occurrences) before
+counting any materialized path allocation. Removing it also eliminates the
+cache-initialization branch and durable-pointer clone from registration. Exact
+selection is unchanged and continues to materialize no paths.
+
+The compatibility algorithm is:
+
+```text
+owned_lookup(hash):
+    occurrence := ordered_collision_bucket(hash).last()
+    path := topology.materialize(occurrence.path_id)
+    if path failed: return None without mutation
+    return owned(path, clone(occurrence.durable_pointer), occurrence.metadata)
+
+owned_remove(hash):
+    occurrence := ordered_collision_bucket(hash).last()
+    path := topology.materialize(occurrence.path_id)
+    if path failed: return None without mutation
+    commit removal and accounting updates without allocation
+    return owned(path, move(occurrence.durable_pointer), occurrence.metadata)
 ```
 
-**EvictableNode Structure:**
+Repeated owned lookup is therefore $`O(\mathit{depth})`$ and allocates the returned path
+each time. This is intentional: callers that need repeated inspection should
+retain the owned result, while checkpoint construction and eviction selection
+avoid paying permanent memory for a rarely used compatibility API. Collision
+semantics remain deterministic: lookup and removal both select the last live
+occurrence in the ordered hash bucket. Character materialization additionally
+rejects non-Unicode-scalar UTF-32 units before mutation.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `path` | `Vec<u8>` | Path from root (edge labels) |
-| `disk_ptr` | `SwizzledPtr` | Disk location from checkpoint |
-| `size_bytes` | `usize` | Estimated memory size |
-| `depth` | `usize` | Depth in trie (0 = root children) |
-| `node_type` | `NodeType` | Node variant (Node4, Node16, etc.) |
+This is an intentional prerelease API migration: borrowed `get` and `get_char`
+were replaced by the explicit `get_owned` and `get_char_owned` names. A caller
+typically changes only the method name; because the result is owned, it no
+longer borrows the registry:
 
-**Key Methods:**
+```rust
+let record = registry
+    .get_owned(path_hash)
+    .expect("registered byte occurrence");
+drop(registry);
+assert_eq!(record.path, b"expected/path");
+```
 
-| Method | Description |
-|--------|-------------|
-| `register(path, ptr, size, depth, type)` | Record node's disk location |
-| `select_for_eviction(target, lru, depth, max)` | Select cold nodes for eviction |
-| `invalidate()` | Mark registry as invalid (on write ops) |
-| `is_valid()` | Check if registry is usable |
-
-**Memory Overhead:** ~50 bytes per node (path + 8 bytes ptr + 8 bytes size + 8 bytes depth + overhead)
+The functional refinement and failure transaction are proved in
+`formal-verification/rocq/Spec/DetachedCallbackSeparationSpec.v` and exhaustively
+model-checked for the bounded collision/removal protocol in
+`formal-verification/tla+/CachelessOwnedRegistry.tla`. The permanent formal gate
+also runs rejected-design controls that must find counterexamples for selecting
+the first collision occurrence and mutating before materialization succeeds.
 
 **Source:** `src/persistent_artrie/core/eviction/disk_registry.rs` (`DiskLocationRegistry`)
 
@@ -266,24 +331,67 @@ The end-to-end trigger-to-completion path is **Figure 1** above. In prose, the s
 5. **Unswizzle.** Invoke the callback, which atomically swaps each selected $`\text{ChildNode} \to \text{DiskRef}`$.
 6. **Record statistics.** `record_eviction(nodes, bytes, duration_ms)`.
 
-### Node Selection Algorithm
+### The two selection and execution policies
 
+Manual and memory-pressure eviction preserves the historical
+`DescendantFirst` policy: candidates are ranked by local coldness, deepest
+successful endpoints suppress overlapping ancestors, and candidate-local
+weights are sufficient because this path is an opportunistic reclamation
+request rather than a resident-budget guarantee.
+
+The checkpoint tail uses `ResidentBudgetAncestorClosure`. Its target is an
+exact resident-byte delta, so overlapping subtrees must be counted as a union.
+For a resident record $`x`$, let
+
+```math
+w(x)=\text{serialized\_bytes}(x)+\text{family\_overhead}.
 ```
-DiskLocationRegistry.select_for_eviction(target_bytes, lru, min_depth, max_count):
 
-  1. FILTER: locations where depth >= min_depth
+The topology is preorder and each subtree is one interval. Selection performs:
 
-  2. SCORE: For each node, compute coldness via LruRegistry
-     coldness = lru_registry.coldness_score_hash(path_hash)
+1. Capture one LRU timestamp and rank each eligible anchor by its *warmest*
+   resident descendant. Larger coldness ranks first; ties use greater depth,
+   then ascending path identifier.
+2. Give every resident record $`x`$ to the earliest-ranked eligible ancestor
+   on its root-to-$`x`$ path. If that rank is $`\rho(x)`$, define
 
-  3. SORT: By coldness descending (coldest first)
+   ```math
+   g_r=\sum_{x:\rho(x)=r}w(x).
+   ```
 
-  4. SELECT: Accumulate nodes until:
-     - total_bytes >= target_bytes, OR
-     - count >= max_count
+3. Select the smallest priority prefix whose $`\sum g_r`$ reaches the target,
+   or the configured cap. These gain sets are disjoint and partition the
+   selected subtree union, so `planned_bytes` is exact for the captured
+   authoritative generation.
+4. Execute ancestor-first. The first selected ancestor whose live stamp equals
+   its exact disk pointer replaces the complete subtree. A stale ancestor is
+   skipped and its already-ranked descendants remain fallbacks.
 
-  5. RETURN: Vec<(path_hash, EvictableNode)>
-```
+Warmest-descendant aggregation implies every resident descendant ranks before
+its ancestor; positive weights therefore make the selected set downward-closed.
+The configured cap bounds selected resident records, successful replacement
+endpoints, and registry-clear work. It does not bound bytes because record sizes
+vary. Root advancement, authority loss, or mutation can make committed
+reclamation smaller than the plan, never larger.
+
+Selection uses one reverse topology pass, one forward effective-rank pass, and
+a coldness sort: $`O(n\log n)`$ time, $`O(n)`$ fallible transient memory, and
+constant native-stack use. Unary and branching execution are explicit PDAs;
+neither recurses with trie depth.
+
+### Lock-free resident snapshot
+
+Resident scoring captures and helps one immutable root revision, then reads the
+packed residency cells named by that root's exact catalog and ordinal. It clones
+only immutable topology and record-table `Arc`s; it does not take a registry or
+lifecycle lock. After the residency scan, the coordinator validates that the
+root still has the same identity, catalog, generation, and ordinal. A changed
+root yields `Retry`; lost exact authority yields `Unavailable`.
+
+The resulting snapshot is a planning input, not an authority lease. The exact
+root CAS revalidates the captured identity and binding before it can clear any
+successor residency. Consequently a stale snapshot can be ranked safely but can
+never mutate a newer root revision or catalog generation.
 
 ### Checkpoint Integration
 
@@ -336,7 +444,7 @@ Node eviction (above) reclaims *trie nodes*; beneath it, the block-storage **buf
 | `touch_node()` | Non-blocking (atomic DashMap ops) |
 | `request_eviction()` | Non-blocking (brief `request_queue` mutex; no condvar) |
 | `lookup()` / `contains()` | Non-blocking (epoch enter/exit) |
-| `insert()` | Non-blocking (invalidates registry) |
+| `insert()` | Non-blocking (its root CAS clears the exact eviction binding) |
 | Actual eviction | Happens in background thread only |
 
 ---
@@ -401,8 +509,18 @@ let config = EvictionConfig {
         critical_memory_threshold: 0.10, // 10% available triggers Critical
         ..Default::default()
     }),
+    resident_budget_bytes: Some(2 * 1024 * 1024 * 1024),
+    resident_budget_eviction_cap: None,
 };
 ```
+
+**Resident-budget latency cap:**
+
+An uncapped tail reaches any structurally reachable budget in one quiescent
+checkpoint. With `Some(n)`, convergence depends on *weight*, not merely node
+count: the exact resident bytes covered by the first `n` cold-ranked anchors
+must exceed resident growth between checkpoints. `min_eviction_depth` can pin
+shallow residency; exhaustion is reported separately from cap exhaustion.
 
 ### Tuning Guidelines
 
@@ -511,27 +629,95 @@ fn evict_node_at_path(&mut self, path: &[u8], disk_ptr: SwizzledPtr) -> bool {
 }
 ```
 
-### Dirty Nodes (Modified After Checkpoint)
+### Exact fault provenance and re-eviction
 
-Nodes modified after the last checkpoint cannot be evicted because:
-1. Their disk representation is stale
-2. Evicting them would lose uncommitted changes
+Every exact byte or character decoder stamps the top-level decoded node with
+the source `SwizzledPtr::to_raw()` before attempting publication. For a
+compressed record, only the head of the expanded span receives that stamp;
+synthetic descendants have no independent disk identity and remain zero.
+Uncompressed exact records follow the same rule. Structural path copies always
+clear the stamp.
 
-The `DiskLocationRegistry` is **invalidated** on any write operation:
+The stamp is provenance, not authority. A winning fault must additionally match
+the current registry generation, exact path, disk address, root binding, and
+nonresident occurrence. The coordinator publishes the new root and marks that
+one occurrence resident in the same immutable-root CAS. A losing fault load
+remains private and changes neither the published stamp nor residency. This
+protocol makes `evict → exact fault → evict` non-vacuously repeatable without
+allowing a stale or detached load to authorize reclamation.
 
-```rust
-pub fn invalidate_registry(&self) {
-    self.disk_registry.write().invalidate();
-}
+### Exact-root authority and cold lifecycle publication
+
+A durable registry is authoritative only when the current immutable root
+revision names its exact catalog and generation. Let $`R`$ be the current root,
+$`B(R)`$ its optional eviction binding, $`C`$ a coordinator identity, and $`G`$
+a registry generation. Exact authority is:
+
+```math
+\operatorname{Authority}(R,C,G) \iff B(R) = \operatorname{Some}(C,G)
+\land \neg \operatorname{Retired}(C).
 ```
 
-Eviction is skipped when the registry is invalid:
+The root identity is the linearization authority. There is no runtime semantic
+permit counter, callback counter, or writer-side publication lock.
+`SemanticMutationPublicationPermit` is only a zero-sized compile-time witness
+that durable writers use the semantic root-CAS path; it has no lock, atomic,
+allocation, branch, or drop-time action.
 
-```rust
-if !disk_registry.is_valid() {
-    return (0, 0);
-}
+The implementation protocol is:
+
+```text
+semantic mutation (hot path):
+  append and, when policy requires, sync the data WAL
+  capture one root revision
+  prepare a semantic successor with no eviction binding
+  CAS(captured root, semantic successor)
+  retry from a fresh capture after a lost CAS
+
+exact eviction or fault (hot path):
+  capture and help one bound root revision
+  prepare a packed residency successor for its exact catalog and ordinal
+  CAS(captured root, exact successor)
+  on loss, classify the returned defeating revision; mutate no side state
+
+checkpoint publication (cold path):
+  build the immutable catalog, packed residency, and deferred stamps
+  lock the trie-lifetime lifecycle gate and reject a retired coordinator
+  CAS the captured root to the prepared bound revision
+  on success, apply stamps and activate the builder mirror only if the root
+    still names that exact generation; otherwise fail closed
+  unlock the lifecycle gate
+
+retirement (cold path):
+  lock the lifecycle gate and set the irreversible retired bit
+  publish an unconditional unbound root fence, retrying only on root advance
+  invalidate the builder mirror and clear the detached catalog
+  unlock the lifecycle gate
+
+detached compatibility install (cold path):
+  finalize the structural registry
+  lock the lifecycle gate and reject retirement
+  ArcSwap an immutable detached catalog; unlock
 ```
+
+An immutable detached catalog is a different capability type. Compatibility
+callbacks retain an `Arc` snapshot across replacement, but that snapshot cannot
+construct an exact root transition. Thus callbacks may overlap semantic writes
+without blocking them and without becoming eviction authority.
+
+The source-compatible `update_disk_registry` wrapper remains infallible in its
+signature and therefore panics when structural finalization fails or the
+coordinator has retired. Code that needs explicit failure handling should call
+`try_update_disk_registry`; a rejected attempt does not modify the installed
+detached catalog. Concurrent semantic writes and compatibility callbacks are
+not rejection conditions because the detached `ArcSwap` catalog is independent
+of exact root authority.
+
+This ordering closes the durable WAL-before-CAS race and the checkpoint/write
+race at the root itself. A checkpoint may serialize while a writer is active;
+if the writer publishes first, the checkpoint's exact root CAS loses and its
+catalog never becomes authority. If the checkpoint publishes first, the
+writer's next successful semantic CAS atomically removes that binding.
 
 ### Concurrent Reads During Eviction
 
@@ -555,18 +741,23 @@ if !self.wait_for_quiescence() {
 
 The eviction cycle is skipped (not retried with a longer timeout) to prevent indefinite blocking. The next memory pressure event will trigger another attempt.
 
-### Registry Invalidation on Writes
+### Coordinator retirement and re-enable
 
-Any write operation (insert, remove) invalidates the disk registry:
+`close()` and `disable_eviction()` retire the installed coordinator while the
+trie still holds its coordinator-slot mutex. Retirement acquires the temporary
+exact-publication lifecycle boundary, irreversibly marks the coordinator
+retired, publishes an unbound root fence, and clears exact registry authority
+before the slot can become empty. A stale `Arc` may still exist, but it can no
+longer publish an exact registry, install a detached catalog, fault through
+exact authority, or commit an already-selected compact batch.
 
-```rust
-// In insert():
-if let Some(coordinator) = &self.eviction_coordinator {
-    coordinator.invalidate_registry();
-}
-```
-
-A new registry is populated during the next checkpoint.
+Re-enabling eviction installs a fresh coordinator identity. Semantic writers
+do not enter the lifecycle boundary: their root CAS clears exact authority
+atomically and carries only a zero-sized compile-time witness. Detached legacy
+callbacks retain immutable Arc snapshots and never block the replacement
+coordinator. Their catalog is separate from the exact registry, so clearing or
+replacing it cannot orphan or manufacture a root binding. Retirement is not a
+substitute for reader-epoch quiescence.
 
 ### Already-Evicted Nodes
 
@@ -649,7 +840,7 @@ The eviction subsystem lives under the unit-agnostic `core/` of the persistent A
 | `src/persistent_artrie/core/eviction/config.rs` | `EvictionConfig` (incl. `resident_budget_bytes`), `EvictionUrgency` (`Moderate`/`Urgent`/`Emergency`), `EvictionStats`, `EvictionStatsAtomic` |
 | `src/persistent_artrie/core/eviction/coordinator.rs` | `EvictionCoordinator` — request queue, `Weak`-driven async eviction loop, cooldown/quiescence, byte+char+resident-budget eviction arities |
 | `src/persistent_artrie/core/eviction/lru_tracker.rs` | `LruRegistry`, `AccessTracker`, FNV-1a path hashing, coldness scoring |
-| `src/persistent_artrie/core/eviction/disk_registry.rs` | `DiskLocationRegistry`, `EvictableNode`/`EvictableCharNode`, `select_for_eviction`, resident-estimate helpers |
+| `src/persistent_artrie/core/eviction/disk_registry.rs` | Segmented byte/character `PathTopology`, dense durable records and residency, generation-qualified selection snapshots, compact manual and exact resident-closure selectors |
 | `src/persistent_artrie/core/memory_monitor.rs` | `MemoryPressureMonitor`, `MemoryPressureLevel` (`Normal`/`Low`/`Critical`), `MemoryPressureConfig`, `sysinfo`/PSI-based detection |
 | `src/persistent_artrie/core/concurrency.rs` | `EpochManager` (EBR: `enter_read`/`exit_read`/`advance`/`wait_for_quiescence`) and `EpochGuard` |
 | `src/persistent_artrie/core/swizzled_ptr.rs` | `SwizzledPtr` — atomic `swizzle`/`unswizzle`, `DiskLocation`, `NodeType` |

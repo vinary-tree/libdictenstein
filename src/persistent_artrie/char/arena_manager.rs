@@ -333,9 +333,16 @@ impl<S: BlockStorage> ArenaManager<S> {
     /// If the current arena is full, a new arena is created automatically.
     /// When slot-level tracking is enabled, the allocation is marked dirty.
     pub fn allocate(&mut self, data: &[u8]) -> Result<ArenaSlot> {
+        let active_arena = self.checked_active_arena()?;
+        let active_arena_id = u32::try_from(active_arena).map_err(|_| {
+            PersistentARTrieError::internal(
+                "active char arena index exceeds the u32 persistent arena-id range",
+            )
+        })?;
+
         // Try to allocate in the active arena
-        if let Some(slot_id) = self.arenas[self.active_arena].allocate(data) {
-            let slot = ArenaSlot::new(self.active_arena as u32, slot_id);
+        if let Some(slot_id) = self.arenas[active_arena].allocate(data) {
+            let slot = ArenaSlot::new(active_arena_id, slot_id);
             // Track the dirty slot
             if let Some(ref mut tracker) = self.dirty_tracker {
                 tracker.mark_slot_dirty(slot.arena_id, slot.slot_id);
@@ -343,25 +350,115 @@ impl<S: BlockStorage> ArenaManager<S> {
             return Ok(slot);
         }
 
-        // Active arena is full, create a new one
-        let new_arena = CharNodeArena::new(self.arena_size);
-        self.arenas.push(new_arena);
-        self.active_arena = self.arenas.len() - 1;
-
-        // Allocate in the new arena
-        if let Some(slot_id) = self.arenas[self.active_arena].allocate(data) {
-            let slot = ArenaSlot::new(self.active_arena as u32, slot_id);
-            // Track the dirty slot
-            if let Some(ref mut tracker) = self.dirty_tracker {
-                tracker.mark_slot_dirty(slot.arena_id, slot.slot_id);
-            }
-            Ok(slot)
-        } else {
-            Err(PersistentARTrieError::internal(format!(
+        // Preflight and populate the new arena before publishing it into the
+        // manager. Oversized data or allocation failure therefore cannot leave
+        // an empty rollover arena behind.
+        let new_arena_index = self.arenas.len();
+        let new_arena_id = u32::try_from(new_arena_index).map_err(|_| {
+            PersistentARTrieError::internal(
+                "char arena count exceeds the u32 persistent arena-id range",
+            )
+        })?;
+        let mut new_arena = CharNodeArena::try_new(self.arena_size)?;
+        let slot_id = new_arena.allocate(data).ok_or_else(|| {
+            PersistentARTrieError::internal(format!(
                 "Data too large for arena: {} bytes",
                 data.len()
-            )))
+            ))
+        })?;
+        let requested_arenas =
+            self.arenas.len().checked_add(1).ok_or_else(|| {
+                PersistentARTrieError::internal("char arena table length overflow")
+            })?;
+        self.arenas.try_reserve(1).map_err(|source| {
+            PersistentARTrieError::allocation_failed(
+                "char arena manager rollover table",
+                requested_arenas,
+                source,
+            )
+        })?;
+        self.arenas.push(new_arena);
+        self.active_arena = new_arena_index;
+
+        let slot = ArenaSlot::new(new_arena_id, slot_id);
+        if let Some(ref mut tracker) = self.dirty_tracker {
+            tracker.mark_slot_dirty(slot.arena_id, slot.slot_id);
         }
+        Ok(slot)
+    }
+
+    fn checked_active_arena(&self) -> Result<usize> {
+        if self.arenas.is_empty() {
+            return Err(PersistentARTrieError::corrupted(
+                "char arena manager has no arenas",
+            ));
+        }
+        if self.active_arena >= self.arenas.len() {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "char arena manager active index {} exceeds arena count {}",
+                self.active_arena,
+                self.arenas.len()
+            )));
+        }
+        Ok(self.active_arena)
+    }
+
+    /// Return the exact slot of the next allocation if it remains in the
+    /// current arena. Unlike `next_slot`, malformed manager state is an error
+    /// rather than a fabricated fallback address.
+    pub(crate) fn try_next_slot(&self) -> Result<ArenaSlot> {
+        let active_arena = self.checked_active_arena()?;
+        let arena_id = u32::try_from(active_arena).map_err(|_| {
+            PersistentARTrieError::internal(
+                "active char arena index exceeds the u32 persistent arena-id range",
+            )
+        })?;
+        Ok(ArenaSlot::new(
+            arena_id,
+            self.arenas[active_arena].node_count(),
+        ))
+    }
+
+    /// Plan the exact slot for an allocation of `size` bytes without mutating
+    /// the arena manager.
+    pub(crate) fn plan_next_allocation(&self, size: usize) -> Result<ArenaSlot> {
+        let active_arena = self.checked_active_arena()?;
+        if self.arenas[active_arena].can_allocate(size) {
+            return self.try_next_slot();
+        }
+        if !CharNodeArena::empty_can_allocate(self.arena_size, size) {
+            return Err(PersistentARTrieError::internal(format!(
+                "Data too large for arena: {size} bytes"
+            )));
+        }
+        let next_arena_id = u32::try_from(self.arenas.len()).map_err(|_| {
+            PersistentARTrieError::internal(
+                "char arena count exceeds the u32 persistent arena-id range",
+            )
+        })?;
+        Ok(ArenaSlot::new(next_arena_id, 0))
+    }
+
+    /// Commit bytes at a previously planned next slot. A stale plan is
+    /// rejected before any arena bytes or manager topology are mutated.
+    pub(crate) fn allocate_at_planned_slot(
+        &mut self,
+        planned: ArenaSlot,
+        data: &[u8],
+    ) -> Result<ArenaSlot> {
+        let current_plan = self.plan_next_allocation(data.len())?;
+        if current_plan != planned {
+            return Err(PersistentARTrieError::InvalidOperation(format!(
+                "char arena allocation plan changed from {planned:?} to {current_plan:?}"
+            )));
+        }
+        let allocated = self.allocate(data)?;
+        if allocated != planned {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "char arena allocated {allocated:?} after planning {planned:?}"
+            )));
+        }
+        Ok(allocated)
     }
 
     /// Read data from the specified arena slot
@@ -1294,6 +1391,62 @@ mod tests {
 
         // Verify we can read all allocations
         // (Note: We'd need to track all slots to verify this fully)
+    }
+
+    #[test]
+    fn exact_rollover_plan_is_non_mutating_and_commits_one_record() {
+        let mut manager = TestArenaManager::with_arena_size(512);
+        manager
+            .allocate(&[0u8; 300])
+            .expect("seed allocation should fit the initial arena");
+
+        let arenas_before_plan = manager.arena_count();
+        let nodes_before_plan = manager.total_node_count();
+        let planned = manager
+            .plan_next_allocation(80)
+            .expect("rollover record should fit a fresh arena");
+        assert_eq!(planned, ArenaSlot::new(1, 0));
+        assert_eq!(manager.arena_count(), arenas_before_plan);
+        assert_eq!(manager.total_node_count(), nodes_before_plan);
+
+        let committed = manager
+            .allocate_at_planned_slot(planned, &[1u8; 80])
+            .expect("planned rollover allocation should commit");
+        assert_eq!(committed, planned);
+        assert_eq!(manager.arena_count(), arenas_before_plan + 1);
+        assert_eq!(manager.total_node_count(), nodes_before_plan + 1);
+        assert_eq!(
+            manager.read(committed).expect("read committed record"),
+            &[1u8; 80]
+        );
+    }
+
+    #[test]
+    fn oversized_rollover_plan_leaves_manager_unchanged() {
+        let manager = TestArenaManager::with_arena_size(512);
+        let arenas_before = manager.arena_count();
+        let nodes_before = manager.total_node_count();
+
+        assert!(manager.plan_next_allocation(500).is_err());
+        assert_eq!(manager.arena_count(), arenas_before);
+        assert_eq!(manager.total_node_count(), nodes_before);
+    }
+
+    #[test]
+    fn stale_allocation_plan_is_rejected_before_mutation() {
+        let mut manager = TestArenaManager::with_arena_size(1024);
+        let stale = manager
+            .plan_next_allocation(8)
+            .expect("initial plan should succeed");
+        manager
+            .allocate(&[2u8; 8])
+            .expect("intervening allocation should succeed");
+        let arenas_before_rejection = manager.arena_count();
+        let nodes_before_rejection = manager.total_node_count();
+
+        assert!(manager.allocate_at_planned_slot(stale, &[3u8; 8]).is_err());
+        assert_eq!(manager.arena_count(), arenas_before_rejection);
+        assert_eq!(manager.total_node_count(), nodes_before_rejection);
     }
 
     #[test]

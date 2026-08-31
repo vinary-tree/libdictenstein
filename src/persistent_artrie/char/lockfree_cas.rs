@@ -9,8 +9,8 @@
 //! - `get_lockfree` / `increment_cas` / `cas_retry_count`
 //! - `merge_lockfree_to_persistent` / `merge_lockfree_values_to_persistent`
 //! - Private DFS helpers: `try_insert_lockfree_path`, `build_path_recursive`,
-//!   `create_lockfree_path`, `insert_lockfree_recursive`,
-//!   `find_in_lockfree_trie`, `find_leaf_lockfree`, `find_leaf_recursive`,
+//!   `create_lockfree_path`, `insert_lockfree_iterative`,
+//!   `find_in_lockfree_trie`, `find_leaf_lockfree`, `find_leaf_iterative`,
 //!   `merge_lockfree_zipper`, `chars_to_utf8_bytes`
 
 /// The `(new root, new node)` pair produced by a copy-on-write republish.
@@ -27,11 +27,13 @@ use std::sync::Arc;
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::core::counter_codec;
 use crate::persistent_artrie::core::key_encoding::CharKey;
-use crate::persistent_artrie::core::overlay::durable_write::DurableOverlayWrite;
+use crate::persistent_artrie::core::overlay::durable_write::{
+    DurableOverlayWrite, RegistryEligibleMutation, SemanticMutationPublicationPermit,
+};
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::wal::WalRecord;
 // Phase 4 (DRY K-generic lift): the read-path fault-in walk `find_leaf_faulting`
-// (and the per-attempt evict primitive) now live as default methods of the
+// and compact-batch eviction planning now live as default methods of the
 // `OverlayEvictable<CharKey, V, S>` subtrait of `OverlayFaulter`, lifted K-generic
 // into `persistent_artrie::core::overlay::evict`. Bringing the trait into module
 // scope routes every `self.find_leaf_faulting(...)` call below (the value/membership
@@ -40,8 +42,8 @@ use crate::persistent_artrie::wal::WalRecord;
 // `OverlayFaulter<CharKey, V>` impl over `load_overlay_node_from_disk`). NOT
 // `#[cfg]`-gated: `find_leaf_faulting` is on the UN-GATED production read/remove/
 // valued-insert/increment paths (Flip F0 un-gated it), so the trait + char's impl
-// of it must be available in non-test builds. Only the per-node EVICT primitive's
-// production caller + the batch driver `evict_overlay_nodes` stay gated.
+// of it must be available in non-test builds. Eviction publication uses the
+// generation-qualified compact-batch driver rather than a per-node counted CAS.
 use crate::persistent_artrie::core::overlay::evict::OverlayEvictable;
 use crate::value::DictionaryValue;
 
@@ -56,6 +58,16 @@ use super::dict_impl_char::LockfreeInsertResult;
 // no longer read in code.
 #[allow(dead_code)]
 pub(super) const LOCKFREE_COUNTER_MAX: u64 = u64::MAX;
+
+/// Explicit classification of every character membership root CAS.
+enum MembershipCasContext<'permit, 'gate> {
+    /// Live semantic mutation carrying a compile-time exact-root-CAS witness.
+    Guarded {
+        _permit: &'permit SemanticMutationPublicationPermit<'gate, RegistryEligibleMutation>,
+    },
+    /// No-WAL replay into a fresh, non-authoritative recovery overlay.
+    RecoveryOnly,
+}
 
 /// **OD4 deterministic-regression rendezvous (test-only).** The two phases a
 /// durable lock-free op crosses between Order-A step 1 (WAL append) and the ack:
@@ -114,7 +126,7 @@ fn commit_rendezvous(phase: RendezvousPhase) {
 /// design anticipated "the flip CONSUMES this primitive").
 pub(crate) const DEFAULT_MAX_FAULTIN_RETRIES: usize = 16;
 
-/// Error outcomes of [`PersistentARTrieChar::build_path_recursive`] (membership
+/// Error outcomes of [`PersistentARTrieChar::build_path_iterative`] (membership
 /// write path). Replaces the former bare `()` error so the WRITE-PATH FAULT-IN
 /// (design §4) OnDisk arm can carry a buffer-manager I/O error out WITHOUT widening
 /// the recursive `Err` at every site (smaller blast radius — the design's choice).
@@ -171,6 +183,49 @@ enum LockfreeRemoveResult {
     /// surfaced as `Err(e)` (durable-but-visible-only-after-reopen window). **Flip
     /// F0:** un-gated — fault-in is now a production path.
     IoError(crate::persistent_artrie::error::PersistentARTrieError),
+}
+
+#[cfg(test)]
+mod permanent_fault_mapping_tests {
+    use super::super::nodes::persistent_node::{Child, PersistentCharNode};
+    use super::*;
+
+    #[test]
+    fn char_insert_and_remove_spill_failures_are_typed_and_non_mutating() {
+        use crate::persistent_artrie::core::overlay::{
+            overlay_spine_failpoint, INLINE_OVERLAY_DEPTH,
+        };
+
+        let chars = vec![u32::from('x'); INLINE_OVERLAY_DEPTH + 1];
+        let mut root = Arc::new(PersistentCharNode::<()>::new().as_final());
+        for &unit in chars.iter().rev() {
+            root = Arc::new(PersistentCharNode::<()>::new().with_child(unit, Child::InMem(root)));
+        }
+        let trie = super::super::PersistentARTrieChar::<()>::new();
+
+        let root_before_insert = Arc::clone(&root);
+        let _insert_failpoint = overlay_spine_failpoint::fail_next_spill();
+        let insert = trie.build_path_iterative(&root, &chars, 0, true);
+        assert!(matches!(
+            insert,
+            Err(BuildPathError::Io(
+                PersistentARTrieError::AllocationFailed { .. }
+            ))
+        ));
+        assert!(Arc::ptr_eq(&root, &root_before_insert));
+        drop(_insert_failpoint);
+
+        let root_before_remove = Arc::clone(&root);
+        let _remove_failpoint = overlay_spine_failpoint::fail_next_spill();
+        let remove = trie.build_remove_path_iterative(&root, &chars, 0);
+        assert!(matches!(
+            remove,
+            Err(BuildPathError::Io(
+                PersistentARTrieError::AllocationFailed { .. }
+            ))
+        ));
+        assert!(Arc::ptr_eq(&root, &root_before_remove));
+    }
 }
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
@@ -276,7 +331,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         };
         let _epoch = self.epoch_manager.enter_read();
         loop {
-            match self.try_remove_lockfree_path(lockfree_root, chars) {
+            match self.try_remove_lockfree_path(
+                lockfree_root,
+                chars,
+                MembershipCasContext::RecoveryOnly,
+            ) {
                 LockfreeRemoveResult::Removed(_) | LockfreeRemoveResult::AlreadyAbsent(_) => {
                     if let Some(ref cache) = self.lockfree_cache {
                         cache.remove(&CharKey::units_to_term(chars));
@@ -365,7 +424,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         loop {
             // Finality and cardinality are part of the same immutable-root CAS
             // even for the no-WAL path; the `finalize` flag selects that path.
-            match self.try_insert_lockfree_path(lockfree_root, &chars, true) {
+            match self.try_insert_lockfree_path(
+                lockfree_root,
+                &chars,
+                true,
+                MembershipCasContext::RecoveryOnly,
+            ) {
                 // The non-durable path does not record a commit generation.
                 LockfreeInsertResult::Inserted(_node, _gen) => {
                     lockfree_cache.insert(term.to_string(), true);
@@ -472,18 +536,24 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 lockfree_cache.insert(term.to_string(), true);
                 return Ok(false);
             }
-            let lsn = self.append_to_wal_returning_lsn(WalRecord::Insert {
+            let pending = self.append_to_wal_returning_lsn(WalRecord::Insert {
                 term: term.as_bytes().to_vec(),
                 value: None,
             })?;
-            match self.publish_root_cas_ranked(|r| Arc::new(r.as_final()), |r| r.is_final())? {
+            match self.publish_root_cas_ranked(
+                |r| Arc::new(r.as_final()),
+                |r| r.is_final(),
+                pending.permit(),
+            )? {
                 RootPublishOutcome::Published(generation) => {
                     lockfree_cache.insert(term.to_string(), true);
+                    let lsn = pending.commit_visible();
                     self.commit_rank_and_mark(lsn, term.as_bytes(), generation)?;
                     return Ok(true);
                 }
                 RootPublishOutcome::AlreadyInState => {
                     lockfree_cache.insert(term.to_string(), true);
+                    let lsn = pending.cancel_unpublished();
                     self.mark_committed_burned(lsn);
                     return Ok(false);
                 }
@@ -507,7 +577,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         // ORDER A — step 1: append + sync the WAL record DURABLE, before any
         // visibility. The returned LSN is durable-per-policy at this point.
-        let lsn = self.append_to_wal_returning_lsn(WalRecord::Insert {
+        let pending = self.append_to_wal_returning_lsn(WalRecord::Insert {
             term: term.as_bytes().to_vec(),
             value: None,
         })?;
@@ -538,7 +608,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         <Self as crate::persistent_artrie::core::overlay::cas_walk::OverlayCasWalk<CharKey, V, S>>::drive_insert_cas(
             self,
             term.as_bytes(),
-            lsn,
+            pending,
         )
     }
 
@@ -619,17 +689,23 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 lockfree_cache.remove(term);
                 return Ok(false);
             }
-            let lsn = self.append_to_wal_returning_lsn(WalRecord::Remove {
+            let pending = self.append_to_wal_returning_lsn(WalRecord::Remove {
                 term: term.as_bytes().to_vec(),
             })?;
-            match self.publish_root_cas_ranked(|r| Arc::new(r.as_non_final()), |r| !r.is_final())? {
+            match self.publish_root_cas_ranked(
+                |r| Arc::new(r.as_non_final()),
+                |r| !r.is_final(),
+                pending.permit(),
+            )? {
                 RootPublishOutcome::Published(generation) => {
                     lockfree_cache.remove(term);
+                    let lsn = pending.commit_visible();
                     self.commit_rank_and_mark(lsn, term.as_bytes(), generation)?;
                     return Ok(true);
                 }
                 RootPublishOutcome::AlreadyInState => {
                     lockfree_cache.remove(term);
+                    let lsn = pending.cancel_unpublished();
                     self.mark_committed_burned(lsn);
                     return Ok(false);
                 }
@@ -647,20 +723,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // in-memory term) skips the faulting read entirely (the production 75-minute-
         // hang footgun: a faulting read on the hot path can block under eviction).
         // Only an absent-in-memory miss — which COULD be a term under an evicted
-        // (OnDisk) prefix — pays a faulting read to confirm presence; on I/O error
-        // treat as absent (best-effort). A false-absent only skips a NO-OP remove (the
-        // root CAS is the sole arbiter; a never-present term has nothing to remove), so
-        // it never loses a write — the best-effort fallback is safe. (Was faulting-
-        // first, which paid the fault on EVERY remove incl. present-in-memory ones.)
-        let present_before = {
-            if self.find_leaf_lockfree(lockfree_root, &chars).is_some() {
-                true
-            } else {
-                match self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES) {
-                    Ok(found) => found.is_some(),
-                    Err(_) => false,
-                }
-            }
+        // (OnDisk) prefix — pays the exact faulting read. Storage/decode failure is
+        // not absence and must propagate before a WAL record is allocated. (Was
+        // faulting-first, which paid the fault on every remove including resident
+        // terms.)
+        let present_before = if self.find_leaf_lockfree(lockfree_root, &chars).is_some() {
+            true
+        } else {
+            self.find_leaf_faulting(lockfree_root, &chars, DEFAULT_MAX_FAULTIN_RETRIES)?
+                .is_some()
         };
         if !present_before {
             // Genuinely absent → no WAL record (no LSN, no watermark hole).
@@ -674,7 +745,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // visibility. The returned LSN is durable-per-policy at this point. One
         // append covers every CAS retry — we never re-append (that would burn
         // LSNs and punch holes in the watermark).
-        let lsn = self.append_to_wal_returning_lsn(WalRecord::Remove {
+        let pending = self.append_to_wal_returning_lsn(WalRecord::Remove {
             term: term.as_bytes().to_vec(),
         })?;
 
@@ -699,7 +770,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         <Self as crate::persistent_artrie::core::overlay::cas_walk::OverlayCasWalk<CharKey, V, S>>::drive_remove_cas(
             self,
             term.as_bytes(),
-            lsn,
+            pending,
         )
     }
 
@@ -709,11 +780,12 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         &self,
         root: &super::nodes::atomic_ptr::AtomicNodePtr<V>,
         chars: &[u32],
+        _context: MembershipCasContext<'_, '_>,
     ) -> LockfreeRemoveResult {
         // Load the current published root. A null/empty overlay has nothing to
         // remove (absent).
-        let current_root = match root.load() {
-            Some(node) => node,
+        let current_revision = match root.load_revision() {
+            Some(revision) => revision,
             // Empty/null overlay: nothing was ever present, so generation 0 (sorts
             // first; an idempotent remove of a never-present term is harmless).
             None => return LockfreeRemoveResult::AlreadyAbsent(0),
@@ -726,10 +798,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // `current_root.version + 1`, fixed at this CAS, strictly monotone in
         // root-CAS order — the SAME generation source the insert path reads, so an
         // insert and the remove it clobbers can never TIE.
-        match self.build_remove_path_recursive(&current_root, chars, 0) {
+        let current_root = current_revision.node();
+        match self.build_remove_path_iterative(current_root, chars, 0) {
             Ok((new_root, _cleared_leaf)) => {
                 let root_generation = new_root.version();
-                match root.compare_exchange_counted(&current_root, new_root, -1) {
+                match root.compare_exchange_revision_counted(&current_revision, new_root, -1) {
                     Ok(_) => LockfreeRemoveResult::Removed(root_generation),
                     Err(_actual) => LockfreeRemoveResult::Conflict,
                 }
@@ -740,7 +813,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             Err(BuildPathError::AlreadyAbsent) => {
                 LockfreeRemoveResult::AlreadyAbsent(current_root.version())
             }
-            // `build_remove_path_recursive` never returns `AlreadyExists`; keep the
+            // `build_remove_path_iterative` never returns `AlreadyExists`; keep the
             // match total by mapping it to absent (the no-op spine outcome).
             Err(BuildPathError::AlreadyExists) => {
                 LockfreeRemoveResult::AlreadyAbsent(current_root.version())
@@ -750,9 +823,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
     }
 
-    /// Recursively build a NEW tree with `chars`'s leaf cleared (non-final) — the
-    /// dual of [`Self::build_path_recursive`]. On the way down it descends the
-    /// existing spine; at `depth == len` it clears finality on a **FRESH**
+    /// Iteratively build a NEW tree with `chars`'s leaf cleared (non-final) — the
+    /// dual of [`Self::build_path_iterative`]. Descent records the existing spine
+    /// in a bounded heap worklist; at `depth == len` it clears finality on a **FRESH**
     /// [`OverlayNode::as_non_final`] copy of the existing leaf (NOT a shared Arc
     /// like insert — the root CAS is the sole arbiter for the 1→0 transition,
     /// §3.5). On the way back up it path-copies each ancestor with the rebuilt
@@ -767,58 +840,72 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// base case, passed UNCHANGED up the path-copy). The caller reads the leaf's
     /// `version()` for the Order-A commit generation (§3.6) from this EXACT node —
     /// the one the root CAS publishes — not a re-walk.
-    fn build_remove_path_recursive(
+    fn build_remove_path_iterative(
         &self,
         node: &Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
         chars: &[u32],
         depth: usize,
     ) -> std::result::Result<PublishedCharPair<V>, BuildPathError> {
-        use super::nodes::persistent_node::Child;
-
-        if depth == chars.len() {
-            // Reached the target depth.
-            if !node.is_final() {
-                // Already absent — do NOT publish a no-op spine.
-                return Err(BuildPathError::AlreadyAbsent);
-            }
-            // FRESH cleared leaf (as_non_final): a NEW node version, published
-            // only via the root CAS. The subtree is RETAINED (remove "cat" keeps
-            // "cats"). This is the 1→0 transition the §3.5/§4.4 negative control
-            // proves MUST go through a fresh copy + root CAS, never an in-place
-            // `fetch_and` on the shared node. At the base, root == leaf.
-            let leaf = Arc::new(node.as_non_final());
-            return Ok((Arc::clone(&leaf), leaf));
-        }
-
-        let key = chars[depth];
-
-        // **G5.3' P1 (FIX 2):** resolve through the shared
-        // [`cas_walk::resolve_or_fault`], then map to char REMOVE's per-cell behavior
-        // (see the mapping table — char is uniform: fault-in, only a real I/O failure
-        // surfaces):
-        //   InMem / Faulted → DESCEND + path-copy, threading the cleared leaf up
-        //     unchanged (fault-in splices `Child::InMem` so the single root CAS stays
-        //     the SOLE arbiter for the 1→0 clear — RB6 remove-under-evicted-prefix);
-        //   FaultFailed(e) → `BuildPathError::Io(*e)` ⇒ `LockfreeRemoveResult::IoError`
-        //     (the real I/O error is unboxed + carried out, NOT a uniform Conflict);
-        //   Null / Absent → `AlreadyAbsent` (no no-op spine published).
         use crate::persistent_artrie::core::overlay::cas_walk::{
-            resolve_or_fault, ChildResolution, FaultMode,
+            resolve_or_fault, unwind_spine, ChildResolution, FaultMode,
         };
-        match resolve_or_fault::<CharKey, V, _>(node, key, FaultMode::Fault, |p| {
-            self.load_overlay_node_from_disk(p)
-        }) {
-            ChildResolution::InMem(child_arc) | ChildResolution::Faulted(child_arc) => {
-                let (new_child, leaf) =
-                    self.build_remove_path_recursive(&child_arc, chars, depth + 1)?;
-                let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
-                Ok((new_node, leaf))
-            }
-            // Surface the real I/O error (unbox) — char's `IoError`, NOT Conflict.
-            ChildResolution::FaultFailed(e) => Err(BuildPathError::Io(*e)),
-            // Null filler / missing edge ⇒ absent on this snapshot (no no-op spine).
-            ChildResolution::Null | ChildResolution::Absent => Err(BuildPathError::AlreadyAbsent),
+        use crate::persistent_artrie::core::overlay::{
+            try_push_overlay_path_spine, OverlayNodeHandle, OverlayPathFrame, OverlayPathSpine,
+        };
+
+        let capacity = chars.len().checked_sub(depth).ok_or_else(|| {
+            BuildPathError::Io(
+                crate::persistent_artrie::error::PersistentARTrieError::internal(
+                    "character overlay remove depth exceeds key length",
+                ),
+            )
+        })?;
+        let mut spine = OverlayPathSpine::<CharKey, V>::new();
+        let mut current = OverlayNodeHandle::Borrowed(node);
+        let mut cursor = depth;
+
+        while cursor < chars.len() {
+            let key = chars[cursor];
+            let child =
+                match resolve_or_fault::<CharKey, V, _>(&current, key, FaultMode::Fault, |p| {
+                    self.load_overlay_node_from_disk(p)
+                }) {
+                    ChildResolution::InMem(child) => child,
+                    ChildResolution::Faulted(child) => OverlayNodeHandle::Owned(child),
+                    ChildResolution::FaultFailed(error) => return Err(BuildPathError::Io(*error)),
+                    ChildResolution::Null | ChildResolution::Absent => {
+                        return Err(BuildPathError::AlreadyAbsent);
+                    }
+                };
+            try_push_overlay_path_spine(
+                &mut spine,
+                OverlayPathFrame {
+                    node: current,
+                    unit: key,
+                },
+                capacity,
+            )
+            .map_err(|source| {
+                BuildPathError::Io(
+                    crate::persistent_artrie::error::PersistentARTrieError::allocation_failed(
+                        "character overlay remove path spine",
+                        capacity,
+                        source,
+                    ),
+                )
+            })?;
+            current = child;
+            cursor += 1;
         }
+
+        if !current.node().is_final() {
+            return Err(BuildPathError::AlreadyAbsent);
+        }
+        // The fresh leaf retains its subtree; reverse-unwind path-copies every
+        // ancestor and leaves publication to the caller's sole root CAS.
+        let leaf = Arc::new(current.node().as_non_final());
+        let new_root = unwind_spine(spine, Arc::clone(&leaf));
+        Ok((new_root, leaf))
     }
 
     /// Attempt to insert a path in the lock-free trie.
@@ -829,37 +916,36 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         root: &super::nodes::atomic_ptr::AtomicNodePtr<V>,
         chars: &[u32],
         finalize: bool,
+        _context: MembershipCasContext<'_, '_>,
     ) -> LockfreeInsertResult<V> {
         use super::nodes::persistent_node::PersistentCharNode;
 
-        // Load current root
-        let current_root = match root.load() {
-            Some(node) => node,
-            None => {
-                // Root is null - try to initialize it
-                let new_root = Arc::new(PersistentCharNode::new());
-                match root.try_init(new_root) {
-                    Ok(()) => return self.try_insert_lockfree_path(root, chars, finalize),
-                    Err(actual) => actual,
+        // Null-root initialization is an explicit retry state, not a native-stack
+        // self-call. A failed initializer supplies the concurrently installed root.
+        let current_revision = loop {
+            match root.load_revision() {
+                Some(revision) => break revision,
+                None => {
+                    let new_root = Arc::new(PersistentCharNode::new());
+                    let _ = root.try_init(new_root);
                 }
             }
         };
 
         // Navigate/create path to the target node
-        self.insert_lockfree_recursive(root, &current_root, chars, 0, finalize)
+        self.insert_lockfree_iterative(root, &current_revision, chars, 0, finalize)
     }
 
-    /// Recursively build a new tree with the path inserted.
+    /// Iteratively build a new tree with the path inserted.
     ///
-    /// This method builds the path from leaf to root: it recurses down to the
-    /// target depth, creates the leaf node, then on the way back up creates
-    /// new versions of each parent with updated child pointers.
+    /// This method records a root-to-leaf spine in a bounded heap worklist,
+    /// creates the leaf, then reverse-unwinds new immutable parent versions.
     ///
     /// # Returns
     ///
     /// - `Ok(new_node, leaf)` - New version of this node with path inserted, plus leaf node
     /// - `Err(())` - Term already exists (node is already final at target depth)
-    fn build_path_recursive(
+    fn build_path_iterative(
         &self,
         node: &Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
         chars: &[u32],
@@ -867,72 +953,75 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         finalize: bool,
     ) -> std::result::Result<PublishedCharPair<V>, BuildPathError> {
         use super::nodes::persistent_node::Child;
-
-        if depth == chars.len() {
-            // Reached the target depth.
-            if node.is_final() {
-                return Err(BuildPathError::AlreadyExists); // Already a complete term
-            }
-            // (1a, D2.8 §1.2 / RT-D2-A): the DURABLE path (`finalize == true`)
-            // publishes a FRESH FINAL leaf INSIDE the root CAS, so the root CAS in
-            // `insert_lockfree_recursive` becomes the SOLE linearization point
-            // (matching the value/remove paths) ⇒ generation/commit_seq order ==
-            // visibility order. No proper-prefix regression and no double-count:
-            // two racers each build a fresh final copy but only ONE root CAS wins;
-            // the loser retries, sees `is_final()` above ⇒ `AlreadyExists` ⇒ exactly
-            // one publisher. (The old shared-node + `try_set_final` arbiter is kept
-            // ONLY for the non-durable path below — it has no replay key to
-            // mis-order, so its split linearization point is harmless there.)
-            if finalize {
-                let final_leaf = Arc::new(node.as_final());
-                return Ok((Arc::clone(&final_leaf), final_leaf));
-            }
-            // Non-durable `insert_cas` (`finalize == false`): return the EXISTING
-            // shared node so its later `try_set_final` (`fetch_or`) is the single
-            // atomic arbiter — UNCHANGED behavior (the §6.2 no-regression contract;
-            // a fresh-final here would make `try_set_final` observe an already-final
-            // node and wrongly report a new prefix term, e.g. "d" after "da", as a
-            // duplicate — the Phase-A bug — so the non-durable path MUST stay shared).
-            return Ok((Arc::clone(node), Arc::clone(node)));
-        }
-
-        let key = chars[depth];
-
-        // **G5.3' P1 (FIX 2):** resolve through the shared
-        // [`cas_walk::resolve_or_fault`], then map to char INSERT's per-cell behavior
-        // (see the mapping table — char is uniform: every OnDisk arm faults-in, only
-        // a real I/O failure surfaces):
-        //   InMem / Faulted → DESCEND (fault-in splices `Child::InMem` so the single
-        //     root CAS in `insert_lockfree_recursive` stays the SOLE arbiter —
-        //     DATA-LOSS-CRITICAL: WITHOUT it a NEW term under an evicted prefix would
-        //     return `AlreadyExists` (false) and be SILENTLY DROPPED);
-        //   FaultFailed(e) → `BuildPathError::Io(*e)` ⇒ `LockfreeInsertResult::IoError`
-        //     (the durable-but-visible-after-reopen window; the rich error is unboxed
-        //     and carried out — char keeps its real I/O error, NOT a uniform Conflict);
-        //   Null → `AlreadyExists` (conservative — never a real child);
-        //   Absent → build the remaining spine (`create_lockfree_path(finalize)`).
         use crate::persistent_artrie::core::overlay::cas_walk::{
-            resolve_or_fault, ChildResolution, FaultMode,
+            resolve_or_fault, unwind_spine, ChildResolution, FaultMode,
         };
-        match resolve_or_fault::<CharKey, V, _>(node, key, FaultMode::Fault, |p| {
-            self.load_overlay_node_from_disk(p)
-        }) {
-            ChildResolution::InMem(child_arc) | ChildResolution::Faulted(child_arc) => {
-                let (new_child, leaf) =
-                    self.build_path_recursive(&child_arc, chars, depth + 1, finalize)?;
-                let new_node = Arc::new(node.with_child(key, Child::InMem(new_child)));
-                Ok((new_node, leaf))
-            }
-            // Surface the real I/O error (unbox) — char's `IoError`, NOT Conflict.
-            ChildResolution::FaultFailed(e) => Err(BuildPathError::Io(*e)),
-            // Null filler — conservative AlreadyExists.
-            ChildResolution::Null => Err(BuildPathError::AlreadyExists),
-            ChildResolution::Absent => {
-                let (new_subtree, leaf) = self.create_lockfree_path(&chars[depth + 1..], finalize);
-                let new_node = Arc::new(node.with_child(key, Child::InMem(new_subtree)));
-                Ok((new_node, leaf))
-            }
+        use crate::persistent_artrie::core::overlay::{
+            try_push_overlay_path_spine, OverlayNodeHandle, OverlayPathFrame, OverlayPathSpine,
+        };
+
+        let capacity = chars.len().checked_sub(depth).ok_or_else(|| {
+            BuildPathError::Io(
+                crate::persistent_artrie::error::PersistentARTrieError::internal(
+                    "character overlay insert depth exceeds key length",
+                ),
+            )
+        })?;
+        let mut spine = OverlayPathSpine::<CharKey, V>::new();
+        let mut current = OverlayNodeHandle::Borrowed(node);
+        let mut cursor = depth;
+
+        while cursor < chars.len() {
+            let key = chars[cursor];
+            let child =
+                match resolve_or_fault::<CharKey, V, _>(&current, key, FaultMode::Fault, |p| {
+                    self.load_overlay_node_from_disk(p)
+                }) {
+                    ChildResolution::InMem(child) => child,
+                    ChildResolution::Faulted(child) => OverlayNodeHandle::Owned(child),
+                    ChildResolution::FaultFailed(error) => return Err(BuildPathError::Io(*error)),
+                    ChildResolution::Null => return Err(BuildPathError::AlreadyExists),
+                    ChildResolution::Absent => {
+                        let (new_subtree, leaf) =
+                            self.create_lockfree_path(&chars[cursor + 1..], finalize);
+                        let branch =
+                            Arc::new(current.node().with_child(key, Child::InMem(new_subtree)));
+                        return Ok((unwind_spine(spine, branch), leaf));
+                    }
+                };
+            try_push_overlay_path_spine(
+                &mut spine,
+                OverlayPathFrame {
+                    node: current,
+                    unit: key,
+                },
+                capacity,
+            )
+            .map_err(|source| {
+                BuildPathError::Io(
+                    crate::persistent_artrie::error::PersistentARTrieError::allocation_failed(
+                        "character overlay insert path spine",
+                        capacity,
+                        source,
+                    ),
+                )
+            })?;
+            current = child;
+            cursor += 1;
         }
+
+        if current.node().is_final() {
+            return Err(BuildPathError::AlreadyExists);
+        }
+        let leaf = if finalize {
+            Arc::new(current.node().as_final())
+        } else {
+            // The non-durable two-phase path deliberately retains the exact shared
+            // leaf for its later try_set_final arbiter.
+            current.into_arc()
+        };
+        let new_root = unwind_spine(spine, Arc::clone(&leaf));
+        Ok((new_root, leaf))
     }
 
     /// Create a new path for the remaining characters.
@@ -974,19 +1063,20 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     }
 
     /// Attempt to insert a path using CAS. Called from insert_cas retry loop.
-    fn insert_lockfree_recursive(
+    fn insert_lockfree_iterative(
         &self,
         root: &super::nodes::atomic_ptr::AtomicNodePtr<V>,
-        current: &Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
+        current: &crate::persistent_artrie::core::overlay::RootRevision<CharKey, V>,
         chars: &[u32],
         _depth: usize, // Kept for API compatibility
         finalize: bool,
     ) -> LockfreeInsertResult<V> {
         // Build the new tree structure with the path inserted. The single root CAS
         // below is the SOLE visibility arbiter — write-path fault-in (design §4)
-        // happens INSIDE `build_path_recursive` (it rebuilds ONE new spine that
+        // happens INSIDE `build_path_iterative` (it rebuilds ONE new spine that
         // splices any faulted prefix InMem), so it adds no second commit point.
-        match self.build_path_recursive(current, chars, 0, finalize) {
+        let current_node = current.node();
+        match self.build_path_iterative(current_node, chars, 0, finalize) {
             Ok((new_root, leaf)) => {
                 // The published root's version IS the Order-A commit generation
                 // (design C′, §3.6): `with_child` path-copy bumped it to
@@ -994,8 +1084,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 // publications are strictly monotone in CAS order. Capture it
                 // BEFORE the CAS consumes `new_root`.
                 let root_generation = new_root.version();
+                #[cfg(test)]
+                crate::persistent_artrie::core::overlay::durable_write::semantic_cas_rendezvous();
                 // Try to CAS the root to the new version
-                match root.compare_exchange_counted(current, new_root, 1) {
+                match root.compare_exchange_revision_counted(current, new_root, 1) {
                     Ok(_) => {
                         // Successfully updated the tree
                         LockfreeInsertResult::Inserted(leaf, root_generation)
@@ -1013,15 +1105,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 // walk traversed and found the term final in) so the idempotent
                 // caller ranks causally (< any later same-key remove), NOT a second
                 // `lockfree_root.load()` (the leapfrog).
-                LockfreeInsertResult::AlreadyExists(current.version())
+                LockfreeInsertResult::AlreadyExists(current_node.version())
             }
             // R-B `AlreadyAbsent` is produced ONLY by the remove path
-            // (`build_remove_path_recursive`); the insert path's
-            // `build_path_recursive` never returns it. Treat it conservatively as
+            // (`build_remove_path_iterative`); the insert path's
+            // `build_path_iterative` never returns it. Treat it conservatively as
             // "already exists" so this arm stays total without inventing a new
             // insert outcome (unreachable in practice for inserts).
             Err(BuildPathError::AlreadyAbsent) => {
-                LockfreeInsertResult::AlreadyExists(current.version())
+                LockfreeInsertResult::AlreadyExists(current_node.version())
             }
             // WRITE-PATH FAULT-IN I/O error: surface it so the durable caller
             // returns `Err(e)` and the best-effort caller retries / returns false.
@@ -1103,31 +1195,31 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         chars: &[u32],
     ) -> Option<Arc<super::nodes::persistent_node::PersistentCharNode<V>>> {
         let current = root.load()?;
-        self.find_leaf_recursive(&current, chars, 0)
+        self.find_leaf_iterative(&current, chars, 0)
     }
 
-    /// Recursive helper for `find_leaf_lockfree`. `pub(crate)` so the value seams
+    /// Iterative helper for `find_leaf_lockfree`. `pub(crate)` so the value seams
     /// ([`DurableOverlayWrite::value_publish_inner`] in `overlay_write_mode`) can do
     /// the in-loop InsertOnce/CAS pre-check on the freshly-loaded root.
     ///
     /// **G5.3' P1:** a thin shim over the shared generic
-    /// [`cas_walk::find_leaf_recursive`]. The `pub(crate)` NAME + the `&self`
-    /// receiver are PRESERVED (the value seams call it as `self.find_leaf_recursive`);
+    /// [`cas_walk::find_leaf_iterative`]. The `&self` receiver keeps value-seam call
+    /// sites uniform across byte and character dictionaries;
     /// `&self` is no longer read (the walk needs no trie state). Behavior-identical:
     /// `PersistentCharNode<V>` IS `OverlayNode<CharKey, V>` (a type alias).
-    pub(crate) fn find_leaf_recursive(
+    pub(crate) fn find_leaf_iterative(
         &self,
         node: &Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
         chars: &[u32],
         depth: usize,
     ) -> Option<Arc<super::nodes::persistent_node::PersistentCharNode<V>>> {
-        crate::persistent_artrie::core::overlay::cas_walk::find_leaf_recursive::<CharKey, V>(
+        crate::persistent_artrie::core::overlay::cas_walk::find_leaf_iterative::<CharKey, V>(
             node, chars, depth,
         )
     }
 
     // Phase 4 (DRY K-generic lift): `find_leaf_faulting` — the read-path single-level
-    // fault-in walk (the dual of `evict_overlay_node_at_path`) — now lives ONCE,
+    // fault-in walk (the dual of compact-batch unswizzling) — now lives ONCE,
     // K-generic, as a default method of
     // `persistent_artrie::core::overlay::evict::OverlayEvictable<CharKey, V, S>`
     // (imported at module top). The `self.find_leaf_faulting(lockfree_root, &chars,
@@ -1148,8 +1240,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
     /// Path-copy the `root`→leaf spine for `chars`, finalizing the leaf with
     /// `value`. Returns a new root `Arc` (the published-version candidate) or
-    /// `None` if an on-disk child blocks the copy AND cannot be faulted in (I/O
-    /// error). **G5/F0: GENERIC over `V`** (relocated here from the `<u64,S>` block;
+    /// Returns a typed construction/fault-in error if the new root cannot be built.
+    /// **G5/F0: GENERIC over `V`** (relocated here from the `<u64,S>` block;
     /// the only `V`-ness is the `value` parameter — the recursion uses only the
     /// `<K,V>`-generic node ops `as_final`/`with_value`/`find_child`/`with_child`).
     /// Shared by the value seams (insert/upsert/CAS — [`value_publish_inner`]) AND
@@ -1160,17 +1252,17 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// into the leaf so finalization+value publish happen atomically with the root
     /// CAS (single-phase); for an existing path it replaces the leaf's value
     /// (last-writer = the CAS winner), for a new path it creates the spine.
-    pub(crate) fn build_value_path_recursive(
+    pub(crate) fn build_value_path_iterative(
         &self,
         node: &Arc<super::nodes::persistent_node::PersistentCharNode<V>>,
         chars: &[u32],
         depth: usize,
         value: V,
-    ) -> Option<Arc<super::nodes::persistent_node::PersistentCharNode<V>>> {
+    ) -> Result<Arc<super::nodes::persistent_node::PersistentCharNode<V>>> {
         // **G5.3' P1:** a thin shim over the shared generic
         // [`cas_walk::build_value_spine`] in [`FaultMode::Fault`] (char faults an
-        // evicted OnDisk prefix in; an I/O error / null collapses to `None` exactly
-        // as the prior `as_in_mem()? ` / `.ok()? `). The `pub(crate)` NAME +
+        // evicted OnDisk prefix in; allocation, I/O, and invalid-edge failures
+        // propagate to the durable caller). The `pub(crate)` NAME +
         // `&self`-syntax call sites (value seams + the counter inner) are PRESERVED.
         // `PersistentCharNode<V>` IS `OverlayNode<CharKey, V>` (a type alias), so the
         // descent + bottom-up build order are byte-identical (format-preserving).
@@ -1200,6 +1292,7 @@ impl<V: DictionaryValue, S: BlockStorage>
     fn try_remove_path_attempt(
         &self,
         key_bytes: &[u8],
+        _permit: &crate::persistent_artrie::core::overlay::durable_write::SemanticMutationPublicationPermit<'_, crate::persistent_artrie::core::overlay::durable_write::RegistryEligibleMutation>,
     ) -> crate::persistent_artrie::core::overlay::cas_walk::RemoveAttempt {
         use crate::persistent_artrie::core::overlay::cas_walk::RemoveAttempt;
         let lockfree_root = match self.lockfree_root.as_ref() {
@@ -1219,7 +1312,11 @@ impl<V: DictionaryValue, S: BlockStorage>
         // ONE single-arbiter path-copy + root CAS. FIX 1: the `Removed(_version)` /
         // `AlreadyAbsent(_version)` per-attempt versions are DROPPED at this boundary
         // (the skeleton ranks the caller-claimed `commit_seq`).
-        match self.try_remove_lockfree_path(lockfree_root, &chars) {
+        match self.try_remove_lockfree_path(
+            lockfree_root,
+            &chars,
+            MembershipCasContext::Guarded { _permit },
+        ) {
             LockfreeRemoveResult::Removed(_version) => RemoveAttempt::Removed,
             LockfreeRemoveResult::AlreadyAbsent(_version) => RemoveAttempt::AlreadyAbsent,
             LockfreeRemoveResult::Conflict => RemoveAttempt::Conflict,
@@ -1240,6 +1337,7 @@ impl<V: DictionaryValue, S: BlockStorage>
     fn try_insert_path_attempt(
         &self,
         key_bytes: &[u8],
+        _permit: &crate::persistent_artrie::core::overlay::durable_write::SemanticMutationPublicationPermit<'_, crate::persistent_artrie::core::overlay::durable_write::RegistryEligibleMutation>,
     ) -> crate::persistent_artrie::core::overlay::cas_walk::InsertAttempt {
         use crate::persistent_artrie::core::overlay::cas_walk::InsertAttempt;
         let lockfree_root = match self.lockfree_root.as_ref() {
@@ -1261,7 +1359,12 @@ impl<V: DictionaryValue, S: BlockStorage>
         // FIX 1: the `Inserted(_node, _root_generation)` per-attempt node + version
         // are DROPPED at this boundary (the skeleton ranks the caller-claimed
         // `commit_seq`; the durable path needs no leaf for a `try_set_final`).
-        match self.try_insert_lockfree_path(lockfree_root, &chars, true) {
+        match self.try_insert_lockfree_path(
+            lockfree_root,
+            &chars,
+            true,
+            MembershipCasContext::Guarded { _permit },
+        ) {
             LockfreeInsertResult::Inserted(_node, _root_generation) => InsertAttempt::Inserted,
             LockfreeInsertResult::AlreadyExists(_observed_gen) => InsertAttempt::AlreadyExists,
             LockfreeInsertResult::Conflict => InsertAttempt::Conflict,
@@ -1371,7 +1474,12 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     /// increment would otherwise cross-domain mis-sort). The generation is captured
     /// before the winning CAS and returned ONLY from the `Ok` arm (a losing iteration
     /// discards its `new_root`, so no stale generation leaks).
-    pub(super) fn try_increment_cas_inner(&self, key: &str, delta: u64) -> Result<(u64, u64)> {
+    pub(super) fn try_increment_cas_inner(
+        &self,
+        key: &str,
+        delta: u64,
+        _permit: &crate::persistent_artrie::core::overlay::durable_write::SemanticMutationPublicationPermit<'_, crate::persistent_artrie::core::overlay::durable_write::RegistryEligibleMutation>,
+    ) -> Result<(u64, u64)> {
         use super::nodes::persistent_node::PersistentCharNode;
         use std::sync::atomic::Ordering;
 
@@ -1382,8 +1490,8 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
 
         let chars: Vec<u32> = key.chars().map(|c| c as u32).collect();
         // Empty-string support (H4): the empty key "" IS the root; the loop below reads
-        // the root counter via `find_leaf_recursive(root, &[], 0)` (returns the root iff
-        // final → its value, else 0) and republishes via `build_value_path_recursive`
+        // the root counter via `find_leaf_iterative(root, &[], 0)` (returns the root iff
+        // final → its value, else 0) and republishes via `build_value_path_iterative`
         // (fresh-root-CAS at depth 0). The root counter RMW is the depth-0 case of the
         // general loop — no rejection.
         // (The former `delta > LOCKFREE_COUNTER_MAX` early-return is gone — vacuous on
@@ -1402,15 +1510,16 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
             let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             // (1) Load the current published root (initializing it if null — the
             // same null-init dance the membership path uses).
-            let root = match lockfree_root.load() {
-                Some(r) => r,
+            let root_revision = match lockfree_root.load_revision() {
+                Some(revision) => revision,
                 None => {
                     let new_root = Arc::new(PersistentCharNode::<u64>::new());
                     let _ = lockfree_root.try_init(new_root);
                     continue;
                 }
             };
-            let was_present = self.find_leaf_recursive(&root, &chars, 0).is_some();
+            let root = Arc::clone(root_revision.node());
+            let was_present = self.find_leaf_iterative(&root, &chars, 0).is_some();
 
             // (2) Read the current count at `key`. READ-PATH FAULT-IN (design §3):
             // when compiled in, fault an evicted (OnDisk) prefix back in FIRST so
@@ -1426,7 +1535,7 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
                     Ok(found) => found.and_then(|leaf| leaf.get_value()).unwrap_or(0),
                     // I/O error reading the durable image: fall back to this snapshot.
                     Err(_) => self
-                        .find_leaf_recursive(&root, &chars, 0)
+                        .find_leaf_iterative(&root, &chars, 0)
                         .and_then(|leaf| leaf.get_value())
                         .unwrap_or(0),
                 };
@@ -1434,7 +1543,7 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
             // reversibility): the non-faulting read that returned 0 (silent counter
             // reset) for a term under an evicted prefix.
             // let cur = self
-            //     .find_leaf_recursive(&root, &chars, 0)
+            //     .find_leaf_iterative(&root, &chars, 0)
             //     .and_then(|leaf| leaf.get_value())
             //     .unwrap_or(0);
 
@@ -1455,16 +1564,7 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
                 };
 
             // (4) Build a new root with the value-carrying leaf spliced in.
-            let new_root = match self.build_value_path_recursive(&root, &chars, 0, new_val) {
-                Some(r) => r,
-                None => {
-                    // An on-disk child blocked the path-copy (cannot fault in the
-                    // overlay). Treat as a transient conflict and retry from a
-                    // fresh root load — mirrors the membership `Conflict` arm.
-                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
-            };
+            let new_root = self.build_value_path_iterative(&root, &chars, 0, new_val)?;
 
             // (5) CAS-publish. On success the new value is now visible. On
             // failure another writer won; re-read the higher count and retry so
@@ -1473,8 +1573,11 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
             // (NOT `new_root.version()`). Returned ONLY from the winning `Ok` arm so a
             // losing iteration never leaks a stale rank; the durable wrapper ranks it.
             let generation = commit_seq;
-            match lockfree_root.compare_exchange_counted(&root, new_root, isize::from(!was_present))
-            {
+            match lockfree_root.compare_exchange_revision_counted(
+                &root_revision,
+                new_root,
+                isize::from(!was_present),
+            ) {
                 Ok(_) => return Ok((new_val, generation)),
                 Err(_actual) => {
                     self.cas_retries.fetch_add(1, Ordering::Relaxed);
@@ -1489,7 +1592,9 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     /// the public signature for the existing callers (the non-durable / increment_cas
     /// paths and tests do not rank, so they ignore the generation).
     pub fn try_increment_cas(&self, key: &str, delta: u64) -> Result<u64> {
-        self.try_increment_cas_inner(key, delta).map(|(v, _)| v)
+        let permit = self.begin_semantic_publication();
+        self.try_increment_cas_inner(key, delta, &permit)
+            .map(|(value, _)| value)
     }
 
     /// **Order-A durable** lock-free increment (Migration Phase E) — the counter
@@ -1552,7 +1657,7 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     /// **Flip F0 — thin Order-A durable VALUED insert** (`V = u64`). The valued
     /// analogue of [`Self::insert_cas_durable`] (which writes membership only,
     /// `value = None`): this bakes a `u64` value into the leaf via
-    /// `Self::build_value_path_recursive` (single-phase — finality + value
+    /// `Self::build_value_path_iterative` (single-phase — finality + value
     /// publish atomically with the root CAS).
     ///
     /// **Insert semantics (NOT upsert):** if the term is already present this is a
@@ -1572,7 +1677,7 @@ impl<S: BlockStorage> super::PersistentARTrieChar<u64, S> {
     pub fn insert_cas_with_value_durable(&self, term: &str, value: u64) -> Result<bool> {
         // **Flip F0 (G5): thin caller of the SHARED GENERIC value-write default.**
         // The whole `u64` range is representable now (the value is published via the
-        // path-copy value seam — `build_value_path_recursive` — NOT a delta-based i64
+        // path-copy value seam — `build_value_path_iterative` — NOT a delta-based i64
         // WAL record), so the former `value > LOCKFREE_COUNTER_MAX` (now `u64::MAX`)
         // guard is a tautology and is gone. The Order-A skeleton (gate → faulting
         // present-hoist → append `Insert` DURABLE → value seam publish in InsertOnce
@@ -1662,9 +1767,12 @@ mod reclaim_tests {
     use crate::persistent_artrie::char::PersistentARTrieChar;
     use std::sync::Arc;
 
+    use super::{LockfreeInsertResult, LockfreeRemoveResult, MembershipCasContext};
+
     /// Build a lock-free overlay trie on the real-disk scratch dir
     /// (`target/test-tmp`) — NEVER `/tmp`, which is tmpfs (RAM) on this host.
     fn lockfree_trie(prefix: &str) -> (tempfile::TempDir, PersistentARTrieChar<()>) {
+        std::fs::create_dir_all("target/test-tmp").expect("create real-disk test scratch root");
         let dir = tempfile::Builder::new()
             .prefix(prefix)
             .tempdir_in("target/test-tmp")
@@ -1673,6 +1781,50 @@ mod reclaim_tests {
         let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create trie");
         trie.install_overlay();
         (dir, trie)
+    }
+
+    #[test]
+    fn one_hundred_thousand_deep_insert_remove_and_drop_are_stack_safe() {
+        const DEPTH: usize = 100_000;
+        let (_dir, trie) = lockfree_trie("overlay-path-machine-deep");
+        let chars = vec![u32::from('x'); DEPTH];
+        let root = trie.lockfree_root.as_ref().expect("lock-free enabled");
+
+        assert!(matches!(
+            trie.try_insert_lockfree_path(root, &chars, true, MembershipCasContext::RecoveryOnly,),
+            LockfreeInsertResult::Inserted(_, _)
+        ));
+        let inserted = root.load().expect("published deep root");
+        assert!(PersistentARTrieChar::<()>::find_in_lockfree_trie(
+            &inserted, &chars, 0
+        ));
+        let terms = trie
+            .iter_prefix("")
+            .expect("enumerate deep overlay")
+            .expect("empty prefix exists");
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0].chars().count(), DEPTH);
+        let valued_terms = trie
+            .iter_prefix_with_values("")
+            .expect("enumerate valued deep overlay")
+            .expect("empty prefix exists");
+        assert_eq!(valued_terms.len(), 1);
+        assert_eq!(valued_terms[0].0.chars().count(), DEPTH);
+        drop(inserted);
+
+        assert!(matches!(
+            trie.try_remove_lockfree_path(root, &chars, MembershipCasContext::RecoveryOnly),
+            LockfreeRemoveResult::Removed(_)
+        ));
+        let removed = root.load().expect("published cleared root");
+        assert!(!PersistentARTrieChar::<()>::find_in_lockfree_trie(
+            &removed, &chars, 0
+        ));
+        drop(removed);
+
+        // Dropping the trie dismantles the last 100,000-node immutable spine
+        // through OverlayNode's explicit heap worklist, not native recursion.
+        drop(trie);
     }
 
     /// Walk the live overlay root down a code-point path, returning an owned `Arc`
@@ -1892,6 +2044,463 @@ mod durable_write_tests {
             .prefix(prefix)
             .tempdir_in("target/test-tmp")
             .expect("scratch tempdir under target/test-tmp")
+    }
+
+    #[test]
+    fn durable_remove_preserves_state_when_exact_faulting_fails() {
+        use crate::persistent_artrie::char::nodes::atomic_ptr::AtomicNodePtr;
+        use crate::persistent_artrie::char::nodes::persistent_node::PersistentCharNode;
+        use crate::persistent_artrie::core::key_encoding::CharKey;
+        use crate::persistent_artrie::core::overlay::node::Child;
+        use crate::persistent_artrie::core::swizzled_ptr::{NodeType, SwizzledPtr};
+
+        let dir = scratch("char-durable-remove-permanent-fault");
+        let path = dir.path().join("t.artc");
+        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+        trie.set_durability_policy(DurabilityPolicy::Immediate);
+        trie.install_overlay();
+        let unavailable = Child::<CharKey, ()>::OnDisk(SwizzledPtr::on_disk(1, 0, NodeType::Node4));
+        trie.lockfree_root = Some(AtomicNodePtr::new(Arc::new(
+            PersistentCharNode::new().with_child('x' as u32, unavailable),
+        )));
+        trie.lockfree_cache
+            .as_ref()
+            .expect("cache installed")
+            .insert("x".to_string(), true);
+
+        let root_slot = trie.lockfree_root.as_ref().expect("root installed");
+        let root_before = root_slot.load().expect("root present");
+        let lsn_before = trie.current_lsn();
+        let watermark_before = trie.committed_watermark.watermark();
+        let retries_before = trie.cas_retry_count();
+
+        let _error = trie
+            .remove_cas_durable("x")
+            .expect_err("an unavailable durable child must not be reported absent");
+
+        let root_after = root_slot.load().expect("root remains present");
+        assert!(Arc::ptr_eq(&root_before, &root_after));
+        assert_eq!(trie.current_lsn(), lsn_before);
+        assert_eq!(trie.committed_watermark.watermark(), watermark_before);
+        assert_eq!(trie.cas_retry_count(), retries_before);
+        assert!(trie
+            .lockfree_cache
+            .as_ref()
+            .expect("cache remains installed")
+            .contains_key("x"));
+    }
+
+    #[test]
+    fn durable_insert_spill_failure_is_not_counted_as_contention() {
+        use crate::persistent_artrie::char::nodes::atomic_ptr::AtomicNodePtr;
+        use crate::persistent_artrie::char::nodes::persistent_node::PersistentCharNode;
+        use crate::persistent_artrie::core::key_encoding::CharKey;
+        use crate::persistent_artrie::core::overlay::{
+            overlay_spine_failpoint, Child, INLINE_OVERLAY_DEPTH,
+        };
+        use crate::persistent_artrie::PersistentARTrieError;
+
+        let dir = scratch("char-durable-insert-spill-failure");
+        let path = dir.path().join("t.artc");
+        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+        trie.set_durability_policy(DurabilityPolicy::Immediate);
+        trie.install_overlay();
+
+        let units = [u32::from('x'); INLINE_OVERLAY_DEPTH + 1];
+        let term = "x".repeat(INLINE_OVERLAY_DEPTH + 1);
+        let mut root = Arc::new(PersistentCharNode::<()>::new());
+        for &unit in units.iter().rev() {
+            root = Arc::new(
+                PersistentCharNode::new().with_child(unit, Child::<CharKey, ()>::InMem(root)),
+            );
+        }
+        trie.lockfree_root = Some(AtomicNodePtr::new(root));
+
+        let root_slot = trie.lockfree_root.as_ref().expect("root installed");
+        let root_before = root_slot.load().expect("root present");
+        let watermark_before = trie.committed_watermark.watermark();
+        let retries_before = trie.cas_retry_count();
+        let _failpoint = overlay_spine_failpoint::fail_next_spill();
+
+        let error = trie
+            .insert_cas_durable(&term)
+            .expect_err("spine allocation failure must be returned");
+
+        assert!(matches!(
+            error,
+            PersistentARTrieError::AllocationFailed { .. }
+        ));
+        let root_after = root_slot.load().expect("root remains present");
+        assert!(Arc::ptr_eq(&root_before, &root_after));
+        assert_eq!(trie.committed_watermark.watermark(), watermark_before);
+        assert_eq!(trie.cas_retry_count(), retries_before);
+    }
+
+    #[test]
+    fn non_durable_increment_does_not_pay_durable_structural_generation_atomic() {
+        let dir = scratch("char-nondurable-increment-structural-generation");
+        let path = dir.path().join("t.artc");
+        let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create");
+        trie.install_overlay();
+        let generation_before = trie
+            .structural_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+
+        assert_eq!(trie.try_increment_cas("hot", 1).expect("increment"), 1);
+
+        assert_eq!(
+            trie.structural_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+            generation_before,
+            "non-durable increments must not pay the durable raw-handle diagnostic atomic"
+        );
+    }
+
+    #[test]
+    fn char_checkpoint_may_publish_before_semantic_cas_which_clears_exact_binding() {
+        use crate::persistent_artrie::core::eviction::EvictionConfig;
+        use crate::persistent_artrie::core::overlay::durable_write::set_semantic_wal_rendezvous;
+        use crate::EvictableARTrie;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = scratch("char-semantic-publication-permit");
+        let path = dir.path().join("t.artc");
+        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+        trie.set_durability_policy(DurabilityPolicy::Immediate);
+        trie.install_overlay();
+        let trie = Arc::new(trie);
+        trie.enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable eviction");
+        let root_slot = trie.lockfree_root.as_ref().expect("root installed");
+        let generation_before = trie
+            .structural_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let writer_trie = Arc::clone(&trie);
+        let writer = thread::spawn(move || {
+            set_semantic_wal_rendezvous(Some(Box::new(move || {
+                entered_tx.send(()).expect("announce durable data WAL");
+                release_rx.recv().expect("release visibility CAS");
+            })));
+            let outcome = writer_trie.insert_cas_durable("permit-window");
+            set_semantic_wal_rendezvous(None);
+            outcome
+        });
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("writer reached WAL/CAS boundary");
+        assert_eq!(
+            trie.structural_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+            generation_before + 1,
+            "semantic admission advances character structure exactly once before WAL"
+        );
+        trie.checkpoint()
+            .expect("checkpoint may publish against the unchanged captured root");
+        assert!(
+            root_slot
+                .load_revision()
+                .expect("checkpoint root revision")
+                .eviction_binding()
+                .is_some(),
+            "checkpoint must publish exact authority before the paused semantic CAS"
+        );
+
+        release_tx.send(()).expect("release writer");
+        assert!(writer
+            .join()
+            .expect("writer thread")
+            .expect("durable insert"));
+        assert!(
+            root_slot
+                .load_revision()
+                .expect("semantic successor root revision")
+                .eviction_binding()
+                .is_none(),
+            "the semantic root CAS must clear exact authority at its linearization point"
+        );
+        assert_eq!(
+            trie.structural_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+            generation_before + 1,
+            "CommitRank/control WAL must not re-admit or re-advance structure"
+        );
+        assert!(trie.contains_lockfree("permit-window"));
+        trie.disable_eviction().expect("disable eviction");
+    }
+
+    #[test]
+    fn char_panic_after_semantic_wal_leaves_root_unpublished() {
+        use crate::persistent_artrie::core::eviction::EvictionConfig;
+        use crate::persistent_artrie::core::overlay::durable_write::set_semantic_wal_rendezvous;
+        use crate::EvictableARTrie;
+
+        let dir = scratch("char-semantic-publication-unwind");
+        let path = dir.path().join("t.artc");
+        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+        trie.set_durability_policy(DurabilityPolicy::Immediate);
+        trie.install_overlay();
+        let trie = Arc::new(trie);
+        trie.enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable eviction");
+        set_semantic_wal_rendezvous(Some(Box::new(|| {
+            panic!("deterministic character WAL/CAS unwind");
+        })));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = trie.insert_cas_durable("unwind-window");
+        }));
+        set_semantic_wal_rendezvous(None);
+
+        assert!(result.is_err());
+        assert!(!trie.contains_lockfree("unwind-window"));
+        trie.checkpoint()
+            .expect("publication succeeds after the pre-CAS unwind");
+        trie.disable_eviction().expect("disable eviction");
+    }
+
+    #[test]
+    fn char_data_wal_failures_leave_semantic_root_unpublished() {
+        use crate::persistent_artrie::core::eviction::EvictionConfig;
+        use crate::persistent_artrie::core::overlay::durable_write::{
+            set_semantic_wal_fault, SemanticWalFaultPoint,
+        };
+        use crate::EvictableARTrie;
+
+        for (label, fault) in [
+            ("append", SemanticWalFaultPoint::DataAppend),
+            ("sync", SemanticWalFaultPoint::DataSync),
+        ] {
+            let dir = scratch(&format!("char-semantic-{label}-failure"));
+            let path = dir.path().join("t.artc");
+            let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.install_overlay();
+            let trie = Arc::new(trie);
+            trie.enable_eviction(EvictionConfig::without_memory_monitor())
+                .expect("enable eviction");
+            set_semantic_wal_fault(Some(fault));
+            let result = trie.insert_cas_durable("must-not-publish");
+            set_semantic_wal_fault(None);
+
+            assert!(result.is_err(), "{label} failure must surface");
+            assert!(!trie.contains_lockfree("must-not-publish"));
+            trie.checkpoint()
+                .expect("publication succeeds after failed WAL boundary");
+            trie.disable_eviction().expect("disable eviction");
+        }
+    }
+
+    #[test]
+    fn char_post_wal_overflow_error_leaves_record_unranked() {
+        use crate::persistent_artrie::core::eviction::EvictionConfig;
+        use crate::EvictableARTrie;
+
+        let dir = scratch("char-post-wal-overflow-release");
+        let path = dir.path().join("t.artc");
+        let mut trie = PersistentARTrieChar::<u64>::create(&path).expect("create");
+        trie.set_durability_policy(DurabilityPolicy::Immediate);
+        trie.install_overlay();
+        trie.upsert_cas_durable("max", u64::MAX)
+            .expect("seed maximum counter");
+        let trie = Arc::new(trie);
+        trie.enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable eviction");
+        let lsn_before = trie.current_lsn();
+        let watermark_before = trie.committed_watermark.watermark();
+        assert_eq!(watermark_before, lsn_before - 1);
+
+        let result = trie.try_increment_cas_durable("max", 1);
+
+        assert!(
+            result.is_err(),
+            "u64 overflow after WAL append must surface"
+        );
+        assert_eq!(trie.get_value("max"), Some(u64::MAX));
+        assert_eq!(trie.current_lsn(), lsn_before + 1);
+        assert_eq!(
+            trie.committed_watermark.watermark(),
+            watermark_before,
+            "a non-visible error record must remain unranked and uncommitted"
+        );
+        trie.checkpoint()
+            .expect("publication succeeds after the error drops its permit");
+        trie.disable_eviction().expect("disable eviction");
+    }
+
+    #[test]
+    fn char_commit_rank_failure_occurs_after_semantic_visibility() {
+        use crate::persistent_artrie::core::eviction::EvictionConfig;
+        use crate::persistent_artrie::core::overlay::durable_write::{
+            set_semantic_commit_rendezvous, set_semantic_wal_fault, SemanticWalFaultPoint,
+        };
+        use crate::EvictableARTrie;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = scratch("char-commit-rank-failure");
+        let path = dir.path().join("t.artc");
+        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+        trie.set_durability_policy(DurabilityPolicy::Immediate);
+        trie.install_overlay();
+        let trie = Arc::new(trie);
+        trie.enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable eviction");
+        let generation_before = trie
+            .structural_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        let observed = Arc::new(AtomicBool::new(false));
+        let observed_in_hook = Arc::clone(&observed);
+        set_semantic_commit_rendezvous(Some(Box::new(move || {
+            observed_in_hook.store(true, Ordering::Release);
+        })));
+        set_semantic_wal_fault(Some(SemanticWalFaultPoint::CommitRankAppend));
+        let lsn_before = trie.current_lsn();
+
+        let result = trie.insert_cas_durable("visible-without-rank-ack");
+        set_semantic_commit_rendezvous(None);
+        set_semantic_wal_fault(None);
+
+        assert!(result.is_err(), "CommitRank failure must surface");
+        assert!(observed.load(Ordering::Acquire));
+        assert!(trie.contains_lockfree("visible-without-rank-ack"));
+        assert_eq!(trie.current_lsn(), lsn_before + 1);
+        assert_eq!(trie.committed_watermark.watermark(), lsn_before - 1);
+        assert_eq!(
+            trie.structural_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+            generation_before + 1,
+            "control-WAL failure must not re-admit or advance character structure"
+        );
+        trie.checkpoint()
+            .expect("publication remains available after visibility terminal");
+        trie.disable_eviction().expect("disable eviction");
+    }
+
+    #[test]
+    fn char_raced_idempotent_insert_burns_once_and_releases_once() {
+        use crate::persistent_artrie::core::eviction::EvictionConfig;
+        use crate::persistent_artrie::core::overlay::durable_write::set_semantic_wal_rendezvous;
+        use crate::EvictableARTrie;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        for (label, term) in [("nonempty", "raced-idempotent"), ("empty-root", "")] {
+            let dir = scratch(&format!("char-{label}-idempotent"));
+            let path = dir.path().join("t.artc");
+            let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+            trie.set_durability_policy(DurabilityPolicy::Immediate);
+            trie.install_overlay();
+            let trie = Arc::new(trie);
+            trie.enable_eviction(EvictionConfig::without_memory_monitor())
+                .expect("enable eviction");
+            let generation_before = trie
+                .structural_generation
+                .load(std::sync::atomic::Ordering::Acquire);
+            let lsn_before = trie.current_lsn();
+            let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+            let (release_tx, release_rx) = mpsc::sync_channel(1);
+            let writer_trie = Arc::clone(&trie);
+            let writer_term = term.to_string();
+            let writer = thread::spawn(move || {
+                set_semantic_wal_rendezvous(Some(Box::new(move || {
+                    entered_tx.send(()).expect("announce first data WAL");
+                    release_rx.recv().expect("release idempotent writer");
+                })));
+                let result = writer_trie.insert_cas_durable(&writer_term);
+                set_semantic_wal_rendezvous(None);
+                result
+            });
+
+            entered_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("first writer reached WAL/CAS boundary");
+            assert!(trie
+                .insert_cas_durable(term)
+                .expect("competing insert publishes"));
+            release_tx.send(()).expect("release first writer");
+            assert!(!writer
+                .join()
+                .expect("first writer thread")
+                .expect("idempotent result"));
+
+            assert!(trie.contains_lockfree(term));
+            assert_eq!(trie.current_lsn(), lsn_before + 3);
+            assert_eq!(trie.committed_watermark.watermark(), trie.current_lsn() - 1);
+            assert_eq!(
+                trie.structural_generation
+                    .load(std::sync::atomic::Ordering::Acquire),
+                generation_before + 2,
+                "each semantic operation advances structure once; retry/control paths do not"
+            );
+            trie.disable_eviction().expect("disable eviction");
+        }
+    }
+
+    #[test]
+    fn char_real_cas_conflict_retries_one_pending_visibility_decision() {
+        use crate::persistent_artrie::core::eviction::EvictionConfig;
+        use crate::persistent_artrie::core::overlay::durable_write::set_semantic_cas_rendezvous;
+        use crate::EvictableARTrie;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = scratch("char-real-cas-conflict-permit");
+        let path = dir.path().join("t.artc");
+        let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
+        trie.set_durability_policy(DurabilityPolicy::Immediate);
+        trie.install_overlay();
+        let trie = Arc::new(trie);
+        trie.enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable eviction");
+        let generation_before = trie
+            .structural_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        let retries_before = trie.cas_retry_count();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let writer_trie = Arc::clone(&trie);
+        let calls_in_hook = Arc::clone(&calls);
+        let writer = thread::spawn(move || {
+            set_semantic_cas_rendezvous(Some(Box::new(move || {
+                let invocation = calls_in_hook.fetch_add(1, Ordering::AcqRel);
+                if invocation == 0 {
+                    entered_tx.send(()).expect("announce captured root");
+                    release_rx.recv().expect("release stale CAS");
+                }
+            })));
+            let result = writer_trie.insert_cas_durable("conflict-loser-retries");
+            set_semantic_cas_rendezvous(None);
+            result
+        });
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("writer captured the pre-conflict root");
+        assert!(trie
+            .insert_cas_durable("conflict-winner")
+            .expect("competing writer advances root"));
+        release_tx.send(()).expect("release stale CAS");
+        assert!(writer
+            .join()
+            .expect("retrying writer thread")
+            .expect("retrying insert succeeds"));
+
+        assert!(calls.load(Ordering::Acquire) >= 2);
+        assert!(trie.cas_retry_count() > retries_before);
+        assert_eq!(
+            trie.structural_generation
+                .load(std::sync::atomic::Ordering::Acquire),
+            generation_before + 2,
+            "a CAS retry must not advance character structure a second time"
+        );
+        assert!(trie.contains_lockfree("conflict-winner"));
+        assert!(trie.contains_lockfree("conflict-loser-retries"));
+        trie.disable_eviction().expect("disable eviction");
     }
 
     #[test]

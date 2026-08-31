@@ -72,14 +72,27 @@ fn collect_terms<N: DictionaryNode<Unit = char>>(
     prefix: &mut String,
     out: &mut BTreeSet<String>,
 ) {
-    if node.is_final() {
-        out.insert(prefix.clone());
+    let initial_prefix_len = prefix.len();
+    let mut pending = vec![(node.clone(), initial_prefix_len, None)];
+
+    while let Some((node, parent_prefix_len, incoming)) = pending.pop() {
+        prefix.truncate(parent_prefix_len);
+        if let Some(ch) = incoming {
+            prefix.push(ch);
+        }
+
+        if node.is_final() {
+            out.insert(prefix.clone());
+        }
+
+        let child_prefix_len = prefix.len();
+        let mut children: Vec<_> = node.edges().collect();
+        while let Some((ch, child)) = children.pop() {
+            pending.push((child, child_prefix_len, Some(ch)));
+        }
     }
-    for (ch, child) in node.edges() {
-        prefix.push(ch);
-        collect_terms(&child, prefix, out);
-        prefix.pop();
-    }
+
+    prefix.truncate(initial_prefix_len);
 }
 
 /// Walk from `root` to the node at `term` using ONLY repeated `transition(char)`

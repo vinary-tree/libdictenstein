@@ -358,7 +358,7 @@ fn test_stress_large_terms() {
     let dict = PersistentARTrie::<i32>::create(&path).expect("create dict");
     // F2 flag-1: the overlay spine is UN-path-compressed (one node per char), so a
     // 500-char term builds a ~500-deep structure. The value-write INSERT
-    // (`build_value_path_recursive`) is ITERATIVE (no stack growth with term length),
+    // (`build_value_path_iterative`) has no stack growth with term length,
     // and at this depth (≤500) the checkpoint serialize + Arc-spine drop fit the test
     // thread stack — so this runs UN-pinned on the overlay (feature-on `i32` flips) and
     // the owned tree (feature-off). No kill-switch.

@@ -3,9 +3,10 @@
 //! `install_overlay` is now `pub(crate)` (the overlay-install primitive, called by the ctors via
 //! `install_overlay_on_create`) +
 //! the owned `insert_cas`/`is_lockfree_enabled`/`merge_lockfree_to_persistent` are deleted. The
-//! immutable-trie CAS walk (`try_insert_lockfree_path` / `insert_lockfree_recursive` /
-//! `create_lockfree_path` / `find_in_lockfree_trie`) is RETAINED — it is the structural-sharing
-//! insert/lookup the overlay write path (`overlay_write_mode`) builds on.
+//! immutable-trie CAS walk (`try_insert_lockfree_path` / `create_lockfree_path` /
+//! `find_in_lockfree_trie`) is RETAINED — it is the structural-sharing insert/lookup the overlay
+//! write path (`overlay_write_mode`) builds on. Path copying uses an explicit heap spine and a
+//! reverse unwind, so native stack use is independent of term depth.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -16,12 +17,26 @@ use crate::persistent_artrie::char::nodes::persistent_node::Child as ChildGeneri
 use crate::persistent_artrie::char::nodes::{
     AtomicNodePtr as AtomicNodePtrGeneric, PersistentCharNode as PersistentCharNodeGeneric,
 };
+use crate::persistent_artrie::error::PersistentARTrieError;
 
 // Vocab overlay node value = `u64` vocabulary index (G1: char overlay node is now
 // generic; the vocab instantiates it at `V = u64`).
 type Child = ChildGeneric<u64>;
 type AtomicNodePtr = AtomicNodePtrGeneric<u64>;
 type PersistentCharNode = PersistentCharNodeGeneric<u64>;
+
+/// Failure to construct one immutable vocabulary path-copy candidate.
+///
+/// `AlreadyPresent` is the only normal insert-once refusal. `Unavailable` means
+/// the supposedly in-memory vocabulary overlay contained a null or durable child;
+/// `Failure` carries a resource error. Keeping these states distinct prevents a
+/// failed build from being accepted as if a concurrent writer had inserted the
+/// term.
+pub(super) enum VocabPathInsertError {
+    AlreadyPresent,
+    Unavailable,
+    Failure(PersistentARTrieError),
+}
 
 impl<S: crate::persistent_artrie::block_storage::BlockStorage>
     super::dict_impl::PersistentVocabARTrie<S>
@@ -48,77 +63,82 @@ impl<S: crate::persistent_artrie::block_storage::BlockStorage>
 
     /// Try to create a new root with the term inserted (lock-free version).
     ///
-    /// Returns `Ok(new_root)` if successful, `Err(existing_idx)` if term already exists.
+    /// Returns a new immutable root on success. Descent records a root-to-leaf
+    /// spine on the heap and reverse-unwinds it, so the method is stack-safe for
+    /// arbitrarily deep terms representable by the input slice.
     pub(super) fn try_insert_lockfree_path(
         &self,
         root: &Arc<PersistentCharNode>,
         chars: &[u32],
         index: u64,
-    ) -> std::result::Result<Arc<PersistentCharNode>, u64> {
+    ) -> std::result::Result<Arc<PersistentCharNode>, VocabPathInsertError> {
+        use crate::persistent_artrie::core::key_encoding::CharKey;
+        use crate::persistent_artrie::core::overlay::cas_walk::{
+            resolve_or_fault, unwind_spine, ChildResolution, FaultMode,
+        };
+        use crate::persistent_artrie::core::overlay::{
+            try_push_overlay_path_spine, OverlayNodeHandle, OverlayPathFrame, OverlayPathSpine,
+        };
+
         if chars.is_empty() {
             // Empty term - mark root as final
             if root.is_final() {
-                return Err(root.get_value().unwrap_or(0));
+                return Err(VocabPathInsertError::AlreadyPresent);
             }
             let new_root = root.as_final().with_value(index);
             return Ok(Arc::new(new_root));
         }
 
-        // Recursively create the path
-        self.insert_lockfree_recursive(root, chars, 0, index)
-    }
+        let mut spine = OverlayPathSpine::<CharKey, u64>::new();
+        let mut current = OverlayNodeHandle::Borrowed(root);
+        let mut cursor = 0;
 
-    /// Recursively create new nodes along the path (lock-free version).
-    fn insert_lockfree_recursive(
-        &self,
-        node: &Arc<PersistentCharNode>,
-        chars: &[u32],
-        depth: usize,
-        index: u64,
-    ) -> std::result::Result<Arc<PersistentCharNode>, u64> {
-        if depth == chars.len() {
-            // Reached the end - mark as final
-            if node.is_final() {
-                return Err(node.get_value().unwrap_or(0));
-            }
-            let new_node = node.as_final().with_value(index);
-            return Ok(Arc::new(new_node));
-        }
-
-        let c = chars[depth];
-
-        match node.find_child(c) {
-            Some(child) => {
-                // Child exists - recurse
-                if child.is_null() {
-                    return Err(0); // Shouldn't happen
+        loop {
+            if cursor == chars.len() {
+                if current.node().is_final() {
+                    return Err(VocabPathInsertError::AlreadyPresent);
                 }
+                let leaf = Arc::new(current.node().as_final().with_value(index));
+                return Ok(unwind_spine(spine, leaf));
+            }
 
-                match child.as_in_mem() {
-                    Some(child_arc) => {
-                        let child_arc = Arc::clone(child_arc);
-
-                        // Recurse into child
-                        let new_child =
-                            self.insert_lockfree_recursive(&child_arc, chars, depth + 1, index)?;
-
-                        // Create new node owning the updated child by `Arc`
-                        // (no raw-pointer smuggling).
-                        let new_node = node.with_child(c, Child::InMem(new_child));
-                        Ok(Arc::new(new_node))
-                    }
-                    None => {
-                        // On-disk child - not supported in lock-free mode yet
-                        Err(0)
-                    }
+            let unit = chars[cursor];
+            let child = match resolve_or_fault(
+                &current,
+                unit,
+                FaultMode::NoFaultIn,
+                |_| -> crate::persistent_artrie::core::error::Result<_> {
+                    unreachable!("vocabulary insertion never faults an on-disk edge")
+                },
+            ) {
+                ChildResolution::InMem(child) => child,
+                ChildResolution::Faulted(_) | ChildResolution::FaultFailed(_) => {
+                    unreachable!("no-fault vocabulary resolution cannot fault")
                 }
-            }
-            None => {
-                // Child doesn't exist - create new path
-                let new_child = self.create_lockfree_path(&chars[depth + 1..], index);
-                let new_node = node.with_child(c, Child::InMem(new_child));
-                Ok(Arc::new(new_node))
-            }
+                ChildResolution::Null => return Err(VocabPathInsertError::Unavailable),
+                ChildResolution::Absent => {
+                    let new_child = self.create_lockfree_path(&chars[cursor + 1..], index);
+                    let branch = Arc::new(current.node().with_child(unit, Child::InMem(new_child)));
+                    return Ok(unwind_spine(spine, branch));
+                }
+            };
+            try_push_overlay_path_spine(
+                &mut spine,
+                OverlayPathFrame {
+                    node: current,
+                    unit,
+                },
+                chars.len(),
+            )
+            .map_err(|source| {
+                VocabPathInsertError::Failure(PersistentARTrieError::allocation_failed(
+                    "vocabulary overlay insert path spine",
+                    chars.len(),
+                    source,
+                ))
+            })?;
+            current = child;
+            cursor += 1;
         }
     }
 
@@ -171,5 +191,99 @@ impl<S: crate::persistent_artrie::block_storage::BlockStorage>
     #[inline]
     pub fn cas_retries(&self) -> u64 {
         self.cas_retries.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::dict_impl::PersistentVocabARTrie;
+    use super::VocabPathInsertError;
+    use crate::persistent_artrie::char::nodes::persistent_node::{Child, PersistentCharNode};
+    use std::sync::Arc;
+
+    #[test]
+    fn one_hundred_thousand_deep_insert_and_drop_are_stack_safe() {
+        const DEPTH: usize = 100_000;
+
+        std::fs::create_dir_all("target/test-tmp").expect("create real-disk test scratch root");
+        let directory = tempfile::Builder::new()
+            .prefix("vocab-overlay-path-machine-deep")
+            .tempdir_in("target/test-tmp")
+            .expect("scratch tempdir under target/test-tmp");
+        let path = directory.path().join("deep.vocab");
+        let trie = PersistentVocabARTrie::create(&path).expect("create vocabulary trie");
+        let root_revision = trie
+            .lockfree_root
+            .as_ref()
+            .expect("lock-free overlay installed")
+            .load_revision()
+            .expect("published root revision");
+        let root = Arc::clone(root_revision.node());
+        let units = vec![u32::from('x'); DEPTH];
+
+        let inserted = trie
+            .try_insert_lockfree_path(&root, &units, 17)
+            .unwrap_or_else(|failure| match failure {
+                VocabPathInsertError::AlreadyPresent => {
+                    panic!("deep term unexpectedly present")
+                }
+                VocabPathInsertError::Unavailable => {
+                    panic!("deep in-memory vocabulary path unexpectedly unavailable")
+                }
+                VocabPathInsertError::Failure(error) => {
+                    panic!("deep vocabulary path construction failed: {error}")
+                }
+            });
+
+        assert_eq!(trie.find_in_lockfree_trie(&inserted, &units), Some(17));
+        assert!(super::super::dict_impl::overlay_subtree_all_in_mem(
+            &inserted
+        ));
+        assert!(
+            trie.lockfree_root
+                .as_ref()
+                .expect("lock-free overlay installed")
+                .compare_exchange_revision_counted(&root_revision, Arc::clone(&inserted), 1)
+                .is_ok(),
+            "publish deep vocabulary root"
+        );
+        let terms = trie.iter_terms().collect::<Vec<_>>();
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0].chars().count(), DEPTH);
+        drop(inserted);
+        drop(root);
+        drop(trie);
+    }
+
+    #[test]
+    fn vocabulary_insert_spill_failure_is_typed_and_non_mutating() {
+        use crate::persistent_artrie::core::overlay::{
+            overlay_spine_failpoint, INLINE_OVERLAY_DEPTH,
+        };
+
+        std::fs::create_dir_all("target/test-tmp").expect("create test scratch root");
+        let directory = tempfile::Builder::new()
+            .prefix("vocab-overlay-spill-failure")
+            .tempdir_in("target/test-tmp")
+            .expect("scratch tempdir");
+        let path = directory.path().join("spill.vocab");
+        let trie = PersistentVocabARTrie::create(&path).expect("create vocabulary trie");
+        let units = vec![u32::from('x'); INLINE_OVERLAY_DEPTH + 1];
+        let mut root = Arc::new(PersistentCharNode::<u64>::new().as_final().with_value(3));
+        for &unit in units.iter().rev() {
+            root = Arc::new(PersistentCharNode::<u64>::new().with_child(unit, Child::InMem(root)));
+        }
+        let root_before = Arc::clone(&root);
+        let _failpoint = overlay_spine_failpoint::fail_next_spill();
+
+        let result = trie.try_insert_lockfree_path(&root, &units, 4);
+
+        assert!(matches!(
+            result,
+            Err(VocabPathInsertError::Failure(
+                crate::persistent_artrie::error::PersistentARTrieError::AllocationFailed { .. }
+            ))
+        ));
+        assert!(Arc::ptr_eq(&root, &root_before));
     }
 }

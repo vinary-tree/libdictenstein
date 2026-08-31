@@ -41,11 +41,11 @@ At a glance, the corpus comprises:
 
 | Artifact class | Tool | Count | Headline guarantee |
 |----------------|------|------:|--------------------|
-| Rocq `.v` proof files | Rocq/Coq theorem proving | **72** | functional correctness + Map-ADT refinement |
-| Rocq propositions (`Theorem`+`Lemma`+`Corollary`+`Proposition`) | Rocq/Coq | **1,348** | all closed by `Qed.`/`Defined.`; **0** `Admitted` / **0** `Axiom` / **0** `Parameter` |
-| TLA⁺ modules (`.tla`) | TLA⁺ / TLC / SANY | **57** | concurrency safety, crash-recovery, linearizability, and starvation freedom (with **69** `.cfg` TLC configs) |
-| `unsafe` inventory rows | CI set-equality gate | **43** | every `unsafe` site mapped to a reviewed contract |
-| `unsafe` safety contracts | CI set-equality gate | **31** | each contract tied to a coverage class + evidence |
+| Rocq `.v` proof files | Rocq/Coq theorem proving | **83** | functional correctness + Map-ADT refinement |
+| Rocq propositions (`Theorem`+`Lemma`+`Corollary`+`Proposition`) | Rocq/Coq | **1,738** | all closed by `Qed.`/`Defined.`; **0** `Admitted` / **0** `Axiom` / **0** `Parameter` |
+| TLA⁺ modules (`.tla`) | TLA⁺ / TLC / SANY | **75** | concurrency safety, crash-recovery, linearizability, and starvation freedom (with **142** `.cfg` TLC configs) |
+| `unsafe` inventory patterns | CI set-equality gate | **268** | every grouped `unsafe` pattern mapped to a reviewed contract |
+| `unsafe` safety contracts | CI set-equality gate | **43** | each contract tied to a coverage class + evidence |
 
 > The two-pronged split is illustrated in
 > [Proof-artifact map](#proof-artifact-map) below; the spec↔Rust mapping is
@@ -53,7 +53,7 @@ At a glance, the corpus comprises:
 > boundary for `unsafe` is in [`UNSAFE_BOUNDARY.md`](UNSAFE_BOUNDARY.md).
 
 The current repo-wide coverage and remaining formalization candidates are
-tracked in [`GAP_LEDGER.md`](GAP_LEDGER.md). As of the 2026-08-19 audit, the
+tracked in [`GAP_LEDGER.md`](GAP_LEDGER.md). As of the 2026-08-25 audit, the
 only non-ARTrie stale model found in the refactor was the PathMap snapshot/ref
 surface, now covered by `rocq/Spec/PathMapSnapshotSpec.v`.
 
@@ -88,6 +88,7 @@ formal-verification/
 │   ├── ARTrieState.tla        # Abstract trie state
 │   ├── ArenaManager.tla       # Arena allocation/free-list model
 │   ├── SequentialSiblings.tla # Sibling-list traversal semantics
+│   ├── RetainedEdgeRangeTraversal.tla # Retained immutable-range ownership/publication
 │   ├── WAL.tla                # Write-ahead log specification
 │   ├── WAL_FileSystem.tla     # WAL refined onto POSIX filesystem
 │   ├── FileSystem.tla         # POSIX filesystem model (TOCTOU-aware)
@@ -107,6 +108,12 @@ formal-verification/
 │   ├── LockFreeARTrieLinearizability.tla # Byte lock-free root/cache model
 │   ├── LockFreeIndexedOverlay.tla # Char/vocab value/index overlay model
 │   ├── LockFreeCounterMergeAtomicity.tla # Checked counter merge model
+│   ├── EvictionExactRootPublication.tla # Lock-free exact-root authority/lifecycle model
+│   ├── HelpedRootResidency.tla # Root-owned helped packed-residency model
+│   ├── DetachedCallbackSeparation.tla # Detached compatibility capability model
+│   ├── CharV3ArenaPublication.tla # Character-node V2/V3 publication/migration model
+│   ├── PackedResidencyFreshCatalog.tla # Exact fresh-catalog rollover at ordinal exhaustion
+│   ├── OverlayTreeWitness.tla # Revision-bound arborescence authority for zero-census serialization
 │   ├── ConcurrentCheckpointPublication.tla # Mutation/checkpoint race model
 │   ├── AbiProducerSnapshot.tla # ABI immutable-capture/publication model
 │   ├── AbiSnapshotQuiescence.tla # ABI writer-admission/starvation model
@@ -127,9 +134,9 @@ formal-verification/
 │   ├── PART.cfg               # TLC configuration (no crash)
 │   └── PART_crash.cfg         # TLC configuration (with crash)
 │
-└── rocq/                      # Rocq/Coq proofs (72 .v files, 27,689 LOC,
-    │                            1,348 theorem/lemma/corollary propositions
-    │                            = 1,027 Theorem + 313 Lemma + 8 Corollary,
+└── rocq/                      # Rocq/Coq proofs (83 .v files, 35,844 LOC,
+    │                            1,738 theorem/lemma/corollary propositions
+    │                            = 1,364 Theorem + 356 Lemma + 18 Corollary,
     │                            0 Admitted / 0 Axiom / 0 Parameter)
     ├── Makefile               # Build system
     ├── Spec/                  # Specifications
@@ -238,6 +245,9 @@ formal-verification/
 | Public Read Snapshot Traversal | Safety | Byte/char/vocab public iteration, prefix iteration, and zipper-style traversal return exact visible snapshots or fail closed on lazy/disk corruption |
 | Public DictionaryNode Traversal | Safety | The faulting `DictionaryNode` walk reaches exactly the snapshot regardless of residency (`WalkReachesAllKeys`); faulting/reopen never drop a key; the non-faulting walk is sound but incomplete over swizzled children |
 | Eviction Walk EBR | Safety | No active reader observes a freed node under the gated unlink → retire → drain → free reclaim (`NoUseAfterFree`); a linked node is never freed; the gate is necessary (the property is violated with `Gated = FALSE`) |
+| Exact-Root Eviction Publication | Safety | Semantic mutation, exact eviction/fault residency, checkpoint binding, retirement fencing, and detached compatibility catalogs preserve one live immutable-root authority without runtime writer or callback permits |
+| Packed Residency Fresh-Catalog Rollover | Safety | Ordinal exhaustion publishes exactly one winning root with a distinct fully materialized catalog; every new cell matches the winner's logical residency, and retained helpers remain confined to the old catalog identity |
+| Character-Node V2/V3 Compatibility | Safety | The current reader accepts baseline V2 and current V2/V3; the old reader accepts current fixed V2 and rejects compact V3 before payload interpretation; only committed checksum-valid arenas become roots |
 | Concurrent Vocab Linearizability | Safety | Public insert/read/batch/checkpoint/recover histories have a sequential vocabulary-map explanation respecting real-time order |
 | Epoch Checkpoint Recovery | Safety | Epoch metadata is published only after the trie checkpoint, and WAL cleanup retains recovery evidence for visible operations |
 | Transaction Increment Recovery | Safety | Transaction increment aggregation/current-value overflow fails before commit WAL publication, and replay stops before overflowed `BatchIncrement` suffixes |
@@ -267,7 +277,7 @@ formal-verification/
 | Substring Candidate Correctness | Safety | Exact substring APIs return the reference occurrence set needed by fuzzy-search candidate generation |
 | SCDAWG Occurrence Construction | Safety | Forward traversal, left-extension closure, `locations`, and `freq` refine exact reference substring occurrences |
 | Fuzzy Candidate Coverage | Safety | Splitting a query into `budget + 1` nonempty pieces guarantees at least one surviving exact substring candidate for in-budget terms |
-| Public Serialization Roundtrip | Safety | Term-only, value-aware, gzip-wrapped, protobuf, DAT-protobuf, and suffix-protobuf serializers preserve their reference semantics, and malformed payloads fail closed |
+| Public Serialization Roundtrip | Safety | Term-only, value-aware, gzip-wrapped, protobuf, DAT-protobuf, and suffix-protobuf serializers preserve their reference semantics; retained edge-range iteration refines recursive depth-first traversal; V2 two-vector event commits are failure-atomic; and malformed payloads fail closed |
 
 ### Running TLC Model Checker
 
@@ -553,11 +563,12 @@ make check-Model/Key
 
 ### Proof Status
 
-As of 2026-08-19: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
-0 `Parameter` across the **72** `.v` files (verified by grep, see
+As of 2026-08-30: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
+0 `Parameter` across the **83** `.v` files (verified by anchored source scan and
+full Rocq compilation; see
 [VERIFICATION_RESULTS.md](VERIFICATION_RESULTS.md) for the per-file tally). The
-aggregate is **1,348** propositions = 1,027 `Theorem` + 313 `Lemma` +
-8 `Corollary` + 0 `Proposition`. The status table below lists the
+aggregate is **1,738** propositions = 1,364 `Theorem` + 356 `Lemma` +
+18 `Corollary` + 0 `Proposition`. The status table below lists the
 longest-standing modules; the live tree additionally carries the overlay
 codec/reestablish, eviction-registry, char-node-layout, persistent-SCDAWG,
 persistent-suffix-automaton, prefix-chunking, U64, and worker-lifecycle specs
@@ -605,11 +616,20 @@ introduced in the L-campaign and eviction work.
 | SubstringSearchSpec.v | Complete | Exact substring candidate, occurrence-position, and limited-result laws |
 | ScdawgOccurrenceSpec.v | Complete | SCDAWG forward traversal, left-extension closure, `locations`, and `freq` occurrence exactness laws |
 | FuzzyCandidateCoverageSpec.v | Complete | WallBreaker query-piece pigeonhole and fuzzy candidate coverage laws |
-| SerializationRoundtripSpec.v | Complete | Public serializer membership/value roundtrip, legacy value-dropping, gzip/protobuf feature-codec, and fail-closed malformed-payload laws |
+| SerializationRoundtripSpec.v | Complete | Public serializer membership/value roundtrip, legacy value-dropping, gzip/protobuf feature-codec, retained-range DFS refinement, two-vector V2 authorization/commit atomicity, and fail-closed malformed-payload laws |
 | ARTrieSpec.v | Complete (0 Admitted) | ARTrie specification incl. normalized checked construction and insert/delete correctness theorems |
 | ReplicatedMapSpec.v | Complete | Replicated put/remove log replay over the map-entry reference model |
 | DictionaryNodeReopenTraversalSpec.v | Complete (0 Admitted) | Faulting `DictionaryNode` traversal is residency-invariant (equals the snapshot regardless of swizzled children), reopen preserves it, `edges` enumerates all children, and the non-faulting walk is sound but strictly incomplete over swizzled children |
 | PersistentCharEpochReclamationSpec.v | Complete (0 Admitted) | Eviction-vs-walk EBR: no active reader observes a freed node, preserved as a state invariant of the gated unlink → retire → drain → free protocol |
+| EvictionExactRootPublicationSpec.v | Complete (0 Admitted) | Semantic unbinding, exact root/catalog/generation authority, winning and losing exact publication, retirement fencing, generation freshness, failed-publication preservation, and reflexive-transitive closure |
+| HelpedRootResidencySpec.v | Complete (0 Admitted) | The immutable root is the sole logical and accounting authority; helpers materialize only root-stamped packed residency and cannot publish early, cross retirement, or grant catalog authority |
+| DetachedCallbackSeparationSpec.v | Complete (0 Admitted) | Detached `ArcSwap` callback snapshots remain immutable across replacement, cannot observe or authorize exact catalogs, and may overlap semantic publication without blocking it |
+| CharV3TypeEncodingSpec.v | Complete (0 Admitted) | Complete writer × reader × mode × node-kind compatibility matrix, exact packed type semantics, minimal fixed-rate payload capacity, deterministic codec choice, migration preservation, and stack-safe streamed emission |
+| ApiFeatureVisibilitySpec.v | Complete (0 Admitted) | Established causal API exports remain unconditional, while persistent serialization instrumentation is public exactly when `perf-instrumentation` is enabled |
+| TlcDiagnosticClassifierSpec.v | Complete (0 Admitted) | Both TLC invariant-violation forms are accepted only for the exact required invariant name; mismatched names are rejected |
+| PackedResidencyRefinementSpec.v | Complete (0 Admitted) | Exact packed-cell decoding, delayed-helper generation isolation, total fresh-generation rollover, sparse-delta and aggregate refinement, sealed prepared-target exactness, streamed interval coverage, geometric transition construction, and observationally exact catalog-metadata erasure |
+| ResidentBudgetEvictionSpec.v | Complete (0 Admitted) | Finite preorder-closure partitioning, unique ownership, positive-gain candidate selection, exact minimum-prefix cap satisfaction, downward-closed plans, stale-snapshot fallback, and one-pass convergence |
+| OverlayFaultProvenanceSpec.v | Complete (0 Admitted) | Exact decode/checkpoint fault stamps, prepared-source binding, CAS winner/loser authorization, root-advance rejection, path-copy stamp clearing, truthful detached registries, re-eviction, and mismatch rejection |
 | StructuralInvariants.v | Complete (0 Admitted) | Structural invariants |
 | TransitionInvariants.v | Complete (0 Admitted) | Node transition proofs (corrected `_after_insert` / `_with_lower_bound` variants) |
 | ArenaInvariants.v | Complete | Arena allocation invariants |
@@ -701,7 +721,8 @@ This full spec↔Rust correspondence table is the authoritative source for the
 | `SubstringSearchSpec.v` | `tests/substring_candidate_correspondence.rs`, public `SubstringDictionary` APIs for byte and Unicode SCDAWG candidate generation |
 | `ScdawgOccurrenceSpec.v` | `tests/scdawg_occurrence_correspondence.rs`, byte and Unicode SCDAWG `find`/`freq`/`locations`, handle-based `freq_at`/`locations_at`, and left-extension traversal |
 | `FuzzyCandidateCoverageSpec.v` | `tests/fuzzy_candidate_coverage_correspondence.rs`, WallBreaker-style query-piece candidate coverage over byte and Unicode SCDAWG substring APIs |
-| `SerializationRoundtripSpec.v` | `tests/serialization_correspondence.rs`, `tests/serialization_value_roundtrip.rs`, `tests/protobuf_compression_correspondence.rs`, and public Bincode/JSON/plaintext/gzip/protobuf serializer APIs under `--features serialization` and `--features "serialization protobuf compression"` |
+| `SerializationRoundtripSpec.v` | `tests/serialization_correspondence.rs`, `tests/serialization_value_roundtrip.rs`, `tests/protobuf_compression_correspondence.rs`, `src/serialization/protobuf_impl.rs`, and public Bincode/JSON/plaintext/gzip/protobuf serializer APIs under `--features serialization` and `--features "serialization protobuf compression"`; the V2 sink reserves both logical outputs before one exact spare-capacity commit |
+| `RetainedEdgeRangeTraversal.tla` | `src/lib.rs`, `src/dynamic_dawg/{lockfree,ascii,char,u64}.rs`, and `src/serialization/protobuf_impl.rs`; retained owners keep inline or spilled immutable edge storage live, range steps remain within one allocation, and local traversal failure cannot partially publish an external protobuf |
 | `ByzantineRecovery.v` | `src/persistent_artrie/core/recovery.rs` authenticated-record boundary |
 | `CertifiedReference.v` / `ProofCarryingExtraction.v` | reference and certified-trace boundaries exercised by `tests/persistent_artrie_formal_correspondence.rs` |
 

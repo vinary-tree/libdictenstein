@@ -362,19 +362,62 @@ pub struct CharNodeArena {
 }
 
 impl CharNodeArena {
-    /// Create a new empty arena with the specified size
-    pub fn new(size: usize) -> Self {
-        let mut data = vec![0u8; size];
+    /// Return whether one record of `allocation_size` bytes can fit in a
+    /// newly-created arena of `arena_size` bytes.
+    ///
+    /// This is the allocation planner's non-mutating rollover predicate. It
+    /// deliberately uses checked arithmetic and enforces the on-disk u32
+    /// coordinate limit before an arena buffer is allocated.
+    pub(crate) fn empty_can_allocate(arena_size: usize, allocation_size: usize) -> bool {
+        if arena_size < HEADER_SIZE || u32::try_from(arena_size).is_err() {
+            return false;
+        }
+        let Some(needed) = allocation_size
+            .checked_add(SLOT_SIZE)
+            .and_then(|size| size.checked_add(MIN_FREE_SPACE))
+        else {
+            return false;
+        };
+        let Some(available) = arena_size.checked_sub(HEADER_SIZE) else {
+            return false;
+        };
+        u32::try_from(allocation_size).is_ok() && available >= needed
+    }
+
+    /// Fallibly create a new empty arena.
+    pub(crate) fn try_new(size: usize) -> Result<Self> {
+        if size < HEADER_SIZE {
+            return Err(PersistentARTrieError::internal(format!(
+                "char arena size {size} is smaller than its {HEADER_SIZE}-byte header"
+            )));
+        }
+        u32::try_from(size).map_err(|_| {
+            PersistentARTrieError::internal(format!(
+                "char arena size {size} exceeds the u32 persistent offset range"
+            ))
+        })?;
+
+        let mut data = Vec::new();
+        data.try_reserve_exact(size).map_err(|source| {
+            PersistentARTrieError::allocation_failed("char arena buffer", size, source)
+        })?;
+        data.resize(size, 0);
         let header = ArenaHeader::new(size);
         header.to_bytes(&mut data[0..HEADER_SIZE]);
 
-        Self {
+        Ok(Self {
             data,
             header,
             block_id: None,
             dirty: true,
             max_data_offset: HEADER_SIZE as u32,
-        }
+        })
+    }
+
+    /// Create a new empty arena with the specified size
+    pub fn new(size: usize) -> Self {
+        Self::try_new(size)
+            .unwrap_or_else(|error| panic!("failed to create {size}-byte char arena: {error}"))
     }
 
     /// Create a new arena with default BLOCK_SIZE
@@ -488,8 +531,13 @@ impl CharNodeArena {
     /// Check if this arena can fit an allocation of the given size
     pub fn can_allocate(&self, size: usize) -> bool {
         // Need space for data + slot entry + minimum free space
-        let needed = size + SLOT_SIZE + MIN_FREE_SPACE;
-        self.header.available_space() >= needed
+        let Some(needed) = size
+            .checked_add(SLOT_SIZE)
+            .and_then(|value| value.checked_add(MIN_FREE_SPACE))
+        else {
+            return false;
+        };
+        u32::try_from(size).is_ok() && self.header.available_space() >= needed
     }
 
     /// Allocate space for data and return the slot ID
@@ -501,10 +549,27 @@ impl CharNodeArena {
             return None;
         }
 
+        let len_u32 = u32::try_from(len).ok()?;
+        let data_start = usize::try_from(self.header.free_offset).ok()?;
+        let data_end = data_start.checked_add(len)?;
+        self.data.get(data_start..data_end)?;
+        let next_free_offset = self.header.free_offset.checked_add(len_u32)?;
+        let next_directory_start = self
+            .header
+            .directory_start
+            .checked_sub(u32::try_from(SLOT_SIZE).ok()?)?;
+        if next_free_offset > next_directory_start {
+            return None;
+        }
+        let slot_offset = usize::try_from(next_directory_start).ok()?;
+        let slot_end = slot_offset.checked_add(SLOT_SIZE)?;
+        self.data.get(slot_offset..slot_end)?;
+        let next_node_count = self.header.node_count.checked_add(1)?;
+
         // Allocate data space (bump upward)
         let data_offset = self.header.free_offset;
-        self.data[data_offset as usize..(data_offset as usize + len)].copy_from_slice(data);
-        self.header.free_offset += len as u32;
+        self.data[data_start..data_end].copy_from_slice(data);
+        self.header.free_offset = next_free_offset;
 
         // Track max data offset for compact encoding
         if self.header.free_offset > self.max_data_offset {
@@ -512,14 +577,13 @@ impl CharNodeArena {
         }
 
         // Allocate slot entry (grow downward)
-        self.header.directory_start -= SLOT_SIZE as u32;
-        let slot_offset = self.header.directory_start as usize;
-        let slot = SlotEntry::new(data_offset, len as u32);
-        slot.to_bytes(&mut self.data[slot_offset..slot_offset + SLOT_SIZE]);
+        self.header.directory_start = next_directory_start;
+        let slot = SlotEntry::new(data_offset, len_u32);
+        slot.to_bytes(&mut self.data[slot_offset..slot_end]);
 
         // Update node count
         let slot_id = self.header.node_count;
-        self.header.node_count += 1;
+        self.header.node_count = next_node_count;
 
         // Write updated header
         self.header.to_bytes(&mut self.data[0..HEADER_SIZE]);

@@ -657,6 +657,75 @@ impl<V: DictionaryValue> DictionaryNode for DynamicDawgU64Node<V> {
         })
     }
 
+    #[inline]
+    fn supports_efficient_snapshot_cursor_edge_paging(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn visit_snapshot_cursor_edge_page<F>(
+        &self,
+        cursor: Self::SnapshotCursor,
+        start: usize,
+        capacity: usize,
+        visitor: F,
+    ) -> Option<(bool, usize)>
+    where
+        F: FnMut(u64, Self::SnapshotCursor),
+    {
+        // SAFETY: inherited from the trait contract; `self` retains the exact
+        // immutable revision that produced `cursor` and all emitted children.
+        Some(unsafe { DawgNodeU64::<V>::visit_cursor_edge_page(cursor, start, capacity, visitor) })
+    }
+
+    #[inline]
+    fn supports_efficient_snapshot_cursor_edge_ranges(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_edge_range_start(
+        &self,
+        cursor: Self::SnapshotCursor,
+    ) -> Option<crate::SnapshotEdgeRangeStart<u64, Self::SnapshotCursor, Self>> {
+        // SAFETY: inherited from the trait contract; `self` retains the exact
+        // immutable revision that owns the cursor and returned storage.
+        let native = unsafe { DawgNodeU64::<V>::cursor_edge_range_start(cursor) };
+        let is_final = native.is_final();
+        let total = native.total_edge_count();
+        let (first, remaining) = native.into_first_and_remaining();
+        let remaining = remaining.map(|token| {
+            let (current, end) = token.into_raw_parts();
+            // SAFETY: this public wrapper denotes the exact native backend.
+            unsafe { crate::SnapshotEdgeRangeToken::from_raw_parts(current, end) }
+        });
+        Some(crate::SnapshotEdgeRangeStart::new(
+            is_final, total, first, remaining,
+        ))
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_edge_range_step(
+        &self,
+        token: crate::SnapshotEdgeRangeToken<Self>,
+    ) -> Option<(
+        u64,
+        Self::SnapshotCursor,
+        Option<crate::SnapshotEdgeRangeToken<Self>>,
+    )> {
+        let (current, end) = token.into_raw_parts();
+        // SAFETY: the wrapper marker changes while both provenances remain.
+        let native = unsafe { crate::SnapshotEdgeRangeToken::from_raw_parts(current, end) };
+        // SAFETY: `native` denotes the same retained immutable edge range.
+        let (label, child, remaining) = unsafe { DawgNodeU64::<V>::cursor_edge_range_step(native) };
+        let remaining = remaining.map(|token| {
+            let (current, end) = token.into_raw_parts();
+            // SAFETY: same exact wrapper/backend relation as at method entry.
+            unsafe { crate::SnapshotEdgeRangeToken::from_raw_parts(current, end) }
+        });
+        Some((label, child, remaining))
+    }
+
     fn is_final(&self) -> bool {
         self.node.is_final
     }

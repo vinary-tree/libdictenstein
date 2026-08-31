@@ -233,3 +233,25 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persistent_artrie::core::key_encoding::ByteKey;
+
+    #[test]
+    fn builder_drop_is_stack_safe_at_one_hundred_thousand_depth() {
+        const DEPTH: usize = 100_000;
+
+        let mut root = OverlayBuilderNode::<ByteKey, ()>::new();
+        let mut cursor = &mut root;
+        for _ in 0..DEPTH {
+            cursor = cursor
+                .children
+                .entry(0)
+                .or_insert_with(|| Box::new(OverlayBuilderNode::new()));
+        }
+
+        drop(root);
+    }
+}

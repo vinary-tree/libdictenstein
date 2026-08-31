@@ -26,10 +26,9 @@
 //! # When `Child::OnDisk` overlay children actually occur
 //!
 //! A reader-visible OnDisk overlay child arises ONLY from overlay **eviction**
-//! (`evict_overlay_nodes`, `#[cfg(feature = "bench-internals")]`/test-only). char
-//! has that eviction driver + the production read/write fault-in; byte has neither
-//! (its routed overlay is always fully `Child::InMem`). The faulter is supplied on
-//! the paths where eviction is possible (the `Shared*ARTrie` walks, which hold
+//! through the generation-qualified compact-batch driver. Byte and character
+//! variants both have production eviction and read/write fault-in paths. The
+//! faulter is supplied where eviction is possible (the `Shared*ARTrie` walks, which hold
 //! the trie behind an `Arc<..>` and can call the faulting loader); the inherent
 //! `root(&self)` walks pass `None` (eviction is impossible on an owned trie, so
 //! no OnDisk child can appear). A
@@ -39,6 +38,7 @@
 
 use std::sync::Arc;
 
+use crate::persistent_artrie::core::error::Result;
 use crate::persistent_artrie::core::key_encoding::KeyEncoding;
 use crate::persistent_artrie::core::overlay::node::OverlayNode;
 use crate::persistent_artrie::core::swizzled_ptr::SwizzledPtr;
@@ -52,11 +52,19 @@ use crate::persistent_artrie::core::swizzled_ptr::SwizzledPtr;
 /// handle (which is `Send + Sync`) can carry an `Arc<dyn OverlayFaulter<K, V>>`.
 pub trait OverlayFaulter<K: KeyEncoding, V>: Send + Sync {
     /// Fault in (load + deserialize from disk) the overlay node behind an already
-    /// located `Child::OnDisk` slot, returning a fresh owned overlay `Arc` whose
-    /// own children stay `Child::OnDisk` (single-level / lazy — the overlay fault
-    /// granularity). Returns `None` if the slot is null/unresolvable or the load
-    /// fails — both degrade to "no child" (the only non-panicking mapping the
-    /// infallible `DictionaryNode` API admits; a transient I/O error yields a miss,
-    /// never UB). The fault writes nothing to disk and advances no watermark.
-    fn fault_overlay_slot(&self, slot: &SwizzledPtr) -> Option<Arc<OverlayNode<K, V>>>;
+    /// located non-null `Child::OnDisk` slot. The exact typed failure is retained
+    /// so durable mutations can distinguish storage failure from proven absence.
+    /// The returned node is a fresh owned overlay `Arc` whose children remain
+    /// `Child::OnDisk` (single-level / lazy fault granularity). The fault writes
+    /// nothing to disk and advances no watermark.
+    fn try_fault_overlay_slot(&self, slot: &SwizzledPtr) -> Result<Arc<OverlayNode<K, V>>>;
+
+    /// Best-effort adapter for infallible read/traversal interfaces whose contract
+    /// explicitly permits an unavailable child to appear absent. Durable mutation
+    /// and any API that promises exact error reporting must call
+    /// [`Self::try_fault_overlay_slot`] instead.
+    #[inline]
+    fn fault_overlay_slot(&self, slot: &SwizzledPtr) -> Option<Arc<OverlayNode<K, V>>> {
+        self.try_fault_overlay_slot(slot).ok()
+    }
 }

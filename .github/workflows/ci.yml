@@ -74,8 +74,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: cargo build
         run: cargo build ${{ matrix.features }} --verbose
+      - name: verify protobuf feature isolation
+        if: matrix.features-name == 'protobuf'
+        run: |
+          cargo rustc --lib --no-default-features --features protobuf -- --print cfg > target/protobuf-root-cfg.txt
+          grep -Fx 'feature="protobuf"' target/protobuf-root-cfg.txt
+          if grep -Fxq 'feature="serialization"' target/protobuf-root-cfg.txt; then
+            echo 'protobuf must not enable the independent serialization feature' >&2
+            exit 1
+          fi
       - name: cargo test
         run: cargo test ${{ matrix.features }} --verbose --no-fail-fast
+      - name: verify performance-instrumentation API visibility
+        if: matrix.features-name == 'no-default-features'
+        run: bash scripts/verify-api-feature-visibility.sh
 
   # -----------------------------------------------------------------
   # `cargo clippy` with `-D warnings`. Catches all the lint regressions
@@ -215,12 +227,68 @@ jobs:
           components: rust-src
       - name: Run ${{ matrix.sanitizer }}sanitizer
         env:
-          RUSTFLAGS: "-Z sanitizer=${{ matrix.sanitizer }}"
+          RUSTFLAGS: "-C target-feature=+aes,+sse2 -Z sanitizer=${{ matrix.sanitizer }}"
         run: |
-          cargo +nightly test \
+          # Loom uses stackful generator contexts that LLVM's sanitizers cannot
+          # instrument soundly.  Those schedule-exhaustive targets run in the
+          # ordinary and formal jobs; keep sanitizer coverage on native-stack
+          # targets.  AddressSanitizer's lib pass disables leak checking only
+          # because its crash-recovery unit tests deliberately `mem::forget`
+          # complete dictionaries.  Integration targets that deliberately leak
+          # are excluded from the address pass, so LeakSanitizer remains active
+          # everywhere else.
+          cargo_test=(cargo +nightly test)
+          if [[ "${{ matrix.sanitizer }}" == thread ]]; then
+            # TSan changes Rust's ABI. Rebuild `std` with the same sanitizer;
+            # never suppress the mismatch with unsafe-allow-abi-mismatch.
+            cargo_test+=(-Z build-std)
+          fi
+
+          integration_targets=()
+          for source in tests/*.rs; do
+            if grep -Eq '(^|[^[:alnum:]_])loom::' "$source"; then
+              echo "sanitizer-excluded Loom target: $source"
+              continue
+            fi
+            if [[ "${{ matrix.sanitizer }}" == address ]] && grep -Fq 'mem::forget' "$source"; then
+              echo "address-sanitizer-excluded crash target: $source"
+              continue
+            fi
+            target="${source#tests/}"
+            integration_targets+=(--test "${target%.rs}")
+          done
+          test "${#integration_targets[@]}" -gt 0
+
+          if [[ "${{ matrix.sanitizer }}" == address ]]; then
+            ASAN_OPTIONS=detect_leaks=0 "${cargo_test[@]}" \
+              --target x86_64-unknown-linux-gnu \
+              --all-features \
+              --lib \
+              --no-fail-fast
+          else
+            "${cargo_test[@]}" \
+              --target x86_64-unknown-linux-gnu \
+              --all-features \
+              --lib \
+              --no-fail-fast
+          fi
+
+          "${cargo_test[@]}" \
             --target x86_64-unknown-linux-gnu \
             --all-features \
+            "${integration_targets[@]}" \
             --no-fail-fast
+
+          # This mixed target has ordinary correspondence tests plus three
+          # `loom_*` models.  Preserve sanitizer coverage for its ordinary
+          # tests while leaving only the stackful models to the Loom jobs.
+          "${cargo_test[@]}" \
+            --target x86_64-unknown-linux-gnu \
+            --all-features \
+            --test dynamic_dawg_u64_correspondence \
+            --no-fail-fast \
+            -- \
+            --skip loom_
 
   # -----------------------------------------------------------------
   # Rocq proofs. Requires `coqc` >= 9.1 on the runner.

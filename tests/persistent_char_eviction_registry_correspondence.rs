@@ -49,7 +49,7 @@ fn build(path: &Path) -> SharedCharARTrie<i32> {
 }
 
 /// TLA `NoPublishWithoutVerify` + Rocq `publish_empty_unless_verified`:
-/// `checkpoint()` calls `update_disk_registry` only AFTER `verify_checkpoint()`
+/// `checkpoint()` publishes exact registry authority only AFTER `verify_checkpoint()`
 /// succeeds, so the published registry is empty (eviction selects nothing) until
 /// the first checkpoint.
 #[test]
@@ -106,11 +106,12 @@ fn evicted_entries_reference_durable_data() {
     }
 }
 
-/// TLA `Mutate` action (the A1 fix): a write invalidates the published registry,
-/// preserving `RegistryEntriesAreDurable` across mutations -- eviction selects
-/// nothing until the next checkpoint republishes a fresh registry.
+/// TLA `Mutate` action (the A1 fix): a write's semantic root CAS clears the
+/// exact eviction binding, preserving `RegistryEntriesAreDurable` across
+/// mutations -- eviction selects nothing until the next checkpoint publishes a
+/// fresh root-bound catalog.
 #[test]
-fn write_invalidates_published_registry() {
+fn write_clears_exact_eviction_binding() {
     let dir = tempdir().expect("tempdir");
     let shared = build(&dir.path().join("invalidate.trie"));
     shared
@@ -120,7 +121,7 @@ fn write_invalidates_published_registry() {
     shared.write().checkpoint().expect("checkpoint");
     assert!(shared.force_eviction(1 << 20).expect("force").0 >= 1);
 
-    // Re-publish, then mutate: invalidation makes eviction a no-op.
+    // Re-publish, then mutate: the unbound successor makes eviction a no-op.
     shared.write().checkpoint().expect("re-checkpoint");
     assert!(put(&shared, "newcomer", 99));
     assert_eq!(shared.force_eviction(1 << 20).expect("force"), (0, 0));

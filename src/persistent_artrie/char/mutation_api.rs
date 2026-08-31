@@ -25,10 +25,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// body runs (the one-release fallback — NO mutation logic duplicated).
     pub fn insert(&self, term: &str) -> Result<bool> {
         // Overlay path: Order-A WAL-then-CAS over the immutable overlay. The primitive
-        // itself does the WAL append (chokepoint = `invalidate_eviction_registry`), the
-        // visibility CAS, and the committed-watermark advance — so the
-        // registry-invalidation contract and `NoLostWriteUnderLockFreeCommit` hold by
-        // construction.
+        // primitive itself appends the WAL record, prepares an unbound semantic
+        // successor, publishes it with the visibility CAS, and advances the
+        // committed watermark. Thus exact eviction authority is cleared at the
+        // semantic linearization point and `NoLostWriteUnderLockFreeCommit` holds
+        // by construction.
         self.insert_cas_durable(term)
     }
 

@@ -103,6 +103,8 @@ impl<V: DictionaryValue>
                 DurabilityPolicy::default(),
             ),
             eviction_coordinator: std::sync::Mutex::new(None),
+            registry_publication_gate:
+                crate::persistent_artrie::core::eviction::RegistryPublicationGate::new(),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
             lockfree_root: None,
@@ -244,6 +246,8 @@ impl<V: DictionaryValue>
                 DurabilityPolicy::default(),
             ),
             eviction_coordinator: std::sync::Mutex::new(None),
+            registry_publication_gate:
+                crate::persistent_artrie::core::eviction::RegistryPublicationGate::new(),
             prefetcher: crate::persistent_artrie::prefetch::Prefetcher::new(),
             _phantom: std::marker::PhantomData,
             lockfree_root: None,

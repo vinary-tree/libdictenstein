@@ -24,8 +24,10 @@ use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::core::adaptive_edge_store::SortedUniqueEntries;
 use crate::persistent_artrie::core::committed_watermark::CommittedWatermark;
 use crate::persistent_artrie::core::key_encoding::{KeyEncoding, U64Key};
-use crate::persistent_artrie::core::overlay::atomic_ptr::AtomicNodePtr;
-use crate::persistent_artrie::core::overlay::compressed_serialize::OverlayCompressedSerialize;
+use crate::persistent_artrie::core::overlay::atomic_ptr::{AtomicNodePtr, RootRevision};
+use crate::persistent_artrie::core::overlay::compressed_serialize::{
+    OverlayCompressedSerialize, OverlaySerializationBuild,
+};
 use crate::persistent_artrie::core::overlay::dict_node::OverlayDictionaryNode;
 use crate::persistent_artrie::core::overlay::node::{Child, OverlayNode};
 use crate::persistent_artrie::core::recovery::{reconcile_lww_with_regime, RecoveredOperation};
@@ -239,6 +241,7 @@ impl<V: DictionaryValue, const PREFIX: usize> OverlayCompressedSerialize<U64Key<
         projected: &Self::Projected,
         _child_disk_ptrs: &[(u64, SwizzledPtr)],
         _path: &[u64],
+        _registry_path: crate::persistent_artrie::core::eviction::RegistryPathId,
         _registry: Option<&mut crate::persistent_artrie::eviction::DiskLocationRegistry>,
     ) -> Result<SwizzledPtr> {
         let mut nodes = self
@@ -259,10 +262,6 @@ impl<V: DictionaryValue, const PREFIX: usize> OverlayCompressedSerialize<U64Key<
 
     fn new_synth_node() -> U64Node<V, PREFIX> {
         U64Node::<V, PREFIX>::new()
-    }
-
-    fn stamp_durable(live: &U64Node<V, PREFIX>, raw: u64) {
-        live.set_durable_stamp(raw);
     }
 }
 
@@ -456,7 +455,8 @@ fn write_snapshot_file<V: DictionaryValue, const PREFIX: usize>(
     ensure_parent(path)?;
 
     let builder = U64CxSnapshotBuilder::default();
-    let root_ptr = builder.serialize_compressed_loop(root, None)?;
+    let mut serialization = OverlaySerializationBuild::dag_disabled();
+    let root_ptr = builder.serialize_compressed_loop(root, &mut serialization)?;
     let nodes = builder.into_nodes()?;
 
     let encoded_prefix = u32::try_from(PREFIX).map_err(|_| {
@@ -1222,9 +1222,16 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
     }
 
     pub fn root_arc(&self) -> Arc<U64Node<V, PREFIX>> {
-        self.root
-            .load()
-            .unwrap_or_else(|| Arc::new(U64Node::<V, PREFIX>::new()))
+        Arc::clone(self.root_revision().node())
+    }
+
+    fn root_revision(&self) -> RootRevision<U64Key<PREFIX>, V> {
+        loop {
+            if let Some(revision) = self.root.load_revision() {
+                return revision;
+            }
+            let _ = self.root.try_init(Arc::new(U64Node::<V, PREFIX>::new()));
+        }
     }
 
     /// Capture a traversal root and exact cardinality from one atomic revision.
@@ -1325,16 +1332,18 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
 
     fn insert_sequence_cas(&self, sequence: &[u64], value: Option<V>) -> bool {
         loop {
-            let root = self.root_arc();
+            let revision = self.root_revision();
+            let root = revision.node();
             let Some((new_root, inserted)) =
-                Self::build_insert_path(&root, sequence, 0, value.clone())
+                Self::build_insert_path(root, sequence, 0, value.clone())
             else {
                 return false;
             };
-            match self
-                .root
-                .compare_exchange_counted(&root, new_root, isize::from(inserted))
-            {
+            match self.root.compare_exchange_revision_counted(
+                &revision,
+                new_root,
+                isize::from(inserted),
+            ) {
                 Ok(_) => {
                     if inserted {
                         self.term_count.fetch_add(1, Ordering::AcqRel);
@@ -1349,16 +1358,18 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
     fn insert_sequence_cas_ranked(&self, sequence: &[u64], value: Option<V>) -> U64CasOutcome {
         loop {
             let generation = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
-            let root = self.root_arc();
+            let revision = self.root_revision();
+            let root = revision.node();
             let Some((new_root, inserted)) =
-                Self::build_insert_path(&root, sequence, 0, value.clone())
+                Self::build_insert_path(root, sequence, 0, value.clone())
             else {
                 return U64CasOutcome::Idempotent;
             };
-            match self
-                .root
-                .compare_exchange_counted(&root, new_root, isize::from(inserted))
-            {
+            match self.root.compare_exchange_revision_counted(
+                &revision,
+                new_root,
+                isize::from(inserted),
+            ) {
                 Ok(_) => {
                     if inserted {
                         self.term_count.fetch_add(1, Ordering::AcqRel);
@@ -1411,14 +1422,16 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
 
     fn remove_sequence_cas(&self, sequence: &[u64]) -> bool {
         loop {
-            let root = self.root_arc();
-            let Some((new_root, removed)) = Self::build_remove_path(&root, sequence, 0) else {
+            let revision = self.root_revision();
+            let root = revision.node();
+            let Some((new_root, removed)) = Self::build_remove_path(root, sequence, 0) else {
                 return false;
             };
-            match self
-                .root
-                .compare_exchange_counted(&root, new_root, -isize::from(removed))
-            {
+            match self.root.compare_exchange_revision_counted(
+                &revision,
+                new_root,
+                -isize::from(removed),
+            ) {
                 Ok(_) => {
                     if removed {
                         self.term_count.fetch_sub(1, Ordering::AcqRel);
@@ -1433,14 +1446,16 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
     fn remove_sequence_cas_ranked(&self, sequence: &[u64]) -> U64CasOutcome {
         loop {
             let generation = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
-            let root = self.root_arc();
-            let Some((new_root, removed)) = Self::build_remove_path(&root, sequence, 0) else {
+            let revision = self.root_revision();
+            let root = revision.node();
+            let Some((new_root, removed)) = Self::build_remove_path(root, sequence, 0) else {
                 return U64CasOutcome::Idempotent;
             };
-            match self
-                .root
-                .compare_exchange_counted(&root, new_root, -isize::from(removed))
-            {
+            match self.root.compare_exchange_revision_counted(
+                &revision,
+                new_root,
+                -isize::from(removed),
+            ) {
                 Ok(_) => {
                     if removed {
                         self.term_count.fetch_sub(1, Ordering::AcqRel);

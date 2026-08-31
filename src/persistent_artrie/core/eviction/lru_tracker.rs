@@ -3,7 +3,6 @@
 //! This module provides access tracking to enable smarter eviction decisions.
 //! Nodes are evicted in LRU order (coldest first), keeping hot data in memory.
 
-use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -112,24 +111,33 @@ impl Clone for AccessTracker {
 ///
 /// Uses FNV-1a for speed; collisions are acceptable since this is
 /// just for LRU approximation, not correctness.
-fn hash_path(path: &[u8]) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
+pub(crate) const PATH_HASH_OFFSET: u64 = 0xcbf29ce484222325;
+const PATH_HASH_PRIME: u64 = 0x100000001b3;
 
-    let mut hash = FNV_OFFSET;
-    for &byte in path {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(FNV_PRIME);
+#[inline]
+pub(crate) fn extend_byte_path_hash(hash: u64, byte: u8) -> u64 {
+    (hash ^ u64::from(byte)).wrapping_mul(PATH_HASH_PRIME)
+}
+
+#[inline]
+pub(crate) fn extend_char_unit_hash(mut hash: u64, unit: u32) -> u64 {
+    for byte in unit.to_le_bytes() {
+        hash = extend_byte_path_hash(hash, byte);
     }
     hash
 }
 
-/// Alternative path hasher using the standard library.
-fn hash_path_std<T: Hash>(path: &[T]) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-    hasher.finish()
+#[inline]
+pub(crate) fn extend_char_path_hash(hash: u64, unit: char) -> u64 {
+    extend_char_unit_hash(hash, u32::from(unit))
+}
+
+fn hash_path(path: &[u8]) -> u64 {
+    let mut hash = PATH_HASH_OFFSET;
+    for &byte in path {
+        hash = extend_byte_path_hash(hash, byte);
+    }
+    hash
 }
 
 fn retain_coldest_entries(entries: &mut Vec<(u64, u64)>, n: usize) {
@@ -251,12 +259,24 @@ impl LruRegistry {
 
     /// Get the coldness score for a pre-computed hash.
     pub fn coldness_score_hash(&self, hash: u64) -> u64 {
-        let now = self.now_us();
+        self.coldness_score_hash_at(hash, self.now_us())
+    }
 
+    /// Get a hash's coldness relative to one caller-captured selection instant.
+    ///
+    /// Batch selection uses the same `now_us` for every candidate so iteration
+    /// order cannot bias otherwise equal access histories.
+    pub(crate) fn coldness_score_hash_at(&self, hash: u64, now_us: u64) -> u64 {
         self.trackers
             .get(&hash)
-            .map(|t| t.coldness_score(now))
+            .map(|t| t.coldness_score(now_us))
             .unwrap_or(u64::MAX)
+    }
+
+    /// Capture one epoch-relative instant for a complete eviction selection.
+    #[inline]
+    pub(crate) fn selection_time_us(&self) -> u64 {
+        self.now_us()
     }
 
     /// Remove tracking for a node path (called after eviction).
@@ -339,7 +359,9 @@ impl Default for LruRegistry {
 
 /// Compute the hash for a char path (for PersistentARTrieChar).
 pub fn hash_char_path(path: &[char]) -> u64 {
-    hash_path_std(path)
+    path.iter()
+        .copied()
+        .fold(PATH_HASH_OFFSET, extend_char_path_hash)
 }
 
 #[cfg(test)]
