@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::iter::FusedIterator;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -155,6 +156,8 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixNode<U, V> {
 struct NativeSuffixGraph<U: PersistentSuffixUnit, V: DictionaryValue> {
     nodes: Vec<NativeSuffixNode<U, V>>,
     sources: Vec<SourceRecord<V>>,
+    #[serde(skip)]
+    sorted_active_source_indices: Vec<usize>,
     explicit_values: HashMap<Vec<U>, V>,
     needs_compaction: bool,
 }
@@ -164,9 +167,100 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixGraph<U, V> {
         Self {
             nodes: vec![NativeSuffixNode::new()],
             sources: Vec::new(),
+            sorted_active_source_indices: Vec::new(),
             explicit_values: HashMap::new(),
             needs_compaction: false,
         }
+    }
+
+    /// Return a dense cursor into this immutable native graph revision.
+    #[inline]
+    fn snapshot_cursor(&self, state: usize) -> Option<crate::SnapshotTraversalCursor> {
+        (state < self.nodes.len())
+            .then(|| crate::SnapshotTraversalCursor::from_index(state))
+            .flatten()
+    }
+
+    #[inline]
+    fn contains_snapshot_cursor(&self, cursor: crate::SnapshotTraversalCursor) -> bool {
+        cursor.index() < self.nodes.len()
+    }
+
+    #[inline]
+    fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(
+        &self,
+        cursor: crate::SnapshotTraversalCursor,
+        mut project: P,
+        mut visitor: F,
+    ) -> Option<bool>
+    where
+        P: FnMut(U) -> Option<T>,
+        F: FnMut(U, crate::SnapshotTraversalCursor, T),
+    {
+        let node = self.nodes.get(cursor.index())?;
+        for &(label, target) in &node.edges {
+            if let Some(projected) = project(label) {
+                visitor(
+                    label,
+                    self.snapshot_cursor(target)
+                        .expect("a suffix-automaton edge targets this immutable revision"),
+                    projected,
+                );
+            }
+        }
+        Some(node.is_final())
+    }
+
+    #[inline]
+    fn snapshot_cursor_is_final(&self, cursor: crate::SnapshotTraversalCursor) -> Option<bool> {
+        self.nodes
+            .get(cursor.index())
+            .map(NativeSuffixNode::is_final)
+    }
+
+    #[inline]
+    fn snapshot_cursor_transition(
+        &self,
+        cursor: crate::SnapshotTraversalCursor,
+        label: U,
+    ) -> Option<Option<crate::SnapshotTraversalCursor>> {
+        let node = self.nodes.get(cursor.index())?;
+        Some(node.find_edge(label).map(|target| {
+            self.snapshot_cursor(target)
+                .expect("a suffix-automaton edge targets this immutable revision")
+        }))
+    }
+
+    #[inline]
+    fn visit_snapshot_cursor_edge_page<F>(
+        &self,
+        cursor: crate::SnapshotTraversalCursor,
+        start: usize,
+        capacity: usize,
+        mut visitor: F,
+    ) -> Option<(bool, usize)>
+    where
+        F: FnMut(U, crate::SnapshotTraversalCursor),
+    {
+        let node = self.nodes.get(cursor.index())?;
+        let total = node.edges.len();
+        let start = start.min(total);
+        let end = start.saturating_add(capacity).min(total);
+        for &(label, target) in &node.edges[start..end] {
+            visitor(
+                label,
+                self.snapshot_cursor(target)
+                    .expect("a suffix-automaton edge targets this immutable revision"),
+            );
+        }
+        Some((node.is_final(), total))
+    }
+
+    #[inline]
+    fn snapshot_cursor_value(&self, cursor: crate::SnapshotTraversalCursor) -> Option<Option<V>> {
+        self.nodes
+            .get(cursor.index())
+            .map(|node| node.value.clone())
     }
 
     fn from_compact_snapshot(
@@ -179,6 +273,7 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixGraph<U, V> {
             graph.insert_source_with_id(record.id, record.text.clone(), record.value.clone());
         }
         graph.sources = sources;
+        graph.rebuild_record_index();
         graph.explicit_values.clear();
         for (units, value) in explicit_values {
             graph.ensure_value_path(&units, value);
@@ -222,7 +317,22 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixGraph<U, V> {
     }
 
     fn active_count(&self) -> usize {
-        self.sources.iter().filter(|record| record.active).count()
+        self.sorted_active_source_indices.len()
+    }
+
+    fn rebuild_record_index(&mut self) {
+        self.sorted_active_source_indices = self
+            .sources
+            .iter()
+            .enumerate()
+            .filter_map(|(index, record)| record.active.then_some(index))
+            .collect();
+        self.sorted_active_source_indices.sort_by(|&left, &right| {
+            self.sources[left]
+                .text
+                .cmp(&self.sources[right].text)
+                .then_with(|| self.sources[left].id.cmp(&self.sources[right].id))
+        });
     }
 
     fn source_texts(&self) -> Vec<String> {
@@ -302,6 +412,7 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixGraph<U, V> {
     fn insert_source(&mut self, text: &str, value: Option<V>) -> bool {
         let source_id = self.next_source_id();
         self.insert_source_with_id(source_id, text.to_string(), value);
+        self.rebuild_record_index();
         true
     }
 
@@ -313,6 +424,7 @@ impl<U: PersistentSuffixUnit, V: DictionaryValue> NativeSuffixGraph<U, V> {
         {
             record.active = false;
             self.needs_compaction = true;
+            self.rebuild_record_index();
             return true;
         }
         false
@@ -969,8 +1081,10 @@ fn read_legacy_snapshot<U: PersistentSuffixUnit, V: DictionaryValue>(
             found: legacy.version,
         });
     }
+    let mut graph = legacy.graph;
+    graph.rebuild_record_index();
     Ok(LoadedSuffixSnapshot {
-        graph: legacy.graph,
+        graph,
         checkpoint_op_id: 0,
         folds_legacy_wal: false,
     })
@@ -1227,6 +1341,52 @@ pub struct PersistentSuffixAutomatonChar<V: DictionaryValue = (), S: BlockStorag
     _storage: PhantomData<S>,
 }
 
+/// Snapshot iterator over stored byte-suffix source records.
+pub struct PersistentSuffixAutomatonEntryIterator<V: DictionaryValue = ()> {
+    graph: Arc<NativeSuffixGraph<u8, V>>,
+    index: usize,
+}
+
+/// Snapshot iterator over stored Unicode-suffix source records.
+pub struct PersistentSuffixAutomatonCharEntryIterator<V: DictionaryValue = ()> {
+    graph: Arc<NativeSuffixGraph<char, V>>,
+    index: usize,
+}
+
+macro_rules! impl_suffix_record_iterator {
+    ($iterator:ident, $unit:ty) => {
+        impl<V: DictionaryValue> Iterator for $iterator<V> {
+            type Item = (String, Option<V>);
+
+            fn next(&mut self) -> Option<Self::Item> {
+                let record_index = *self.graph.sorted_active_source_indices.get(self.index)?;
+                self.index += 1;
+                let record = self
+                    .graph
+                    .sources
+                    .get(record_index)
+                    .expect("the revision record index references a source");
+                Some((record.text.clone(), record.value.clone()))
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                let remaining = self
+                    .graph
+                    .sorted_active_source_indices
+                    .len()
+                    .saturating_sub(self.index);
+                (remaining, Some(remaining))
+            }
+        }
+
+        impl<V: DictionaryValue> ExactSizeIterator for $iterator<V> {}
+        impl<V: DictionaryValue> FusedIterator for $iterator<V> {}
+    };
+}
+
+impl_suffix_record_iterator!(PersistentSuffixAutomatonEntryIterator, u8);
+impl_suffix_record_iterator!(PersistentSuffixAutomatonCharEntryIterator, char);
+
 /// Byte-level node handle for native persistent suffix traversal.
 #[derive(Clone)]
 pub struct PersistentSuffixAutomatonNode<V: DictionaryValue = ()> {
@@ -1416,6 +1576,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomaton<V, S> {
         self.index.load().source_texts()
     }
 
+    /// Iterate over stored source records from one immutable revision.
+    pub fn iter_entries(&self) -> PersistentSuffixAutomatonEntryIterator<V> {
+        PersistentSuffixAutomatonEntryIterator {
+            graph: self.index.load(),
+            index: 0,
+        }
+    }
+
     pub fn checkpoint(&self) -> Result<()> {
         self.index.checkpoint()
     }
@@ -1588,6 +1756,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomatonChar<V, S> {
         self.index.load().source_texts()
     }
 
+    /// Iterate over stored source records from one immutable revision.
+    pub fn iter_entries(&self) -> PersistentSuffixAutomatonCharEntryIterator<V> {
+        PersistentSuffixAutomatonCharEntryIterator {
+            graph: self.index.load(),
+            index: 0,
+        }
+    }
+
     pub fn checkpoint(&self) -> Result<()> {
         self.index.checkpoint()
     }
@@ -1612,6 +1788,78 @@ impl<V: DictionaryValue> DictionaryNode for PersistentSuffixAutomatonNode<V> {
     fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {
         self.state_id
             .and_then(crate::SnapshotNodeIdentity::from_index)
+    }
+
+    #[inline]
+    fn snapshot_root_cursor(&self) -> Option<Self::SnapshotCursor> {
+        self.graph.snapshot_cursor(self.state_id?)
+    }
+
+    #[inline]
+    fn contains_snapshot_cursor(&self, cursor: Self::SnapshotCursor) -> bool {
+        self.graph.contains_snapshot_cursor(cursor)
+    }
+
+    #[inline]
+    fn supports_snapshot_cursor_nodes(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_node(&self, cursor: Self::SnapshotCursor) -> Option<Self> {
+        self.graph.contains_snapshot_cursor(cursor).then(|| Self {
+            graph: Arc::clone(&self.graph),
+            state_id: Some(cursor.index()),
+        })
+    }
+
+    #[inline]
+    unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(
+        &self,
+        cursor: Self::SnapshotCursor,
+        project: P,
+        visitor: F,
+    ) -> Option<bool>
+    where
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self::SnapshotCursor, T),
+    {
+        self.graph
+            .filter_map_snapshot_cursor_edges_and_finality(cursor, project, visitor)
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_is_final(&self, cursor: Self::SnapshotCursor) -> Option<bool> {
+        self.graph.snapshot_cursor_is_final(cursor)
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_transition(
+        &self,
+        cursor: Self::SnapshotCursor,
+        label: Self::Unit,
+    ) -> Option<Option<Self::SnapshotCursor>> {
+        self.graph.snapshot_cursor_transition(cursor, label)
+    }
+
+    #[inline]
+    fn supports_efficient_snapshot_cursor_edge_paging(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn visit_snapshot_cursor_edge_page<F>(
+        &self,
+        cursor: Self::SnapshotCursor,
+        start: usize,
+        capacity: usize,
+        visitor: F,
+    ) -> Option<(bool, usize)>
+    where
+        F: FnMut(Self::Unit, Self::SnapshotCursor),
+    {
+        self.graph
+            .visit_snapshot_cursor_edge_page(cursor, start, capacity, visitor)
     }
 
     fn is_final(&self) -> bool {
@@ -1716,6 +1964,19 @@ impl<V: DictionaryValue> MappedDictionaryNode for PersistentSuffixAutomatonNode<
             .and_then(|state| self.graph.nodes.get(state))
             .and_then(|node| node.value.clone())
     }
+
+    #[inline]
+    fn supports_snapshot_cursor_values(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_value(
+        &self,
+        cursor: Self::SnapshotCursor,
+    ) -> Option<Option<Self::Value>> {
+        self.graph.snapshot_cursor_value(cursor)
+    }
 }
 
 impl<V: DictionaryValue> DictionaryNode for PersistentSuffixAutomatonCharNode<V> {
@@ -1727,6 +1988,78 @@ impl<V: DictionaryValue> DictionaryNode for PersistentSuffixAutomatonCharNode<V>
     fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {
         self.state_id
             .and_then(crate::SnapshotNodeIdentity::from_index)
+    }
+
+    #[inline]
+    fn snapshot_root_cursor(&self) -> Option<Self::SnapshotCursor> {
+        self.graph.snapshot_cursor(self.state_id?)
+    }
+
+    #[inline]
+    fn contains_snapshot_cursor(&self, cursor: Self::SnapshotCursor) -> bool {
+        self.graph.contains_snapshot_cursor(cursor)
+    }
+
+    #[inline]
+    fn supports_snapshot_cursor_nodes(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_node(&self, cursor: Self::SnapshotCursor) -> Option<Self> {
+        self.graph.contains_snapshot_cursor(cursor).then(|| Self {
+            graph: Arc::clone(&self.graph),
+            state_id: Some(cursor.index()),
+        })
+    }
+
+    #[inline]
+    unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(
+        &self,
+        cursor: Self::SnapshotCursor,
+        project: P,
+        visitor: F,
+    ) -> Option<bool>
+    where
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self::SnapshotCursor, T),
+    {
+        self.graph
+            .filter_map_snapshot_cursor_edges_and_finality(cursor, project, visitor)
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_is_final(&self, cursor: Self::SnapshotCursor) -> Option<bool> {
+        self.graph.snapshot_cursor_is_final(cursor)
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_transition(
+        &self,
+        cursor: Self::SnapshotCursor,
+        label: Self::Unit,
+    ) -> Option<Option<Self::SnapshotCursor>> {
+        self.graph.snapshot_cursor_transition(cursor, label)
+    }
+
+    #[inline]
+    fn supports_efficient_snapshot_cursor_edge_paging(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn visit_snapshot_cursor_edge_page<F>(
+        &self,
+        cursor: Self::SnapshotCursor,
+        start: usize,
+        capacity: usize,
+        visitor: F,
+    ) -> Option<(bool, usize)>
+    where
+        F: FnMut(Self::Unit, Self::SnapshotCursor),
+    {
+        self.graph
+            .visit_snapshot_cursor_edge_page(cursor, start, capacity, visitor)
     }
 
     fn is_final(&self) -> bool {
@@ -1830,6 +2163,19 @@ impl<V: DictionaryValue> MappedDictionaryNode for PersistentSuffixAutomatonCharN
         self.state_id
             .and_then(|state| self.graph.nodes.get(state))
             .and_then(|node| node.value.clone())
+    }
+
+    #[inline]
+    fn supports_snapshot_cursor_values(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_value(
+        &self,
+        cursor: Self::SnapshotCursor,
+    ) -> Option<Option<Self::Value>> {
+        self.graph.snapshot_cursor_value(cursor)
     }
 }
 
@@ -2024,7 +2370,96 @@ impl<V: DictionaryValue> Default for PersistentSuffixAutomatonChar<V> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
+
+    fn assert_direct_cursor_matches_owned<N>(root: N)
+    where
+        N: MappedDictionaryNode<Value = u64, SnapshotCursor = crate::SnapshotTraversalCursor>
+            + fmt::Debug,
+    {
+        let root_cursor = root.snapshot_root_cursor().expect("direct root cursor");
+        assert!(root.contains_snapshot_cursor(root_cursor));
+        assert!(root.supports_snapshot_cursor_nodes());
+        assert!(root.supports_snapshot_cursor_values());
+        assert!(root.supports_efficient_snapshot_cursor_edge_paging());
+
+        let mut seen = HashSet::new();
+        let mut pending = vec![(root, root_cursor)];
+        while let Some((owned, cursor)) = pending.pop() {
+            if !seen.insert(cursor) {
+                continue;
+            }
+            // SAFETY: every cursor is rooted in the retained immutable graph.
+            assert_eq!(
+                unsafe { owned.snapshot_cursor_is_final(cursor) },
+                Some(owned.is_final())
+            );
+            // SAFETY: same retained graph provenance.
+            assert_eq!(
+                unsafe { owned.snapshot_cursor_value(cursor) },
+                Some(owned.value())
+            );
+
+            let mut owned_edges = Vec::new();
+            owned.for_each_edge(|label, child| owned_edges.push((label, child)));
+            let mut cursor_edges = Vec::new();
+            // SAFETY: same retained graph provenance.
+            let finality = unsafe {
+                owned.filter_map_snapshot_cursor_edges_and_finality(
+                    cursor,
+                    Some,
+                    |label, child, projected| {
+                        assert_eq!(label, projected);
+                        cursor_edges.push((label, child));
+                    },
+                )
+            };
+            assert_eq!(finality, Some(owned.is_final()));
+            assert_eq!(
+                cursor_edges.iter().map(|edge| edge.0).collect::<Vec<_>>(),
+                owned_edges.iter().map(|edge| edge.0).collect::<Vec<_>>()
+            );
+            assert!(cursor_edges.windows(2).all(|pair| pair[0].0 < pair[1].0));
+
+            let mut paged = Vec::new();
+            for start in 0..=cursor_edges.len() {
+                let mut page = Vec::new();
+                // SAFETY: same retained graph provenance.
+                let metadata = unsafe {
+                    owned.visit_snapshot_cursor_edge_page(cursor, start, 1, |label, child| {
+                        page.push((label, child));
+                    })
+                };
+                assert_eq!(metadata, Some((owned.is_final(), cursor_edges.len())));
+                if start < cursor_edges.len() {
+                    assert_eq!(page, vec![cursor_edges[start]]);
+                    paged.extend(page);
+                } else {
+                    assert!(page.is_empty());
+                }
+            }
+            assert_eq!(paged, cursor_edges);
+
+            // SAFETY: suffix-automaton dense states materialize exactly.
+            let materialized = unsafe { owned.snapshot_cursor_node(cursor) }
+                .expect("materialized native suffix node");
+            assert_eq!(materialized.is_final(), owned.is_final());
+            assert_eq!(materialized.value(), owned.value());
+
+            for ((label, child_owned), (_, child_cursor)) in
+                owned_edges.into_iter().zip(cursor_edges).rev()
+            {
+                // SAFETY: same retained graph provenance.
+                assert_eq!(
+                    unsafe { owned.snapshot_cursor_transition(cursor, label) },
+                    Some(Some(child_cursor))
+                );
+                pending.push((child_owned, child_cursor));
+            }
+        }
+    }
 
     #[test]
     fn opens_legacy_full_graph_snapshot_after_compact_snapshot_upgrade() {
@@ -2047,5 +2482,82 @@ mod tests {
         assert!(reopened.contains_live_suffix_prefix("nana"));
         assert_eq!(reopened.get_value("banana"), Some(7));
         assert_eq!(reopened.get_value("bandana"), Some(11));
+    }
+
+    #[test]
+    fn native_suffix_cursors_match_owned_traversal_and_isolate_revisions() {
+        let byte = PersistentSuffixAutomaton::<u64>::new();
+        assert!(byte.insert_with_value("banana", 7));
+        let old_byte = byte.root();
+        let old_byte_cursor = old_byte.snapshot_root_cursor().expect("old byte root");
+        assert_direct_cursor_matches_owned(old_byte.clone());
+        assert!(byte.insert_with_value("zoo", 11));
+        let fresh_byte = byte.root();
+        assert_direct_cursor_matches_owned(fresh_byte.clone());
+        // SAFETY: the old cursor remains tied to the retained old graph.
+        assert_eq!(
+            unsafe { old_byte.snapshot_cursor_transition(old_byte_cursor, b'z') },
+            Some(None)
+        );
+        let fresh_byte_cursor = fresh_byte.snapshot_root_cursor().expect("fresh byte root");
+        // SAFETY: the fresh cursor belongs to the fresh graph.
+        assert!(
+            unsafe { fresh_byte.snapshot_cursor_transition(fresh_byte_cursor, b'z') }
+                .flatten()
+                .is_some()
+        );
+
+        let chars = PersistentSuffixAutomatonChar::<u64>::new();
+        assert!(chars.insert_with_value("βα", 13));
+        let old_chars = chars.root();
+        let old_chars_cursor = old_chars.snapshot_root_cursor().expect("old char root");
+        assert_direct_cursor_matches_owned(old_chars.clone());
+        assert!(chars.insert_with_value("雪豹", 17));
+        let fresh_chars = chars.root();
+        assert_direct_cursor_matches_owned(fresh_chars.clone());
+        // SAFETY: the old cursor remains tied to the retained old graph.
+        assert_eq!(
+            unsafe { old_chars.snapshot_cursor_transition(old_chars_cursor, '雪') },
+            Some(None)
+        );
+        let fresh_chars_cursor = fresh_chars.snapshot_root_cursor().expect("fresh char root");
+        // SAFETY: the fresh cursor belongs to the fresh graph.
+        assert!(
+            unsafe { fresh_chars.snapshot_cursor_transition(fresh_chars_cursor, '雪') }
+                .flatten()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn native_suffix_old_snapshot_survives_concurrent_publications() {
+        let dictionary = Arc::new(PersistentSuffixAutomaton::<u64>::new());
+        assert!(dictionary.insert_with_value("banana", 7));
+        let old = Arc::new(dictionary.root());
+        let barrier = Arc::new(std::sync::Barrier::new(5));
+        let mut readers = Vec::new();
+        for _ in 0..4 {
+            let old = Arc::clone(&old);
+            let barrier = Arc::clone(&barrier);
+            readers.push(std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..128 {
+                    let root = old.snapshot_root_cursor().expect("old root cursor");
+                    // SAFETY: the retained old graph never changes.
+                    assert_eq!(
+                        unsafe { old.snapshot_cursor_transition(root, b'z') },
+                        Some(None)
+                    );
+                    assert_direct_cursor_matches_owned((*old).clone());
+                }
+            }));
+        }
+        barrier.wait();
+        for value in 0..32 {
+            dictionary.insert_with_value(&format!("zoo{value}"), value);
+        }
+        for reader in readers {
+            reader.join().expect("suffix snapshot reader");
+        }
     }
 }

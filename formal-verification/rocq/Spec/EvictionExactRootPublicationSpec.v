@@ -13,7 +13,7 @@
     proved in [DetachedCallbackSeparationSpec].
 *)
 
-From Stdlib Require Import Arith Bool Lia List PeanoNat.
+From Coq Require Import Arith Bool Lia List PeanoNat.
 
 Module EvictionExactRootPublicationSpec.
 

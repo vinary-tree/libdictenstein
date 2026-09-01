@@ -58,8 +58,9 @@ use crate::value::DictionaryValue;
 /// ([`OverlayEvictable::find_leaf_faulting`]) used by
 /// `LockFreeOverlay::overlay_value_get`. Equals both variants' per-variant
 /// `lockfree_cas::DEFAULT_MAX_FAULTIN_RETRIES` (`16`): after this many loser-safe
-/// install-CAS rebases, ONE final read-only walk answers (a still-`OnDisk` slot
-/// reads absent — durable; a later read faults it — never spins).
+/// install-CAS rebases, the read answers from the last privately faulted captured
+/// snapshot. Publication is only a cache optimization: root-CAS contention can
+/// never turn a successfully loaded committed node into an absent result.
 pub(crate) const DEFAULT_MAX_FAULTIN_RETRIES: usize = 16;
 
 struct DecodedFaultCache<K: KeyEncoding, V: DictionaryValue> {
@@ -826,8 +827,8 @@ pub(crate) trait OverlayEvictable<K: KeyEncoding, V: DictionaryValue, S>:
         K: RegistryFamily,
     {
         // One read-only walk of `root` (no faulting): used for the empty-key leaf
-        // and the post-exhaustion liveness fallback. A still-OnDisk slot reads
-        // absent (durable; a later call retries) — never spins.
+        // and only when no OnDisk child was successfully loaded. Once a durable
+        // child has been loaded, its captured answer is the exact fallback below.
         fn walk_no_fault<K: KeyEncoding, V: DictionaryValue>(
             root: &Arc<OverlayNode<K, V>>,
             key: &[K::Unit],
@@ -1990,5 +1991,192 @@ mod batch_tests {
                 Child::OnDisk(_) => panic!("stale resident ancestor was evicted"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persistent_artrie::core::key_encoding::{ByteKey, CharKey};
+    use crate::persistent_artrie::core::swizzled_ptr::NodeType;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Barrier;
+    use std::thread;
+
+    /// A deterministic two-thread fixture that advances the published root while
+    /// the reader is blocked inside the disk loader. The reader's subsequent
+    /// install CAS must lose, exactly modeling a concurrent sibling publication.
+    struct ForcedPublicationLoss<K: KeyEncoding> {
+        root: AtomicNodePtr<K, ()>,
+        epoch: EpochManager,
+        loaded: Arc<OverlayNode<K, ()>>,
+        loader_entered: Barrier,
+        writer_published: Barrier,
+        sibling: K::Unit,
+        cas_attempts: AtomicUsize,
+    }
+
+    impl<K: KeyEncoding> OverlayFaulter<K, ()> for ForcedPublicationLoss<K> {
+        fn try_fault_overlay_slot(
+            &self,
+            _slot: &SwizzledPtr,
+        ) -> crate::persistent_artrie::core::error::Result<Arc<OverlayNode<K, ()>>> {
+            self.loader_entered.wait();
+            self.writer_published.wait();
+            Ok(Arc::clone(&self.loaded))
+        }
+    }
+
+    impl<K: KeyEncoding> OverlayEvictable<K, (), ()> for ForcedPublicationLoss<K> {
+        fn overlay_root_slot(&self) -> Option<&AtomicNodePtr<K, ()>> {
+            Some(&self.root)
+        }
+
+        fn overlay_epoch_manager(&self) -> &EpochManager {
+            &self.epoch
+        }
+
+        fn overlay_eviction_coordinator(&self) -> Option<Arc<EvictionCoordinator>> {
+            None
+        }
+
+        fn prepare_overlay_eviction_commit(
+            &self,
+            _coordinator: &EvictionCoordinator,
+            _root_revision: &RootRevision<K, ()>,
+            _batch: &CompactEvictionBatch<K::Unit>,
+            _successful: &mut [usize],
+        ) -> Option<PreparedPackedResidency> {
+            None
+        }
+
+        fn commit_overlay_eviction(
+            &self,
+            _coordinator: &EvictionCoordinator,
+            _root: &AtomicNodePtr<K, ()>,
+            _root_transition: PreparedBoundRootTransition<K, ()>,
+        ) -> ExactEvictionOutcome {
+            ExactEvictionOutcome::AuthorityLost
+        }
+
+        fn prepare_overlay_fault_commit(
+            &self,
+            _coordinator: &EvictionCoordinator,
+            _root_revision: &RootRevision<K, ()>,
+            _path: &[K::Unit],
+            _disk_ptr: &SwizzledPtr,
+        ) -> Option<PreparedPackedResidency> {
+            None
+        }
+
+        fn commit_overlay_fault(
+            &self,
+            _coordinator: &EvictionCoordinator,
+            _root: &AtomicNodePtr<K, ()>,
+            _root_transition: PreparedBoundRootTransition<K, ()>,
+        ) -> ExactFaultOutcome {
+            ExactFaultOutcome::AuthorityLost
+        }
+
+        fn note_faultin_cas(&self) {
+            self.cas_attempts.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn assert_publication_loss_preserves_committed_read<K: RegistryFamily>(
+        first: K::Unit,
+        second: K::Unit,
+        sibling: K::Unit,
+        node_type: NodeType,
+    ) {
+        let disk_child = SwizzledPtr::on_disk(7, 11, node_type);
+        let root =
+            Arc::new(OverlayNode::<K, ()>::new().with_child(first, Child::OnDisk(disk_child)));
+        let committed_leaf = Arc::new(OverlayNode::<K, ()>::new().as_final());
+        let loaded =
+            Arc::new(OverlayNode::<K, ()>::new().with_child(second, Child::InMem(committed_leaf)));
+        let fixture = Arc::new(ForcedPublicationLoss {
+            root: AtomicNodePtr::new(root),
+            epoch: EpochManager::new(),
+            loaded,
+            loader_entered: Barrier::new(2),
+            writer_published: Barrier::new(2),
+            sibling,
+            cas_attempts: AtomicUsize::new(0),
+        });
+        let max_retries = DEFAULT_MAX_FAULTIN_RETRIES;
+
+        let reader = {
+            let fixture = Arc::clone(&fixture);
+            thread::spawn(move || {
+                <ForcedPublicationLoss<K> as OverlayEvictable<K, (), ()>>::find_leaf_faulting(
+                    &fixture,
+                    &fixture.root,
+                    &[first, second],
+                    max_retries,
+                )
+                .expect("faulting read")
+            })
+        };
+        let writer = {
+            let fixture = Arc::clone(&fixture);
+            thread::spawn(move || {
+                // Advance the root once per permitted reader attempt. Reusable
+                // barriers force every install CAS to compare against a stale Arc.
+                for _ in 0..=max_retries {
+                    fixture.loader_entered.wait();
+                    let old_root = fixture.root.load().expect("published root");
+                    let sibling_leaf = Arc::new(OverlayNode::<K, ()>::new().as_final());
+                    let advanced =
+                        Arc::new(old_root.with_child(fixture.sibling, Child::InMem(sibling_leaf)));
+                    fixture.root.store(advanced);
+                    fixture.writer_published.wait();
+                }
+            })
+        };
+
+        let found = reader.join().expect("reader thread");
+        writer.join().expect("writer thread");
+        assert!(
+            found.is_some_and(|leaf| leaf.is_final()),
+            "a root-CAS loss must not turn the loaded committed term into absence"
+        );
+        assert_eq!(
+            fixture.cas_attempts.load(Ordering::Relaxed),
+            max_retries + 1,
+            "the test must force every bounded install-CAS attempt to lose"
+        );
+
+        // Prove the intended interleaving occurred: the writer's sibling is live,
+        // while the queried child is still OnDisk because the reader's CAS lost.
+        let published = fixture.root.load().expect("final published root");
+        assert!(matches!(
+            published.find_child(first),
+            Some(Child::OnDisk(_))
+        ));
+        assert!(matches!(
+            published.find_child(sibling),
+            Some(Child::InMem(_))
+        ));
+    }
+
+    #[test]
+    fn byte_read_never_misses_committed_after_forced_faultin_publication_loss() {
+        assert_publication_loss_preserves_committed_read::<ByteKey>(
+            b'a',
+            b'b',
+            b'z',
+            NodeType::Node4,
+        );
+    }
+
+    #[test]
+    fn char_read_never_misses_committed_after_forced_faultin_publication_loss() {
+        assert_publication_loss_preserves_committed_read::<CharKey>(
+            'λ' as u32,
+            '雪' as u32,
+            '☃' as u32,
+            NodeType::CharNode4,
+        );
     }
 }

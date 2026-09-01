@@ -11,7 +11,7 @@ DIRS = Spec Model Invariants Operations Proofs
 
 # Source files in dependency order
 SPEC_FILES = Spec/MapSpec.v Spec/DictionaryLawSpec.v Spec/DynamicDawgMutationSpec.v Spec/DynamicDawgU64Spec.v Spec/PersistentARTrieU64Spec.v Spec/DoubleArrayTrieSpec.v Spec/ZipperLanguageSpec.v Spec/ValuedSetCombinatorSpec.v Spec/BloomFilterSpec.v Spec/PersistentMergeSpec.v Spec/PersistentPrefixSpec.v Spec/PersistentReadTraversalSpec.v Spec/PersistentSuffixAutomatonSpec.v Spec/PersistentScdawgSpec.v Spec/PersistentCharNodeLayoutSpec.v Spec/PathMapFactorySpec.v Spec/PathMapSnapshotSpec.v Spec/RelativeEncodingSpec.v Spec/ArenaReservationSpec.v Spec/DedupArenaSpec.v Spec/RootDescriptorReopenSpec.v Spec/PersistentLazyMutationSpec.v Spec/PersistentWalAtomicitySpec.v Spec/LockFreeCounterMergeSpec.v Spec/OverlayReestablishSpec.v Spec/SharedPersistentConcurrencySpec.v Spec/PublicDurabilityPolicySpec.v Spec/PersistentPublicWalLifecycleSpec.v Spec/PersistentEndToEndTraceSpec.v Spec/PersistentVocabWalAtomicitySpec.v Spec/PersistentVocabCheckpointSpec.v Spec/PersistentCheckpointRetentionSpec.v Spec/PersistentDirtyCheckpointSpec.v Spec/PersistentWalSegmentLifecycleSpec.v Spec/PersistentRecoveryPlannerSpec.v Spec/PersistentRecoveryReplayCompletenessSpec.v Spec/PersistentCompactionSpec.v Spec/PersistentRewriteCompactionSpec.v Spec/SubstringSearchSpec.v Spec/ScdawgOccurrenceSpec.v Spec/FuzzyCandidateCoverageSpec.v Spec/SerializationRoundtripSpec.v Spec/OverlayArborescenceSerializationSpec.v Spec/ARTrieSpec.v Spec/ReplicatedMapSpec.v Spec/PersistentCharEvictionRegistrySpec.v Spec/EvictionExactRootPublicationSpec.v Spec/HelpedRootResidencySpec.v Spec/PackedResidencyRefinementSpec.v Spec/HelpedCheckpointStampSpec.v Spec/DetachedCallbackSeparationSpec.v Spec/ResidentBudgetEvictionSpec.v Spec/OverlayFaultProvenanceSpec.v Spec/DictionaryNodeReopenTraversalSpec.v Spec/PersistentCharEpochReclamationSpec.v Spec/CharV3TypeEncodingSpec.v Spec/ApiFeatureVisibilitySpec.v Spec/TlcDiagnosticClassifierSpec.v Spec/OverlayDenseCodecSpec.v Spec/AbiTraversalSnapshotSpec.v Spec/AbiPagingProducerSpec.v Spec/AbiStatusMappingSpec.v
-MODEL_FILES = Model/Key.v Model/NodeTypes.v Model/Bucket.v Model/HotStuff.v Model/PathCompression.v Model/PrefixChunking.v Model/ArenaManager.v Model/SequentialSiblings.v Model/FileSystem.v
+MODEL_FILES = Model/ListCompat.v Model/Key.v Model/NodeTypes.v Model/Bucket.v Model/HotStuff.v Model/PathCompression.v Model/PrefixChunking.v Model/ArenaManager.v Model/SequentialSiblings.v Model/FileSystem.v
 INVARIANT_FILES = Invariants/StructuralInvariants.v Invariants/TransitionInvariants.v Invariants/ArenaInvariants.v Invariants/SequentialSiblingsInvariants.v
 OPERATION_FILES = # Operations/Lookup.v Operations/Insert.v Operations/Delete.v
 PROOF_FILES = Proofs/MapRefinement.v Proofs/StructuralPreservation.v Proofs/ByzantineRecovery.v Proofs/CertifiedReference.v Proofs/HotStuffSafety.v Proofs/ProofCarryingExtraction.v Proofs/FileSystemSafety.v # Proofs/TransitionCorrectness.v
@@ -46,6 +46,7 @@ clean:
 	rm -f $(VOFILES) $(GLOBFILES) $(VOKFILES) $(VOSFILES) $(DEPFILE)
 	rm -f */*.vo */*.glob */*.vok */*.vos
 	rm -f *.vo *.glob *.vok *.vos
+	rm -f .lia.cache .nia.cache
 
 # Build with resource limits (for memory-intensive proofs)
 # Per CLAUDE.md recommendations
@@ -56,66 +57,10 @@ build-safe:
 # Display build order
 show-order:
 	@echo "Build order:"
-	@echo "  1. Model/Key.v"
-	@echo "  2. Model/NodeTypes.v"
-	@echo "  3. Model/Bucket.v"
-	@echo "  4. Model/HotStuff.v"
-	@echo "  5. Model/PathCompression.v"
-	@echo "  6. Model/ArenaManager.v"
-	@echo "  7. Model/SequentialSiblings.v"
-	@echo "  8. Model/FileSystem.v"
-	@echo "  9. Spec/MapSpec.v"
-	@echo " 10. Spec/DictionaryLawSpec.v"
-	@echo " 11. Spec/DynamicDawgMutationSpec.v"
-	@echo " 12. Spec/DynamicDawgU64Spec.v"
-	@echo " 13. Spec/DoubleArrayTrieSpec.v"
-	@echo " 14. Spec/ZipperLanguageSpec.v"
-	@echo " 15. Spec/ValuedSetCombinatorSpec.v"
-	@echo " 16. Spec/BloomFilterSpec.v"
-	@echo " 17. Spec/PersistentMergeSpec.v"
-	@echo " 18. Spec/PersistentPrefixSpec.v"
-	@echo " 19. Spec/PersistentReadTraversalSpec.v"
-	@echo " 20. Spec/PersistentCharNodeLayoutSpec.v"
-	@echo " 21. Spec/PathMapFactorySpec.v"
-	@echo " 22. Spec/PathMapSnapshotSpec.v"
-	@echo " 23. Spec/RelativeEncodingSpec.v"
-	@echo " 24. Spec/ArenaReservationSpec.v"
-	@echo " 25. Spec/DedupArenaSpec.v"
-	@echo " 26. Spec/RootDescriptorReopenSpec.v"
-	@echo " 27. Spec/PersistentLazyMutationSpec.v"
-	@echo " 28. Spec/PersistentWalAtomicitySpec.v"
-	@echo " 29. Spec/LockFreeCounterMergeSpec.v"
-	@echo " 30. Spec/SharedPersistentConcurrencySpec.v"
-	@echo " 31. Spec/PublicDurabilityPolicySpec.v"
-	@echo " 32. Spec/PersistentPublicWalLifecycleSpec.v"
-	@echo " 33. Spec/PersistentEndToEndTraceSpec.v"
-	@echo " 34. Spec/PersistentVocabWalAtomicitySpec.v"
-	@echo " 35. Spec/PersistentVocabCheckpointSpec.v"
-	@echo " 36. Spec/PersistentCheckpointRetentionSpec.v"
-	@echo " 37. Spec/PersistentDirtyCheckpointSpec.v"
-	@echo " 38. Spec/PersistentWalSegmentLifecycleSpec.v"
-	@echo " 39. Spec/PersistentRecoveryPlannerSpec.v"
-	@echo " 40. Spec/PersistentRecoveryReplayCompletenessSpec.v"
-	@echo " 41. Spec/PersistentCompactionSpec.v"
-	@echo " 42. Spec/PersistentRewriteCompactionSpec.v"
-	@echo " 43. Spec/SubstringSearchSpec.v"
-	@echo " 44. Spec/ScdawgOccurrenceSpec.v"
-	@echo " 45. Spec/FuzzyCandidateCoverageSpec.v"
-	@echo " 46. Spec/SerializationRoundtripSpec.v"
-	@echo " 47. Spec/ARTrieSpec.v"
-	@echo " 48. Spec/ReplicatedMapSpec.v"
-	@echo " 49. Spec/PersistentCharEvictionRegistrySpec.v"
-	@echo " 50. Invariants/StructuralInvariants.v"
-	@echo " 51. Invariants/TransitionInvariants.v"
-	@echo " 52. Invariants/ArenaInvariants.v"
-	@echo " 53. Invariants/SequentialSiblingsInvariants.v"
-	@echo " 54. Proofs/MapRefinement.v"
-	@echo " 55. Proofs/StructuralPreservation.v"
-	@echo " 56. Proofs/ByzantineRecovery.v"
-	@echo " 57. Proofs/CertifiedReference.v"
-	@echo " 58. Proofs/HotStuffSafety.v"
-	@echo " 59. Proofs/ProofCarryingExtraction.v"
-	@echo " 60. Proofs/FileSystemSafety.v"
+	@number=1; for source in $(VFILES); do \
+		printf "%3d. %s\n" "$$number" "$$source"; \
+		number=$$((number + 1)); \
+	done
 
 # Check a single file
 check-%: %.v

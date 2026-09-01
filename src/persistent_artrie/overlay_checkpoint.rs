@@ -46,7 +46,9 @@ use crate::persistent_artrie::core::eviction::{
     RegistryStructuralSource,
 };
 use crate::persistent_artrie::core::key_encoding::ByteKey;
-use crate::persistent_artrie::core::overlay::checkpoint::OverlayCheckpoint;
+use crate::persistent_artrie::core::overlay::checkpoint::{
+    CapturedEvictionRoute, OverlayCheckpoint,
+};
 use crate::persistent_artrie::core::overlay::compressed_serialize::{
     try_analysis_registry_transaction, OverlayCompressedSerialize, OverlaySerializationBuild,
 };
@@ -87,7 +89,7 @@ pub(crate) struct CheckpointSnapshot<V: DictionaryValue> {
     /// pre-checkpoint survivor on a later rebuild.
     commit_seq_at_capture: Option<u64>,
     /// **Overlay-arm capture only, eviction-ON (Phase 6 — the byte twin of char's
-    /// `CheckpointSnapshot.eviction_registry`).** The freshly-built per-node disk-location
+    /// `CheckpointSnapshot.registry_publication`).** The freshly-built per-node disk-location
     /// registry, populated during the overlay serialize (`register` per InMem node, with
     /// `set_durable_stamp` stamping each live overlay node — the M-2a eviction-safety
     /// lynchpin). `Some(reg)` ONLY when an eviction coordinator is installed at
@@ -97,6 +99,13 @@ pub(crate) struct CheckpointSnapshot<V: DictionaryValue> {
     /// moves it into the coordinator AFTER `verify_checkpoint_header` (publish-after-verify).
     /// NEVER serialized to disk (a runtime side-table; recovery never reads it).
     registry_publication: Option<PreparedRegistryPublication<ByteKey, V>>,
+}
+
+impl<V: DictionaryValue> CapturedEvictionRoute for CheckpointSnapshot<V> {
+    #[inline]
+    fn captured_with_eviction(&self) -> bool {
+        self.registry_publication.is_some()
+    }
 }
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
@@ -252,6 +261,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         &self,
         snapshot: &CheckpointSnapshot<V>,
     ) -> Result<()> {
+        debug_assert!(
+            snapshot.registry_publication.is_none(),
+            "eviction-off publication received a snapshot with a captured eviction route"
+        );
         let base_watermark = snapshot.committed_watermark_at_capture.ok_or_else(|| {
             PersistentARTrieError::internal(
                 "publish_overlay_snapshot_retaining requires an immutable-overlay snapshot \
@@ -1418,15 +1431,6 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCheckpoint<ByteKey, V, S>
     type CheckpointSnapshot = CheckpointSnapshot<V>;
 
     #[inline]
-    fn has_eviction_coordinator(&self) -> bool {
-        // F4 (EC leaf): brief lock, immediately released — never held across CK/OR.
-        self.eviction_coordinator
-            .lock()
-            .expect("eviction_coordinator mutex poisoned")
-            .is_some()
-    }
-
-    #[inline]
     fn capture_overlay_snapshot(&self) -> Result<CheckpointSnapshot<V>> {
         PersistentARTrie::capture_overlay_snapshot(self)
     }
@@ -1453,16 +1457,19 @@ mod cx_compressed_serialize_byte {
     //! and the #6 eviction-ON tests: F.1 evict-then-refault a compressed chunk, F.3 the load-side
     //! `prefix_len>0` stamp gate (uncompressed no-op = #39 unchanged; compressed stamped = re-evictable).
     //! Scratch is real disk (`target/test-tmp`), never tmpfs `/tmp`.
+    use crate::artrie_trait::EvictableARTrie;
     use crate::persistent_artrie::core::block_storage::BlockStorage;
     use crate::persistent_artrie::core::durability::DurabilityPolicy;
     use crate::persistent_artrie::core::key_encoding::ByteKey;
+    use crate::persistent_artrie::core::overlay::checkpoint::OverlayCheckpoint;
     use crate::persistent_artrie::core::overlay::node::Child;
     use crate::persistent_artrie::core::overlay::test_support::{insert_path, visit_paths};
     use crate::persistent_artrie::core::overlay::OverlayNode;
     use crate::persistent_artrie::eviction::{DiskLocationRegistry, EvictionConfig};
     use crate::persistent_artrie::overlay_fault::evict_overlay_compact_batch;
-    use crate::persistent_artrie::PersistentARTrie;
-    use std::sync::Arc;
+    use crate::persistent_artrie::{PersistentARTrie, SharedARTrie};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     fn scratch(prefix: &str) -> tempfile::TempDir {
         std::fs::create_dir_all("target/test-tmp").ok();
@@ -1470,6 +1477,103 @@ mod cx_compressed_serialize_byte {
             .prefix(prefix)
             .tempdir_in("target/test-tmp")
             .expect("scratch dir under target/test-tmp")
+    }
+
+    /// LDICT-B7 byte correspondence for the capture/publication routing race.
+    /// A registry captured for generation A is discarded after A is replaced by
+    /// B; conversely, an eviction-off capture stays off if C is enabled before
+    /// publication. Both transitions are forced at the exact capture/publish gap.
+    #[test]
+    fn captured_eviction_generation_survives_disable_reenable_races() {
+        type Trie = PersistentARTrie<()>;
+        type Store = crate::persistent_artrie::disk_manager::MmapDiskManager;
+
+        let dir = scratch("byte-evict-route-generation");
+        let path = dir.path().join("t.artb");
+        let mut owned = Trie::create(&path).expect("create route-race trie");
+        owned.set_durability_policy(DurabilityPolicy::Immediate);
+        owned.install_overlay();
+        let shared: SharedARTrie<()> = Arc::new(owned);
+        for term in [b"alpha".as_slice(), b"alphabet", b"beta", b"gamma"] {
+            assert!(
+                shared.insert_cas_durable(term).expect("durable insert"),
+                "test term should be newly inserted"
+            );
+        }
+
+        shared
+            .enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable generation A");
+        let phase = Arc::new(Barrier::new(2));
+        let checkpoint = {
+            let shared = Arc::clone(&shared);
+            let phase = Arc::clone(&phase);
+            thread::spawn(move || {
+                let snapshot = shared
+                    .capture_overlay_snapshot()
+                    .expect("capture with generation A");
+                assert!(
+                    snapshot.registry_publication.is_some(),
+                    "capture retains generation A inside the prepared exact publication"
+                );
+                phase.wait();
+                phase.wait();
+                <Trie as OverlayCheckpoint<ByteKey, (), Store>>::publish_captured_overlay_snapshot(
+                    shared.as_ref(),
+                    snapshot,
+                )
+                .expect("publish generation-A snapshot after replacement");
+            })
+        };
+
+        phase.wait();
+        shared.disable_eviction().expect("disable generation A");
+        shared
+            .enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable generation B");
+        let generation_b = shared
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+            .map(Arc::clone)
+            .expect("generation B installed");
+        phase.wait();
+        checkpoint.join().expect("checkpoint thread");
+        assert_eq!(
+            generation_b.disk_registry_len(),
+            0,
+            "a replacement coordinator must not inherit the captured generation's registry"
+        );
+
+        shared.disable_eviction().expect("disable generation B");
+        let snapshot_off = shared
+            .capture_overlay_snapshot()
+            .expect("capture with eviction disabled");
+        assert!(snapshot_off.registry_publication.is_none());
+        shared
+            .enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable generation C");
+        let generation_c = shared
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+            .map(Arc::clone)
+            .expect("generation C installed");
+        <Trie as OverlayCheckpoint<ByteKey, (), Store>>::publish_captured_overlay_snapshot(
+            shared.as_ref(),
+            snapshot_off,
+        )
+        .expect("publish eviction-off snapshot after enable");
+        assert_eq!(generation_c.disk_registry_len(), 0);
+        shared.disable_eviction().expect("disable generation C");
+
+        drop(shared);
+        let reopened = Trie::open(&path).expect("reopen route-race trie");
+        for term in [b"alpha".as_slice(), b"alphabet", b"beta", b"gamma"] {
+            assert!(reopened.contains_bytes(term), "reopen lost {term:?}");
+        }
     }
 
     /// Build an UNCOMPRESSED overlay (one node per byte) for the given terms — the shape the overlay

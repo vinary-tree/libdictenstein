@@ -4,4 +4,4 @@
 -- the published package.
 packages:
   .
-  ../../../liblevenshtein-rust/vinary-tree-interop/bindings/haskell
+  ../../../vinary-tree-interop/bindings/haskell

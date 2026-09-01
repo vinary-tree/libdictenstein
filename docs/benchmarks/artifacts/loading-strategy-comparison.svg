@@ -113,22 +113,22 @@
 	<g id="gnuplot_plot_1"  fill="none"><title>gnuplot_plot_1</title>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g stroke='none' shape-rendering='crispEdges'>
-		<polygon fill = 'rgb(108, 135, 148)' points = '125.79,417.20 213.67,417.20 213.67,102.73 125.79,102.73 '/>
+		<polygon fill = 'rgb( 96, 125, 139)' fill-opacity = '0.920000' points = '125.79,417.20 213.67,417.20 213.67,102.73 125.79,102.73 '/>
 	</g>
 	<path stroke='rgb( 68,  68,  68)'  d='M125.79,417.20 L125.79,102.74 L213.66,102.74 L213.66,417.20 L125.79,417.20 Z  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g stroke='none' shape-rendering='crispEdges'>
-		<polygon fill = 'rgb(202,  57,  57)' points = '272.24,417.20 360.11,417.20 360.11,131.99 272.24,131.99 '/>
+		<polygon fill = 'rgb(198,  40,  40)' fill-opacity = '0.920000' points = '272.24,417.20 360.11,417.20 360.11,131.99 272.24,131.99 '/>
 	</g>
 	<path stroke='rgb( 68,  68,  68)'  d='M272.24,417.20 L272.24,132.00 L360.10,132.00 L360.10,417.20 L272.24,417.20 Z  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g stroke='none' shape-rendering='crispEdges'>
-		<polygon fill = 'rgb(202,  57,  57)' points = '418.68,417.20 506.55,417.20 506.55,374.91 418.68,374.91 '/>
+		<polygon fill = 'rgb(198,  40,  40)' fill-opacity = '0.920000' points = '418.68,417.20 506.55,417.20 506.55,374.91 418.68,374.91 '/>
 	</g>
 	<path stroke='rgb( 68,  68,  68)'  d='M418.68,417.20 L418.68,374.92 L506.54,374.92 L506.54,417.20 L418.68,417.20 Z  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">
 	<g stroke='none' shape-rendering='crispEdges'>
-		<polygon fill = 'rgb( 62, 135,  66)' points = '565.12,417.20 653.00,417.20 653.00,379.65 565.12,379.65 '/>
+		<polygon fill = 'rgb( 46, 125,  50)' fill-opacity = '0.920000' points = '565.12,417.20 653.00,417.20 653.00,379.65 565.12,379.65 '/>
 	</g>
 	<path stroke='rgb( 68,  68,  68)'  d='M565.12,417.20 L565.12,379.66 L652.99,379.66 L652.99,417.20 L565.12,417.20 Z  '/></g>
 <g fill="none" color="black" stroke="currentColor" stroke-width="1.00" stroke-linecap="butt" stroke-linejoin="miter">

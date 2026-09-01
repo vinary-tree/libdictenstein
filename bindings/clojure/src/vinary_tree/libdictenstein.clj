@@ -5,9 +5,12 @@
    (io.vinarytree.libdictenstein
     Dictionary Dictionary$Lookup DoubleArrayTrie DynamicDawg
     PersistentARTrie PersistentVocabulary Scdawg UnitDomain)
+   (io.vinarytree.interop
+    DictionaryEntry DictionaryEntryIterator DictionaryKey DictionarySnapshot
+    DictionaryUnitDomain UnsignedLong)
    (java.lang AutoCloseable Long)
    (java.nio.file Path)
-   (java.util HashMap OptionalLong)))
+   (java.util HashMap Optional OptionalLong)))
 
 (def ^:private domains
   {:bytes UnitDomain/BYTE
@@ -34,6 +37,13 @@
 (defn- unsigned [^OptionalLong value]
   (when (.isPresent value)
     (bigint (Long/toUnsignedString (.getAsLong value)))))
+
+(defn- unsigned-entry-value [^Optional value]
+  (when (.isPresent value)
+    (bigint (.toString ^UnsignedLong (.get value)))))
+
+(defn- u64-array [tokens]
+  (long-array (map unsigned-long tokens)))
 
 (defn- java-entries [entries]
   (let [output (HashMap.)]
@@ -102,11 +112,29 @@
 (defn put! [dictionary term value]
   (.put dictionary ^String term (optional value)))
 
+(defn put-u64!
+  "Insert or update a full-range u64-token term."
+  [dictionary tokens value]
+  (.put dictionary ^longs (u64-array tokens) (optional value)))
+
 (defn put-all! [dictionary entries]
   (.putAllStrings dictionary (java-entries entries)))
 
 (defn remove! [dictionary term]
   (.remove dictionary ^String term))
+
+(defn remove-u64! [dictionary tokens]
+  (.remove dictionary ^longs (u64-array tokens)))
+
+(defn contains-u64? [^Dictionary dictionary tokens]
+  (.contains dictionary ^longs (u64-array tokens)))
+
+(defn get-u64
+  "Return {:present? boolean :value unsigned-integer-or-nil} for u64 tokens."
+  [^Dictionary dictionary tokens]
+  (let [^Dictionary$Lookup result (.get dictionary ^longs (u64-array tokens))]
+    {:present? (.present result)
+     :value (unsigned (.value result))}))
 
 (defn clear! [^DynamicDawg dictionary] (.clear dictionary))
 (defn compact! [^DynamicDawg dictionary] (.compact dictionary))
@@ -120,5 +148,97 @@
 
 (defn vocabulary-term [^PersistentVocabulary vocabulary index]
   (.orElse (.term vocabulary (unsigned-long index)) nil))
+
+(defn- clojure-key [^DictionaryKey key]
+  (let [unit-domain (.domain key)]
+    (cond
+      (= unit-domain DictionaryUnitDomain/BYTE)
+      (mapv #(bit-and (long %) 0xff) (.bytes key))
+
+      (= unit-domain DictionaryUnitDomain/UNICODE_SCALAR)
+      (.unicode key)
+
+      (= unit-domain DictionaryUnitDomain/U64)
+      (mapv #(bigint (Long/toUnsignedString (long %))) (.u64 key))
+
+      :else
+      (throw (IllegalStateException. (str "unknown entry unit domain: " unit-domain))))))
+
+(defn- clojure-entry [^DictionaryEntry entry]
+  (let [^DictionaryKey key (.key entry)
+        unit-domain (.domain key)]
+    {:key (clojure-key key)
+     :value (unsigned-entry-value (.value entry))
+     :domain (cond
+               (= unit-domain DictionaryUnitDomain/BYTE) :bytes
+               (= unit-domain DictionaryUnitDomain/UNICODE_SCALAR) :unicode-scalar
+               (= unit-domain DictionaryUnitDomain/U64) :u64
+               :else
+               (throw (IllegalStateException.
+                       (str "unknown entry unit domain: " unit-domain))))}))
+
+(defn snapshot
+  "Capture one immutable revision as a persistent vector of entry maps.
+
+  The vector is host-owned, lexicographically ordered, and naturally supports
+  seq, reduce, transduce, and repeated traversal after the dictionary closes."
+  [^Dictionary dictionary]
+  (let [^DictionarySnapshot captured (.snapshot dictionary)]
+    (mapv clojure-entry (.orderedEntries captured))))
+
+(def entries
+  "Alias for snapshot; returns an immutable persistent vector."
+  snapshot)
+
+(defn entry-seq
+  "Return a seq over one newly captured immutable revision."
+  [dictionary]
+  (seq (snapshot dictionary)))
+
+(defn entry-eduction
+  "Return an eduction over one newly captured immutable revision."
+  ([dictionary]
+   (eduction identity (snapshot dictionary)))
+  ([dictionary xform]
+   (eduction xform (snapshot dictionary))))
+
+(defn open-entry-stream
+  "Open a closeable, single-pass iterator over one immutable revision."
+  ([^Dictionary dictionary]
+   (.openEntryStream dictionary))
+  ([^Dictionary dictionary batch-size]
+   (.openEntryStream dictionary (int batch-size))))
+
+(defn stream-seq
+  "Adapt an open EntryStream to a lazy seq of immutable Clojure entry maps.
+
+  Consume the result inside with-open; abandoning a lazy seq does not itself
+  close its native cursor."
+  [^DictionaryEntryIterator stream]
+  (map clojure-entry (iterator-seq stream)))
+
+(defmacro with-entry-stream
+  "Bind a stream for body and close it after normal return, reduced traversal,
+  or exception. Binding forms are [name dictionary] or
+  [name dictionary batch-size]."
+  [[binding dictionary & [batch-size]] & body]
+  `(with-open [~binding (open-entry-stream ~dictionary ~@(when batch-size [batch-size]))]
+     ~@body))
+
+(defn reduce-entries
+  "Resource-scoped streaming reduce over one immutable revision."
+  ([dictionary reducing-function initial]
+   (reduce-entries dictionary 256 reducing-function initial))
+  ([dictionary batch-size reducing-function initial]
+   (with-entry-stream [stream dictionary batch-size]
+     (reduce reducing-function initial (stream-seq stream)))))
+
+(defn transduce-entries
+  "Resource-scoped streaming transduction over one immutable revision."
+  ([dictionary xform reducing-function initial]
+   (transduce-entries dictionary 256 xform reducing-function initial))
+  ([dictionary batch-size xform reducing-function initial]
+   (with-entry-stream [stream dictionary batch-size]
+     (transduce xform reducing-function initial (stream-seq stream)))))
 
 (defn close! [resource] (.close ^AutoCloseable resource))

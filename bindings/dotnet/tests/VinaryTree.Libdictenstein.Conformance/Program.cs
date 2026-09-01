@@ -20,6 +20,7 @@
 
 using System.Collections.Concurrent;
 using System.Text.Json;
+using VinaryTree.Interop;
 using VinaryTree.Libdictenstein;
 
 int failures = 0;
@@ -82,7 +83,7 @@ void AssertFixtureReads(Dictionary dictionary)
 // -- C1 identity/version ---------------------------------------------------
 
 Check(Dictionary.AbiVersion == 1, "abi version == 1");
-Check(Dictionary.ApiRevision == 4, "api revision == 4");
+Check(Dictionary.ApiRevision == 5, "api revision == 5");
 
 const ulong Read = 1UL << 0, Insert = 1UL << 1, Remove = 1UL << 2,
     Clear = 1UL << 3, Compact = 1UL << 4, Substring = 1UL << 5, Checkpoint = 1UL << 6;
@@ -405,6 +406,52 @@ static long RssKib()
     Task.WaitAll(readers.ToArray());
     Check(errors.IsEmpty, "concurrent readers during writer");
     Check(dawg.Get("w2999").Value == 2999, "final write present");
+}
+
+// -- native collection protocols ------------------------------------------
+
+{
+    DictionarySnapshot snapshot;
+    using (var dictionary = new DynamicDawg(UnitDomain.Byte))
+    {
+        dictionary.Put("z", ulong.MaxValue);
+        dictionary.Put("a", null);
+        dictionary.Put("b", 0);
+        snapshot = dictionary.Snapshot();
+        dictionary.Remove("a");
+        dictionary.Put("c", 3);
+    }
+    Check(snapshot.Count == 3, "snapshot count");
+    DictionaryEntry[] snapshotEntries = snapshot.ToArray();
+    Check(snapshotEntries.Select(entry => entry.Key.ToByteArray()[0]).SequenceEqual(new byte[] { (byte)'a', (byte)'b', (byte)'z' }), "snapshot byte order");
+    Check(snapshotEntries[0].Value is null, "snapshot valueless member");
+    Check(snapshotEntries[1].Value == 0, "snapshot mapped zero");
+    Check(snapshotEntries[2].Value == ulong.MaxValue, "snapshot mapped max");
+    Check(snapshot.Keys.Count == 3 && snapshot.Entries.Values.Count() == 3, "snapshot projected views");
+    Check(snapshot.Entries.ContainsKey(snapshotEntries[1].Key), "snapshot readonly dictionary lookup");
+}
+{
+    var dictionary = new DynamicDawg();
+    dictionary.Put("é", 7);
+    dictionary.Put("e", null);
+    using DictionaryEntryEnumerator stream = dictionary.OpenEntryStream(1);
+    Check(stream.Metadata.ExactLength == 2 && stream.Metadata.SnapshotIdentity is not null, "entry metadata");
+    dictionary.Put("z", 9);
+    dictionary.Dispose();
+    var keys = new List<string>();
+    while (stream.MoveNext()) keys.Add(stream.Current.Key.ToUnicodeString());
+    Check(keys.SequenceEqual(new[] { "e", "é" }), "cursor retains producer revision");
+    Check(!stream.MoveNext(), "entry stream fused");
+}
+{
+    using var dictionary = new DynamicDawg(UnitDomain.U64);
+    dictionary.Put(new ulong[] { 0 }, null);
+    dictionary.Put(new ulong[] { 1 }, 0);
+    dictionary.Put(new ulong[] { ulong.MaxValue }, ulong.MaxValue);
+    DictionarySnapshot snapshot = dictionary.Snapshot();
+    DictionaryEntry[] snapshotEntries = snapshot.ToArray();
+    Check(snapshotEntries.Select(entry => entry.Key.ToU64Array()[0]).SequenceEqual(new ulong[] { 0, 1, ulong.MaxValue }), "u64 snapshot order");
+    Check(snapshot.Entries.TryGetValue(snapshotEntries[2].Key, out ulong? maximum) && maximum == ulong.MaxValue, "u64 value-semantic map lookup");
 }
 
 // -- summary ---------------------------------------------------------------

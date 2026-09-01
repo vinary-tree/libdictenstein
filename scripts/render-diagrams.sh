@@ -209,6 +209,23 @@ render_plot() {  # $1=gnuplot script (self-contained: sets terminal svg + output
   # SVG is byte-stable across gnuplot versions (keeps the CI freshness diff stable).
   local out_svg="${gp%.gp}.svg"
   [[ -f "$out_svg" ]] && sed -i -E 's#<desc>Produced by GNUPLOT[^<]*</desc>#<desc>gnuplot</desc>#' "$out_svg"
+  # Gnuplot releases encode a 92%-opaque solid fill in two equivalent ways:
+  # some pre-blend the house color against white, while others preserve the
+  # source RGB and emit fill-opacity. Normalize the five documented palette
+  # colors to the latter representation, and strip an empty title tspan that
+  # also varies by terminal version. The result is byte-stable without
+  # weakening the freshness gate or pinning a distro-specific gnuplot binary.
+  if [[ -f "$out_svg" ]]; then
+    sed -i -E \
+      -e "s#<polygon fill = 'rgb\( 39, 113, 197\)'#<polygon fill = 'rgb( 21, 101, 192)' fill-opacity = '0.920000'#g" \
+      -e "s#<polygon fill = 'rgb\(108, 135, 148\)'#<polygon fill = 'rgb( 96, 125, 139)' fill-opacity = '0.920000'#g" \
+      -e "s#<polygon fill = 'rgb\(249, 174,  54\)'#<polygon fill = 'rgb(249, 168,  37)' fill-opacity = '0.920000'#g" \
+      -e "s#<polygon fill = 'rgb\( 62, 135,  66\)'#<polygon fill = 'rgb( 46, 125,  50)' fill-opacity = '0.920000'#g" \
+      -e "s#<polygon fill = 'rgb\(202,  57,  57\)'#<polygon fill = 'rgb(198,  40,  40)' fill-opacity = '0.920000'#g" \
+      -e 's#Arc&lt;RwLock>#Arc&lt;RwLock\&gt;#g' \
+      -e 's#<tspan font-size="11\.0" dy="0\.00"></tspan>##g' \
+      "$out_svg"
+  fi
   [[ -f "$out_svg" ]] && ensure_root_viewbox "$out_svg"
   rendered=$((rendered + 1))
 }

@@ -10,9 +10,10 @@ src/bindings.rs	unsafe_block	assert_eq!(unsafe { context_strong_count(second.as_
 src/bindings.rs	unsafe_block	let (is_final, total) = unsafe {	1	abi-snapshot-cursor-validation
 src/bindings.rs	unsafe_block	let captured_context = unsafe { &*captured.raw.context.cast::<ResourceContext>() };	1	abi-test-context-probe
 src/bindings.rs	unsafe_block	let captured_observer = unsafe { context_weak_observer(captured) };	1	abi-test-context-probe
+src/bindings.rs	unsafe_block	let context = unsafe { &*self.raw.context.cast::<ResourceContext>() };	1	abi-owned-resource-release-once
 src/bindings.rs	unsafe_block	let graph_vtable = unsafe { &*graph_vtable.cast::<VtDictionaryGraphVTable>() };	1	abi-test-context-probe
 src/bindings.rs	unsafe_block	let live = unsafe { &*dynamic_resource.raw.context.cast::<ResourceContext>() };	1	abi-test-context-probe
-src/bindings.rs	unsafe_block	let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };	9	abi-test-context-probe
+src/bindings.rs	unsafe_block	let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };	11	abi-test-context-probe
 src/bindings.rs	unsafe_block	let nested_observer = unsafe { context_weak_observer(nested) };	1	abi-test-context-probe
 src/bindings.rs	unsafe_block	let nodes = unsafe { std::slice::from_raw_parts(first.nodes, first.node_count) };	1	abi-test-context-probe
 src/bindings.rs	unsafe_block	let observer = unsafe { context_weak_observer(first.as_raw()) };	1	abi-test-context-probe
@@ -52,6 +53,31 @@ src/bindings.rs	unsafe_fn	unsafe fn dictionary_transition_status(	1	abi-producer
 src/bindings.rs	unsafe_fn	unsafe fn dictionary_value_status(	1	abi-producer-callback-body
 src/bindings.rs	unsafe_fn	unsafe fn dictionary_visit_status(	1	abi-producer-callback-body
 src/bindings.rs	unsafe_fn	unsafe fn query_interface_status(	1	abi-producer-callback-body
+src/bindings/entries.rs	unsafe_block	Ok(unsafe { &mut *cursor.context.cast::<EntryCursorState>() })	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	let callback_raw = unsafe { reducer(reducer_context, &batch) };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	let cursor = unsafe { &mut *cursor };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	let handle = unsafe { &mut *cursor };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	let limits = unsafe { *limits };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	let release = unsafe { release_batch_status(cursor, batch.generation) };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	let resource = unsafe { &*resource_context.cast::<ResourceContext>() };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	let state = match unsafe { state_mut(cursor) } {	2	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	let state = unsafe { &mut *handle.context.cast::<EntryCursorState>() };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	match unsafe { next_batch_status(cursor, limits, &mut batch) } {	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	match unsafe { state_mut(cursor) } {	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	unsafe {	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	unsafe { drop(Box::from_raw(context.cast::<EntryCursorState>())) };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	unsafe { next_batch_status(cursor, limits, out_batch) }.to_raw()	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	unsafe { out_batch.write(VtDictionaryEntryBatchView::default()) };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	unsafe { out_batch.write(state.view(generation)) };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	unsafe { out_count.write(0) };	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	unsafe { out_count.write(count) };	2	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_block	unsafe { release_batch_status(cursor, generation) }.to_raw()	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_fn	unsafe fn next_batch_status(	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_fn	unsafe fn release_batch_status(	1	abi-entry-cursor-provider-ownership
+src/bindings/entries.rs	unsafe_fn	unsafe fn state_mut<'a>(	1	abi-entry-cursor-provider-ownership
+src/collection.rs	unsafe_block	let edges = unsafe { graph.edges_and_finality_unchecked(frame.cursor) };	1	snapshot-dense-cursor-contract
+src/collection.rs	unsafe_block	let is_final = unsafe {	1	snapshot-dense-cursor-contract
+src/collection.rs	unsafe_block	unsafe {	2	snapshot-dense-cursor-contract
 src/concurrent_slots.rs	unsafe_block	(unsafe { &*canonical }, installed)	1	concurrent-slots-raw-box-ownership
 src/concurrent_slots.rs	unsafe_block	current = unsafe { (*current).next.load(Ordering::Relaxed) };	1	concurrent-slots-raw-box-ownership
 src/concurrent_slots.rs	unsafe_block	let chunk = unsafe { &*current };	2	concurrent-slots-raw-box-ownership
@@ -66,7 +92,7 @@ src/concurrent_slots.rs	unsafe_block	unsafe { drop(Box::from_raw(pointer)) };	2	
 src/concurrent_slots.rs	unsafe_block	unsafe { self.pointer.load(Ordering::Acquire).as_ref() }	1	concurrent-slots-raw-box-ownership
 src/double_array_trie/ascii.rs	unsafe_block	let finality = unsafe {	2	snapshot-dat-sealed-layout
 src/double_array_trie/ascii.rs	unsafe_block	let materialized = unsafe { owner.snapshot_cursor_node(cursor) }.expect("valid node");	1	snapshot-dat-sealed-layout
-src/double_array_trie/ascii.rs	unsafe_block	let shared = unsafe { DATShared::from_builder_parts_unchecked(raw, term_count) };	3	snapshot-dat-sealed-layout
+src/double_array_trie/ascii.rs	unsafe_block	let shared = unsafe { DATShared::from_builder_parts_unchecked(raw, term_count) };	2	snapshot-dat-sealed-layout
 src/double_array_trie/ascii.rs	unsafe_block	let state = unsafe { self.shared.traversal_state(cursor) }?;	1	snapshot-dat-sealed-layout
 src/double_array_trie/ascii.rs	unsafe_block	unsafe {	2	snapshot-dat-sealed-layout
 src/double_array_trie/ascii.rs	unsafe_block	unsafe { owner.snapshot_cursor_key_units(cursor) },	1	snapshot-dat-sealed-layout
@@ -182,6 +208,7 @@ src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn snapshot_cursor_node(&self, cursor: 
 src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn snapshot_cursor_value(	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn snapshot_graph_cursor_value(	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn visit_snapshot_cursor_edge_page<F>(	1	snapshot-dawg-native-cursor-ownership
+src/ffi.rs	unsafe_fn	unsafe fn entry_cursor_mut<'a>(	1	ffi-entry-cursor-handle-ownership
 src/ffi.rs	unsafe_fn	unsafe fn persistent_open_or_create(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn persistent_path<'a>(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn slice<'a, T>(	1	ffi-caller-pointer-contracts
@@ -214,6 +241,8 @@ src/persistent_artrie/char/types.rs	unsafe_block	*unsafe { Box::from_raw(pointer
 src/persistent_artrie/char/types.rs	unsafe_block	.map(|pointer| (key, unsafe { &*pointer }))	1	char-child-read-only-traversal
 src/persistent_artrie/char/types.rs	unsafe_block	.map(|pointer| unsafe { Box::from_raw(pointer.cast_mut()) });	1	char-child-box-replacement
 src/persistent_artrie/char/types.rs	unsafe_block	Ok(unsafe { &mut *published.as_ptr() })	2	char-child-unique-mutation
+src/persistent_artrie/char/overlay_dictionary_node_faulting_tests.rs	unsafe_block	if unsafe { node.snapshot_cursor_is_final(cursor) }.expect("cursor finality") {	1	snapshot-dense-cursor-contract
+src/persistent_artrie/char/overlay_dictionary_node_faulting_tests.rs	unsafe_block	unsafe {	1	snapshot-dense-cursor-contract
 src/persistent_artrie/char/types.rs	unsafe_block	Some(unsafe { Box::from_raw(ptr as *mut CharTrieNodeInner<V>) })	1	char-child-box-reclaim
 src/persistent_artrie/char/types.rs	unsafe_block	pending.push(unsafe { Box::from_raw(pointer.cast_mut()) });	1	char-child-box-reclaim
 src/persistent_artrie/char/types.rs	unsafe_block	unsafe { &*ptr }	1	char-child-read-only-traversal
@@ -236,6 +265,24 @@ src/persistent_artrie/core/io_uring_disk_manager.rs	unsafe_fn	unsafe fn register
 src/persistent_artrie/core/io_uring_disk_manager.rs	unsafe_impl	unsafe impl Send for IoUringDiskManager {}	1	io-uring-manager-thread-contract
 src/persistent_artrie/core/io_uring_disk_manager.rs	unsafe_impl	unsafe impl Sync for IoUringDiskManager {}	1	io-uring-manager-thread-contract
 src/persistent_artrie/core/mvcc.rs	unsafe_impl	unsafe impl<T: TrieRoot> Send for ReadTransaction<T> {}	1	read-transaction-root-snapshot-thread-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	assert_eq!(unsafe { owner.snapshot_cursor_value(ant) }, Some(Some(7)));	1	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	cursor = unsafe { owner.snapshot_cursor_transition(cursor, unit)? }?;	1	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	let finality = unsafe {	1	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	let materialized = unsafe { owner.snapshot_cursor_node(cursor) }.expect("cursor node");	1	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	let metadata = unsafe {	1	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	unsafe { fresh_owner.snapshot_cursor_value(zoo) },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	unsafe { owner.snapshot_cursor_is_final(cursor) },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	unsafe { owner.snapshot_cursor_key_units(cursor) },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	unsafe { owner.snapshot_cursor_transition(cursor, label) },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	unsafe { owner.snapshot_cursor_transition(root, b'z') },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	unsafe { owner.snapshot_cursor_value(cursor) },	2	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_fn	unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(	1	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_fn	unsafe fn snapshot_cursor_is_final(&self, cursor: Self::SnapshotCursor) -> Option<bool> {	1	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_fn	unsafe fn snapshot_cursor_key_units(	1	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_fn	unsafe fn snapshot_cursor_node(&self, cursor: Self::SnapshotCursor) -> Option<Self> {	1	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_fn	unsafe fn snapshot_cursor_transition(	1	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_fn	unsafe fn snapshot_cursor_value(&self, cursor: Self::SnapshotCursor) -> Option<Option<V>> {	1	snapshot-dense-cursor-contract
+src/persistent_artrie/core/overlay/dict_node.rs	unsafe_fn	unsafe fn visit_snapshot_cursor_edge_page<F>(	1	snapshot-dense-cursor-contract
 src/persistent_artrie/core/swizzled_ptr.rs	unsafe_block	assert_eq!(unsafe { *old_ptr }, 42);	1	swizzled-pointer-unit-test-deref
 src/persistent_artrie/core/swizzled_ptr.rs	unsafe_block	assert_eq!(unsafe { *retrieved }, 12345);	1	swizzled-pointer-unit-test-deref
 src/persistent_artrie/core/swizzled_ptr.rs	unsafe_block	assert_eq!(unsafe { *retrieved }, 42);	1	swizzled-pointer-unit-test-deref
@@ -245,10 +292,79 @@ src/persistent_artrie/core/traversal_context.rs	unsafe_block	return Ok(unsafe { 
 src/persistent_artrie/core/wal/sync_backend.rs	unsafe_block	unsafe {	1	wal-sync-raw-fd-boundary
 src/persistent_artrie/dict_impl.rs	unsafe_block	unsafe {	1	persistent-artrie-mmap-open
 src/persistent_artrie/nodes/node16.rs	unsafe_block	unsafe {	1	byte-node16-prefix-copy
+src/persistent_artrie/scdawg.rs	unsafe_block	let finality = unsafe {	1	snapshot-dense-cursor-contract
+src/persistent_artrie/scdawg.rs	unsafe_block	let metadata = unsafe {	1	snapshot-dense-cursor-contract
+src/persistent_artrie/scdawg.rs	unsafe_block	unsafe { fresh_byte.snapshot_cursor_transition(fresh_byte_cursor, b'z') }	1	snapshot-dense-cursor-contract
+src/persistent_artrie/scdawg.rs	unsafe_block	unsafe { fresh_chars.snapshot_cursor_transition(fresh_chars_cursor, '雪') }	1	snapshot-dense-cursor-contract
+src/persistent_artrie/scdawg.rs	unsafe_block	unsafe { old.snapshot_cursor_transition(root, b'z') },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/scdawg.rs	unsafe_block	unsafe { old_byte.snapshot_cursor_transition(old_byte_cursor, b'z') },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/scdawg.rs	unsafe_block	unsafe { old_chars.snapshot_cursor_transition(old_chars_cursor, '雪') },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/scdawg.rs	unsafe_block	unsafe { owned.snapshot_cursor_is_final(cursor) },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/scdawg.rs	unsafe_block	unsafe { owned.snapshot_cursor_transition(cursor, label) },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/scdawg.rs	unsafe_block	unsafe { owned.snapshot_cursor_value(cursor) },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/scdawg.rs	unsafe_fn	unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(	2	snapshot-dense-cursor-contract
+src/persistent_artrie/scdawg.rs	unsafe_fn	unsafe fn snapshot_cursor_is_final(&self, cursor: Self::SnapshotCursor) -> Option<bool> {	2	snapshot-dense-cursor-contract
+src/persistent_artrie/scdawg.rs	unsafe_fn	unsafe fn snapshot_cursor_transition(	2	snapshot-dense-cursor-contract
+src/persistent_artrie/scdawg.rs	unsafe_fn	unsafe fn snapshot_cursor_value(	2	snapshot-dense-cursor-contract
+src/persistent_artrie/scdawg.rs	unsafe_fn	unsafe fn visit_snapshot_cursor_edge_page<F>(	2	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_block	let finality = unsafe {	1	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_block	let materialized = unsafe { owned.snapshot_cursor_node(cursor) }	1	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_block	let metadata = unsafe {	1	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_block	unsafe { fresh_byte.snapshot_cursor_transition(fresh_byte_cursor, b'z') }	1	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_block	unsafe { fresh_chars.snapshot_cursor_transition(fresh_chars_cursor, '雪') }	1	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_block	unsafe { old.snapshot_cursor_transition(root, b'z') },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_block	unsafe { old_byte.snapshot_cursor_transition(old_byte_cursor, b'z') },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_block	unsafe { old_chars.snapshot_cursor_transition(old_chars_cursor, '雪') },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_block	unsafe { owned.snapshot_cursor_is_final(cursor) },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_block	unsafe { owned.snapshot_cursor_transition(cursor, label) },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_block	unsafe { owned.snapshot_cursor_value(cursor) },	1	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_fn	unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(	2	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_fn	unsafe fn snapshot_cursor_is_final(&self, cursor: Self::SnapshotCursor) -> Option<bool> {	2	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_fn	unsafe fn snapshot_cursor_node(&self, cursor: Self::SnapshotCursor) -> Option<Self> {	2	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_fn	unsafe fn snapshot_cursor_transition(	2	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_fn	unsafe fn snapshot_cursor_value(	2	snapshot-dense-cursor-contract
+src/persistent_artrie/suffix_automaton.rs	unsafe_fn	unsafe fn visit_snapshot_cursor_edge_page<F>(	2	snapshot-dense-cursor-contract
 src/persistent_artrie/vocab/dict_impl.rs	unsafe_impl	unsafe impl<S: BlockStorage> Send for PersistentVocabARTrie<S> {}	1	persistent-vocab-storage-thread-contract
 src/persistent_artrie/vocab/dict_impl.rs	unsafe_impl	unsafe impl<S: BlockStorage> Sync for PersistentVocabARTrie<S> {}	1	persistent-vocab-storage-thread-contract
+src/scdawg/ascii.rs	unsafe_block	let finality = unsafe {	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_block	let materialized = unsafe { owner.snapshot_cursor_node(cursor) }	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_block	let o = unsafe { fresh_owner.snapshot_cursor_transition(z, b'o') }	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_block	let page_metadata = unsafe {	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_block	let transitioned = unsafe { owner.snapshot_cursor_transition(cursor, label) };	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_block	let z = unsafe { fresh_owner.snapshot_cursor_transition(fresh_root, b'z') }	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_block	let zoo = unsafe { fresh_owner.snapshot_cursor_transition(o, b'o') }	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_block	unsafe { fresh_owner.snapshot_cursor_is_final(zoo) },	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_block	unsafe { fresh_owner.snapshot_cursor_value(zoo) },	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_block	unsafe { old_owner.snapshot_cursor_transition(old_root, b'z') },	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_block	unsafe { owner.snapshot_cursor_is_final(cursor) },	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_block	unsafe { owner.snapshot_cursor_transition(cursor, u8::MAX) },	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_block	unsafe { owner.snapshot_cursor_value(cursor) },	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_fn	unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_fn	unsafe fn snapshot_cursor_is_final(&self, cursor: Self::SnapshotCursor) -> Option<bool> {	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_fn	unsafe fn snapshot_cursor_node(&self, cursor: Self::SnapshotCursor) -> Option<Self> {	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_fn	unsafe fn snapshot_cursor_transition(	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_fn	unsafe fn snapshot_cursor_value(	1	snapshot-dense-cursor-contract
+src/scdawg/ascii.rs	unsafe_fn	unsafe fn visit_snapshot_cursor_edge_page<F>(	1	snapshot-dense-cursor-contract
 src/scdawg/ascii.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Send for ScdawgNodeHandle<V> {}	1	scdawg-handle-rwlock-thread-contract
 src/scdawg/ascii.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Sync for ScdawgNodeHandle<V> {}	1	scdawg-handle-rwlock-thread-contract
+src/scdawg/char.rs	unsafe_block	let finality = unsafe {	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_block	let leopard = unsafe { fresh_owner.snapshot_cursor_transition(snow, '豹') }	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_block	let materialized = unsafe { owner.snapshot_cursor_node(cursor) }	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_block	let page_metadata = unsafe {	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_block	let snow = unsafe { fresh_owner.snapshot_cursor_transition(fresh_root, '雪') }	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_block	let transitioned = unsafe { owner.snapshot_cursor_transition(cursor, label) };	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_block	unsafe { fresh_owner.snapshot_cursor_is_final(leopard) },	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_block	unsafe { fresh_owner.snapshot_cursor_value(leopard) },	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_block	unsafe { old_owner.snapshot_cursor_transition(old_root, '雪') },	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_block	unsafe { owner.snapshot_cursor_is_final(cursor) },	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_block	unsafe { owner.snapshot_cursor_transition(cursor, '\0') },	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_block	unsafe { owner.snapshot_cursor_value(cursor) },	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_fn	unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_fn	unsafe fn snapshot_cursor_is_final(&self, cursor: Self::SnapshotCursor) -> Option<bool> {	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_fn	unsafe fn snapshot_cursor_node(&self, cursor: Self::SnapshotCursor) -> Option<Self> {	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_fn	unsafe fn snapshot_cursor_transition(	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_fn	unsafe fn snapshot_cursor_value(	1	snapshot-dense-cursor-contract
+src/scdawg/char.rs	unsafe_fn	unsafe fn visit_snapshot_cursor_edge_page<F>(	1	snapshot-dense-cursor-contract
 src/scdawg/char.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Send for ScdawgCharNodeHandle<V> {}	1	scdawg-char-handle-rwlock-thread-contract
 src/scdawg/char.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Sync for ScdawgCharNodeHandle<V> {}	1	scdawg-char-handle-rwlock-thread-contract
 src/serialization/protobuf_impl.rs	unsafe_block	let final_slot = unsafe { final_spare.get_unchecked_mut(0) };	1	protobuf-v2-exact-spare-commit

@@ -10,11 +10,12 @@
     - malformed payload handling is fail-closed through a validation predicate.
 *)
 
-Require Import Stdlib.Lists.List.
-Require Import Stdlib.Bool.Bool.
-Require Import Stdlib.Arith.PeanoNat.
-Require Import Stdlib.Logic.FunctionalExtensionality.
-Require Import Stdlib.micromega.Lia.
+Require Import Coq.Lists.List.
+Require Import Coq.Bool.Bool.
+Require Import Coq.Arith.PeanoNat.
+Require Import Coq.Logic.FunctionalExtensionality.
+Require Import Coq.micromega.Lia.
+Require Import ARTrie.Model.ListCompat.
 Require Import ARTrie.Spec.MapSpec.
 Import ListNotations.
 
@@ -1347,7 +1348,7 @@ Proof.
   intros first later pending direct resulting_pending Hscheduled.
   cbn [tail_child_schedule] in Hscheduled.
   inversion Hscheduled; subst.
-  rewrite length_app, length_rev.
+  rewrite app_length_portable, length_rev.
   reflexivity.
 Qed.
 
@@ -1365,7 +1366,7 @@ Theorem uneliminated_singleton_pushes_one_unnecessary_frame :
 Proof.
   intros child pending.
   unfold uneliminated_child_schedule.
-  rewrite length_app.
+  rewrite app_length_portable.
   simpl.
   lia.
 Qed.
@@ -1444,7 +1445,7 @@ Proof.
     lia.
   - unfold bounded_tail_child_schedule, counted_batch_capacity.
     simpl.
-    rewrite length_app, length_rev.
+    rewrite app_length_portable, length_rev.
     apply Nat.add_le_mono_l.
     apply firstn_le_length.
 Qed.

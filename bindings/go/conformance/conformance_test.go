@@ -36,7 +36,7 @@ import (
 	"sync"
 	"testing"
 
-	ld "github.com/vinary-tree/libdictenstein/bindings/go"
+	ld "github.com/vinary-tree/libdictenstein/bindings/go/v4"
 )
 
 // ---------------------------------------------------------------------------
@@ -156,8 +156,8 @@ func TestC1_IdentityConstants(t *testing.T) {
 	if ld.AbiVersion() != 1 {
 		t.Fatalf("abi version = %d, want 1", ld.AbiVersion())
 	}
-	if ld.ApiRevision() != 4 {
-		t.Fatalf("api revision = %d, want 4", ld.ApiRevision())
+	if ld.ApiRevision() != 5 {
+		t.Fatalf("api revision = %d, want 5", ld.ApiRevision())
 	}
 }
 

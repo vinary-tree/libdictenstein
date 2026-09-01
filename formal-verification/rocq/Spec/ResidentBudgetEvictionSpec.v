@@ -18,7 +18,7 @@
     positive.  The proofs do not recurse over trie depth; path depth is data.
 *)
 
-From Stdlib Require Import Arith Bool Lia List PeanoNat.
+From Coq Require Import Arith Bool Lia List PeanoNat.
 Import ListNotations.
 
 Module ResidentBudgetEvictionSpec.

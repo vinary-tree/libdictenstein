@@ -1,12 +1,10 @@
 # Cargo configuration for libdictenstein.
 #
 # We enable the minimum CPU features required by transitive dependencies
-# (PathMap's gxhash needs AES + SSE2) — NOT `target-cpu=native`. The native
-# setting silently invokes AVX2 / AVX-512 / etc. on whatever host the
-# build runs on, producing binaries that emit illegal-instruction signals
-# when run on slightly older x86_64 hardware. SSE2 is baseline on all
-# x86_64 CPUs; AES-NI ships on essentially every Intel/AMD CPU from 2008
-# onward.
+# (PathMap's gxhash needs AES plus SSE2 on x86 or NEON on ARM) — NOT
+# `target-cpu=native`. The native setting silently invokes AVX2 / AVX-512 /
+# etc. on whatever host the build runs on, producing binaries that emit
+# illegal-instruction signals when run on slightly older hardware.
 #
 # To rebuild with `target-cpu=native` for local development (release/bench
 # profiles benefit measurably on AVX2+ hardware), set the env var:
@@ -15,13 +13,23 @@
 #
 # RUSTFLAGS in the environment overrides this file.
 
-[build]
+# Keep architecture features conditional: a global `[build]` rustflags entry
+# would incorrectly pass SSE2 to ARM release builders.
+[target.'cfg(all(any(target_arch = "x86", target_arch = "x86_64"), any(target_os = "linux", target_os = "macos", target_os = "windows")))']
 rustflags = ["-C", "target-feature=+aes,+sse2"]
 
-# Per-target overrides (kept here so future cross-compile fan-out has an
-# obvious place to land). The x86_64 GNU/Linux row mirrors `[build]` above.
-[target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-feature=+aes,+sse2"]
+[target.'cfg(all(any(target_arch = "arm", target_arch = "aarch64"), any(target_os = "linux", target_os = "macos", target_os = "windows")))']
+rustflags = ["-C", "target-feature=+aes,+neon"]
+
+# Rust's musl targets default to a static C runtime, which cannot produce the
+# cdylib embedded in musllinux Python wheels. Cargo joins these exact-target
+# flags with the architecture cfg flags above; the repeated architecture
+# features are intentional and `-crt-static` selects musl's dynamic CRT.
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+aes,+sse2,-crt-static"]
+
+[target.aarch64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+aes,+neon,-crt-static"]
 
 # Coverage profile for accurate branch coverage with cargo-llvm-cov.
 [profile.coverage]

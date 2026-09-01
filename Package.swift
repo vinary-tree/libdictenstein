@@ -2,13 +2,19 @@
 import PackageDescription
 
 let package = Package(
-    name: "VinaryTreeLibdictenstein",
+    name: "Libdictenstein",
     platforms: [.macOS(.v13)],
-    products: [.library(name: "Libdictenstein", targets: ["Libdictenstein"])],
+    products: [
+        .library(name: "Libdictenstein", targets: ["Libdictenstein"]),
+        .executable(
+            name: "libdictenstein-collection-profile",
+            targets: ["CollectionTraversalProfile"]
+        ),
+    ],
     dependencies: [
         .package(
-            url: "https://github.com/vinary-tree/liblevenshtein-rust.git",
-            from: "0.10.0"
+            url: "https://github.com/vinary-tree/vinary-tree-interop.git",
+            exact: "4.0.0-rc.4"
         ),
     ],
     targets: [
@@ -20,9 +26,14 @@ let package = Package(
             name: "Libdictenstein",
             dependencies: [
                 "CLibdictenstein",
-                .product(name: "VinaryTreeInterop", package: "liblevenshtein-rust"),
+                .product(name: "VinaryTreeInterop", package: "vinary-tree-interop"),
             ],
             path: "bindings/swift/libdictenstein/Sources/Libdictenstein"
+        ),
+        .executableTarget(
+            name: "CollectionTraversalProfile",
+            dependencies: ["Libdictenstein"],
+            path: "bindings/swift/libdictenstein/Sources/CollectionTraversalProfile"
         ),
     ]
 )

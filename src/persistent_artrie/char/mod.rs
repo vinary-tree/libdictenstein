@@ -824,29 +824,6 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
 // Note: Atomic operations (increment, upsert, compare_and_swap, fetch_add, get_or_insert)
 // are implemented in dict_impl_char.rs on `impl super::PersistentARTrieChar<V>`
 
-/// Build from an iterator of terms
-impl<V: DictionaryValue + Default> FromIterator<String> for PersistentARTrieChar<V> {
-    #[allow(deprecated)]
-    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
-        let trie = Self::new();
-        for term in iter {
-            trie.insert(&term).expect("insert failed");
-        }
-        trie
-    }
-}
-
-impl<'a, V: DictionaryValue + Default> FromIterator<&'a str> for PersistentARTrieChar<V> {
-    #[allow(deprecated)]
-    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
-        let trie = Self::new();
-        for term in iter {
-            trie.insert(term).expect("insert failed");
-        }
-        trie
-    }
-}
-
 /// Node in the character-level trie for the `DictionaryNode` trait.
 ///
 /// **G5.1 (DRY unification).** This is now a thin alias of the shared, key-encoding-
@@ -1255,16 +1232,11 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
         // (lock-free — reads the atomic overlay root; CK serializes the descriptor/arena
         // publish) and publish it while RETAINING the WAL.
         let snapshot = self.capture_snapshot_immutable()?;
-        if self
-            .eviction_coordinator
-            .lock()
-            .expect("eviction_coordinator mutex poisoned")
-            .is_some()
-        {
-            self.publish_immutable_snapshot_retaining_wal_with_eviction(snapshot)
-        } else {
-            self.publish_immutable_snapshot_retaining_wal(&snapshot)
-        }
+        <PersistentARTrieChar<V> as crate::persistent_artrie::core::overlay::checkpoint::OverlayCheckpoint<
+            crate::persistent_artrie::core::key_encoding::CharKey,
+            V,
+            crate::persistent_artrie::disk_manager::MmapDiskManager,
+        >>::publish_captured_overlay_snapshot(self, snapshot)
     }
 
     fn is_dirty(&self) -> bool {
@@ -2161,7 +2133,7 @@ mod tests {
     #[allow(deprecated)]
     fn test_from_iter() {
         let terms = vec!["alpha", "beta", "gamma"];
-        let trie: PersistentARTrieChar<()> = terms.into_iter().collect();
+        let trie = PersistentARTrieChar::<()>::try_from_iter(terms).unwrap();
         assert_eq!(trie.len(), 3);
         assert!(trie.contains("alpha"));
         assert!(trie.contains("beta"));

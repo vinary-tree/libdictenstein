@@ -25,6 +25,13 @@ type LockFreeEdges<U, V> = SmallVec<[(U, Arc<LockFreeDawgNode<U, V>>); 4]>;
 
 const EDGE_LINEAR_SCAN_LIMIT: usize = 16;
 
+#[inline]
+fn next_revision(revision: u64) -> u64 {
+    revision
+        .checked_add(1)
+        .expect("DynamicDAWG graph revision space exhausted")
+}
+
 /// Immutable sorted edge list published atomically by a node.
 #[derive(Clone)]
 pub(crate) struct LockFreeEdgeList<U: CharUnit, V: DictionaryValue> {
@@ -161,6 +168,16 @@ type RootWithCursorGraph<U, V> = (
     Arc<LockFreeDawgNode<U, V>>,
     Option<Arc<FrozenTraversalGraph<U, V>>>,
 );
+
+/// Result of atomically publishing a privately built frozen graph.
+#[cfg(any(feature = "bindings-core", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PublishIfEmpty {
+    /// The graph was published and contains this many distinct terms.
+    Published(usize),
+    /// A competing writer made the destination nonempty first.
+    NonEmpty,
+}
 
 pub(crate) fn frozen_traversal_graph_from_root<U: CharUnit, V: DictionaryValue>(
     root: &Arc<LockFreeDawgNode<U, V>>,
@@ -906,6 +923,77 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
         (version.root.clone(), version.term_count)
     }
 
+    /// Capture the root, count, and identity of exactly one graph generation.
+    ///
+    /// Bindings use the returned revision as their snapshot identity, avoiding
+    /// an outer mutation counter whose observation could be torn from this
+    /// immutable root. One `ArcSwap` load is the sole linearization point.
+    #[cfg(any(feature = "bindings-core", test))]
+    pub(crate) fn root_arc_with_term_count_revision(
+        &self,
+    ) -> (Arc<LockFreeDawgNode<U, V>>, usize, u64) {
+        let version = self.version.load();
+        (version.root.clone(), version.term_count, version.revision)
+    }
+
+    /// Remove every term with one graph-generation CAS.
+    ///
+    /// A retained expected `Arc` is the CAS token, so an allocator cannot
+    /// recycle its address while this attempt is live (pointer-ABA safety).
+    #[cfg(any(feature = "bindings-core", test))]
+    pub(crate) fn clear(&self) -> bool {
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.version.load_full();
+            if current.term_count == 0 {
+                return false;
+            }
+            let next = Arc::new(GraphVersion {
+                root: Arc::new(LockFreeDawgNode::new(false)),
+                cursor_graph: OnceLock::new(),
+                term_count: 0,
+                needs_compaction: false,
+                revision: next_revision(current.revision),
+            });
+            let previous = self.version.compare_and_swap(&current, next);
+            if Arc::ptr_eq(&previous, &current) {
+                return true;
+            }
+            backoff.snooze();
+        }
+    }
+
+    /// Publish a privately built minimal graph if the destination is empty.
+    ///
+    /// Building and sorting happen before this method. If another writer has
+    /// inserted a term, the candidate is rejected and the caller can merge its
+    /// entries through ordinary path-copy insertion. Losing to another empty
+    /// revision (for example, a concurrent clear) simply retries the same
+    /// immutable candidate.
+    #[cfg(any(feature = "bindings-core", test))]
+    pub(crate) fn try_publish_if_empty(&self, frozen: &Self) -> PublishIfEmpty {
+        let candidate = frozen.version.load_full();
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.version.load_full();
+            if current.term_count != 0 {
+                return PublishIfEmpty::NonEmpty;
+            }
+            let next = Arc::new(GraphVersion {
+                root: candidate.root.clone(),
+                cursor_graph: OnceLock::new(),
+                term_count: candidate.term_count,
+                needs_compaction: candidate.needs_compaction,
+                revision: next_revision(current.revision),
+            });
+            let previous = self.version.compare_and_swap(&current, next);
+            if Arc::ptr_eq(&previous, &current) {
+                return PublishIfEmpty::Published(candidate.term_count);
+            }
+            backoff.snooze();
+        }
+    }
+
     pub(crate) fn insert_units(&self, units: &[U]) -> bool {
         crate::causal_perf::record_term_insert_attempts(1);
         crate::causal_perf::record_input_units(units.len() as u64);
@@ -939,7 +1027,7 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
                 cursor_graph: OnceLock::new(),
                 term_count: current.term_count + usize::from(inserted),
                 needs_compaction: current.needs_compaction,
-                revision: current.revision.wrapping_add(1),
+                revision: next_revision(current.revision),
             });
             let previous = self.version.compare_and_swap(&current, next);
             if Arc::ptr_eq(&previous, &current) {
@@ -980,7 +1068,7 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
                 cursor_graph: OnceLock::new(),
                 term_count: current.term_count + usize::from(inserted),
                 needs_compaction: current.needs_compaction,
-                revision: current.revision.wrapping_add(1),
+                revision: next_revision(current.revision),
             });
             let previous = self.version.compare_and_swap(&current, next);
             if Arc::ptr_eq(&previous, &current) {
@@ -1028,7 +1116,7 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
                 cursor_graph: OnceLock::new(),
                 term_count: current.term_count + usize::from(inserted),
                 needs_compaction: current.needs_compaction,
-                revision: current.revision.wrapping_add(1),
+                revision: next_revision(current.revision),
             });
             let previous = self.version.compare_and_swap(&current, next);
             if Arc::ptr_eq(&previous, &current) {
@@ -1156,7 +1244,7 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
                 cursor_graph: OnceLock::new(),
                 term_count: current.term_count.saturating_sub(1),
                 needs_compaction: true,
-                revision: current.revision.wrapping_add(1),
+                revision: next_revision(current.revision),
             });
             let previous = self.version.compare_and_swap(&current, next);
             if Arc::ptr_eq(&previous, &current) {
@@ -1202,7 +1290,7 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
                 cursor_graph: OnceLock::new(),
                 term_count: entries.len(),
                 needs_compaction: false,
-                revision: current.revision.wrapping_add(1),
+                revision: next_revision(current.revision),
             });
 
             let previous = self.version.compare_and_swap(&current, next);
@@ -1307,6 +1395,7 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
 
     fn assert_send_sync<T: Send + Sync>() {}
 
@@ -1605,6 +1694,103 @@ mod tests {
         assert_eq!(dawg.get_units_optional_value(b"cat"), Some(Some(7)));
         assert!(!dawg.insert_units_with_optional_value(b"cat", None));
         assert_eq!(dawg.get_units_optional_value(b"cat"), Some(None));
+    }
+
+    fn assert_generation_publication_for<U: CharUnit>(first: Vec<U>, second: Vec<U>) {
+        let live = LockFreeDawg::<U, u64>::new();
+        let frozen = LockFreeDawg::<U, u64>::from_sorted_entries_by(
+            [(first.clone(), Some(1)), (second.clone(), None)],
+            |term, units| units.extend_from_slice(term),
+        );
+
+        assert_eq!(
+            live.try_publish_if_empty(&frozen),
+            PublishIfEmpty::Published(2)
+        );
+        let (retained_root, retained_count, published_revision) =
+            live.root_arc_with_term_count_revision();
+        assert_eq!(retained_count, 2);
+        assert_eq!(published_revision, 1);
+        assert_eq!(live.get_units_optional_value(&first), Some(Some(1)));
+        assert_eq!(live.get_units_optional_value(&second), Some(None));
+
+        assert!(live.clear());
+        let (_, cleared_count, cleared_revision) = live.root_arc_with_term_count_revision();
+        assert_eq!(cleared_count, 0);
+        assert_eq!(cleared_revision, 2);
+        assert_eq!(live.get_units_optional_value(&first), None);
+        let retained =
+            LockFreeDawg::<U, u64>::collect_visible_entries_from(&retained_root, retained_count);
+        assert_eq!(
+            retained.len(),
+            2,
+            "a pre-clear root remains an exact snapshot"
+        );
+
+        // Clear-before-insert and insert-before-clear are both represented by
+        // one total order of generation CAS publications.
+        assert!(live.insert_units_with_optional_value(&first, None));
+        assert_eq!(live.get_units_optional_value(&first), Some(None));
+        assert_eq!(live.try_publish_if_empty(&frozen), PublishIfEmpty::NonEmpty);
+        assert!(live.clear());
+        assert!(!live.clear(), "clearing an empty graph does not publish");
+    }
+
+    #[test]
+    fn graph_generation_operations_are_shared_by_byte_unicode_and_u64() {
+        assert_generation_publication_for(vec![b'a'], vec![b'b']);
+        assert_generation_publication_for(vec!['α'], vec!['β']);
+        assert_generation_publication_for(vec![1_u64], vec![2_u64]);
+    }
+
+    #[test]
+    fn retained_expected_arc_prevents_pointer_aba_publication() {
+        let live = LockFreeDawg::<u8, ()>::new();
+        let stale_expected = live.version.load_full();
+        assert!(live.insert_units(b"term"));
+        assert!(live.clear());
+        let current = live.version.load_full();
+        assert_eq!(current.term_count, 0);
+        assert!(!Arc::ptr_eq(&stale_expected, &current));
+
+        let stale_candidate = Arc::new(GraphVersion {
+            root: stale_expected.root.clone(),
+            cursor_graph: OnceLock::new(),
+            term_count: 0,
+            needs_compaction: false,
+            revision: next_revision(stale_expected.revision),
+        });
+        let observed = live
+            .version
+            .compare_and_swap(&stale_expected, stale_candidate);
+        assert!(Arc::ptr_eq(&observed, &current));
+        assert!(Arc::ptr_eq(&live.version.load_full(), &current));
+    }
+
+    #[test]
+    fn stalled_private_frozen_builder_cannot_block_shared_writers() {
+        let live = Arc::new(LockFreeDawg::<u8, u64>::new());
+        let (candidate_ready_tx, candidate_ready_rx) = mpsc::channel();
+        let (publish_tx, publish_rx) = mpsc::channel();
+
+        std::thread::scope(|scope| {
+            let publishing_live = Arc::clone(&live);
+            let publisher = scope.spawn(move || {
+                let frozen = LockFreeDawg::from_sorted_entries_by(
+                    [(b"batch".to_vec(), Some(1))],
+                    |term, units| units.extend_from_slice(term),
+                );
+                candidate_ready_tx.send(()).unwrap();
+                publish_rx.recv().unwrap();
+                publishing_live.try_publish_if_empty(&frozen)
+            });
+
+            candidate_ready_rx.recv().unwrap();
+            assert!(live.insert_units_with_value(b"writer", 2));
+            publish_tx.send(()).unwrap();
+            assert_eq!(publisher.join().unwrap(), PublishIfEmpty::NonEmpty);
+        });
+        assert_eq!(live.get_units_value(b"writer"), Some(2));
     }
 
     #[test]

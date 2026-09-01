@@ -7,12 +7,15 @@
 //! node identity preserve graph sharing in a lock-free lazy arena; other
 //! backends retain the sequential ABI-local identifier fallback.
 
+mod entries;
+
 use crate::concurrent_slots::HybridOnceBoxSlots;
 use crate::double_array_trie::char::DoubleArrayTrieChar;
 use crate::double_array_trie::DoubleArrayTrie;
-use crate::dynamic_dawg::char::DynamicDawgChar;
-use crate::dynamic_dawg::u64::DynamicDawgU64;
-use crate::dynamic_dawg::DynamicDawg;
+use crate::dynamic_dawg::char::{DynamicDawgChar, DynamicDawgCharNode};
+use crate::dynamic_dawg::lockfree::PublishIfEmpty;
+use crate::dynamic_dawg::u64::{DynamicDawgU64, DynamicDawgU64Node};
+use crate::dynamic_dawg::{DynamicDawg, DynamicDawgNode};
 use crate::scdawg::char::ScdawgChar;
 use crate::scdawg::Scdawg;
 use crate::{
@@ -24,12 +27,15 @@ use std::ffi::c_void;
 #[cfg(feature = "persistent-artrie")]
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+#[cfg(feature = "perf-instrumentation")]
+use std::sync::Mutex;
+use std::sync::{Arc, OnceLock};
 use vinary_tree_interop::{
     dictionary_flags, VtDictionaryEdge, VtDictionaryGraphEdge, VtDictionaryGraphNode,
     VtDictionaryGraphVTable, VtDictionaryGraphView, VtDictionaryVTable, VtDictionaryVisitVTable,
     VtInterfaceId, VtOptionalU64, VtResource, VtResourceVTable, VtSnapshotIdentity,
     VtSnapshotIdentityVTable, VtStatus, VtUnitDomain, VtValueDomain, VT_ABI_VERSION,
+    VT_DICTIONARY_ENTRIES_INTERFACE_ID, VT_DICTIONARY_ENTRIES_INTERFACE_VERSION,
     VT_DICTIONARY_GRAPH_INTERFACE_ID, VT_DICTIONARY_GRAPH_INTERFACE_VERSION,
     VT_DICTIONARY_INTERFACE_ID, VT_DICTIONARY_INTERFACE_VERSION, VT_DICTIONARY_VISIT_INTERFACE_ID,
     VT_DICTIONARY_VISIT_INTERFACE_VERSION, VT_SNAPSHOT_IDENTITY_INTERFACE_ID,
@@ -80,6 +86,117 @@ pub enum BindingUnitDomain {
     U64 = 3,
 }
 
+/// One owned term emitted by a binding snapshot traversal.
+///
+/// The variants preserve arbitrary byte and `u64` keys without coercing them
+/// through UTF-8. Unicode keys are validated scalar strings.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BindingTerm {
+    /// Arbitrary bytes.
+    Bytes(Vec<u8>),
+    /// A Unicode scalar string.
+    Unicode(String),
+    /// Unsigned 64-bit tokens.
+    U64(Vec<u64>),
+}
+
+/// One lossless, owned dictionary record from an immutable revision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BindingEntry {
+    /// Exact key in its native unit domain.
+    pub term: BindingTerm,
+    /// Mapped value, or `None` for a present term-only record.
+    pub value: Option<u64>,
+}
+
+/// Snapshot-owning, iterative binding traversal.
+///
+/// This direct Rust adapter shares the same engine as the batched family ABI
+/// but avoids FFI for in-process runtimes such as browser WebAssembly.
+pub struct BindingEntries {
+    state: entries::EntryCursorState,
+    domain: VtUnitDomain,
+    remaining: Option<usize>,
+    ended: bool,
+}
+
+impl BindingEntries {
+    fn new(snapshot: Arc<dyn SnapshotOps>) -> Self {
+        let domain = snapshot.domain();
+        let remaining = snapshot.len();
+        Self {
+            state: entries::EntryCursorState::new(snapshot),
+            domain,
+            remaining,
+            ended: false,
+        }
+    }
+
+    fn decode(&self, entry: entries::PendingEntry) -> Result<BindingEntry, VtStatus> {
+        let term = match self.domain {
+            VtUnitDomain::Byte => BindingTerm::Bytes(
+                entry
+                    .units
+                    .into_iter()
+                    .map(|unit| u8::try_from(unit).map_err(|_| VtStatus::ProviderError))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            VtUnitDomain::UnicodeScalar => BindingTerm::Unicode(
+                entry
+                    .units
+                    .into_iter()
+                    .map(|unit| {
+                        u32::try_from(unit)
+                            .ok()
+                            .and_then(char::from_u32)
+                            .ok_or(VtStatus::ProviderError)
+                    })
+                    .collect::<Result<String, _>>()?,
+            ),
+            VtUnitDomain::U64 => BindingTerm::U64(entry.units),
+        };
+        Ok(BindingEntry {
+            term,
+            value: entry.value,
+        })
+    }
+}
+
+impl Iterator for BindingEntries {
+    type Item = Result<BindingEntry, VtStatus>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.ended {
+            return None;
+        }
+        match self.state.next_entry() {
+            Ok(Some(entry)) => {
+                if let Some(remaining) = &mut self.remaining {
+                    *remaining = remaining.saturating_sub(1);
+                }
+                Some(self.decode(entry))
+            }
+            Ok(None) => {
+                self.ended = true;
+                self.remaining = Some(0);
+                None
+            }
+            Err(error) => {
+                self.ended = true;
+                self.remaining = Some(0);
+                Some(Err(error))
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.remaining
+            .map_or((0, None), |remaining| (remaining, Some(remaining)))
+    }
+}
+
+impl std::iter::FusedIterator for BindingEntries {}
+
 impl From<BindingUnitDomain> for VtUnitDomain {
     fn from(value: BindingUnitDomain) -> Self {
         match value {
@@ -129,27 +246,43 @@ static NEXT_SNAPSHOT_PRODUCER: AtomicU64 = AtomicU64::new(1);
 
 struct CachedSnapshot {
     revision: u64,
+    generation: u64,
     snapshot: OnceLock<Arc<dyn SnapshotOps>>,
 }
 
-const SNAPSHOT_QUIESCENCE_BIT: u64 = 1 << 63;
-const SNAPSHOT_WRITER_COUNT_MASK: u64 = SNAPSHOT_QUIESCENCE_BIT - 1;
-const OPTIMISTIC_SNAPSHOT_ATTEMPTS: usize = 64;
+const MAX_SNAPSHOT_BACKOFF_CREDITS: u64 = 64;
+const SNAPSHOT_BACKOFF_SPINS_PER_CREDIT: u64 = 16;
+const COLD_INITIALIZER_WAIT_ATTEMPTS: usize = 256;
 
 /// One strong warmed snapshot per shared producer revision.
 ///
-/// Snapshot reads are lock-free. Writers announce themselves before changing
-/// any backend state and publish a new revision before withdrawing that
-/// announcement. A reader returns only when the writer count and revision are
-/// stable on both sides of capture, which prevents a new root from ever being
-/// labelled with an old snapshot identity.
+/// This is a seqlock-style protocol over heterogeneous immutable backends.
+/// Writers announce themselves before changing backend state and publish a
+/// new revision before withdrawing that announcement. Snapshotters capture
+/// optimistically, then validate the active-writer count *before* the
+/// revision. If the count observes the final writer withdrawal, its Acquire
+/// pairs with that AcqRel RMW and the following revision load must observe the
+/// preceding revision publication. If it observes zero before a writer enters,
+/// the capture can linearize before that writer.
+///
+/// Snapshotters are obstruction-free rather than wait-free: uninterrupted
+/// mutation can invalidate every capture because backend root/count and this
+/// memo revision are not one atomic descriptor. The protocol is nevertheless
+/// lock-free system-wide. No snapshotter owns an admission gate, a suspended
+/// or panicking snapshotter cannot stop writers. A cold publisher installs an
+/// empty per-revision generation before construction; ordinary contenders
+/// poll its `OnceLock` without entering a blocking initializer. After a
+/// bounded stall they may replace that exact generation by CAS and initialize
+/// the successor, so normal capture is single-flight while abandoned work is
+/// helpably superseded.
 struct SnapshotMemo {
     producer: u64,
     revision: AtomicU64,
-    /// High bit closes writer admission; remaining bits count active writers.
-    writer_state: AtomicU64,
-    /// Serializes the rare starvation-prevention path between snapshotters.
-    quiescence: Mutex<()>,
+    active_writers: AtomicU64,
+    /// Consumable advisory pressure from invalidated snapshot attempts.
+    /// Writers atomically take these credits and perform a bounded pause; no
+    /// reader owns a state that a writer must wait to observe or clear.
+    snapshot_backoff_credits: AtomicU64,
     cached: ArcSwapOption<CachedSnapshot>,
     #[cfg(feature = "perf-instrumentation")]
     legacy_control: Mutex<()>,
@@ -158,10 +291,6 @@ struct SnapshotMemo {
 struct SnapshotMutation<'a> {
     memo: &'a SnapshotMemo,
     dirty: bool,
-}
-
-struct SnapshotQuiescence<'a> {
-    memo: &'a SnapshotMemo,
 }
 
 impl SnapshotMemo {
@@ -174,8 +303,8 @@ impl SnapshotMemo {
         Self {
             producer,
             revision: AtomicU64::new(0),
-            writer_state: AtomicU64::new(0),
-            quiescence: Mutex::new(()),
+            active_writers: AtomicU64::new(0),
+            snapshot_backoff_credits: AtomicU64::new(0),
             cached: ArcSwapOption::empty(),
             #[cfg(feature = "perf-instrumentation")]
             legacy_control: Mutex::new(()),
@@ -183,26 +312,33 @@ impl SnapshotMemo {
     }
 
     fn begin_mutation(&self) -> SnapshotMutation<'_> {
-        let mut state = self.writer_state.load(Ordering::Acquire);
+        // This is bounded cooperative backoff, not admission control. Taking
+        // the credits before pausing makes abandoned reader pressure finite:
+        // even if its source snapshotter is suspended forever, this writer
+        // consumes the entire residual cost and then enters normally.
+        let credits = self.snapshot_backoff_credits.swap(0, Ordering::AcqRel);
+        let spins = credits
+            .min(MAX_SNAPSHOT_BACKOFF_CREDITS)
+            .saturating_mul(SNAPSHOT_BACKOFF_SPINS_PER_CREDIT);
+        for _ in 0..spins {
+            std::hint::spin_loop();
+        }
+        let mut active = self.active_writers.load(Ordering::Acquire);
         loop {
-            if state & SNAPSHOT_QUIESCENCE_BIT != 0 {
-                std::thread::yield_now();
-                state = self.writer_state.load(Ordering::Acquire);
-                continue;
-            }
-            let count = state & SNAPSHOT_WRITER_COUNT_MASK;
-            let next = count
+            let next = active
                 .checked_add(1)
-                .filter(|next| *next <= SNAPSHOT_WRITER_COUNT_MASK)
                 .expect("concurrent snapshot-writer count exhausted");
-            match self.writer_state.compare_exchange_weak(
-                state,
+            match self.active_writers.compare_exchange_weak(
+                active,
                 next,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
+                // The acquire half keeps every subsequent backend write after
+                // this admission announcement; the release half participates
+                // in the counter's single modification order.
                 Ok(_) => break,
-                Err(observed) => state = observed,
+                Err(observed) => active = observed,
             }
         }
         SnapshotMutation {
@@ -222,76 +358,220 @@ impl SnapshotMemo {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
         });
-        for _ in 0..OPTIMISTIC_SNAPSHOT_ATTEMPTS {
-            if self.writer_state.load(Ordering::Acquire) != 0 {
-                std::thread::yield_now();
-                continue;
-            }
+        let mut retries = 0usize;
+        loop {
             let revision = self.revision.load(Ordering::Acquire);
-            if self.writer_state.load(Ordering::Acquire) != 0 {
+            if self.active_writers.load(Ordering::Acquire) != 0 {
+                self.request_snapshot_window();
+                snapshot_retry_pause(&mut retries);
                 continue;
             }
 
-            let snapshot = self.snapshot_for_revision(revision, &mut create);
-            if self.writer_state.load(Ordering::Acquire) == 0
-                && self.revision.load(Ordering::Acquire) == revision
-            {
+            let snapshot = self.snapshot_for_revision(revision, true, &mut create);
+            if self.capture_is_current(revision) {
                 return snapshot;
             }
+            self.request_snapshot_window();
+            snapshot_retry_pause(&mut retries);
         }
+    }
 
-        // Continuous writers can otherwise deny the zero-writer observation
-        // forever. Serialize only this bounded fallback, close admissions with
-        // one state bit, and let already-admitted writers drain. Writers never
-        // take this mutex, so no lock cycle is possible.
-        let _serial = self
-            .quiescence
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let previous = self
-            .writer_state
-            .fetch_or(SNAPSHOT_QUIESCENCE_BIT, Ordering::AcqRel);
-        debug_assert_eq!(previous & SNAPSHOT_QUIESCENCE_BIT, 0);
-        let _quiescence = SnapshotQuiescence { memo: self };
-        while self.writer_state.load(Ordering::Acquire) & SNAPSHOT_WRITER_COUNT_MASK != 0 {
-            std::thread::yield_now();
+    #[inline]
+    fn capture_is_current(&self, revision: u64) -> bool {
+        self.capture_is_current_after(revision, || {})
+    }
+
+    #[inline]
+    fn capture_is_current_after(&self, revision: u64, after_active_load: impl FnOnce()) -> bool {
+        // Do not reverse these loads. If a writer completes between them, the
+        // Acquire count load either saw it active or synchronizes with its
+        // final AcqRel withdrawal; the later revision load then rejects the
+        // capture. A deterministic unit test holds that exact interval open.
+        let active_writers = self.active_writers.load(Ordering::Acquire);
+        after_active_load();
+        let validated_revision = self.revision.load(Ordering::Acquire);
+        active_writers == 0 && validated_revision == revision
+    }
+
+    /// Memoize a snapshot whose revision comes from the backend's atomically
+    /// captured immutable graph descriptor.
+    ///
+    /// DynamicDAWG does not need the heterogeneous writer handshake above:
+    /// root, count, and revision are fields of one retained `GraphVersion`.
+    fn get_or_create_at(
+        &self,
+        revision: u64,
+        mut create: impl FnMut(SnapshotIdentity) -> Arc<dyn SnapshotOps>,
+    ) -> Arc<dyn SnapshotOps> {
+        self.observe_authoritative_revision(revision);
+        self.snapshot_for_revision(revision, true, &mut create)
+    }
+
+    /// Advance the memo's authoritative revision floor and evict any older
+    /// warmed arena without perturbing a snapshot already built for this or a
+    /// newer revision.
+    ///
+    /// DynamicDAWG publishes root, count, and revision in one retained graph
+    /// descriptor. Its mutation guard calls this after publication, while a
+    /// snapshot capture also calls it before memo lookup. The latter closes
+    /// the race where a current capture reaches the memo before its mutator's
+    /// guard runs; the monotonic floor prevents an older in-flight capture
+    /// from repopulating the cache after invalidation.
+    fn observe_authoritative_revision(&self, revision: u64) {
+        let previous = self.revision.fetch_max(revision, Ordering::AcqRel);
+        let floor = previous.max(revision);
+        loop {
+            let cached = self.cached.load_full();
+            let Some(entry) = cached.as_ref() else {
+                return;
+            };
+            if entry.revision >= floor {
+                return;
+            }
+            let observed = self.cached.compare_and_swap(&cached, None);
+            if observed.as_ref().map(Arc::as_ptr) == cached.as_ref().map(Arc::as_ptr) {
+                return;
+            }
         }
-        let revision = self.revision.load(Ordering::Acquire);
-        self.snapshot_for_revision(revision, &mut create)
+    }
+
+    #[inline]
+    fn request_snapshot_window(&self) {
+        let _ = self.snapshot_backoff_credits.try_update(
+            Ordering::Release,
+            Ordering::Relaxed,
+            |credits| Some(credits.saturating_add(1).min(MAX_SNAPSHOT_BACKOFF_CREDITS)),
+        );
     }
 
     fn snapshot_for_revision(
         &self,
         revision: u64,
+        memo_revision_is_authoritative: bool,
         create: &mut impl FnMut(SnapshotIdentity) -> Arc<dyn SnapshotOps>,
     ) -> Arc<dyn SnapshotOps> {
         loop {
             let cell = self.cached.load_full();
             if let Some(cached) = cell.as_ref().filter(|cached| cached.revision == revision) {
-                return Arc::clone(cached.snapshot.get_or_init(|| {
-                    create(SnapshotIdentity {
+                if let Some(snapshot) = cached.snapshot.get() {
+                    return Arc::clone(snapshot);
+                }
+
+                // Poll only; never call `get_or_init`, whose initializer lease
+                // can block forever when its owner is descheduled. The pointer
+                // identity is the generation token. Once another contender
+                // replaces it, immediately follow the new generation.
+                let mut current_generation = true;
+                for attempt in 0..COLD_INITIALIZER_WAIT_ATTEMPTS {
+                    if let Some(snapshot) = cached.snapshot.get() {
+                        return Arc::clone(snapshot);
+                    }
+                    let observed = self.cached.load_full();
+                    current_generation = observed
+                        .as_ref()
+                        .is_some_and(|observed| Arc::ptr_eq(observed, cached));
+                    if !current_generation {
+                        break;
+                    }
+                    cold_initializer_wait_pause(attempt);
+                }
+                if !current_generation {
+                    continue;
+                }
+                if let Some(snapshot) = cached.snapshot.get() {
+                    return Arc::clone(snapshot);
+                }
+                if memo_revision_is_authoritative
+                    && self.revision.load(Ordering::Acquire) != revision
+                {
+                    return create(SnapshotIdentity {
                         producer: self.producer,
                         revision,
-                    })
-                }));
+                    });
+                }
+
+                let candidate = Arc::new(CachedSnapshot {
+                    revision,
+                    generation: cached
+                        .generation
+                        .checked_add(1)
+                        .expect("snapshot initializer generation exhausted"),
+                    snapshot: OnceLock::new(),
+                });
+                let previous = self
+                    .cached
+                    .compare_and_swap(&cell, Some(Arc::clone(&candidate)));
+                if previous.as_ref().map(Arc::as_ptr) == cell.as_ref().map(Arc::as_ptr) {
+                    return self.initialize_snapshot_candidate(revision, candidate, create);
+                }
+                continue;
+            }
+
+            // A stale capture must not displace a newer revision's candidate.
+            // Its outer validation will reject the result after construction.
+            if (memo_revision_is_authoritative && self.revision.load(Ordering::Acquire) != revision)
+                || cell
+                    .as_ref()
+                    .is_some_and(|cached| cached.revision > revision)
+            {
+                return create(SnapshotIdentity {
+                    producer: self.producer,
+                    revision,
+                });
             }
 
             let candidate = Arc::new(CachedSnapshot {
                 revision,
+                generation: 0,
                 snapshot: OnceLock::new(),
             });
             let previous = self
                 .cached
                 .compare_and_swap(&cell, Some(Arc::clone(&candidate)));
             if previous.as_ref().map(Arc::as_ptr) == cell.as_ref().map(Arc::as_ptr) {
-                return Arc::clone(candidate.snapshot.get_or_init(|| {
-                    create(SnapshotIdentity {
-                        producer: self.producer,
-                        revision,
-                    })
-                }));
+                return self.initialize_snapshot_candidate(revision, candidate, create);
             }
         }
+    }
+
+    fn initialize_snapshot_candidate(
+        &self,
+        revision: u64,
+        candidate: Arc<CachedSnapshot>,
+        create: &mut impl FnMut(SnapshotIdentity) -> Arc<dyn SnapshotOps>,
+    ) -> Arc<dyn SnapshotOps> {
+        let snapshot = create(SnapshotIdentity {
+            producer: self.producer,
+            revision,
+        });
+        // Exactly the thread that CAS-published this generation initializes
+        // it. A takeover publishes a distinct Arc and therefore never races
+        // this OnceLock. If construction panics, the empty generation remains
+        // observable and is superseded after the bounded poll above.
+        candidate
+            .snapshot
+            .set(Arc::clone(&snapshot))
+            .unwrap_or_else(|_| unreachable!("one publisher initializes each snapshot generation"));
+        snapshot
+    }
+}
+
+#[inline]
+fn cold_initializer_wait_pause(attempt: usize) {
+    if attempt < 32 {
+        std::hint::spin_loop();
+    } else {
+        std::thread::yield_now();
+    }
+}
+
+#[inline]
+fn snapshot_retry_pause(retries: &mut usize) {
+    *retries = retries.saturating_add(1);
+    if *retries <= 8 {
+        std::hint::spin_loop();
+    } else {
+        std::thread::yield_now();
     }
 }
 
@@ -311,28 +591,36 @@ impl SnapshotMutation<'_> {
 
 impl Drop for SnapshotMutation<'_> {
     fn drop(&mut self) {
-        if self.dirty {
+        // Backend publication is sequenced before this guard is finished.
+        // For a dirty mutation, the AcqRel revision RMW publishes those writes
+        // before the final AcqRel withdrawal from `active_writers`. A reader
+        // loads the active count with Acquire and then the revision with
+        // Acquire. It therefore cannot accept across this exit: it observes
+        // either a still-active writer or the changed revision. Cache eviction
+        // precedes both markers, so a matching post-exit revision cannot return
+        // the invalidated candidate.
+        let revision_exhausted = if self.dirty {
             self.memo.cached.store(None);
             self.memo
                 .revision
                 .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                     current.checked_add(1)
                 })
-                .expect("snapshot revision identity space exhausted");
-        }
-        let previous = self.memo.writer_state.fetch_sub(1, Ordering::Release);
-        debug_assert_ne!(previous & SNAPSHOT_WRITER_COUNT_MASK, 0);
-    }
-}
-
-impl Drop for SnapshotQuiescence<'_> {
-    fn drop(&mut self) {
-        let previous = self
-            .memo
-            .writer_state
-            .fetch_and(SNAPSHOT_WRITER_COUNT_MASK, Ordering::Release);
-        debug_assert_ne!(previous & SNAPSHOT_QUIESCENCE_BIT, 0);
-        debug_assert_eq!(previous & SNAPSHOT_WRITER_COUNT_MASK, 0);
+                .is_err()
+        } else {
+            false
+        };
+        // Acquire prior RMWs as well as releasing this writer's revision. If
+        // this is the 1 -> 0 withdrawal, a reader that acquires it observes a
+        // completion chain covering every earlier concurrent writer.
+        let previous = self.memo.active_writers.fetch_sub(1, Ordering::AcqRel);
+        debug_assert_ne!(previous, 0);
+        // Restore the writer-progress state before surfacing the practically
+        // unreachable identity-exhaustion failure from this Drop path.
+        assert!(
+            !revision_exhausted,
+            "snapshot revision identity space exhausted"
+        );
     }
 }
 
@@ -364,6 +652,68 @@ enum DynamicBackend {
     U64(DynamicDawgU64<BindingValue>),
 }
 
+/// One retained DynamicDAWG graph generation. Root, count, and revision are
+/// captured by one ArcSwap load in the unit-generic core.
+enum DynamicSnapshotCapture {
+    Byte {
+        root: DynamicDawgNode<BindingValue>,
+        term_count: usize,
+        revision: u64,
+    },
+    Unicode {
+        root: DynamicDawgCharNode<BindingValue>,
+        term_count: usize,
+        revision: u64,
+    },
+    U64 {
+        root: DynamicDawgU64Node<BindingValue>,
+        term_count: usize,
+        revision: u64,
+    },
+}
+
+impl DynamicSnapshotCapture {
+    fn revision(&self) -> u64 {
+        match self {
+            Self::Byte { revision, .. }
+            | Self::Unicode { revision, .. }
+            | Self::U64 { revision, .. } => *revision,
+        }
+    }
+
+    fn snapshot(&self, identity: SnapshotIdentity) -> Arc<dyn SnapshotOps> {
+        match self {
+            Self::Byte {
+                root, term_count, ..
+            } => exact_traversal_snapshot(
+                root.clone(),
+                *term_count,
+                VtUnitDomain::Byte,
+                false,
+                identity,
+            ),
+            Self::Unicode {
+                root, term_count, ..
+            } => exact_traversal_snapshot(
+                root.clone(),
+                *term_count,
+                VtUnitDomain::UnicodeScalar,
+                false,
+                identity,
+            ),
+            Self::U64 {
+                root, term_count, ..
+            } => exact_traversal_snapshot(
+                root.clone(),
+                *term_count,
+                VtUnitDomain::U64,
+                false,
+                identity,
+            ),
+        }
+    }
+}
+
 impl DynamicBackend {
     fn new(domain: BindingUnitDomain) -> Self {
         match domain {
@@ -389,49 +739,78 @@ impl DynamicBackend {
         }
     }
 
-    fn snapshot(&self, identity: SnapshotIdentity) -> Arc<dyn SnapshotOps> {
-        // Root and length MUST come from one published revision: separate
-        // `root()` + `len()` calls perform two independent lock-free version
-        // loads, and a writer between them produces a torn capture (finding
-        // LDICT-B4, reproduced at ~2% of captures under churn).
+    fn capture_snapshot(&self) -> DynamicSnapshotCapture {
         match self {
             Self::Byte(dictionary) => {
-                let (root, term_count) = dictionary.root_with_term_count();
-                Arc::new(TraversalSnapshot::new(
+                let (root, term_count, revision) = dictionary.root_with_term_count_revision();
+                DynamicSnapshotCapture::Byte {
                     root,
-                    Some(term_count),
-                    VtUnitDomain::Byte,
-                    false,
-                    identity,
-                ))
+                    term_count,
+                    revision,
+                }
             }
             Self::Unicode(dictionary) => {
-                let (root, term_count) = dictionary.root_with_term_count();
-                Arc::new(TraversalSnapshot::new(
+                let (root, term_count, revision) = dictionary.root_with_term_count_revision();
+                DynamicSnapshotCapture::Unicode {
                     root,
-                    Some(term_count),
-                    VtUnitDomain::UnicodeScalar,
-                    false,
-                    identity,
-                ))
+                    term_count,
+                    revision,
+                }
             }
             Self::U64(dictionary) => {
-                let (root, term_count) = dictionary.root_with_term_count();
-                Arc::new(TraversalSnapshot::new(
+                let (root, term_count, revision) = dictionary.root_with_term_count_revision();
+                DynamicSnapshotCapture::U64 {
                     root,
-                    Some(term_count),
-                    VtUnitDomain::U64,
-                    false,
-                    identity,
-                ))
+                    term_count,
+                    revision,
+                }
             }
+        }
+    }
+
+    #[cfg(test)]
+    fn snapshot(&self, identity: SnapshotIdentity) -> Arc<dyn SnapshotOps> {
+        self.capture_snapshot().snapshot(identity)
+    }
+
+    fn clear(&self) -> bool {
+        match self {
+            Self::Byte(dictionary) => dictionary.clear_graph(),
+            Self::Unicode(dictionary) => dictionary.clear_graph(),
+            Self::U64(dictionary) => dictionary.clear_graph(),
         }
     }
 }
 
 struct SharedDictionary {
-    backend: RwLock<DynamicBackend>,
+    /// The selected domain never changes. Each contained DynamicDAWG already
+    /// owns an immutable graph-generation ArcSwap, so an outer lock would only
+    /// serialize otherwise lock-free reads and writers.
+    backend: DynamicBackend,
     snapshots: SnapshotMemo,
+}
+
+impl SharedDictionary {
+    /// Couple every public DynamicDAWG mutation to the revision-backed
+    /// snapshot memo without adding writer admission or a lock. Capturing the
+    /// latest graph descriptor also makes out-of-order guard drops converge on
+    /// the newest published revision.
+    fn snapshot_revision_guard(&self) -> DynamicSnapshotRevisionGuard<'_> {
+        DynamicSnapshotRevisionGuard { dictionary: self }
+    }
+}
+
+struct DynamicSnapshotRevisionGuard<'a> {
+    dictionary: &'a SharedDictionary,
+}
+
+impl Drop for DynamicSnapshotRevisionGuard<'_> {
+    fn drop(&mut self) {
+        let revision = self.dictionary.backend.capture_snapshot().revision();
+        self.dictionary
+            .snapshots
+            .observe_authoritative_revision(revision);
+    }
 }
 
 #[cfg(feature = "persistent-artrie")]
@@ -465,43 +844,31 @@ impl PersistentBackend {
         match self {
             Self::Byte(dictionary) => {
                 let (root, term_count) = dictionary.root_with_term_count();
-                Arc::new(TraversalSnapshot::new(
-                    root,
-                    Some(term_count),
-                    VtUnitDomain::Byte,
-                    false,
-                    identity,
-                ))
+                exact_traversal_snapshot(root, term_count, VtUnitDomain::Byte, false, identity)
             }
             Self::Unicode(dictionary) => {
                 let (root, term_count) = dictionary.root_with_term_count();
-                Arc::new(TraversalSnapshot::new(
+                exact_traversal_snapshot(
                     root,
-                    Some(term_count),
+                    term_count,
                     VtUnitDomain::UnicodeScalar,
                     false,
                     identity,
-                ))
+                )
             }
             Self::U64(dictionary) => {
                 let (root, term_count) = dictionary.root_with_term_count();
-                Arc::new(TraversalSnapshot::new(
-                    root,
-                    Some(term_count),
-                    VtUnitDomain::U64,
-                    false,
-                    identity,
-                ))
+                exact_traversal_snapshot(root, term_count, VtUnitDomain::U64, false, identity)
             }
             Self::Vocab(dictionary) => {
                 let (root, term_count) = dictionary.root_with_term_count();
-                Arc::new(TraversalSnapshot::new(
+                exact_traversal_snapshot(
                     root,
-                    Some(term_count),
+                    term_count,
                     VtUnitDomain::UnicodeScalar,
                     false,
                     identity,
-                ))
+                )
             }
         }
     }
@@ -620,7 +987,10 @@ impl PersistentARTrieBinding {
             }
             PersistentBackend::U64(_) => Err(BindingError::DomainMismatch),
         };
-        mutation.finish(result.is_ok());
+        // An I/O error may be reported after durable or overlay state changed.
+        // Keep RAII's conservative dirty=true on Err; only a proven Ok(false)
+        // is known not to have published a new visible term.
+        mutation.finish(!matches!(result, Ok(false)));
         result
     }
 
@@ -638,7 +1008,7 @@ impl PersistentARTrieBinding {
             PersistentBackend::Vocab(_) => Err(BindingError::Unsupported),
             PersistentBackend::U64(_) => Err(BindingError::DomainMismatch),
         };
-        mutation.finish(matches!(result, Ok(true)));
+        mutation.finish(!matches!(result, Ok(false)));
         result
     }
 
@@ -690,7 +1060,7 @@ impl PersistentARTrieBinding {
                 .map_err(io_error),
             _ => Err(BindingError::DomainMismatch),
         };
-        mutation.finish(result.is_ok());
+        mutation.finish(!matches!(result, Ok(false)));
         result
     }
 
@@ -705,7 +1075,7 @@ impl PersistentARTrieBinding {
             }
             _ => Err(BindingError::DomainMismatch),
         };
-        mutation.finish(matches!(result, Ok(true)));
+        mutation.finish(!matches!(result, Ok(false)));
         result
     }
 
@@ -855,24 +1225,44 @@ impl SecondaryBackend {
             // SCDAWGs are mutable: pair the root with the count from ONE
             // published revision (finding LDICT-B4).
             Self::ScdawgByte(dictionary) => {
-                let (root, term_count) = dictionary.root_with_term_count();
-                Arc::new(TraversalSnapshot::new(
-                    root,
-                    Some(term_count),
-                    VtUnitDomain::Byte,
-                    true,
-                    identity,
-                ))
+                let (root, term_count, entries) = dictionary.root_with_term_count_and_entries();
+                Arc::new(
+                    TraversalSnapshot::new(
+                        root,
+                        Some(term_count),
+                        VtUnitDomain::Byte,
+                        true,
+                        identity,
+                    )
+                    .with_entry_factory(move || {
+                        entries.clone().map(|(term, value)| {
+                            (
+                                term.into_bytes().into_iter().map(u64::from).collect(),
+                                value.and_then(BindingValue::into_option),
+                            )
+                        })
+                    }),
+                )
             }
             Self::ScdawgUnicode(dictionary) => {
-                let (root, term_count) = dictionary.root_with_term_count();
-                Arc::new(TraversalSnapshot::new(
-                    root,
-                    Some(term_count),
-                    VtUnitDomain::UnicodeScalar,
-                    true,
-                    identity,
-                ))
+                let (root, term_count, entries) = dictionary.root_with_term_count_and_entries();
+                Arc::new(
+                    TraversalSnapshot::new(
+                        root,
+                        Some(term_count),
+                        VtUnitDomain::UnicodeScalar,
+                        true,
+                        identity,
+                    )
+                    .with_entry_factory(move || {
+                        entries.clone().map(|(term, value)| {
+                            (
+                                term.chars().map(|unit| u64::from(unit as u32)).collect(),
+                                value.and_then(BindingValue::into_option),
+                            )
+                        })
+                    }),
+                )
             }
         }
     }
@@ -1090,7 +1480,7 @@ impl DynamicDawgBinding {
     pub fn new(domain: BindingUnitDomain) -> Self {
         Self {
             shared: Arc::new(SharedDictionary {
-                backend: RwLock::new(DynamicBackend::new(domain)),
+                backend: DynamicBackend::new(domain),
                 snapshots: SnapshotMemo::new(),
             }),
         }
@@ -1098,20 +1488,12 @@ impl DynamicDawgBinding {
 
     /// Return the dictionary's immutable unit domain.
     pub fn domain(&self) -> BindingUnitDomain {
-        self.shared
-            .backend
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .domain()
+        self.shared.backend.domain()
     }
 
     /// Return the number of visible terms.
     pub fn len(&self) -> usize {
-        self.shared
-            .backend
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .len()
+        self.shared.backend.len()
     }
 
     /// Return whether the dictionary is empty.
@@ -1121,13 +1503,8 @@ impl DynamicDawgBinding {
 
     /// Insert or update a UTF-8/byte term and optional value.
     pub fn insert_text(&self, term: &[u8], value: Option<u64>) -> Result<bool, BindingError> {
-        let backend = self
-            .shared
-            .backend
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mutation = self.shared.snapshots.begin_mutation();
-        let result = match &*backend {
+        let _snapshot_revision = self.shared.snapshot_revision_guard();
+        let result = match &self.shared.backend {
             DynamicBackend::Byte(dictionary) => {
                 Ok(dictionary
                     .insert_bytes_with_optional_value(term, value.map(BindingValue::present)))
@@ -1138,8 +1515,6 @@ impl DynamicDawgBinding {
             }
             DynamicBackend::U64(_) => Err(BindingError::DomainMismatch),
         };
-        drop(backend);
-        mutation.finish(result.is_ok());
         result
     }
 
@@ -1148,27 +1523,25 @@ impl DynamicDawgBinding {
     ///
     /// Ordered input is detected in linear time and skips sorting. Unordered
     /// input is stably sorted so duplicate entries retain last-value-wins
-    /// semantics. Replacing the backend under the binding write lock preserves
-    /// the shared resource identity; snapshots captured before the replacement
-    /// keep their immutable roots.
+    /// semantics. The frozen candidate is built privately and published only
+    /// if the inner graph generation is still empty. A competing insert makes
+    /// this operation merge through ordinary path-copy CAS publication.
     pub fn insert_text_batch<'a, I>(&self, entries: I) -> Result<usize, BindingError>
     where
         I: IntoIterator<Item = (&'a [u8], Option<u64>)>,
     {
+        let _snapshot_revision = self.shared.snapshot_revision_guard();
         let entries: Vec<_> = entries.into_iter().collect();
-        let mut backend = self
-            .shared
-            .backend
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        if backend.len() == 0 {
-            let replacement = match &*backend {
-                DynamicBackend::Byte(_) => {
-                    let mut owned: Vec<_> = entries
-                        .iter()
-                        .map(|(term, value)| (term.to_vec(), value.map(BindingValue::present)))
-                        .collect();
+        match &self.shared.backend {
+            DynamicBackend::Byte(dictionary) => {
+                let mut owned: Vec<_> = entries
+                    .iter()
+                    .map(|(term, value)| (term.to_vec(), value.map(BindingValue::present)))
+                    .collect();
+                if owned.is_empty() {
+                    return Ok(0);
+                }
+                if dictionary.term_count() == 0 {
                     if !owned.windows(2).all(|pair| pair[0].0 <= pair[1].0) {
                         crate::causal_perf::record_batch_sort_calls(1);
                         crate::causal_perf::record_batch_sort_terms(owned.len() as u64);
@@ -1177,16 +1550,31 @@ impl DynamicDawgBinding {
                         );
                         owned.sort_by(|left, right| left.0.cmp(&right.0));
                     }
-                    DynamicBackend::Byte(DynamicDawg::from_sorted_byte_entries(owned))
-                }
-                DynamicBackend::Unicode(_) => {
-                    let mut owned = Vec::with_capacity(entries.len());
-                    for (term, value) in &entries {
-                        let term = std::str::from_utf8(term)
-                            .map_err(|_| BindingError::InvalidUtf8)?
-                            .to_owned();
-                        owned.push((term, value.map(BindingValue::present)));
+                    let frozen = DynamicDawg::from_sorted_byte_entries(owned.clone());
+                    if let PublishIfEmpty::Published(len) = dictionary.try_publish_if_empty(&frozen)
+                    {
+                        return Ok(len);
                     }
+                }
+                Ok(owned
+                    .into_iter()
+                    .map(|(term, value)| dictionary.insert_bytes_with_optional_value(&term, value))
+                    .map(usize::from)
+                    .sum())
+            }
+            DynamicBackend::Unicode(dictionary) => {
+                // Validate the complete batch before any graph publication.
+                let mut owned = Vec::with_capacity(entries.len());
+                for (term, value) in &entries {
+                    let term = std::str::from_utf8(term)
+                        .map_err(|_| BindingError::InvalidUtf8)?
+                        .to_owned();
+                    owned.push((term, value.map(BindingValue::present)));
+                }
+                if owned.is_empty() {
+                    return Ok(0);
+                }
+                if dictionary.term_count() == 0 {
                     if !owned.windows(2).all(|pair| pair[0].0 <= pair[1].0) {
                         crate::causal_perf::record_batch_sort_calls(1);
                         crate::causal_perf::record_batch_sort_terms(owned.len() as u64);
@@ -1198,35 +1586,26 @@ impl DynamicDawgBinding {
                         );
                         owned.sort_by(|left, right| left.0.cmp(&right.0));
                     }
-                    DynamicBackend::Unicode(DynamicDawgChar::from_sorted_optional_entries(owned))
+                    let frozen = DynamicDawgChar::from_sorted_optional_entries(owned.clone());
+                    if let PublishIfEmpty::Published(len) = dictionary.try_publish_if_empty(&frozen)
+                    {
+                        return Ok(len);
+                    }
                 }
-                DynamicBackend::U64(_) => return Err(BindingError::DomainMismatch),
-            };
-            let mutation = self.shared.snapshots.begin_mutation();
-            *backend = replacement;
-            let len = backend.len();
-            drop(backend);
-            mutation.finish(true);
-            return Ok(len);
+                Ok(owned
+                    .into_iter()
+                    .map(|(term, value)| dictionary.insert_with_optional_value(&term, value))
+                    .map(usize::from)
+                    .sum())
+            }
+            DynamicBackend::U64(_) => Err(BindingError::DomainMismatch),
         }
-        drop(backend);
-
-        let mut inserted = 0usize;
-        for (term, value) in entries {
-            inserted += usize::from(self.insert_text(term, value)?);
-        }
-        Ok(inserted)
     }
 
     /// Remove a UTF-8/byte term.
     pub fn remove_text(&self, term: &[u8]) -> Result<bool, BindingError> {
-        let backend = self
-            .shared
-            .backend
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mutation = self.shared.snapshots.begin_mutation();
-        let result = match &*backend {
+        let _snapshot_revision = self.shared.snapshot_revision_guard();
+        let result = match &self.shared.backend {
             DynamicBackend::Byte(dictionary) => Ok(dictionary.remove_bytes(term)),
             DynamicBackend::Unicode(dictionary) => {
                 let term = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
@@ -1234,19 +1613,12 @@ impl DynamicDawgBinding {
             }
             DynamicBackend::U64(_) => Err(BindingError::DomainMismatch),
         };
-        drop(backend);
-        mutation.finish(matches!(result, Ok(true)));
         result
     }
 
     /// Test membership for a UTF-8/byte term.
     pub fn contains_text(&self, term: &[u8]) -> Result<bool, BindingError> {
-        let backend = self
-            .shared
-            .backend
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match &*backend {
+        match &self.shared.backend {
             DynamicBackend::Byte(dictionary) => Ok(dictionary.contains_bytes(term)),
             DynamicBackend::Unicode(dictionary) => {
                 let term = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
@@ -1258,12 +1630,7 @@ impl DynamicDawgBinding {
 
     /// Read the optional value for a UTF-8/byte term.
     pub fn value_text(&self, term: &[u8]) -> Result<Option<Option<u64>>, BindingError> {
-        let backend = self
-            .shared
-            .backend
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match &*backend {
+        match &self.shared.backend {
             DynamicBackend::Byte(dictionary) => Ok(dictionary
                 .get_bytes_optional_value(term)
                 .map(|value| value.and_then(BindingValue::into_option))),
@@ -1279,20 +1646,12 @@ impl DynamicDawgBinding {
 
     /// Insert or update a u64-token term and optional value.
     pub fn insert_u64(&self, term: &[u64], value: Option<u64>) -> Result<bool, BindingError> {
-        let backend = self
-            .shared
-            .backend
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mutation = self.shared.snapshots.begin_mutation();
-        let result = match &*backend {
+        let _snapshot_revision = self.shared.snapshot_revision_guard();
+        match &self.shared.backend {
             DynamicBackend::U64(dictionary) => Ok(dictionary
                 .insert_sequence_with_optional_value(term, value.map(BindingValue::present))),
             _ => Err(BindingError::DomainMismatch),
-        };
-        drop(backend);
-        mutation.finish(result.is_ok());
-        result
+        }
     }
 
     /// Insert/update a complete u64 batch with the same empty-dictionary
@@ -1301,21 +1660,18 @@ impl DynamicDawgBinding {
     where
         I: IntoIterator<Item = (&'a [u64], Option<u64>)>,
     {
-        let entries: Vec<_> = entries.into_iter().collect();
-        let mut backend = self
-            .shared
-            .backend
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        if backend.len() == 0 {
-            if !matches!(&*backend, DynamicBackend::U64(_)) {
-                return Err(BindingError::DomainMismatch);
-            }
-            let mut owned: Vec<_> = entries
-                .iter()
-                .map(|(term, value)| (term.to_vec(), value.map(BindingValue::present)))
-                .collect();
+        let _snapshot_revision = self.shared.snapshot_revision_guard();
+        let DynamicBackend::U64(dictionary) = &self.shared.backend else {
+            return Err(BindingError::DomainMismatch);
+        };
+        let mut owned: Vec<_> = entries
+            .into_iter()
+            .map(|(term, value)| (term.to_vec(), value.map(BindingValue::present)))
+            .collect();
+        if owned.is_empty() {
+            return Ok(0);
+        }
+        if dictionary.term_count() == 0 {
             if !owned.windows(2).all(|pair| pair[0].0 <= pair[1].0) {
                 crate::causal_perf::record_batch_sort_calls(1);
                 crate::causal_perf::record_batch_sort_terms(owned.len() as u64);
@@ -1324,47 +1680,30 @@ impl DynamicDawgBinding {
                 );
                 owned.sort_by(|left, right| left.0.cmp(&right.0));
             }
-            let mutation = self.shared.snapshots.begin_mutation();
-            *backend = DynamicBackend::U64(DynamicDawgU64::from_sorted_sequence_entries(owned));
-            let len = backend.len();
-            drop(backend);
-            mutation.finish(true);
-            return Ok(len);
+            let frozen = DynamicDawgU64::from_sorted_sequence_entries(owned.clone());
+            if let PublishIfEmpty::Published(len) = dictionary.try_publish_if_empty(&frozen) {
+                return Ok(len);
+            }
         }
-        drop(backend);
-
-        let mut inserted = 0usize;
-        for (term, value) in entries {
-            inserted += usize::from(self.insert_u64(term, value)?);
-        }
-        Ok(inserted)
+        Ok(owned
+            .into_iter()
+            .map(|(term, value)| dictionary.insert_sequence_with_optional_value(&term, value))
+            .map(usize::from)
+            .sum())
     }
 
     /// Remove a u64-token term.
     pub fn remove_u64(&self, term: &[u64]) -> Result<bool, BindingError> {
-        let backend = self
-            .shared
-            .backend
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mutation = self.shared.snapshots.begin_mutation();
-        let result = match &*backend {
+        let _snapshot_revision = self.shared.snapshot_revision_guard();
+        match &self.shared.backend {
             DynamicBackend::U64(dictionary) => Ok(dictionary.remove_sequence(term)),
             _ => Err(BindingError::DomainMismatch),
-        };
-        drop(backend);
-        mutation.finish(matches!(result, Ok(true)));
-        result
+        }
     }
 
     /// Test membership for a u64-token term.
     pub fn contains_u64(&self, term: &[u64]) -> Result<bool, BindingError> {
-        let backend = self
-            .shared
-            .backend
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match &*backend {
+        match &self.shared.backend {
             DynamicBackend::U64(dictionary) => Ok(dictionary.contains_sequence(term)),
             _ => Err(BindingError::DomainMismatch),
         }
@@ -1372,12 +1711,7 @@ impl DynamicDawgBinding {
 
     /// Read the optional value for a u64-token term.
     pub fn value_u64(&self, term: &[u64]) -> Result<Option<Option<u64>>, BindingError> {
-        let backend = self
-            .shared
-            .backend
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match &*backend {
+        match &self.shared.backend {
             DynamicBackend::U64(dictionary) => Ok(dictionary
                 .get_sequence_optional_value(term)
                 .map(|value| value.and_then(BindingValue::into_option))),
@@ -1385,40 +1719,20 @@ impl DynamicDawgBinding {
         }
     }
 
-    /// Remove every term by atomically replacing the current empty revision.
+    /// Remove every term by publishing one empty inner graph generation.
     pub fn clear(&self) {
-        let mut backend = self
-            .shared
-            .backend
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let domain = backend.domain();
-        let changed = backend.len() != 0;
-        let mutation = self.shared.snapshots.begin_mutation();
-        *backend = DynamicBackend::new(domain);
-        drop(backend);
-        mutation.finish(changed);
+        let _snapshot_revision = self.shared.snapshot_revision_guard();
+        self.shared.backend.clear();
     }
 
     /// Restore compact DynamicDAWG structure and return reclaimed nodes.
     pub fn compact(&self) -> usize {
-        let backend = self
-            .shared
-            .backend
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mutation = self.shared.snapshots.begin_mutation();
-        let reclaimed = match &*backend {
+        let _snapshot_revision = self.shared.snapshot_revision_guard();
+        match &self.shared.backend {
             DynamicBackend::Byte(dictionary) => dictionary.compact(),
             DynamicBackend::Unicode(dictionary) => dictionary.compact(),
             DynamicBackend::U64(dictionary) => dictionary.compact(),
-        };
-        drop(backend);
-        // Every compaction publishes a fresh immutable graph revision, even
-        // when minimization happens to preserve the physical node count.
-        // Snapshot memoization is revision-based, not size-based.
-        mutation.finish(true);
-        reclaimed
+        }
     }
 
     /// Borrow a two-word resource. The returned resource owns one retain.
@@ -1611,6 +1925,7 @@ struct TraversalSnapshot<N: DictionaryNode> {
     domain: VtUnitDomain,
     suffix: bool,
     identity: SnapshotIdentity,
+    entry_factory: Option<SnapshotEntryFactory>,
     // Keep the immutable owner last so native provenance handles are dropped
     // before the revision that makes them valid.
     arena: NodeArena<N>,
@@ -1720,10 +2035,61 @@ impl<N: DictionaryNode> TraversalSnapshot<N> {
             domain,
             suffix,
             identity,
+            entry_factory: None,
             arena: NodeArena::new(root, root_identity),
         }
     }
+
+    fn with_entry_factory<F, I>(mut self, factory: F) -> Self
+    where
+        F: Fn() -> I + Send + Sync + 'static,
+        I: Iterator<Item = (Vec<u64>, Option<u64>)> + Send + 'static,
+    {
+        self.entry_factory = Some(Arc::new(move || Box::new(factory())));
+        self
+    }
 }
+
+/// Build one exact-dictionary snapshot with a sequential entry stream backed
+/// by the same generic native/graph/owned traversal selector as the pure Rust
+/// collection API.
+///
+/// The random-access graph ABI retains its lazy, validated node arena. Entry
+/// cursors do not accept caller-supplied node identifiers, so they can safely
+/// keep the captured root and use backend-native cursors directly. This avoids
+/// populating and probing a second arena during a full collection scan while
+/// preserving one implementation across byte, Unicode-scalar, and `u64`
+/// dictionaries.
+fn exact_traversal_snapshot<N>(
+    root: N,
+    len: usize,
+    domain: VtUnitDomain,
+    suffix: bool,
+    identity: SnapshotIdentity,
+) -> Arc<dyn SnapshotOps>
+where
+    N: MappedDictionaryNode + 'static,
+    N::Unit: AbiUnit,
+    N::Value: AbiValue,
+{
+    let entry_root = root.clone();
+    Arc::new(
+        TraversalSnapshot::new(root, Some(len), domain, suffix, identity).with_entry_factory(
+            move || {
+                crate::collection::ExactSnapshotEntryIterator::from_node(entry_root.clone(), len)
+                    .map(|entry| {
+                        (
+                            entry.key.into_iter().map(AbiUnit::to_abi).collect(),
+                            entry.value.and_then(AbiValue::into_abi_value),
+                        )
+                    })
+            },
+        ),
+    )
+}
+
+type SnapshotEntryStream = Box<dyn Iterator<Item = (Vec<u64>, Option<u64>)> + Send>;
+type SnapshotEntryFactory = Arc<dyn Fn() -> SnapshotEntryStream + Send + Sync>;
 
 trait SnapshotOps: Send + Sync {
     fn root(&self) -> u64;
@@ -1731,6 +2097,9 @@ trait SnapshotOps: Send + Sync {
     fn suffix(&self) -> bool;
     fn len(&self) -> Option<usize>;
     fn identity(&self) -> SnapshotIdentity;
+    fn entries(&self) -> Option<SnapshotEntryStream> {
+        None
+    }
     fn graph(&self) -> Option<VtDictionaryGraphView>;
     fn graph_value(&self, value_cursor: u64) -> Result<Option<u64>, VtStatus>;
     fn is_final(&self, node: u64) -> Result<bool, VtStatus>;
@@ -1980,6 +2349,10 @@ where
         self.identity
     }
 
+    fn entries(&self) -> Option<SnapshotEntryStream> {
+        self.entry_factory.as_ref().map(|factory| factory())
+    }
+
     fn graph(&self) -> Option<VtDictionaryGraphView> {
         let root = &self.arena.slot(0).ok()?.node;
         if !root.supports_snapshot_graph_values() {
@@ -2114,12 +2487,7 @@ struct ResourceContext {
 impl ResourceContext {
     fn domain(&self) -> VtUnitDomain {
         match &self.payload {
-            ResourcePayload::Live(dictionary) => dictionary
-                .backend
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .domain()
-                .into(),
+            ResourcePayload::Live(dictionary) => dictionary.backend.domain().into(),
             ResourcePayload::Secondary(dictionary) => dictionary.backend.domain().into(),
             #[cfg(feature = "persistent-artrie")]
             ResourcePayload::Persistent(dictionary) => dictionary.backend.domain().into(),
@@ -2153,13 +2521,12 @@ impl ResourceContext {
 
     fn snapshot(&self) -> Arc<dyn SnapshotOps> {
         match &self.payload {
-            ResourcePayload::Live(dictionary) => dictionary.snapshots.get_or_create(|identity| {
+            ResourcePayload::Live(dictionary) => {
+                let capture = dictionary.backend.capture_snapshot();
                 dictionary
-                    .backend
-                    .read()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .snapshot(identity)
-            }),
+                    .snapshots
+                    .get_or_create_at(capture.revision(), |identity| capture.snapshot(identity))
+            }
             ResourcePayload::Secondary(dictionary) => dictionary
                 .snapshots
                 .get_or_create(|identity| dictionary.backend.snapshot(identity)),
@@ -2202,6 +2569,15 @@ impl OwnedDictionaryResource {
     /// Borrow the two-word ABI value.
     pub fn as_raw(&self) -> VtResource {
         self.raw
+    }
+
+    /// Traverse one immutable revision without crossing the C ABI.
+    ///
+    /// The returned iterator owns the snapshot and remains coherent if the
+    /// live producer changes or this resource is dropped.
+    pub fn entries(&self) -> BindingEntries {
+        let context = unsafe { &*self.raw.context.cast::<ResourceContext>() };
+        BindingEntries::new(context.snapshot())
     }
 }
 
@@ -2251,6 +2627,15 @@ unsafe fn query_interface_status(
         && minimum_version <= VT_DICTIONARY_VISIT_INTERFACE_VERSION
     {
         out_vtable.write((&DICTIONARY_VISIT_VTABLE as *const VtDictionaryVisitVTable).cast());
+        VtStatus::Ok
+    } else if (*interface_id).bytes == VT_DICTIONARY_ENTRIES_INTERFACE_ID.bytes
+        && minimum_version <= VT_DICTIONARY_ENTRIES_INTERFACE_VERSION
+    {
+        out_vtable.write(
+            (&entries::DICTIONARY_ENTRIES_VTABLE
+                as *const vinary_tree_interop::VtDictionaryEntriesVTable)
+                .cast(),
+        );
         VtStatus::Ok
     } else if (*interface_id).bytes == VT_DICTIONARY_GRAPH_INTERFACE_ID.bytes
         && minimum_version <= VT_DICTIONARY_GRAPH_INTERFACE_VERSION
@@ -2755,7 +3140,7 @@ fn dictionary_vtable(domain: VtUnitDomain, flags: u64) -> *const VtDictionaryVTa
 mod tests {
     use super::*;
     use std::sync::mpsc;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     fn snapshot_edges(snapshot: &dyn SnapshotOps, node: u64) -> Result<Vec<(u64, u64)>, VtStatus> {
         let (_, total) = snapshot.copy_edges(node, 0, &mut [])?;
@@ -2774,7 +3159,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_quiescence_closes_writer_admission_and_prevents_starvation() {
+    fn waiting_snapshot_does_not_close_writer_admission() {
         let memo = Arc::new(SnapshotMemo::new());
         let backend = Arc::new(DynamicBackend::new(BindingUnitDomain::U64));
         let admitted = memo.begin_mutation();
@@ -2792,35 +3177,252 @@ mod tests {
                     .expect("snapshot receiver remains live");
             });
 
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while memo.writer_state.load(Ordering::Acquire) & SNAPSHOT_QUIESCENCE_BIT == 0 {
-                assert!(
-                    Instant::now() < deadline,
-                    "snapshotter did not close writer admission"
-                );
-                std::thread::yield_now();
-            }
-
             let waiting_writer_memo = Arc::clone(&memo);
             scope.spawn(move || {
                 let mutation = waiting_writer_memo.begin_mutation();
                 writer_tx.send(()).expect("writer receiver remains live");
                 mutation.finish(false);
             });
-            assert!(
-                writer_rx.try_recv().is_err(),
-                "writer entered while quiescence bit closed admission"
-            );
+            writer_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("a waiting snapshot never closes writer admission");
+            assert!(snapshot_rx.try_recv().is_err());
 
             admitted.finish(false);
             let identity = snapshot_rx
                 .recv_timeout(Duration::from_secs(2))
-                .expect("snapshot completes after admitted writer drains");
+                .expect("snapshot completes once writers become quiescent");
             assert_eq!(identity.producer, memo.producer);
-            writer_rx
-                .recv_timeout(Duration::from_secs(2))
-                .expect("writer resumes after snapshot quiescence ends");
         });
+        assert_eq!(memo.active_writers.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn abandoned_snapshot_pressure_is_bounded_and_consumed_by_one_writer() {
+        let memo = SnapshotMemo::new();
+        for _ in 0..(MAX_SNAPSHOT_BACKOFF_CREDITS * 4) {
+            memo.request_snapshot_window();
+        }
+        assert_eq!(
+            memo.snapshot_backoff_credits.load(Ordering::Acquire),
+            MAX_SNAPSHOT_BACKOFF_CREDITS
+        );
+
+        let mutation = memo.begin_mutation();
+        assert_eq!(memo.snapshot_backoff_credits.load(Ordering::Acquire), 0);
+        assert_eq!(memo.active_writers.load(Ordering::Acquire), 1);
+        mutation.finish(false);
+        assert_eq!(memo.active_writers.load(Ordering::Acquire), 0);
+
+        // No reader is required to withdraw an ownership token. Later writers
+        // enter normally after the one bounded residual pause was consumed.
+        memo.begin_mutation().finish(false);
+        assert_eq!(memo.snapshot_backoff_credits.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn active_first_validation_rejects_writer_completing_between_final_loads() {
+        let memo = Arc::new(SnapshotMemo::new());
+        let expected_revision = memo.revision.load(Ordering::Acquire);
+        let mutation = memo.begin_mutation();
+        let (active_loaded_tx, active_loaded_rx) = mpsc::channel();
+        let (writer_finished_tx, writer_finished_rx) = mpsc::channel();
+
+        std::thread::scope(|scope| {
+            let validating_memo = Arc::clone(&memo);
+            let validator = scope.spawn(move || {
+                validating_memo.capture_is_current_after(expected_revision, || {
+                    active_loaded_tx
+                        .send(())
+                        .expect("validation observer remains live");
+                    writer_finished_rx
+                        .recv()
+                        .expect("writer completion signal remains live");
+                })
+            });
+
+            active_loaded_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("validator loads the active count while the writer is present");
+            mutation.finish(true);
+            writer_finished_tx.send(()).expect("validator remains live");
+            assert!(!validator.join().expect("validator does not panic"));
+        });
+        assert_eq!(memo.active_writers.load(Ordering::Acquire), 0);
+        assert_eq!(memo.revision.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn concurrent_cold_snapshotters_normally_build_one_provider_snapshot() {
+        const SNAPSHOTTERS: usize = 16;
+        let memo = Arc::new(SnapshotMemo::new());
+        let backend = Arc::new(DynamicBackend::new(BindingUnitDomain::U64));
+        let barrier = Arc::new(std::sync::Barrier::new(SNAPSHOTTERS));
+        let constructions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let snapshots = std::thread::scope(|scope| {
+            let mut threads = Vec::with_capacity(SNAPSHOTTERS);
+            for _ in 0..SNAPSHOTTERS {
+                let memo = Arc::clone(&memo);
+                let backend = Arc::clone(&backend);
+                let barrier = Arc::clone(&barrier);
+                let constructions = Arc::clone(&constructions);
+                threads.push(scope.spawn(move || {
+                    barrier.wait();
+                    memo.get_or_create(|identity| {
+                        constructions.fetch_add(1, Ordering::Relaxed);
+                        backend.snapshot(identity)
+                    })
+                }));
+            }
+            threads
+                .into_iter()
+                .map(|thread| thread.join().expect("cold snapshotter does not panic"))
+                .collect::<Vec<_>>()
+        });
+
+        assert_eq!(constructions.load(Ordering::Relaxed), 1);
+        assert!(snapshots
+            .iter()
+            .all(|snapshot| Arc::ptr_eq(snapshot, &snapshots[0])));
+    }
+
+    #[test]
+    fn stalled_cold_snapshot_initializer_cannot_convoy_other_snapshotters() {
+        let memo = Arc::new(SnapshotMemo::new());
+        let backend = Arc::new(DynamicBackend::new(BindingUnitDomain::Byte));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        std::thread::scope(|scope| {
+            let stalled_memo = Arc::clone(&memo);
+            let stalled_backend = Arc::clone(&backend);
+            let stalled = scope.spawn(move || {
+                let mut first_call = true;
+                stalled_memo.get_or_create(|identity| {
+                    if first_call {
+                        first_call = false;
+                        entered_tx
+                            .send(())
+                            .expect("initializer observer remains live");
+                        release_rx.recv().expect("initializer release remains live");
+                    }
+                    stalled_backend.snapshot(identity)
+                })
+            });
+
+            entered_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("first snapshotter reaches its cold initializer");
+            let winner = memo.get_or_create(|identity| backend.snapshot(identity));
+            assert_eq!(winner.identity().revision, 0);
+            let mutation = memo.begin_mutation();
+            assert_eq!(memo.active_writers.load(Ordering::Acquire), 1);
+            mutation.finish(true);
+            assert_eq!(memo.revision.load(Ordering::Acquire), 1);
+            release_tx
+                .send(())
+                .expect("stalled initializer remains live");
+            let stalled_result = stalled.join().expect("stalled snapshotter does not panic");
+            assert_eq!(stalled_result.identity().revision, 1);
+            assert!(!Arc::ptr_eq(&winner, &stalled_result));
+            let warmed = memo.get_or_create(|identity| backend.snapshot(identity));
+            assert!(Arc::ptr_eq(&stalled_result, &warmed));
+        });
+    }
+
+    #[test]
+    fn snapshot_and_mutation_panics_leave_progress_state_recoverable() {
+        let memo = SnapshotMemo::new();
+        let snapshot_panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            memo.get_or_create(|_| panic!("injected snapshot construction panic"));
+        }));
+        assert!(snapshot_panic.is_err());
+        assert_eq!(memo.active_writers.load(Ordering::Acquire), 0);
+        let abandoned = memo
+            .cached
+            .load_full()
+            .expect("panicking initializer leaves a replaceable generation");
+        assert!(abandoned.snapshot.get().is_none());
+
+        let backend = DynamicBackend::new(BindingUnitDomain::UnicodeScalar);
+        let recovered_same_revision = memo.get_or_create(|identity| backend.snapshot(identity));
+        assert_eq!(recovered_same_revision.identity().revision, 0);
+
+        let mutation_panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _mutation = memo.begin_mutation();
+            panic!("injected backend mutation panic");
+        }));
+        assert!(mutation_panic.is_err());
+        assert_eq!(memo.active_writers.load(Ordering::Acquire), 0);
+        assert_eq!(memo.revision.load(Ordering::Acquire), 1);
+        assert!(memo.cached.load_full().is_none());
+
+        let recovered = memo.get_or_create(|identity| backend.snapshot(identity));
+        assert_eq!(recovered.identity().revision, 1);
+    }
+
+    #[test]
+    fn byte_unicode_and_u64_producers_share_revision_memo_semantics() {
+        for domain in [
+            BindingUnitDomain::Byte,
+            BindingUnitDomain::UnicodeScalar,
+            BindingUnitDomain::U64,
+        ] {
+            let dictionary = DynamicDawgBinding::new(domain);
+            match domain {
+                BindingUnitDomain::Byte => {
+                    dictionary.insert_text(b"alpha", Some(1)).unwrap();
+                }
+                BindingUnitDomain::UnicodeScalar => {
+                    dictionary.insert_text("άλφα".as_bytes(), Some(1)).unwrap();
+                }
+                BindingUnitDomain::U64 => {
+                    dictionary.insert_u64(&[1, 2, 3], Some(1)).unwrap();
+                }
+            }
+
+            let resource = dictionary.resource();
+            let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };
+            let first = live.snapshot();
+            let warmed = live.snapshot();
+            assert!(Arc::ptr_eq(&first, &warmed));
+            assert_eq!(first.len(), Some(1));
+
+            match domain {
+                BindingUnitDomain::Byte => {
+                    dictionary.insert_text(b"beta", Some(2)).unwrap();
+                }
+                BindingUnitDomain::UnicodeScalar => {
+                    dictionary.insert_text("βήτα".as_bytes(), Some(2)).unwrap();
+                }
+                BindingUnitDomain::U64 => {
+                    dictionary.insert_u64(&[4, 5, 6], Some(2)).unwrap();
+                }
+            }
+
+            let fresh = live.snapshot();
+            assert_eq!(fresh.identity().producer, first.identity().producer);
+            assert_eq!(fresh.identity().revision, first.identity().revision + 1);
+            assert_eq!(first.len(), Some(1));
+            assert_eq!(fresh.len(), Some(2));
+
+            dictionary.compact();
+            let compacted = live.snapshot();
+            assert_eq!(compacted.identity().revision, fresh.identity().revision + 1);
+            assert_eq!(compacted.len(), Some(2));
+            assert_eq!(fresh.len(), Some(2), "pre-compact snapshot is retained");
+
+            dictionary.clear();
+            let cleared = live.snapshot();
+            assert_eq!(
+                cleared.identity().revision,
+                compacted.identity().revision + 1
+            );
+            assert_eq!(cleared.len(), Some(0));
+            assert_eq!(compacted.len(), Some(2), "pre-clear snapshot is retained");
+            assert!(Arc::ptr_eq(&cleared, &live.snapshot()));
+        }
     }
 
     #[test]
@@ -3006,37 +3608,20 @@ mod tests {
         );
         assert_eq!(tokens.value_u64(&[1, 9]).unwrap(), Some(Some(11)));
 
-        let byte_backend = bytes
-            .shared
-            .backend
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let DynamicBackend::Byte(byte_dawg) = &*byte_backend else {
+        let DynamicBackend::Byte(byte_dawg) = &bytes.shared.backend else {
             panic!("byte binding changed domains");
         };
         assert_eq!(byte_dawg.node_count(), 3);
-        drop(byte_backend);
 
-        let unicode_backend = unicode
-            .shared
-            .backend
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let DynamicBackend::Unicode(unicode_dawg) = &*unicode_backend else {
+        let DynamicBackend::Unicode(unicode_dawg) = &unicode.shared.backend else {
             panic!("Unicode binding changed domains");
         };
         // The two suffix nodes cannot merge because one final carries a value
         // and the other is valueless: finality plus value is part of the
         // minimized-state signature.
         assert_eq!(unicode_dawg.node_count(), 5);
-        drop(unicode_backend);
 
-        let token_backend = tokens
-            .shared
-            .backend
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let DynamicBackend::U64(token_dawg) = &*token_backend else {
+        let DynamicBackend::U64(token_dawg) = &tokens.shared.backend else {
             panic!("u64 binding changed domains");
         };
         assert_eq!(token_dawg.node_count(), 5);
@@ -3073,6 +3658,9 @@ mod tests {
     #[test]
     fn invalid_unicode_empty_batch_does_not_publish_a_partial_dictionary() {
         let dictionary = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
+        let resource = dictionary.resource();
+        let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };
+        let before = live.snapshot();
         let invalid = [0xff_u8];
         assert_eq!(
             dictionary
@@ -3080,6 +3668,108 @@ mod tests {
             Err(BindingError::InvalidUtf8)
         );
         assert!(dictionary.is_empty());
+        let after = live.snapshot();
+        assert!(Arc::ptr_eq(&before, &after));
+        assert_eq!(after.identity().revision, 0);
+
+        assert_eq!(
+            dictionary.insert_u64(&[1], None),
+            Err(BindingError::DomainMismatch)
+        );
+        assert!(Arc::ptr_eq(&after, &live.snapshot()));
+    }
+
+    #[test]
+    fn concurrent_empty_batch_and_insert_preserve_union_in_every_unit_domain() {
+        let bytes = Arc::new(DynamicDawgBinding::new(BindingUnitDomain::Byte));
+        let byte_barrier = Arc::new(std::sync::Barrier::new(3));
+        std::thread::scope(|scope| {
+            let dictionary = Arc::clone(&bytes);
+            let barrier = Arc::clone(&byte_barrier);
+            let batch = scope.spawn(move || {
+                barrier.wait();
+                dictionary
+                    .insert_text_batch([
+                        (b"batch-a".as_slice(), Some(1)),
+                        (b"batch-b".as_slice(), None),
+                    ])
+                    .unwrap()
+            });
+            let dictionary = Arc::clone(&bytes);
+            let barrier = Arc::clone(&byte_barrier);
+            let insert = scope.spawn(move || {
+                barrier.wait();
+                dictionary.insert_text(b"single", Some(3)).unwrap()
+            });
+            byte_barrier.wait();
+            batch.join().unwrap();
+            insert.join().unwrap();
+        });
+        assert_eq!(bytes.len(), 3);
+        assert_eq!(bytes.value_text(b"batch-a").unwrap(), Some(Some(1)));
+        assert_eq!(bytes.value_text(b"batch-b").unwrap(), Some(None));
+        assert_eq!(bytes.value_text(b"single").unwrap(), Some(Some(3)));
+
+        let unicode = Arc::new(DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar));
+        let unicode_barrier = Arc::new(std::sync::Barrier::new(3));
+        std::thread::scope(|scope| {
+            let dictionary = Arc::clone(&unicode);
+            let barrier = Arc::clone(&unicode_barrier);
+            let batch = scope.spawn(move || {
+                barrier.wait();
+                dictionary
+                    .insert_text_batch([("άλφα".as_bytes(), Some(1)), ("βήτα".as_bytes(), None)])
+                    .unwrap()
+            });
+            let dictionary = Arc::clone(&unicode);
+            let barrier = Arc::clone(&unicode_barrier);
+            let insert = scope.spawn(move || {
+                barrier.wait();
+                dictionary.insert_text("γάμμα".as_bytes(), Some(3)).unwrap()
+            });
+            unicode_barrier.wait();
+            batch.join().unwrap();
+            insert.join().unwrap();
+        });
+        assert_eq!(unicode.len(), 3);
+        assert_eq!(
+            unicode.value_text("άλφα".as_bytes()).unwrap(),
+            Some(Some(1))
+        );
+        assert_eq!(unicode.value_text("βήτα".as_bytes()).unwrap(), Some(None));
+        assert_eq!(
+            unicode.value_text("γάμμα".as_bytes()).unwrap(),
+            Some(Some(3))
+        );
+
+        let tokens = Arc::new(DynamicDawgBinding::new(BindingUnitDomain::U64));
+        let token_barrier = Arc::new(std::sync::Barrier::new(3));
+        std::thread::scope(|scope| {
+            let dictionary = Arc::clone(&tokens);
+            let barrier = Arc::clone(&token_barrier);
+            let batch = scope.spawn(move || {
+                barrier.wait();
+                dictionary
+                    .insert_u64_batch([
+                        ([1_u64, 2].as_slice(), Some(1)),
+                        ([3_u64, 4].as_slice(), None),
+                    ])
+                    .unwrap()
+            });
+            let dictionary = Arc::clone(&tokens);
+            let barrier = Arc::clone(&token_barrier);
+            let insert = scope.spawn(move || {
+                barrier.wait();
+                dictionary.insert_u64(&[5, 6], Some(3)).unwrap()
+            });
+            token_barrier.wait();
+            batch.join().unwrap();
+            insert.join().unwrap();
+        });
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens.value_u64(&[1, 2]).unwrap(), Some(Some(1)));
+        assert_eq!(tokens.value_u64(&[3, 4]).unwrap(), Some(None));
+        assert_eq!(tokens.value_u64(&[5, 6]).unwrap(), Some(Some(3)));
     }
 
     #[test]

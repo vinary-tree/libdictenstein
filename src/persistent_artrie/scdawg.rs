@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::iter::FusedIterator;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -70,6 +71,7 @@ struct ScdawgTermRecord<V: DictionaryValue> {
 struct NativeScdawgGraph<U: PersistentScdawgUnit, V: DictionaryValue> {
     core: ScdawgCoreInner<U, V>,
     records: Vec<ScdawgTermRecord<V>>,
+    sorted_active_record_indices: Vec<usize>,
     needs_compaction: bool,
 }
 
@@ -79,6 +81,17 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgGraph<U, V> {
     }
 
     fn from_records(records: Vec<ScdawgTermRecord<V>>, needs_compaction: bool) -> Self {
+        let mut sorted_active_record_indices: Vec<_> = records
+            .iter()
+            .enumerate()
+            .filter_map(|(index, record)| record.active.then_some(index))
+            .collect();
+        sorted_active_record_indices.sort_by(|&left, &right| {
+            records[left]
+                .term
+                .cmp(&records[right].term)
+                .then_with(|| left.cmp(&right))
+        });
         let active_records: Vec<_> = records.iter().filter(|record| record.active).collect();
         let total_units = active_records
             .iter()
@@ -96,6 +109,7 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgGraph<U, V> {
         Self {
             core,
             records,
+            sorted_active_record_indices,
             needs_compaction,
         }
     }
@@ -111,7 +125,7 @@ impl<U: PersistentScdawgUnit, V: DictionaryValue> NativeScdawgGraph<U, V> {
     }
 
     fn term_count(&self) -> usize {
-        self.core.term_count()
+        self.sorted_active_record_indices.len()
     }
 
     fn contains(&self, term: &str) -> bool {
@@ -954,6 +968,52 @@ pub struct PersistentScdawgChar<V: DictionaryValue = (), S: BlockStorage = MmapD
     _storage: PhantomData<S>,
 }
 
+/// Snapshot iterator over stored byte-SCDAWG term records.
+pub struct PersistentScdawgEntryIterator<V: DictionaryValue = ()> {
+    graph: Arc<NativeScdawgGraph<u8, V>>,
+    index: usize,
+}
+
+/// Snapshot iterator over stored Unicode-SCDAWG term records.
+pub struct PersistentScdawgCharEntryIterator<V: DictionaryValue = ()> {
+    graph: Arc<NativeScdawgGraph<char, V>>,
+    index: usize,
+}
+
+macro_rules! impl_scdawg_record_iterator {
+    ($iterator:ident) => {
+        impl<V: DictionaryValue> Iterator for $iterator<V> {
+            type Item = (String, Option<V>);
+
+            fn next(&mut self) -> Option<Self::Item> {
+                let record_index = *self.graph.sorted_active_record_indices.get(self.index)?;
+                self.index += 1;
+                let record = self
+                    .graph
+                    .records
+                    .get(record_index)
+                    .expect("the revision record index references a term");
+                Some((record.term.clone(), record.value.clone()))
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                let remaining = self
+                    .graph
+                    .sorted_active_record_indices
+                    .len()
+                    .saturating_sub(self.index);
+                (remaining, Some(remaining))
+            }
+        }
+
+        impl<V: DictionaryValue> ExactSizeIterator for $iterator<V> {}
+        impl<V: DictionaryValue> FusedIterator for $iterator<V> {}
+    };
+}
+
+impl_scdawg_record_iterator!(PersistentScdawgEntryIterator);
+impl_scdawg_record_iterator!(PersistentScdawgCharEntryIterator);
+
 /// Byte-level persistent SCDAWG node handle.
 #[derive(Clone)]
 pub struct PersistentScdawgNode<V: DictionaryValue = ()> {
@@ -1094,16 +1154,23 @@ impl<V: DictionaryValue> PersistentScdawg<V, MmapDiskManager> {
 }
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentScdawg<V, S> {
+    pub fn try_insert(&self, term: &str) -> Result<bool> {
+        self.index.insert(term, None)
+    }
+
     pub fn insert(&self, term: &str) -> bool {
-        self.index.insert(term, None).unwrap_or_else(|error| {
+        self.try_insert(term).unwrap_or_else(|error| {
             log::warn!("PersistentScdawg::insert failed: {error}");
             false
         })
     }
 
+    pub fn try_insert_with_value(&self, term: &str, value: V) -> Result<bool> {
+        self.index.insert(term, Some(value))
+    }
+
     pub fn insert_with_value(&self, term: &str, value: V) -> bool {
-        self.index
-            .insert(term, Some(value))
+        self.try_insert_with_value(term, value)
             .unwrap_or_else(|error| {
                 log::warn!("PersistentScdawg::insert_with_value failed: {error}");
                 false
@@ -1163,6 +1230,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentScdawg<V, S> {
 
     pub fn source_texts(&self) -> Vec<String> {
         self.iter().collect()
+    }
+
+    /// Iterate over stored term records from one immutable revision.
+    pub fn iter_entries(&self) -> PersistentScdawgEntryIterator<V> {
+        PersistentScdawgEntryIterator {
+            graph: self.index.load(),
+            index: 0,
+        }
     }
 
     pub fn contains_substring(&self, pattern: &str) -> bool {
@@ -1299,16 +1374,23 @@ impl<V: DictionaryValue> PersistentScdawgChar<V, MmapDiskManager> {
 }
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentScdawgChar<V, S> {
+    pub fn try_insert(&self, term: &str) -> Result<bool> {
+        self.index.insert(term, None)
+    }
+
     pub fn insert(&self, term: &str) -> bool {
-        self.index.insert(term, None).unwrap_or_else(|error| {
+        self.try_insert(term).unwrap_or_else(|error| {
             log::warn!("PersistentScdawgChar::insert failed: {error}");
             false
         })
     }
 
+    pub fn try_insert_with_value(&self, term: &str, value: V) -> Result<bool> {
+        self.index.insert(term, Some(value))
+    }
+
     pub fn insert_with_value(&self, term: &str, value: V) -> bool {
-        self.index
-            .insert(term, Some(value))
+        self.try_insert_with_value(term, value)
             .unwrap_or_else(|error| {
                 log::warn!("PersistentScdawgChar::insert_with_value failed: {error}");
                 false
@@ -1370,6 +1452,14 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentScdawgChar<V, S> {
         self.iter().collect()
     }
 
+    /// Iterate over stored term records from one immutable revision.
+    pub fn iter_entries(&self) -> PersistentScdawgCharEntryIterator<V> {
+        PersistentScdawgCharEntryIterator {
+            graph: self.index.load(),
+            index: 0,
+        }
+    }
+
     pub fn contains_substring(&self, pattern: &str) -> bool {
         self.index.load().contains_substring(pattern)
     }
@@ -1425,6 +1515,67 @@ impl<V: DictionaryValue> DictionaryNode for PersistentScdawgNode<V> {
     fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {
         self.node_idx
             .and_then(crate::SnapshotNodeIdentity::from_index)
+    }
+
+    #[inline]
+    fn snapshot_root_cursor(&self) -> Option<Self::SnapshotCursor> {
+        self.graph.core.snapshot_cursor(self.node_idx?)
+    }
+
+    #[inline]
+    fn contains_snapshot_cursor(&self, cursor: Self::SnapshotCursor) -> bool {
+        self.graph.core.contains_snapshot_cursor(cursor)
+    }
+
+    #[inline]
+    unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(
+        &self,
+        cursor: Self::SnapshotCursor,
+        project: P,
+        visitor: F,
+    ) -> Option<bool>
+    where
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self::SnapshotCursor, T),
+    {
+        self.graph
+            .core
+            .filter_map_snapshot_cursor_edges_and_finality(cursor, project, visitor)
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_is_final(&self, cursor: Self::SnapshotCursor) -> Option<bool> {
+        self.graph.core.snapshot_cursor_is_final(cursor)
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_transition(
+        &self,
+        cursor: Self::SnapshotCursor,
+        label: Self::Unit,
+    ) -> Option<Option<Self::SnapshotCursor>> {
+        self.graph.core.snapshot_cursor_transition(cursor, label)
+    }
+
+    #[inline]
+    fn supports_efficient_snapshot_cursor_edge_paging(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn visit_snapshot_cursor_edge_page<F>(
+        &self,
+        cursor: Self::SnapshotCursor,
+        start: usize,
+        capacity: usize,
+        visitor: F,
+    ) -> Option<(bool, usize)>
+    where
+        F: FnMut(Self::Unit, Self::SnapshotCursor),
+    {
+        self.graph
+            .core
+            .visit_snapshot_cursor_edge_page(cursor, start, capacity, visitor)
     }
 
     fn is_final(&self) -> bool {
@@ -1529,6 +1680,19 @@ impl<V: DictionaryValue> MappedDictionaryNode for PersistentScdawgNode<V> {
     fn value(&self) -> Option<Self::Value> {
         node(&self.graph, self.node_idx)?.value.clone()
     }
+
+    #[inline]
+    fn supports_snapshot_cursor_values(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_value(
+        &self,
+        cursor: Self::SnapshotCursor,
+    ) -> Option<Option<Self::Value>> {
+        self.graph.core.snapshot_cursor_value(cursor)
+    }
 }
 
 impl<V: DictionaryValue> DictionaryNode for PersistentScdawgCharNode<V> {
@@ -1540,6 +1704,67 @@ impl<V: DictionaryValue> DictionaryNode for PersistentScdawgCharNode<V> {
     fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {
         self.node_idx
             .and_then(crate::SnapshotNodeIdentity::from_index)
+    }
+
+    #[inline]
+    fn snapshot_root_cursor(&self) -> Option<Self::SnapshotCursor> {
+        self.graph.core.snapshot_cursor(self.node_idx?)
+    }
+
+    #[inline]
+    fn contains_snapshot_cursor(&self, cursor: Self::SnapshotCursor) -> bool {
+        self.graph.core.contains_snapshot_cursor(cursor)
+    }
+
+    #[inline]
+    unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(
+        &self,
+        cursor: Self::SnapshotCursor,
+        project: P,
+        visitor: F,
+    ) -> Option<bool>
+    where
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self::SnapshotCursor, T),
+    {
+        self.graph
+            .core
+            .filter_map_snapshot_cursor_edges_and_finality(cursor, project, visitor)
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_is_final(&self, cursor: Self::SnapshotCursor) -> Option<bool> {
+        self.graph.core.snapshot_cursor_is_final(cursor)
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_transition(
+        &self,
+        cursor: Self::SnapshotCursor,
+        label: Self::Unit,
+    ) -> Option<Option<Self::SnapshotCursor>> {
+        self.graph.core.snapshot_cursor_transition(cursor, label)
+    }
+
+    #[inline]
+    fn supports_efficient_snapshot_cursor_edge_paging(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn visit_snapshot_cursor_edge_page<F>(
+        &self,
+        cursor: Self::SnapshotCursor,
+        start: usize,
+        capacity: usize,
+        visitor: F,
+    ) -> Option<(bool, usize)>
+    where
+        F: FnMut(Self::Unit, Self::SnapshotCursor),
+    {
+        self.graph
+            .core
+            .visit_snapshot_cursor_edge_page(cursor, start, capacity, visitor)
     }
 
     fn is_final(&self) -> bool {
@@ -1644,6 +1869,19 @@ impl<V: DictionaryValue> MappedDictionaryNode for PersistentScdawgCharNode<V> {
     fn value(&self) -> Option<Self::Value> {
         node(&self.graph, self.node_idx)?.value.clone()
     }
+
+    #[inline]
+    fn supports_snapshot_cursor_values(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_value(
+        &self,
+        cursor: Self::SnapshotCursor,
+    ) -> Option<Option<Self::Value>> {
+        self.graph.core.snapshot_cursor_value(cursor)
+    }
 }
 
 impl<V: DictionaryValue, S: BlockStorage> Dictionary for PersistentScdawg<V, S> {
@@ -1731,11 +1969,23 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary for Persistent
 }
 
 impl<V: DictionaryValue, S: BlockStorage> SubstringDictionary for PersistentScdawg<V, S> {
-    fn find_exact_substring(&self, pattern: &str) -> Vec<SubstringMatch<Self::Node>> {
-        let Some(node) = self.find(pattern) else {
+    fn find_exact_substring_in_snapshot(
+        snapshot_root: &Self::Node,
+        pattern: &str,
+    ) -> Vec<SubstringMatch<Self::Node>> {
+        debug_assert_eq!(snapshot_root.node_idx, Some(0));
+        debug_assert!(snapshot_root.path.is_empty());
+        let graph = Arc::clone(&snapshot_root.graph);
+        let Some(node_idx) = graph.core.find_substring_fast(pattern) else {
             return Vec::new();
         };
-        self.locations(pattern)
+        let node = PersistentScdawgNode {
+            graph: Arc::clone(&graph),
+            node_idx: Some(node_idx),
+            path: pattern.as_bytes().to_vec(),
+        };
+        graph
+            .locations(pattern)
             .into_iter()
             .map(|(term, position)| {
                 SubstringMatch::new(node.clone(), term, position, pattern.len())
@@ -1829,12 +2079,24 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary for Persistent
 }
 
 impl<V: DictionaryValue, S: BlockStorage> SubstringDictionary for PersistentScdawgChar<V, S> {
-    fn find_exact_substring(&self, pattern: &str) -> Vec<SubstringMatch<Self::Node>> {
-        let Some(node) = self.find(pattern) else {
+    fn find_exact_substring_in_snapshot(
+        snapshot_root: &Self::Node,
+        pattern: &str,
+    ) -> Vec<SubstringMatch<Self::Node>> {
+        debug_assert_eq!(snapshot_root.node_idx, Some(0));
+        debug_assert!(snapshot_root.path.is_empty());
+        let graph = Arc::clone(&snapshot_root.graph);
+        let Some(node_idx) = graph.core.find_substring_fast(pattern) else {
             return Vec::new();
         };
+        let node = PersistentScdawgCharNode {
+            graph: Arc::clone(&graph),
+            node_idx: Some(node_idx),
+            path: pattern.to_owned(),
+        };
         let pattern_len = pattern.chars().count();
-        self.locations(pattern)
+        graph
+            .locations(pattern)
             .into_iter()
             .map(|(term, position)| SubstringMatch::new(node.clone(), term, position, pattern_len))
             .collect()
@@ -1850,5 +2112,173 @@ impl<V: DictionaryValue> Default for PersistentScdawg<V> {
 impl<V: DictionaryValue> Default for PersistentScdawgChar<V> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod snapshot_cursor_tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    fn assert_direct_cursor_matches_owned<N>(root: N)
+    where
+        N: MappedDictionaryNode<Value = u64, SnapshotCursor = crate::SnapshotTraversalCursor>
+            + fmt::Debug,
+    {
+        let root_cursor = root.snapshot_root_cursor().expect("direct root cursor");
+        assert!(root.contains_snapshot_cursor(root_cursor));
+        assert!(!root.supports_snapshot_cursor_nodes());
+        assert!(!root.supports_snapshot_cursor_key_units());
+        assert!(root.supports_snapshot_cursor_values());
+        assert!(root.supports_efficient_snapshot_cursor_edge_paging());
+
+        let mut seen = HashSet::new();
+        let mut pending = vec![(root, root_cursor)];
+        while let Some((owned, cursor)) = pending.pop() {
+            if !seen.insert(cursor) {
+                continue;
+            }
+            // SAFETY: every cursor is rooted in the retained immutable graph.
+            assert_eq!(
+                unsafe { owned.snapshot_cursor_is_final(cursor) },
+                Some(owned.is_final())
+            );
+            // SAFETY: same retained graph provenance.
+            assert_eq!(
+                unsafe { owned.snapshot_cursor_value(cursor) },
+                Some(owned.value())
+            );
+
+            let mut owned_edges = Vec::new();
+            owned.for_each_edge(|label, child| owned_edges.push((label, child)));
+            let mut cursor_edges = Vec::new();
+            // SAFETY: same retained graph provenance.
+            let finality = unsafe {
+                owned.filter_map_snapshot_cursor_edges_and_finality(
+                    cursor,
+                    Some,
+                    |label, child, projected| {
+                        assert_eq!(label, projected);
+                        cursor_edges.push((label, child));
+                    },
+                )
+            };
+            assert_eq!(finality, Some(owned.is_final()));
+            assert_eq!(
+                cursor_edges.iter().map(|edge| edge.0).collect::<Vec<_>>(),
+                owned_edges.iter().map(|edge| edge.0).collect::<Vec<_>>()
+            );
+            assert!(cursor_edges.windows(2).all(|pair| pair[0].0 < pair[1].0));
+
+            let mut paged = Vec::new();
+            for start in 0..=cursor_edges.len() {
+                let mut page = Vec::new();
+                // SAFETY: same retained graph provenance.
+                let metadata = unsafe {
+                    owned.visit_snapshot_cursor_edge_page(cursor, start, 1, |label, child| {
+                        page.push((label, child));
+                    })
+                };
+                assert_eq!(metadata, Some((owned.is_final(), cursor_edges.len())));
+                if start < cursor_edges.len() {
+                    assert_eq!(page, vec![cursor_edges[start]]);
+                    paged.extend(page);
+                } else {
+                    assert!(page.is_empty());
+                }
+            }
+            assert_eq!(paged, cursor_edges);
+
+            for ((label, child_owned), (_, child_cursor)) in
+                owned_edges.into_iter().zip(cursor_edges).rev()
+            {
+                // SAFETY: same retained graph provenance.
+                assert_eq!(
+                    unsafe { owned.snapshot_cursor_transition(cursor, label) },
+                    Some(Some(child_cursor))
+                );
+                pending.push((child_owned, child_cursor));
+            }
+        }
+    }
+
+    #[test]
+    fn persistent_scdawg_cursors_match_owned_traversal_and_isolate_revisions() {
+        let byte = PersistentScdawg::<u64>::new();
+        assert!(byte.insert_with_value("banana", 7));
+        assert!(byte.insert_with_value("band", 11));
+        let old_byte = byte.root();
+        let old_byte_cursor = old_byte.snapshot_root_cursor().expect("old byte root");
+        assert_direct_cursor_matches_owned(old_byte.clone());
+        assert!(byte.insert_with_value("zoo", 13));
+        let fresh_byte = byte.root();
+        assert_direct_cursor_matches_owned(fresh_byte.clone());
+        // SAFETY: the old cursor remains tied to the retained old graph.
+        assert_eq!(
+            unsafe { old_byte.snapshot_cursor_transition(old_byte_cursor, b'z') },
+            Some(None)
+        );
+        let fresh_byte_cursor = fresh_byte.snapshot_root_cursor().expect("fresh byte root");
+        // SAFETY: the fresh cursor belongs to the fresh graph.
+        assert!(
+            unsafe { fresh_byte.snapshot_cursor_transition(fresh_byte_cursor, b'z') }
+                .flatten()
+                .is_some()
+        );
+
+        let chars = PersistentScdawgChar::<u64>::new();
+        assert!(chars.insert_with_value("βα", 17));
+        assert!(chars.insert_with_value("βήτα", 19));
+        let old_chars = chars.root();
+        let old_chars_cursor = old_chars.snapshot_root_cursor().expect("old char root");
+        assert_direct_cursor_matches_owned(old_chars.clone());
+        assert!(chars.insert_with_value("雪豹", 23));
+        let fresh_chars = chars.root();
+        assert_direct_cursor_matches_owned(fresh_chars.clone());
+        // SAFETY: the old cursor remains tied to the retained old graph.
+        assert_eq!(
+            unsafe { old_chars.snapshot_cursor_transition(old_chars_cursor, '雪') },
+            Some(None)
+        );
+        let fresh_chars_cursor = fresh_chars.snapshot_root_cursor().expect("fresh char root");
+        // SAFETY: the fresh cursor belongs to the fresh graph.
+        assert!(
+            unsafe { fresh_chars.snapshot_cursor_transition(fresh_chars_cursor, '雪') }
+                .flatten()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn persistent_scdawg_old_snapshot_survives_concurrent_publications() {
+        let dictionary = Arc::new(PersistentScdawg::<u64>::new());
+        assert!(dictionary.insert_with_value("banana", 7));
+        let old = Arc::new(dictionary.root());
+        let barrier = Arc::new(std::sync::Barrier::new(5));
+        let mut readers = Vec::new();
+        for _ in 0..4 {
+            let old = Arc::clone(&old);
+            let barrier = Arc::clone(&barrier);
+            readers.push(std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..128 {
+                    let root = old.snapshot_root_cursor().expect("old root cursor");
+                    // SAFETY: the retained old graph never changes.
+                    assert_eq!(
+                        unsafe { old.snapshot_cursor_transition(root, b'z') },
+                        Some(None)
+                    );
+                    assert_direct_cursor_matches_owned((*old).clone());
+                }
+            }));
+        }
+        barrier.wait();
+        for value in 0..32 {
+            dictionary.insert_with_value(&format!("zoo{value}"), value);
+        }
+        for reader in readers {
+            reader.join().expect("SCDAWG snapshot reader");
+        }
     }
 }

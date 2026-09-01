@@ -1,0 +1,157 @@
+#!/usr/bin/env ruby
+
+# Measures the public Ruby collection facade over a deterministic dictionary
+# revision. Corpus construction and warmup are outside the reported interval.
+
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+
+require "json"
+require "optparse"
+require "vinary_tree/libdictenstein"
+
+LD = VinaryTree::Libdictenstein
+
+DEFAULT_ENTRIES = 65_536
+DEFAULT_BATCH_SIZE = 256
+DEFAULT_EARLY_CANCEL = 64
+KEY_UNITS = 38
+U64_MASK = (1 << 64) - 1
+ARMS = %w[materialized stream stream-cancel].freeze
+
+def parse_arguments(arguments)
+  config = {
+    arm: nil,
+    entries: DEFAULT_ENTRIES,
+    passes: 1,
+    warmup_passes: 1,
+    batch_size: DEFAULT_BATCH_SIZE,
+    early_cancel: DEFAULT_EARLY_CANCEL
+  }
+  parser = OptionParser.new do |options|
+    options.on("--arm ARM") { |value| config[:arm] = value }
+    options.on("--entries N", Integer) { |value| config[:entries] = value }
+    options.on("--passes N", Integer) { |value| config[:passes] = value }
+    options.on("--warmup-passes N", Integer) { |value| config[:warmup_passes] = value }
+    options.on("--batch-size N", Integer) { |value| config[:batch_size] = value }
+    options.on("--early-cancel N", Integer) { |value| config[:early_cancel] = value }
+  end
+  parser.parse!(arguments)
+  raise OptionParser::InvalidArgument, "unexpected positional arguments" unless arguments.empty?
+  raise OptionParser::InvalidArgument, "--arm must be #{ARMS.join(', ')}" unless ARMS.include?(config[:arm])
+  %i[entries passes batch_size early_cancel].each do |name|
+    raise OptionParser::InvalidArgument, "--#{name.to_s.tr('_', '-')} must be positive" unless config[name].positive?
+  end
+  raise OptionParser::InvalidArgument, "--warmup-passes must be nonnegative" if config[:warmup_passes].negative?
+  config
+end
+
+def make_corpus(size)
+  Array.new(size) do |index|
+    [format("collection/%04x/%08x/shared-suffix", index & 0x0fff, index).b, index]
+  end
+end
+
+def expected_checksum(corpus, limit)
+  corpus.sort_by(&:first).first(limit).sum { |key, value| key.bytesize ^ value } & U64_MASK
+end
+
+def entry_checksum(entry)
+  raise "benchmark expected a byte-domain entry" unless entry.domain == LD::BYTE
+  (entry.key.bytesize ^ (entry.value || 0)) & U64_MASK
+end
+
+def drain_materialized(dictionary)
+  entries = dictionary.entries
+  [entries.sum { |entry| entry_checksum(entry) } & U64_MASK, entries.length]
+end
+
+def drain_stream(dictionary, batch_size:, limit:, cancel:)
+  stream = dictionary.entry_stream(
+    max_entries: batch_size,
+    max_units: batch_size * KEY_UNITS,
+    max_values: batch_size
+  )
+  checksum = 0
+  processed = 0
+  begin
+    while processed < limit && (entry = stream.next)
+      checksum = (checksum + entry_checksum(entry)) & U64_MASK
+      processed += 1
+    end
+    if cancel
+      stream.cancel
+    elsif processed != limit || !stream.next.nil?
+      raise "stream cardinality differs from the generated corpus"
+    end
+    stream.close
+  ensure
+    stream.close
+  end
+  [checksum, processed]
+end
+
+def drain(dictionary, config)
+  case config[:arm]
+  when "materialized"
+    drain_materialized(dictionary)
+  when "stream"
+    drain_stream(dictionary, batch_size: config[:batch_size], limit: config[:entries], cancel: false)
+  when "stream-cancel"
+    drain_stream(
+      dictionary,
+      batch_size: config[:batch_size],
+      limit: [config[:entries], config[:early_cancel]].min,
+      cancel: true
+    )
+  end
+end
+
+def execute(arguments)
+  config = parse_arguments(arguments)
+  corpus = make_corpus(config[:entries])
+  dictionary = LD::DynamicDawg.new(domain: LD::BYTE)
+  begin
+    inserted = dictionary.put_all(corpus)
+    raise "inserted #{inserted} of #{corpus.length} generated entries" unless inserted == corpus.length
+
+    consumed = config[:arm] == "stream-cancel" ? [config[:entries], config[:early_cancel]].min : config[:entries]
+    expected = expected_checksum(corpus, consumed)
+    config[:warmup_passes].times do
+      checksum, count = drain(dictionary, config)
+      raise "warmup checksum or cardinality mismatch" unless count == consumed && checksum == expected
+    end
+
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
+    checksum = 0
+    config[:passes].times do
+      pass_checksum, count = drain(dictionary, config)
+      raise "timed checksum or cardinality mismatch" unless count == consumed && pass_checksum == expected
+      checksum = (checksum + pass_checksum) & U64_MASK
+    end
+    elapsed_ns = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - started
+    raise "aggregate checksum mismatch" unless checksum == (expected * config[:passes]) & U64_MASK
+
+    puts JSON.generate(
+      schema: "libdictenstein.host-collection-traversal.v1",
+      runtime: "ruby",
+      arm: config[:arm],
+      dictionary_entries: config[:entries],
+      consumed_entries_per_pass: consumed,
+      passes: config[:passes],
+      warmup_passes: config[:warmup_passes],
+      batch_size: config[:arm] == "materialized" ? nil : config[:batch_size],
+      early_cancel: config[:arm] == "stream-cancel" ? config[:early_cancel] : nil,
+      elapsed_ns: elapsed_ns,
+      checksum: checksum
+    )
+  ensure
+    dictionary.close
+  end
+end
+
+begin
+  execute(ARGV)
+rescue StandardError => error
+  warn error.message
+  exit 2
+end

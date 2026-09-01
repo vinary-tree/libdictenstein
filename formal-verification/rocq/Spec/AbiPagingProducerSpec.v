@@ -21,9 +21,10 @@
     real C ABI).
 *)
 
-From Stdlib Require Import List.
-From Stdlib Require Import Arith.
-From Stdlib Require Import Lia.
+From Coq Require Import Lists.List.
+From Coq Require Import Arith.Arith.
+From Coq Require Import micromega.Lia.
+Require Import ARTrie.Model.ListCompat.
 Import ListNotations.
 
 Section Paging.
@@ -51,7 +52,7 @@ Theorem page_within_remaining :
     length (page edges start capacity) <= total edges - start.
 Proof.
   intros. unfold page, total.
-  rewrite length_firstn, length_skipn. lia.
+  rewrite firstn_length_portable, skipn_length_portable. lia.
 Qed.
 
 (** A full-capacity page exists exactly while pages remain. *)
@@ -61,7 +62,7 @@ Theorem page_exact_while_remaining :
     length (page edges start capacity) = capacity.
 Proof.
   intros edges start capacity Hle. unfold page, total in *.
-  rewrite length_firstn, length_skipn. lia.
+  rewrite firstn_length_portable, skipn_length_portable. lia.
 Qed.
 
 (** Past-the-end starts yield the empty page (the End condition). *)
@@ -129,7 +130,7 @@ Proof.
     rewrite IH.
     + apply firstn_skipn.
     + exact Hcap.
-    + rewrite length_skipn.
+    + rewrite skipn_length_portable.
       destruct capacity as [| c]; [lia | simpl; lia].
 Qed.
 
@@ -194,9 +195,9 @@ Proof.
             with (k' * capacity + capacity) by lia.
           rewrite Nat.add_comm.
           reflexivity.
-        * rewrite length_skipn.
+        * rewrite skipn_length_portable.
           destruct capacity as [| c]; [lia | simpl; lia].
-        * rewrite length_skipn.
+        * rewrite skipn_length_portable.
           assert (Hstep : S k' * capacity = capacity + k' * capacity) by lia.
           destruct capacity as [| c]; [lia | simpl in Hstep |- *; lia]. }
   intros edges k Hin.

@@ -5,7 +5,7 @@
 [FFI boundary analysis](../security/ffi-boundary.md) ·
 [Findings ledger](FINDINGS_LEDGER.md)
 
-This is the normative reference for the **35-function `ldict_*` C ABI** exported
+This is the normative reference for the **41-function `ldict_*` C ABI** exported
 by the libdictenstein cdylib — the project-owned surface above the family
 resource ABI. Every function is documented with its exact header signature, its
 preconditions, the **exact** set of statuses it can return (derived from the
@@ -51,12 +51,12 @@ how the two connect at [`ldict_dictionary_resource`](#ldict_dictionary_resource)
 
 The project ABI carries two counters, following the family's four-counter
 evolution model (see the canonical
-[ABI evolution policy](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/abi-evolution.md)):
+[ABI evolution policy](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/abi-evolution.md)):
 
 | Constant | Value | Meaning | Caller check |
 |---|---|---|---|
 | `LDICT_ABI_VERSION` | 1 | Breaking-change counter for the `ldict_*` surface: layouts, ownership rules, status meanings. | **Exact equality** — refuse any other value. |
-| `LDICT_API_REVISION` | 4 | Additive counter: bumped when functions are added (revision 4 added the scalar `*_value` twins and vocabulary surface). | **At least** — a facade built against revision $`n`$ refuses a library reporting less than $`n`$. |
+| `LDICT_API_REVISION` | 5 | Additive counter: revision 5 adds the bounded entry cursor/reducer surface over `vt.dict.entry.v1`. | **At least** — a facade built against revision $`n`$ refuses a library reporting less than $`n`$. |
 
 Every fallible function reports failure twice: as an `LdictStatus` return value
 (the machine channel) and as a human-readable message retrievable through
@@ -84,7 +84,7 @@ Returns `LDICT_ABI_VERSION` (currently `1`).
 LDICT_API uint32_t ldict_api_revision(void);
 ```
 
-Returns `LDICT_API_REVISION` (currently `4`).
+Returns `LDICT_API_REVISION` (currently `5`).
 
 - **Preconditions**: none.
 - **Statuses**: none — cannot fail.
@@ -126,14 +126,16 @@ typedef enum LdictStatus {
     LDICT_STATUS_IO_ERROR = 7,
     LDICT_STATUS_CLOSED = 8,
     LDICT_STATUS_DOMAIN_MISMATCH = 9,
-    LDICT_STATUS_LIMIT_EXCEEDED = 10
+    LDICT_STATUS_LIMIT_EXCEEDED = 10,
+    LDICT_STATUS_PROVIDER_ERROR = 11,
+    LDICT_STATUS_BATCH_IN_USE = 12
 } LdictStatus;
 ```
 
 | Value | Name | Semantics | Producible today? |
 |---:|---|---|---|
 | 0 | `OK` | The operation completed; every documented out-parameter was written. | yes — every function |
-| 1 | `END` | An iterator or paged operation is exhausted. | **no** — reserved. Revision 4 exposes no `ldict_*` iterator; paging happens on the resource vtable, which reports totals instead of an end status. The boundary already treats `END` as a success for error-channel purposes, so a future paged surface can adopt it additively. |
+| 1 | `END` | An entry cursor is exhausted, or an entry reducer requests successful early stop. | yes — entry collection surface |
 | 2 | `INVALID_ARGUMENT` | An argument value is outside its contract: an unknown unit domain, an empty persistence path, or `LdictOptionalU64.has_value` outside $`\{0, 1\}`$. | yes |
 | 3 | `INVALID_UTF8` | A term, pattern, or path that must be UTF-8 was not (see the [text-acceptance matrix](#54-text-acceptance-per-backend)). | yes |
 | 4 | `NULL_POINTER` | A required pointer was null: the handle, a non-empty input buffer, or any out-parameter. | yes |
@@ -143,6 +145,8 @@ typedef enum LdictStatus {
 | 8 | `CLOSED` | A handle was already closed. | **no** — reserved. `ldict_*` handles have no closed-but-not-freed state; the code exists for family enum-shape parity and future lifecycle surfaces. |
 | 9 | `DOMAIN_MISMATCH` | The operation exists, but the caller used the wrong **term representation** for the dictionary's unit domain — e.g. a `*_text` call on a `u64`-domain dictionary. | yes |
 | 10 | `LIMIT_EXCEEDED` | A resource bound was exceeded. Today: [`ldict_vocab_get_term`](#ldict_vocab_get_term)'s output buffer is too small (the required size is reported). | yes |
+| 11 | `PROVIDER_ERROR` | The negotiated entry provider returned an unknown status, malformed metadata/batch, or an otherwise unclassified failure. | yes — entry collection surface |
+| 12 | `BATCH_IN_USE` | The entry cursor already has a live borrowed batch; release its exact generation before `next`, `reduce`, or `free`. | yes — entry collection surface |
 
 ### 3.1 This enum is per-project — never cast across projects
 
@@ -154,8 +158,8 @@ divergence is where careless code corrupts meaning:
 |---:|---|---|
 | 9 | **`DOMAIN_MISMATCH`** | `LIMIT_EXCEEDED` |
 | 10 | **`LIMIT_EXCEEDED`** | `PROVIDER_ERROR` |
-| 11 | — (out of range) | `BATCH_IN_USE` |
-| 12 | — (out of range) | `DOMAIN_MISMATCH` |
+| 11 | **`PROVIDER_ERROR`** | `BATCH_IN_USE` |
+| 12 | **`BATCH_IN_USE`** | `DOMAIN_MISMATCH` |
 
 The interop layer's `VtStatus` is a **third** numbering again (`NullPointer`
 is 3 there, 4 here). This is intentional: each project's status enum is an
@@ -1030,7 +1034,76 @@ reports `0` with `OK`).
 
 ---
 
-## 13. Persistence-path caveats
+## 13. Bounded entry collection cursor
+
+Revision 5 exposes the optional `vt.dict.entry.v1` provider through project
+status codes and an opaque owned cursor. Applications never copy the provider's
+two-word cursor or call its vtable directly.
+
+```c
+typedef VtDictionaryEntry LdictEntry;
+typedef VtDictionaryEntryBatchLimits LdictEntryBatchLimits;
+typedef VtDictionaryEntryBatchView LdictEntryBatch;
+typedef VtDictionaryEntriesInfo LdictEntriesInfo;
+typedef struct LdictEntryCursor LdictEntryCursor;
+
+typedef LdictStatus (*LdictEntryReducer)(
+    void* reducer_context, const LdictEntryBatch* batch);
+
+LDICT_API LdictStatus ldict_dictionary_entries_open(
+    const LdictDictionary* dictionary,
+    LdictEntryCursor** out_cursor,
+    LdictEntriesInfo* out_info);
+LDICT_API LdictStatus ldict_entry_cursor_next(
+    LdictEntryCursor* cursor,
+    const LdictEntryBatchLimits* limits,
+    LdictEntryBatch* out_batch);
+LDICT_API LdictStatus ldict_entry_cursor_release(
+    LdictEntryCursor* cursor, uint64_t generation);
+LDICT_API LdictStatus ldict_entry_cursor_reduce(
+    LdictEntryCursor* cursor,
+    const LdictEntryBatchLimits* limits,
+    LdictEntryReducer reducer,
+    void* reducer_context,
+    size_t* out_count);
+LDICT_API LdictStatus ldict_entry_cursor_cancel(LdictEntryCursor* cursor);
+LDICT_API LdictStatus ldict_entry_cursor_free(LdictEntryCursor* cursor);
+```
+
+`open` captures one immutable revision in O(1), writes its unit/value domains,
+lexicographic order, optional exact cardinality, and snapshot identity, and
+returns a cursor that may outlive the source dictionary. Failed opens leave
+`*out_cursor == NULL` and zero the metadata output.
+
+`next` accepts hard bounds for descriptors, unit-arena elements, and values.
+On `OK` it returns one nonempty cursor-owned batch. Descriptor offsets and
+lengths count elements, not bytes: `units` points to `uint8_t`, `uint32_t`, or
+`uint64_t` according to `info.unit_domain`. A descriptor's `value_len == 0`
+means a present valueless key; `value_len == 1` indexes a present `uint64_t`,
+including zero and `UINT64_MAX`. No value sentinel is used.
+
+Exactly one batch generation may be leased. Its pointers remain valid until
+`release(cursor, batch.generation)` succeeds. Calling `next`, `reduce`, or
+`free` while leased returns `BATCH_IN_USE`; a wrong or repeated generation
+returns `INVALID_ARGUMENT`. `LIMIT_EXCEEDED` does not advance an oversized
+first entry, so the caller may retry with larger bounds. Exhaustion is sticky
+and returns `END` with a canonical empty batch.
+
+`reduce` invokes the callback synchronously once per leased batch and always
+settles the lease before interpreting callback control flow. `OK` continues,
+`END` stops successfully, and another published `LdictStatus` aborts and
+propagates. `out_count` counts entries accepted by completed callbacks.
+Callbacks must not retain batch pointers or re-enter the same cursor.
+
+`cancel` is idempotent and makes later traversal return `END`; it deliberately
+does not invalidate a current lease. `free(NULL)` is a successful no-op.
+Otherwise `free` consumes the opaque cursor only on `OK`, so a caller receiving
+`BATCH_IN_USE` must release and retry. Independent cursors are reentrant, but
+operations and close must not race on the same cursor.
+
+---
+
+## 14. Persistence-path caveats
 
 The persistent constructors, `checkpoint`, and vocabulary lookups sit on the
 durable ARTrie engine; four caveats matter at the ABI:
@@ -1060,7 +1133,7 @@ durable ARTrie engine; four caveats matter at the ABI:
 
 ---
 
-## 14. The snapshot-then-walk consumer loop
+## 15. The snapshot-then-walk consumer loop
 
 The `ldict_*` surface mutates and introspects; **traversal** happens on the
 family resource, against an immutable snapshot. The complete protocol, as
@@ -1131,7 +1204,7 @@ with the trust boundary marked (source:
 
 <img src="../diagrams/snapshot-capture-sequence.svg" alt="Sequence diagram of the snapshot-then-walk protocol. The consumer, on the foreign side of the trust boundary, borrows the two-word resource from the ldict_* C ABI, retains it, negotiates vt.dictionary.v1, and calls snapshot(). The producer's ResourceContext clones the backend revision root in O(1) by structural sharing, wraps it in a TraversalSnapshot, and hands back a snapshot resource born with one retain via mem::forget. A subsequent live mutation publishes a successor revision that the pinned snapshot never sees. A compact-graph-aware consumer negotiates vt.dict.graph.v1 and receives stable flat arrays projected once for the revision; another consumer falls back to root and paged node_edges, whose append-only arena reads and established slots are lock-free. Teardown releases the snapshot, releases the source resource, and frees the dictionary handle." width="100%"/>
 
-## 15. A complete, verified C example
+## 16. A complete, verified C example
 
 The program below was compile-gated with
 `cc -std=c17 -Wall -Wextra -Werror -fsyntax-only -I include` **and** linked
@@ -1366,7 +1439,7 @@ Canonical family-level specifications live with the interop crate in
 liblevenshtein-rust (linked absolutely — cross-repo relative paths do not
 survive packaging):
 
-- [ABI reference — `vinary_tree_interop.h`, annotated](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/abi-reference.md)
-- [ABI evolution policy — the four version counters](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/abi-evolution.md)
-- [Family security model — trust zones and validation duties](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/security-model.md)
+- [ABI reference — `vinary_tree_interop.h`, annotated](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/abi-reference.md)
+- [ABI evolution policy — the four version counters](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/abi-evolution.md)
+- [Family security model — trust zones and validation duties](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/security-model.md)
 - [liblevenshtein language-binding architecture (the consumer side)](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/docs/language-bindings.md)

@@ -21,6 +21,7 @@ use crate::persistent_artrie::core::eviction::{
     RegistryStructuralSource,
 };
 use crate::persistent_artrie::core::key_encoding::CharKey;
+use crate::persistent_artrie::core::overlay::checkpoint::CapturedEvictionRoute;
 #[cfg(test)]
 use crate::persistent_artrie::core::overlay::compressed_serialize::try_analysis_registry_transaction;
 use crate::persistent_artrie::core::overlay::compressed_serialize::{
@@ -78,6 +79,13 @@ pub(crate) struct CheckpointSnapshot<V: DictionaryValue> {
     /// Freshly-built disk-location registry (only when eviction is enabled),
     /// published to the eviction coordinator after durability is verified.
     registry_publication: Option<PreparedRegistryPublication<CharKey, V>>,
+}
+
+impl<V: DictionaryValue> CapturedEvictionRoute for CheckpointSnapshot<V> {
+    #[inline]
+    fn captured_with_eviction(&self) -> bool {
+        self.registry_publication.is_some()
+    }
 }
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
@@ -431,15 +439,15 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         // The eviction registry is intentionally NOT published here: this helper
         // is for the durability soak, which does not enable eviction (so the
-        // snapshot's `eviction_registry` is always `None`). Publishing it is a
+        // snapshot's `registry_publication` is always `None`). Publishing it is a
         // Phase-D concern orthogonal to the durability contract and would require
         // the registry to be `Clone` (it is not), so it is left to the
         // owner-gated flip's `publish_durable_and_reclaim`.
         debug_assert!(
             snapshot.registry_publication.is_none(),
             "publish_immutable_snapshot_retaining_wal is the eviction-disabled soak \
-             publisher; an eviction registry here means it was called on an \
-             eviction-enabled trie, which must use publish_durable_and_reclaim"
+             publisher; a captured eviction generation or registry here means the \
+             immutable snapshot route was discarded before publication"
         );
 
         // The safe `checkpoint_lsn` is the watermark captured before the root load.
@@ -520,7 +528,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// (`g4-eviction-on-immutable-checkpoint.md`).
     ///
     /// The shipped [`Self::publish_immutable_snapshot_retaining_wal`] deliberately
-    /// REFUSES a registry (`debug_assert!(eviction_registry.is_none())`): it is the
+    /// REFUSES a registry (`debug_assert!(registry_publication.is_none())`): it is the
     /// eviction-DISABLED durability soak publisher. The owned-tree
     /// [`Self::publish_durable_and_reclaim`] DOES publish the registry, but its
     /// reclaim is lock-free-incompatible (it reclaims by `next_lsn`, which the
@@ -613,7 +621,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
                 .mark_committed(checkpoint_record_lsn);
             // S5-2 (A3 floor): raise the WAL commit_seq floor (same as the
             // retaining-WAL publisher). `commit_seq_at_capture` is `Copy`, so it
-            // survives the earlier `eviction_registry` partial-move.
+            // survives the later `registry_publication` partial move.
             if let Some(floor) = snapshot.commit_seq_at_capture {
                 wal_writer.set_commit_seq_floor(floor).map_err(|e| {
                     PersistentARTrieError::WalError {
@@ -2263,6 +2271,8 @@ mod immutable_eviction_checkpoint_correspondence {
     // F4: the `.read()/.write()` compat shim on the collapsed handle.
     use crate::persistent_artrie::char::{PersistentARTrieChar, SharedCharARTrie};
     use crate::persistent_artrie::core::durability::DurabilityPolicy;
+    use crate::persistent_artrie::core::key_encoding::CharKey;
+    use crate::persistent_artrie::core::overlay::checkpoint::OverlayCheckpoint;
     use crate::persistent_artrie::core::shared_access::SharedTrieAccess;
     use crate::Dictionary;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -2275,6 +2285,111 @@ mod immutable_eviction_checkpoint_correspondence {
             .prefix(prefix)
             .tempdir_in("target/test-tmp")
             .expect("scratch tempdir under target/test-tmp")
+    }
+
+    /// LDICT-B7: capture owns its eviction route. Disable/re-enable after capture
+    /// must neither send generation A's registry to generation B nor select the
+    /// eviction-off publisher for an eviction-on snapshot. The inverse transition
+    /// (capture off, enable before publish) must remain on the off route as well.
+    #[test]
+    fn captured_eviction_generation_survives_disable_reenable_races() {
+        type Trie = PersistentARTrieChar<()>;
+        type Store = crate::persistent_artrie::disk_manager::MmapDiskManager;
+
+        let dir = scratch("imm-evict-route-generation");
+        let path = dir.path().join("t.artc");
+        let mut owned = Trie::create(&path).expect("create route-race trie");
+        owned.set_durability_policy(DurabilityPolicy::Immediate);
+        owned.install_overlay();
+        let shared: SharedCharARTrie<()> = Arc::new(owned);
+        for term in ["alpha", "alphabet", "beta", "日本"] {
+            assert!(
+                shared
+                    .read()
+                    .insert_cas_durable(term)
+                    .expect("durable insert"),
+                "test term should be newly inserted"
+            );
+        }
+
+        shared
+            .enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable generation A");
+        let phase = Arc::new(Barrier::new(2));
+        let checkpoint = {
+            let shared = Arc::clone(&shared);
+            let phase = Arc::clone(&phase);
+            thread::spawn(move || {
+                let snapshot = shared
+                    .read()
+                    .capture_snapshot_immutable()
+                    .expect("capture with generation A");
+                assert!(
+                    snapshot.registry_publication.is_some(),
+                    "capture retains generation A inside the prepared exact publication"
+                );
+                phase.wait();
+                phase.wait();
+                <Trie as OverlayCheckpoint<CharKey, (), Store>>::publish_captured_overlay_snapshot(
+                    shared.as_ref(),
+                    snapshot,
+                )
+                .expect("publish generation-A snapshot after replacement");
+            })
+        };
+
+        // The checkpoint thread is paused exactly between capture and publication.
+        phase.wait();
+        shared.disable_eviction().expect("disable generation A");
+        shared
+            .enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable generation B");
+        let generation_b = shared
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+            .map(Arc::clone)
+            .expect("generation B installed");
+        phase.wait();
+        checkpoint.join().expect("checkpoint thread");
+        assert_eq!(
+            generation_b.disk_registry_char_len(),
+            0,
+            "a replacement coordinator must not inherit the captured generation's registry"
+        );
+
+        // Inverse race: capture while disabled, then enable before publication.
+        // The immutable route remains eviction-off and leaves generation C empty.
+        shared.disable_eviction().expect("disable generation B");
+        let snapshot_off = shared
+            .read()
+            .capture_snapshot_immutable()
+            .expect("capture with eviction disabled");
+        assert!(snapshot_off.registry_publication.is_none());
+        shared
+            .enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable generation C");
+        let generation_c = shared
+            .eviction_coordinator
+            .lock()
+            .expect("eviction_coordinator mutex poisoned")
+            .as_ref()
+            .map(Arc::clone)
+            .expect("generation C installed");
+        <Trie as OverlayCheckpoint<CharKey, (), Store>>::publish_captured_overlay_snapshot(
+            shared.as_ref(),
+            snapshot_off,
+        )
+        .expect("publish eviction-off snapshot after enable");
+        assert_eq!(generation_c.disk_registry_char_len(), 0);
+        shared.disable_eviction().expect("disable generation C");
+
+        drop(shared);
+        let reopened = Trie::open(&path).expect("reopen route-race trie");
+        for term in ["alpha", "alphabet", "beta", "日本"] {
+            assert!(reopened.contains(term), "reopen lost {term:?}");
+        }
     }
 
     /// **T1** — eviction-enabled overlay membership trie, `Immediate`,

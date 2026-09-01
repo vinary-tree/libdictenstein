@@ -20,10 +20,10 @@
     2. decode_sequential_siblings() uses checked_add as defense-in-depth
 *)
 
-From Stdlib Require Import List.
-From Stdlib Require Import Arith.
-From Stdlib Require Import Lia.
-From Stdlib Require Import Bool.
+From Coq Require Import Lists.List.
+From Coq Require Import Arith.Arith.
+From Coq Require Import micromega.Lia.
+From Coq Require Import Bool.Bool.
 Import ListNotations.
 
 (** ** Constants *)

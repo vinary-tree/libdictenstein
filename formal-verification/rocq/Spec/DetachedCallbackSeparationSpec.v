@@ -9,7 +9,7 @@
     root CAS clears the exact binding at the linearization point.
 *)
 
-From Stdlib Require Import Arith Bool Lia List PeanoNat.
+From Coq Require Import Arith Bool Lia List PeanoNat.
 
 Module DetachedCallbackSeparationSpec.
 
@@ -521,6 +521,67 @@ Theorem cacheless_materialized_result_has_only_detached_capability :
       root_revision root_generation = false.
 Proof.
   reflexivity.
+Qed.
+
+(** The deprecated unit-returning installer is a total projection of the
+    fallible installer.  Rejection covers both malformed topology and a
+    retired coordinator.  In either case the pre-existing detached catalog is
+    preserved; callers that need the reason use the typed [try_*] result. *)
+Record detached_install_state : Type := mkDetachedInstallState {
+  install_live : bool;
+  installed_detached_catalog : option nat
+}.
+
+Inductive detached_install_error : Type :=
+| MalformedDetachedCatalog
+| RetiredDetachedCoordinator.
+
+Definition try_detached_install
+    (state : detached_install_state)
+    (structurally_valid : bool)
+    (candidate : nat)
+    : detached_install_state * option detached_install_error :=
+  if install_live state
+  then
+    if structurally_valid
+    then
+      (mkDetachedInstallState true (Some candidate), None)
+    else (state, Some MalformedDetachedCatalog)
+  else (state, Some RetiredDetachedCoordinator).
+
+Definition legacy_detached_update
+    (state : detached_install_state)
+    (structurally_valid : bool)
+    (candidate : nat) : detached_install_state :=
+  fst (try_detached_install state structurally_valid candidate).
+
+Theorem legacy_update_rejection_preserves_catalog :
+  forall state structurally_valid candidate error,
+    snd (try_detached_install state structurally_valid candidate) = Some error ->
+    legacy_detached_update state structurally_valid candidate = state.
+Proof.
+  intros [live catalog] structurally_valid candidate error Herror.
+  destruct live, structurally_valid; simpl in *;
+    try discriminate; reflexivity.
+Qed.
+
+Theorem legacy_update_success_installs_candidate :
+  forall state candidate,
+    install_live state = true ->
+    installed_detached_catalog
+      (legacy_detached_update state true candidate) = Some candidate.
+Proof.
+  intros [live catalog] candidate Hlive.
+  simpl in Hlive. subst live. reflexivity.
+Qed.
+
+Theorem retired_legacy_update_is_state_preserving :
+  forall state structurally_valid candidate,
+    install_live state = false ->
+    legacy_detached_update state structurally_valid candidate = state.
+Proof.
+  intros [live catalog] structurally_valid candidate Hlive.
+  simpl in Hlive. subst live. reflexivity.
 Qed.
 
 End DetachedCallbackSeparationSpec.

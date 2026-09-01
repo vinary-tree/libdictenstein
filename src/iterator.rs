@@ -21,8 +21,8 @@
 //! }
 //!
 //! // IntoIterator support
-//! for (bytes, value) in &dict {
-//!     println!("{:?} -> {}", bytes, value);
+//! for entry in &dict {
+//!     println!("{:?} -> {:?}", entry.key, entry.value);
 //! }
 //! ```
 //!
@@ -38,6 +38,10 @@
 //! Since most nodes (~90%+) are not final, this is highly efficient.
 
 use super::zipper::{DictZipper, ValuedDictZipper};
+use smallvec::SmallVec;
+use std::iter::FusedIterator;
+
+const INLINE_CHILDREN: usize = 8;
 
 /// Iterator over dictionary entries yielding `(term, value)` pairs.
 ///
@@ -107,7 +111,10 @@ impl<Z: ValuedDictZipper> Iterator for DictionaryIterator<Z> {
         while let Some(zipper) = self.stack.pop() {
             // Push all children onto stack for continued DFS traversal.
             // No path work here - paths are reconstructed lazily only for final nodes.
-            for (_unit, child) in zipper.children() {
+            let mut children: SmallVec<[(Z::Unit, Z); INLINE_CHILDREN]> =
+                zipper.children().collect();
+            children.sort_unstable_by_key(|(unit, _)| *unit);
+            for (_unit, child) in children.into_iter().rev() {
                 self.stack.push(child);
             }
 
@@ -124,7 +131,13 @@ impl<Z: ValuedDictZipper> Iterator for DictionaryIterator<Z> {
 
         None
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, None)
+    }
 }
+
+impl<Z: ValuedDictZipper> FusedIterator for DictionaryIterator<Z> {}
 
 /// Iterator over dictionary terms (without values).
 ///
@@ -170,7 +183,10 @@ impl<Z: DictZipper> Iterator for DictionaryTermIterator<Z> {
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(zipper) = self.stack.pop() {
-            for (_unit, child) in zipper.children() {
+            let mut children: SmallVec<[(Z::Unit, Z); INLINE_CHILDREN]> =
+                zipper.children().collect();
+            children.sort_unstable_by_key(|(unit, _)| *unit);
+            for (_unit, child) in children.into_iter().rev() {
                 self.stack.push(child);
             }
 
@@ -181,7 +197,13 @@ impl<Z: DictZipper> Iterator for DictionaryTermIterator<Z> {
 
         None
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, None)
+    }
 }
+
+impl<Z: DictZipper> FusedIterator for DictionaryTermIterator<Z> {}
 
 #[cfg(test)]
 mod tests {

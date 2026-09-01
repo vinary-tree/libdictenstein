@@ -41,6 +41,8 @@
 //! - Good cache locality for sequential access
 //! - Alignment with memory-mapped page boundaries
 
+#[cfg(not(target_os = "wasi"))]
+use std::fs::TryLockError;
 use std::fs::{File, OpenOptions};
 #[cfg(not(unix))]
 use std::io::Read as IoRead;
@@ -320,22 +322,22 @@ pub struct MmapDiskManager {
     /// Path to the file (for error messages)
     path: String,
     /// Single-owner advisory-lock guard on the `<path>.wlock` sidecar (Tier-1). Held for the
-    /// manager's lifetime; the OS `flock` releases when the LAST guard for this path in the process
-    /// drops (same-process reopens share one refcounted `flock` — see [`WLockGuard`]). Held purely
-    /// for the lock (RAII) — intentionally never read.
+    /// manager's lifetime; closing the LAST registered file handle releases the OS lock
+    /// (same-process reopens share one refcounted lock — see [`WLockGuard`]). Held purely for the
+    /// lock (RAII) — intentionally never read.
     #[allow(dead_code)]
     wlock: Option<WLockGuard>,
 }
 
 /// Process-global registry of held single-owner file locks, keyed by canonical path. It lets a
-/// SECOND open of the same file WITHIN ONE PROCESS succeed (sharing one refcounted OS `flock`)
-/// while a DIFFERENT process is still rejected by the underlying `flock`. This restores the
+/// SECOND open of the same file WITHIN ONE PROCESS succeed (sharing one refcounted OS lock)
+/// while a DIFFERENT process is still rejected by the underlying platform lock. This restores the
 /// pre-lock same-process behavior — e.g. crash-recovery tests that `mem::forget` a handle then
 /// reopen the same path — without weakening the cross-process guarantee. (Create-vs-create in one
 /// process still fails at the WAL's `O_EXCL`, independently of this lock.) See
 /// `docs/design/os-level-locking.md`.
 struct LockEntry {
-    /// Owns the `flock`'d `.wlock` fd; the OS lock releases when this entry is removed (below).
+    /// Owns the locked `.wlock` file; the OS lock releases when this entry is removed (below).
     #[allow(dead_code)]
     file: File,
     /// WASI has no advisory-lock syscall; its atomically-created sidecar is
@@ -368,7 +370,7 @@ fn lock_key(path_str: &str) -> String {
     path_str.to_string()
 }
 
-/// RAII guard for a held single-owner lock. Same-process reopens share one refcounted OS `flock`;
+/// RAII guard for a held single-owner lock. Same-process reopens share one refcounted OS lock;
 /// dropping the LAST guard for a path releases it. A `mem::forget` of the owner (crash simulation)
 /// leaks a refcount, so the lock stays held until the process exits — matching a real crash, where
 /// the OS releases the fd on process death.
@@ -864,10 +866,11 @@ impl MmapDiskManager {
         })
     }
 
-    /// Acquire an exclusive advisory lock (`flock(LOCK_EX | LOCK_NB)`) on the `<path>.wlock`
-    /// sidecar, enforcing single-owner (single-process) access to the backing file. Returns the
-    /// held lock `File` (the lock releases when it drops), or [`PersistentARTrieError::FileLocked`]
-    /// if another process or live handle already owns it.
+    /// Acquire a non-blocking exclusive advisory lock on the `<path>.wlock` sidecar, enforcing
+    /// single-owner (single-process) access to the backing file. Rust maps [`File::try_lock`] to
+    /// `flock(LOCK_EX | LOCK_NB)` on Unix and `LockFileEx` with
+    /// `LOCKFILE_FAIL_IMMEDIATELY` on Windows. Returns a held lock `File` (the lock releases when
+    /// it drops), or [`PersistentARTrieError::FileLocked`] if another process owns it.
     ///
     /// A stable SIDECAR — not the data inode — is locked, so the lock composes with the future SWMR
     /// atomic-rename publication (which replaces the data inode each checkpoint). All persistent
@@ -880,7 +883,7 @@ impl MmapDiskManager {
             .map_err(|_| PersistentARTrieError::internal("lock registry mutex poisoned"))?;
 
         // Already held by THIS process (a reopen, or a crash-sim `mem::forget`'d owner) → share the
-        // existing refcounted flock rather than self-conflict on a second `flock` of the same file.
+        // existing refcounted OS lock rather than relying on platform-specific re-lock semantics.
         if let Some(entry) = registry.get_mut(&key) {
             entry.refs += 1;
             return Ok(WLockGuard { key });
@@ -920,20 +923,19 @@ impl MmapDiskManager {
                 }
             })?;
         #[cfg(not(target_os = "wasi"))]
-        match rustix::fs::flock(
-            &lock_file,
-            rustix::fs::FlockOperation::NonBlockingLockExclusive,
-        ) {
+        match lock_file.try_lock() {
             Ok(()) => {}
-            Err(e) if e == rustix::io::Errno::WOULDBLOCK => {
+            Err(TryLockError::WouldBlock) => {
                 return Err(PersistentARTrieError::FileLocked {
                     path: path_str.to_string(),
                 })
             }
-            Err(e) => {
-                return Err(PersistentARTrieError::internal(format!(
-                    "flock on '{lock_path}' failed: {e:?}"
-                )))
+            Err(TryLockError::Error(source)) => {
+                return Err(PersistentARTrieError::IoError {
+                    operation: "acquire exclusive .wlock advisory lock".to_string(),
+                    path: lock_path,
+                    source,
+                })
             }
         }
         registry.insert(

@@ -1,6 +1,7 @@
 Require Import Coq.Arith.Arith.
 Require Import Coq.Lists.List.
 Require Import Coq.micromega.Lia.
+Require Import ARTrie.Model.ListCompat.
 
 Import ListNotations.
 
@@ -112,7 +113,7 @@ Proof.
   destruct Hq2 as [Hq2_nodup [Hq2_incl Hq2_len]].
   assert (NoDup (q1 ++ q2)) as Happend_nodup.
   {
-    apply NoDup_app; repeat split; auto.
+    apply NoDup_app_portable; auto.
   }
   assert (incl (q1 ++ q2) universe) as Happend_incl.
   {
@@ -121,7 +122,7 @@ Proof.
     destruct Hr as [Hr | Hr]; [apply Hq1_incl | apply Hq2_incl]; exact Hr.
   }
   pose proof (NoDup_incl_length Happend_nodup Happend_incl) as Happend_len.
-  rewrite length_app in Happend_len.
+  rewrite app_length_portable in Happend_len.
   pose proof (quorum_overlap_numeric faults) as Hoverlap.
   lia.
 Qed.

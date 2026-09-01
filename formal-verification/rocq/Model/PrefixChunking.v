@@ -23,7 +23,8 @@
    Self-contained: depends only on the Coq/Rocq stdlib (List/Arith/Lia). No [Axiom], no [admit],
    no [Admitted] — consistent with the ARTrie proof corpus. *)
 
-From Stdlib Require Import List Arith Lia.
+From Coq Require Import Lists.List Arith.Arith micromega.Lia.
+Require Import ARTrie.Model.ListCompat.
 Import ListNotations.
 
 Section Chunking.
@@ -73,7 +74,7 @@ Proof.
     (* length (skipn w (x::xs)) <= f' : firstn + skipn = whole; firstn >= 1; whole <= S f'. *)
     assert (Hsplit : length (firstn w (x :: xs)) + length (skipn w (x :: xs))
                      = length (x :: xs)).
-    { rewrite <- length_app. rewrite firstn_skipn. reflexivity. }
+    { rewrite <- app_length_portable. rewrite firstn_skipn. reflexivity. }
     assert (Hpos : length (firstn w (x :: xs)) >= 1)
       by (apply firstn_pos_len; [assumption | discriminate]).
     rewrite IH.

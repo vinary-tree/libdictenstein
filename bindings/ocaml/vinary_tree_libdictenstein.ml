@@ -1,5 +1,15 @@
 type t
 type lookup = { found : bool; value : int64 option }
+type entry_key = Bytes of bytes | Unicode of string | U64 of int64 array
+type entry = { key : entry_key; value : int64 option }
+type value_domain = Unit | Optional_u64
+type entries_metadata = {
+  unit_domain : Vinary_tree_interop.unit_domain;
+  value_domain : value_domain;
+  exact_length : int64 option;
+  snapshot_identity : (int64 * int64) option;
+}
+type entry_cursor
 
 external abi_version : unit -> int = "ocaml_ldict_abi_version"
 external api_revision : unit -> int = "ocaml_ldict_api_revision"
@@ -39,6 +49,13 @@ external checkpoint : t -> unit = "ocaml_ldict_checkpoint"
 external contains_substring : t -> string -> bool = "ocaml_ldict_contains_substring"
 external substring_frequency : t -> string -> int = "ocaml_ldict_substring_frequency"
 external term : t -> int64 -> string option = "ocaml_ldict_term"
+external raw_entries_open : t -> int -> int -> int -> entry_cursor
+  = "ocaml_ldict_entries_open"
+external raw_entries_metadata : entry_cursor -> entries_metadata
+  = "ocaml_ldict_entries_metadata"
+external raw_entries_next : entry_cursor -> entry option
+  = "ocaml_ldict_entries_next"
+external raw_entries_close : entry_cursor -> unit = "ocaml_ldict_entries_close"
 
 let dynamic_dawg ?(domain = Vinary_tree_interop.Unicode_scalar) () =
   raw_dynamic_dawg domain
@@ -63,3 +80,24 @@ let get dictionary text =
 let get_u64 dictionary tokens =
   let found, value = raw_get_u64 dictionary tokens in
   { found; value }
+
+let open_entries ?(max_entries = 256) ?(max_units = 65536)
+    ?(max_values = 256) dictionary =
+  if max_entries <= 0 || max_units < 0 || max_values < 0 then
+    invalid_arg "invalid dictionary entry batch limits";
+  raw_entries_open dictionary max_entries max_units max_values
+
+let with_entries_seq ?max_entries ?max_units ?max_values dictionary action =
+  let cursor = open_entries ?max_entries ?max_units ?max_values dictionary in
+  let rec sequence () =
+    match raw_entries_next cursor with
+    | None -> Seq.Nil
+    | Some entry -> Seq.Cons (entry, sequence)
+  in
+  Fun.protect
+    ~finally:(fun () -> raw_entries_close cursor)
+    (fun () -> action (raw_entries_metadata cursor) sequence)
+
+let fold_entries ?max_entries ?max_units ?max_values dictionary ~init ~f =
+  with_entries_seq ?max_entries ?max_units ?max_values dictionary
+    (fun _ entries -> Seq.fold_left f init entries)

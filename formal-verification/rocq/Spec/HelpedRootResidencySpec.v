@@ -20,7 +20,7 @@
     identities are not reused while an old descriptor remains reachable.
 *)
 
-From Stdlib Require Import Arith Bool Lia List PeanoNat ZArith.
+From Coq Require Import Arith Bool Lia List PeanoNat ZArith.
 Import ListNotations.
 
 Module HelpedRootResidencySpec.

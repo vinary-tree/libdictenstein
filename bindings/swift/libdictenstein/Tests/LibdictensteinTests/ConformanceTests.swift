@@ -107,7 +107,7 @@ final class ConformanceTests: XCTestCase {
 
     func testC1Identity() throws {
         XCTAssertEqual(Dictionary.abiVersion(), 1)
-        XCTAssertEqual(Dictionary.apiRevision(), 4)
+        XCTAssertEqual(Dictionary.apiRevision(), 5)
     }
 
     func testC1KindAndCapabilities() throws {
@@ -294,6 +294,58 @@ final class ConformanceTests: XCTestCase {
                 XCTAssertEqual(try dat.get("t\(size - 1)").value, UInt64(size - 1), "batch \(size) last")
             }
         }
+    }
+
+    func testC7EntrySnapshotPreservesDomainsValuesAndRevision() throws {
+        let unicode = try DynamicDAWG()
+        _ = try unicode.put("", value: nil)
+        _ = try unicode.put("a", value: 0)
+        _ = try unicode.put("é", value: UInt64.max)
+        let stream = try unicode.entryStream(
+            limits: EntryBatchLimits(maxEntries: 1, maxUnits: 8, maxValues: 1)
+        )
+        XCTAssertEqual(stream.info.unitDomain.cValue, UnitDomain.unicodeScalar.cValue)
+        XCTAssertEqual(stream.info.exactCount, 3)
+        _ = try unicode.put("later", value: 7)
+        unicode.close()
+
+        var captured: [DictionaryEntry] = []
+        while let entry = try stream.next() { captured.append(entry) }
+        XCTAssertEqual(captured.map(\.key.string), ["", "a", "é"])
+        XCTAssertNil(captured[0].value)
+        XCTAssertEqual(captured[1].value, 0)
+        XCTAssertEqual(captured[2].value, UInt64.max)
+        try stream.close()
+
+        let bytes = try DynamicDAWG(unitDomain: .byte)
+        defer { bytes.close() }
+        let raw: [UInt8] = [0, 0xff]
+        _ = try bytes.put(bytes: raw)
+        let byteSnapshot = try bytes.entries()
+        XCTAssertEqual(Array(byteSnapshot), [DictionaryEntry(key: .bytes(raw), value: nil)])
+
+        let tokens = try DynamicDAWG(unitDomain: .u64)
+        defer { tokens.close() }
+        _ = try tokens.put([1, UInt64.max], value: 0)
+        let tokenSnapshot = try tokens.entries()
+        XCTAssertEqual(
+            Array(tokenSnapshot),
+            [DictionaryEntry(key: .u64([1, UInt64.max]), value: 0)]
+        )
+    }
+
+    func testC7EntryStreamExplicitEarlyCancel() throws {
+        let dictionary = try DynamicDAWG()
+        defer { dictionary.close() }
+        for term in ["a", "b", "c"] { _ = try dictionary.put(term) }
+        let stream = try dictionary.entryStream(
+            limits: EntryBatchLimits(maxEntries: 3, maxUnits: 3, maxValues: 0)
+        )
+        XCTAssertEqual(try stream.next()?.key.string, "a")
+        try stream.cancel()
+        XCTAssertNil(try stream.next())
+        try stream.close()
+        try stream.close()
     }
 
     // C8 -------------------------------------------------------------------

@@ -1245,14 +1245,21 @@ impl EvictionCoordinator {
         self.install_finalized_registry(registry)
     }
 
-    /// Deprecated ambiguous name for
-    /// [`Self::install_detached_compatibility_catalog`].
+    /// Deprecated source-compatible detached-catalog installer.
+    ///
+    /// This unit-returning compatibility wrapper never panics. A malformed
+    /// registry or retired coordinator rejects the candidate without publishing
+    /// it. Another concurrent successful install may independently replace the
+    /// discovery slot. The wrapper invokes no user-supplied logging callback, so
+    /// rejection remains total. Callers that must distinguish rejection from
+    /// installation use
+    /// [`Self::try_install_detached_compatibility_catalog`].
     #[deprecated(
-        note = "installs only a detached advisory catalog; use install_detached_compatibility_catalog"
+        note = "installs only a detached advisory catalog; use try_install_detached_compatibility_catalog for typed rejection"
     )]
     #[inline]
     pub fn update_disk_registry(&self, registry: DiskLocationRegistry) {
-        self.install_detached_compatibility_catalog(registry);
+        let _ = self.try_install_detached_compatibility_catalog(registry);
     }
 
     /// Deprecated ambiguous name for
@@ -2532,6 +2539,45 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
+    fn legacy_coordinator_update_rejection_is_total_and_preserves_the_catalog() {
+        let coordinator =
+            EvictionCoordinator::new(EvictionConfig::default(), Arc::new(EpochManager::new()));
+        let mut published = DiskLocationRegistry::new();
+        published.register(
+            b"legacy-published".to_vec(),
+            SwizzledPtr::on_disk(1, 220, NodeType::Node16),
+            320,
+            1,
+            NodeType::Node16,
+        );
+        coordinator
+            .try_install_detached_compatibility_catalog(published)
+            .expect("install the catalog preserved across rejection");
+
+        let mut unfinished = DiskLocationRegistry::new();
+        let unfinished_root = unfinished
+            .try_reserve_byte_path(RegistryPathId::ROOT, b"unfinished-legacy")
+            .expect("reserve unfinished compatibility path");
+        let _open_subtree = unfinished
+            .try_begin_byte_builder_subtree(unfinished_root)
+            .expect("leave one builder subtree structurally unfinished");
+
+        // This direct call is the regression oracle: the former implementation
+        // delegated to the panicking installer and unwound here.
+        coordinator.update_disk_registry(unfinished);
+
+        assert_eq!(
+            coordinator.force_eviction_bytes(usize::MAX, |entries| {
+                assert_eq!(entries[0].1, b"legacy-published");
+                (entries.len(), 320)
+            }),
+            (1, 320),
+            "rejection must preserve the prior immutable compatibility catalog"
+        );
+    }
+
+    #[test]
     fn detached_catalog_replacement_is_independent_of_exact_registry_state() {
         let coordinator =
             EvictionCoordinator::new(EvictionConfig::default(), Arc::new(EpochManager::new()));
@@ -3723,6 +3769,16 @@ mod tests {
             NodeType::Node4,
         );
         assert!(coordinator.try_update_disk_registry(rejected).is_err());
+        let mut legacy_rejected = DiskLocationRegistry::new();
+        legacy_rejected.register(
+            b"retired-legacy-rejected".to_vec(),
+            SwizzledPtr::on_disk(1, 206, NodeType::Node4),
+            76,
+            1,
+            NodeType::Node4,
+        );
+        #[allow(deprecated)]
+        coordinator.update_disk_registry(legacy_rejected);
         let callback_calls = AtomicUsize::new(0);
         assert_eq!(
             coordinator.force_eviction_bytes(usize::MAX, |_| {

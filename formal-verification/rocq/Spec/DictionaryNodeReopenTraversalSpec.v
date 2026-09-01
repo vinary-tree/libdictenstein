@@ -21,8 +21,8 @@
 
     No [Admitted], no [Axiom], no [Parameter]. *)
 
-From Stdlib Require Import Lists.List.
-From Stdlib Require Import Arith.PeanoNat.
+From Coq Require Import Lists.List.
+From Coq Require Import Arith.PeanoNat.
 Import ListNotations.
 
 Section DictionaryNodeReopen.

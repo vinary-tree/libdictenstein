@@ -16,7 +16,7 @@
     fault state is immediately eligible for exact re-eviction.
 *)
 
-From Stdlib Require Import Arith Bool Lia List PeanoNat.
+From Coq Require Import Arith Bool Lia List PeanoNat.
 Import ListNotations.
 
 Module OverlayFaultProvenanceSpec.

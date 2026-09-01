@@ -13,10 +13,10 @@
       substring language after compaction.
 *)
 
-From Stdlib Require Import Arith.PeanoNat.
-From Stdlib Require Import Bool.Bool.
-From Stdlib Require Import Lists.List.
-From Stdlib Require Import Lia.
+From Coq Require Import Arith.PeanoNat.
+From Coq Require Import Bool.Bool.
+From Coq Require Import Lists.List.
+From Coq Require Import micromega.Lia.
 Import ListNotations.
 
 Section PersistentSuffixAutomaton.

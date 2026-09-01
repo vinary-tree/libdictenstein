@@ -1,6 +1,6 @@
 (library
  (name vinary_tree_libdictenstein)
- (public_name vinary-tree-libdictenstein)
+ (public_name libdictenstein)
  (libraries vinary-tree-interop)
  (foreign_stubs
   (language c)

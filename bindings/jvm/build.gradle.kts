@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "io.vinarytree"
-version = "0.2.1"
+version = "4.0.0-rc.4"
 
 java {
     toolchain.languageVersion = JavaLanguageVersion.of(
@@ -36,8 +36,8 @@ tasks.withType<Javadoc>().configureEach {
 repositories { mavenCentral() }
 
 dependencies {
-    api("io.vinarytree:vinary-tree-interop:0.1.0")
-    testImplementation("io.vinarytree:liblevenshtein:0.10.0")
+    api("io.vinarytree:vinary-tree-interop:4.0.0-rc.4")
+    testImplementation("io.vinarytree:liblevenshtein:4.0.0-rc.4")
     testImplementation(platform("org.junit:junit-bom:6.1.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
@@ -52,6 +52,24 @@ tasks.test {
             .orElse("../../target/debug:../../../liblevenshtein-rust/target/debug")
             .get()
     )
+}
+
+tasks.register<JavaExec>("collectionTraversalProfile") {
+    group = "benchmark"
+    description = "Run one public-facade collection traversal benchmark arm."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass = "io.vinarytree.libdictenstein.CollectionTraversalProfile"
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    systemProperty(
+        "java.library.path",
+        providers.gradleProperty("vinaryTree.nativeDir")
+            .orElse("../../target/debug:../../../liblevenshtein-rust/target/debug")
+            .get()
+    )
+    doFirst {
+        val raw = providers.gradleProperty("profileArgs").orElse("").get().trim()
+        setArgs(if (raw.isEmpty()) emptyList<String>() else raw.split(Regex("\\s+")))
+    }
 }
 
 val nativeResourcesByPlatform = mapOf(
@@ -111,7 +129,7 @@ publishing {
             from(components["java"])
             pom {
                 name = "libdictenstein JVM bindings"
-                description = "High-performance dictionaries and retained Vinary Tree resources"
+                description = "High-performance dictionaries and trie-maps for approximate string matching"
                 url = "https://github.com/vinary-tree/libdictenstein"
                 licenses {
                     license {

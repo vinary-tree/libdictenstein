@@ -20,7 +20,7 @@
     preservation of V2-to-V3 migration.
 *)
 
-From Stdlib Require Import Arith Bool Lia List PeanoNat Sorting.Permutation.
+From Coq Require Import Arith Bool Lia List PeanoNat Sorting.Permutation.
 Import ListNotations.
 
 Module CharV3TypeEncodingSpec.

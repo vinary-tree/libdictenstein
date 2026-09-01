@@ -3,14 +3,17 @@ requires = ["setuptools>=77", "wheel>=0.45"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vinary-tree-libdictenstein"
-version = "0.2.1"
+name = "libdictenstein"
+version = "4.0.0rc4"
 description = "High-performance Vinary Tree dictionaries with retained cross-project resources"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 readme = "README.md"
 authors = [{ name = "Dylon Edwards", email = "dylon.devo@gmail.com" }]
-dependencies = ["vinary-tree-interop==0.1.0"]
+dependencies = [
+  "typing-extensions>=4.0.0; python_version < '3.11'",
+  "vinary-tree-interop==4.0.0rc4",
+]
 classifiers = [
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.10",
@@ -26,6 +29,9 @@ classifiers = [
 Homepage = "https://github.com/vinary-tree/libdictenstein"
 Repository = "https://github.com/vinary-tree/libdictenstein"
 Issues = "https://github.com/vinary-tree/libdictenstein/issues"
+
+[project.scripts]
+libdictenstein-collection-profile = "libdictenstein._collection_profile:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -15,9 +15,9 @@
     merge.
 *)
 
-From Stdlib Require Import Lists.List.
-From Stdlib Require Import Arith.PeanoNat.
-From Stdlib Require Import Logic.FunctionalExtensionality.
+From Coq Require Import Lists.List.
+From Coq Require Import Arith.PeanoNat.
+From Coq Require Import Logic.FunctionalExtensionality.
 Require Import ARTrie.Spec.MapSpec.
 Import ListNotations.
 

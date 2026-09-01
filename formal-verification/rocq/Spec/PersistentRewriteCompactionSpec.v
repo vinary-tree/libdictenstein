@@ -15,9 +15,9 @@
       dirty evidence and replayable WAL.
  *)
 
-From Stdlib Require Import List.
-From Stdlib Require Import Arith.
-From Stdlib Require Import Logic.FunctionalExtensionality.
+From Coq Require Import Lists.List.
+From Coq Require Import Arith.Arith.
+From Coq Require Import Logic.FunctionalExtensionality.
 Import ListNotations.
 
 Definition Key := nat.

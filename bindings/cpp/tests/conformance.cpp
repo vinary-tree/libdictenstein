@@ -18,7 +18,7 @@
 //
 // Build (from the repository root), e.g.:
 //   c++ -std=c++20 -O2 bindings/cpp/tests/conformance.cpp
-//       -I include -I ../liblevenshtein-rust/vinary-tree-interop/include
+//       -I include -I ../vinary-tree-interop/include
 //       -L target/release -llibdictenstein -o /tmp/cpp_conformance
 //   LD_LIBRARY_PATH=target/release /tmp/cpp_conformance bindings/canonical_fixture.json
 
@@ -42,6 +42,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -336,7 +337,7 @@ std::size_t rss_kib() {
 
 void check_c1_identity() {
     CHECK(ld::abi_version() == 1);
-    CHECK(ld::api_revision() == 4);
+    CHECK(ld::api_revision() == LDICT_API_REVISION);
 }
 
 void check_c1_kind_and_capabilities() {
@@ -462,13 +463,17 @@ void check_c4_double_array_trie(const Fixture& fixture) {
 void check_c4_persistent_artrie(const Fixture& fixture) {
     const auto path = std::filesystem::temp_directory_path() /
                       ("ldict-cpp-c4-" + std::to_string(::getpid()) + ".part");
+    auto wal_path = path;
+    wal_path.replace_extension(".wal");
     std::filesystem::remove(path);
+    std::filesystem::remove(wal_path);
     {
         ld::persistent_artrie art(path, ld::persistent_artrie::open_mode::create);
         for (const auto& [term, value] : fixture.entries) (void)art.insert(term, value);
         assert_fixture_reads(fixture, art);
     }
     std::filesystem::remove(path);
+    std::filesystem::remove(wal_path);
     std::filesystem::remove(std::filesystem::path(path).concat(".wlock"));
 }
 
@@ -601,6 +606,71 @@ void check_c7_batch_sizes() {
                   std::optional<std::uint64_t>(size - 1));
         }
     }
+}
+
+void check_c7_snapshot_entry_range() {
+    static_assert(std::ranges::input_range<ld::entries_view>);
+    static_assert(std::ranges::view<ld::entries_view>);
+    static_assert(!std::is_copy_constructible_v<ld::entries_view>);
+    static_assert(std::is_nothrow_move_constructible_v<ld::entries_view>);
+
+    ld::dynamic_dawg unicode;
+    CHECK(unicode.insert("", std::nullopt));
+    CHECK(unicode.insert("a", std::uint64_t{0}));
+    CHECK(unicode.insert("é", std::numeric_limits<std::uint64_t>::max()));
+    auto frozen = unicode.entries({1, 8, 1});
+    CHECK(frozen.domain() == ld::unit_domain::unicode_scalar);
+    CHECK(frozen.exact_size() == std::optional<std::size_t>(3));
+    CHECK(unicode.insert("later", 7));
+
+    std::vector<std::vector<std::uint32_t>> scalar_keys;
+    std::vector<std::optional<std::uint64_t>> scalar_values;
+    for (const ld::entry_view entry : frozen) {
+        const auto units = entry.unicode_scalars();
+        scalar_keys.emplace_back(units.begin(), units.end());
+        scalar_values.push_back(entry.value());
+    }
+    CHECK((scalar_keys == std::vector<std::vector<std::uint32_t>>{{}, {'a'}, {0xE9}}));
+    CHECK((scalar_values == std::vector<std::optional<std::uint64_t>>{
+        std::nullopt, std::uint64_t{0}, std::numeric_limits<std::uint64_t>::max()}));
+
+    // Breaking out of a range-for destroys the temporary view, which must
+    // release its live lease before closing the opaque cursor.
+    for (const ld::entry_view entry : unicode.entries({1, 8, 1})) {
+        CHECK(!entry.unicode_scalars().empty() || entry.value() == std::nullopt);
+        break;
+    }
+    std::size_t fresh_count = 0;
+    for ([[maybe_unused]] const ld::entry_view entry : unicode.entries({2, 16, 2}))
+        ++fresh_count;
+    CHECK(fresh_count == 4);
+
+    ld::dynamic_dawg bytes(ld::unit_domain::byte);
+    const std::string raw("\0\xFF", 2);
+    CHECK(bytes.insert(std::string_view(raw), std::nullopt));
+    CHECK(bytes.insert("a", std::uint64_t{0}));
+    std::vector<std::vector<std::uint8_t>> byte_keys;
+    for (const ld::entry_view entry : bytes.entries({2, 8, 2})) {
+        const auto units = entry.bytes();
+        byte_keys.emplace_back(units.begin(), units.end());
+    }
+    CHECK((byte_keys == std::vector<std::vector<std::uint8_t>>{{0, 0xFF}, {'a'}}));
+
+    ld::dynamic_dawg tokens(ld::unit_domain::u64);
+    const std::uint64_t one[] = {1};
+    const std::uint64_t one_nine[] = {1, 9};
+    CHECK(tokens.insert(std::span<const std::uint64_t>(one), std::nullopt));
+    CHECK(tokens.insert(std::span<const std::uint64_t>(one_nine), std::uint64_t{0}));
+    std::vector<std::vector<std::uint64_t>> token_keys;
+    std::vector<std::optional<std::uint64_t>> token_values;
+    for (const ld::entry_view entry : tokens.entries({1, 2, 1})) {
+        const auto units = entry.u64_units();
+        token_keys.emplace_back(units.begin(), units.end());
+        token_values.push_back(entry.value());
+    }
+    CHECK((token_keys == std::vector<std::vector<std::uint64_t>>{{1}, {1, 9}}));
+    CHECK((token_values == std::vector<std::optional<std::uint64_t>>{
+        std::nullopt, std::uint64_t{0}}));
 }
 
 // ---------------------------------------------------------------------------
@@ -779,6 +849,7 @@ int main(int argc, char** argv) {
     check_c6_u64_values();
 
     check_c7_batch_sizes();
+    check_c7_snapshot_entry_range();
     check_c8_crud_script_vs_map();
     check_c8_substring_vs_naive();
     check_c9_leak();

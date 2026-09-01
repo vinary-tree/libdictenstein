@@ -14,7 +14,8 @@
     of the reconstructed logical target.
 *)
 
-From Stdlib Require Import Arith Bool Lia List PeanoNat.
+From Coq Require Import Arith Bool Lia List PeanoNat.
+Require Import ARTrie.Model.ListCompat.
 Import ListNotations.
 
 Module PackedResidencyRefinementSpec.
@@ -643,7 +644,7 @@ Proof.
           (transitions ++ [transition]))).
     destruct (length transitions <=? capacity) eqn:Hcapacity;
       unfold builder_capacity_invariant;
-      rewrite length_app; simpl.
+      rewrite app_length_portable; simpl.
     + apply Nat.leb_le in Hcapacity.
       repeat split; lia.
     + apply Nat.leb_gt in Hcapacity.

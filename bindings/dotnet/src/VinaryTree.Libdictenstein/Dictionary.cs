@@ -33,7 +33,8 @@ public enum BackendKind : uint
 public readonly record struct Lookup(bool Found, ulong? Value);
 
 /// <summary>Common exact-lookup and resource API for all backends.</summary>
-public abstract class Dictionary : IDictionaryResource, IDisposable
+public abstract class Dictionary : IDictionaryResource, IDisposable,
+    IEnumerable<VinaryTree.Interop.DictionaryEntry>
 {
     internal DictionaryHandle Handle { get; }
     internal Dictionary(nint handle) => Handle = handle != 0 ? new DictionaryHandle(handle) : throw new InvalidOperationException("native dictionary was not returned");
@@ -49,6 +50,36 @@ public abstract class Dictionary : IDictionaryResource, IDisposable
     public ulong Capabilities { get { Native.Check(Native.Capabilities(Handle, out ulong result)); return result; } }
     /// <summary>Number of complete terms.</summary>
     public nuint Count { get { Native.Check(Native.Length(Handle, out nuint result)); return result; } }
+
+    /// <summary>
+    /// Materialize one immutable, repeatable lexicographic revision. Keys are copied once out of
+    /// borrowed native batches and remain valid after this dictionary changes or is disposed.
+    /// </summary>
+    public VinaryTree.Interop.DictionarySnapshot Snapshot() => this.SnapshotEntries();
+
+    /// <summary>Materialized immutable entry collection for one revision.</summary>
+    public IReadOnlyCollection<VinaryTree.Interop.DictionaryEntry> Entries => Snapshot();
+    /// <summary>Materialized immutable dictionary view for one revision.</summary>
+    public IReadOnlyDictionary<VinaryTree.Interop.DictionaryKey, ulong?> AsReadOnlyDictionary() => Snapshot().Entries;
+    /// <summary>Open a single-pass native-backed cursor with the requested batch bound.</summary>
+    public DictionaryEntryEnumerator OpenEntryStream(int batchSize = 256) =>
+        this.OpenEntryEnumerator(BatchLimits(batchSize));
+    /// <summary>Open a one-shot enumerable stream with the requested batch bound.</summary>
+    public DictionaryEntryStream StreamEntries(int batchSize = 256) =>
+        VinaryTree.Interop.DictionaryCollectionExtensions.StreamEntries(this, BatchLimits(batchSize));
+    /// <summary>
+    /// Return a native-backed snapshot enumerator. C# foreach disposes it; manually controlled
+    /// enumeration must also dispose it when stopping early.
+    /// </summary>
+    public IEnumerator<VinaryTree.Interop.DictionaryEntry> GetEnumerator() => OpenEntryStream();
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+    private static DictionaryBatchLimits BatchLimits(int batchSize)
+    {
+        if (batchSize <= 0) throw new ArgumentOutOfRangeException(nameof(batchSize));
+        nuint units = checked((nuint)Math.Max(65_536L, checked((long)batchSize * 64)));
+        return new((nuint)batchSize, units, (nuint)batchSize);
+    }
 
     /// <summary>Test a Unicode or raw-byte term.</summary>
     public unsafe bool Contains(string term)

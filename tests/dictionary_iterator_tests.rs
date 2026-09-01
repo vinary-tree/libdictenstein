@@ -43,12 +43,30 @@ mod double_array_trie_tests {
         let dict = DoubleArrayTrie::from_terms_with_values(vec![("a", 1), ("b", 2), ("c", 3)]);
 
         let mut count = 0;
-        for (bytes, value) in &dict {
+        for entry in &dict {
             count += 1;
-            assert!((1..=3).contains(&value));
-            assert_eq!(bytes.len(), 1);
+            assert!((1..=3).contains(&entry.value.unwrap()));
+            assert_eq!(entry.key.len(), 1);
         }
         assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_iteration_is_lexicographic_and_fused() {
+        let dict = DoubleArrayTrie::from_terms_with_values([
+            ("zeta", 1),
+            ("alpha", 2),
+            ("alphabet", 3),
+            ("beta", 4),
+        ]);
+        let mut iter = dict.iter_bytes();
+        let keys: Vec<_> = iter
+            .by_ref()
+            .map(|(key, _)| String::from_utf8(key).unwrap())
+            .collect();
+        assert_eq!(keys, ["alpha", "alphabet", "beta", "zeta"]);
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next(), None);
     }
 
     #[test]
@@ -119,9 +137,9 @@ mod dynamic_dawg_tests {
         let dict: DynamicDawg<u32> = DynamicDawg::new();
         dict.insert_with_value("test", 42);
 
-        for (bytes, value) in &dict {
-            assert_eq!(String::from_utf8(bytes).unwrap(), "test");
-            assert_eq!(value, 42);
+        for entry in &dict {
+            assert_eq!(String::from_utf8(entry.key).unwrap(), "test");
+            assert_eq!(entry.value, Some(42));
         }
     }
 }
@@ -167,10 +185,10 @@ mod double_array_trie_char_tests {
     fn test_into_iterator_char() {
         let dict = DoubleArrayTrieChar::from_terms_with_values(vec![("émoji", 1)]);
 
-        for (chars, value) in &dict {
-            let term: String = chars.iter().collect();
+        for entry in &dict {
+            let term: String = entry.key.iter().collect();
             assert_eq!(term, "émoji");
-            assert_eq!(value, 1);
+            assert_eq!(entry.value, Some(1));
         }
     }
 }
@@ -200,10 +218,10 @@ mod dynamic_dawg_char_tests {
         let dict: DynamicDawgChar<u32> = DynamicDawgChar::new();
         dict.insert_with_value("🎉", 42);
 
-        for (chars, value) in &dict {
-            let term: String = chars.iter().collect();
+        for entry in &dict {
+            let term: String = entry.key.iter().collect();
             assert_eq!(term, "🎉");
-            assert_eq!(value, 42);
+            assert_eq!(entry.value, Some(42));
         }
     }
 }
@@ -310,9 +328,9 @@ mod pathmap_tests {
         let dict = PathMapDictionary::<u32>::new();
         dict.insert_with_value("test", 42);
 
-        for (bytes, value) in &dict {
-            assert_eq!(String::from_utf8(bytes).unwrap(), "test");
-            assert_eq!(value, 42);
+        for entry in &dict {
+            assert_eq!(String::from_utf8(entry.key).unwrap(), "test");
+            assert_eq!(entry.value, Some(42));
         }
     }
 

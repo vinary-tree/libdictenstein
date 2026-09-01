@@ -74,6 +74,38 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
         Arc::ptr_eq(&previous, current)
     }
 
+    fn from_byte_entries(entries: Vec<(Vec<u8>, V)>) -> Self {
+        let mut map = PathMap::new();
+        let mut len = 0;
+        for (key, value) in entries {
+            if map.insert(&key, value).is_none() {
+                len += 1;
+            }
+        }
+        Self::from_state(map, len)
+    }
+
+    fn extend_byte_entries(&self, entries: Vec<(Vec<u8>, V)>) -> usize {
+        if entries.is_empty() {
+            return 0;
+        }
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.load_state();
+            let mut map = current.map.clone();
+            let mut inserted = 0;
+            for (key, value) in &entries {
+                if map.insert(key, value.clone()).is_none() {
+                    inserted += 1;
+                }
+            }
+            if self.compare_store_state(&current, PathMapState::new(map, current.len + inserted)) {
+                return inserted;
+            }
+            backoff.snooze();
+        }
+    }
+
     /// Create a new empty dictionary
     pub fn new() -> Self
     where
@@ -396,13 +428,115 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     }
 }
 
-impl<V: DictionaryValue> IntoIterator for &PathMapDictionary<V> {
-    type Item = (Vec<u8>, V);
-    type IntoIter = DictionaryIterator<PathMapZipper<V>>;
+impl<V: DictionaryValue + Default> FromIterator<String> for PathMapDictionary<V> {
+    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
+        Self::from_terms(iter)
+    }
+}
 
-    /// Creates an iterator over all `(term, value)` pairs as raw byte vectors.
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter_bytes()
+impl<'a, V: DictionaryValue + Default> FromIterator<&'a str> for PathMapDictionary<V> {
+    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
+        Self::from_terms(iter)
+    }
+}
+
+impl<V: DictionaryValue + Default> FromIterator<Vec<u8>> for PathMapDictionary<V> {
+    fn from_iter<I: IntoIterator<Item = Vec<u8>>>(iter: I) -> Self {
+        Self::from_byte_entries(iter.into_iter().map(|key| (key, V::default())).collect())
+    }
+}
+
+impl<'a, V: DictionaryValue + Default> FromIterator<&'a [u8]> for PathMapDictionary<V> {
+    fn from_iter<I: IntoIterator<Item = &'a [u8]>>(iter: I) -> Self {
+        iter.into_iter().map(<[u8]>::to_vec).collect()
+    }
+}
+
+impl<V: DictionaryValue> FromIterator<(String, V)> for PathMapDictionary<V> {
+    fn from_iter<I: IntoIterator<Item = (String, V)>>(iter: I) -> Self {
+        Self::from_terms_with_values(iter)
+    }
+}
+
+impl<'a, V: DictionaryValue> FromIterator<(&'a str, V)> for PathMapDictionary<V> {
+    fn from_iter<I: IntoIterator<Item = (&'a str, V)>>(iter: I) -> Self {
+        Self::from_terms_with_values(iter)
+    }
+}
+
+impl<V: DictionaryValue> FromIterator<(Vec<u8>, V)> for PathMapDictionary<V> {
+    fn from_iter<I: IntoIterator<Item = (Vec<u8>, V)>>(iter: I) -> Self {
+        Self::from_byte_entries(iter.into_iter().collect())
+    }
+}
+
+impl<'a, V: DictionaryValue> FromIterator<(&'a [u8], V)> for PathMapDictionary<V> {
+    fn from_iter<I: IntoIterator<Item = (&'a [u8], V)>>(iter: I) -> Self {
+        Self::from_byte_entries(
+            iter.into_iter()
+                .map(|(key, value)| (key.to_vec(), value))
+                .collect(),
+        )
+    }
+}
+
+impl<V: DictionaryValue + Default> Extend<String> for PathMapDictionary<V> {
+    fn extend<I: IntoIterator<Item = String>>(&mut self, iter: I) {
+        self.extend_byte_entries(
+            iter.into_iter()
+                .map(|key| (key.into_bytes(), V::default()))
+                .collect(),
+        );
+    }
+}
+
+impl<'a, V: DictionaryValue + Default> Extend<&'a str> for PathMapDictionary<V> {
+    fn extend<I: IntoIterator<Item = &'a str>>(&mut self, iter: I) {
+        self.extend(iter.into_iter().map(str::to_owned));
+    }
+}
+
+impl<V: DictionaryValue + Default> Extend<Vec<u8>> for PathMapDictionary<V> {
+    fn extend<I: IntoIterator<Item = Vec<u8>>>(&mut self, iter: I) {
+        self.extend_byte_entries(iter.into_iter().map(|key| (key, V::default())).collect());
+    }
+}
+
+impl<'a, V: DictionaryValue + Default> Extend<&'a [u8]> for PathMapDictionary<V> {
+    fn extend<I: IntoIterator<Item = &'a [u8]>>(&mut self, iter: I) {
+        self.extend(iter.into_iter().map(<[u8]>::to_vec));
+    }
+}
+
+impl<V: DictionaryValue> Extend<(String, V)> for PathMapDictionary<V> {
+    fn extend<I: IntoIterator<Item = (String, V)>>(&mut self, iter: I) {
+        self.extend_byte_entries(
+            iter.into_iter()
+                .map(|(key, value)| (key.into_bytes(), value))
+                .collect(),
+        );
+    }
+}
+
+impl<'a, V: DictionaryValue> Extend<(&'a str, V)> for PathMapDictionary<V> {
+    fn extend<I: IntoIterator<Item = (&'a str, V)>>(&mut self, iter: I) {
+        self.extend(iter.into_iter().map(|(key, value)| (key.to_owned(), value)));
+    }
+}
+
+impl<V: DictionaryValue> Extend<(Vec<u8>, V)> for PathMapDictionary<V> {
+    fn extend<I: IntoIterator<Item = (Vec<u8>, V)>>(&mut self, iter: I) {
+        self.extend_byte_entries(iter.into_iter().collect());
+    }
+}
+
+impl<'a, V: DictionaryValue> Extend<(&'a [u8], V)> for PathMapDictionary<V> {
+    fn extend<I: IntoIterator<Item = (&'a [u8], V)>>(&mut self, iter: I) {
+        self.extend_byte_entries(
+            iter.into_iter()
+                .map(|(key, value)| (key.to_vec(), value))
+                .collect(),
+        );
     }
 }
 

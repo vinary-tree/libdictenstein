@@ -1,4 +1,10 @@
-//! Status and capability matrix for all 35 `ldict_*` producer C-ABI functions.
+//! Status and capability matrix for the producer's constructor, metadata,
+//! CRUD, batch-mutation, persistence, and substring `ldict_*` entry points.
+//!
+//! The current ABI has 41 functions. Cursor-specific status, lifecycle, and
+//! lease states for its six collection-entry functions are exercised through
+//! the public C boundary by `bindings/c/tests/entries.c` and through the
+//! underlying versioned interface by `ffi_entries_batches`.
 //!
 //! Spec: the ldict status tables are proved in
 //! `formal-verification/rocq/Spec/AbiStatusMappingSpec.v` (plan obligation
@@ -1721,7 +1727,7 @@ fn abi_meta_constants_match_the_binding_model() {
     assert_eq!(ldict_abi_version(), LDICT_ABI_VERSION);
     assert_eq!(ldict_abi_version(), 1);
     assert_eq!(ldict_api_revision(), LDICT_API_REVISION);
-    assert_eq!(ldict_api_revision(), 4);
+    assert_eq!(ldict_api_revision(), 5);
 }
 
 // ---------------------------------------------------------------------------

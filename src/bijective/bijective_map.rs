@@ -293,6 +293,65 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveMap<V> {
         Ok(())
     }
 
+    /// Fallibly build a bijection from term/value pairs.
+    ///
+    /// Unlike [`Self::from_pairs`], this never panics for duplicate terms or
+    /// values. A failed private partial map is dropped rather than returned.
+    pub fn try_from_iter<I, T>(pairs: I) -> Result<Self, InsertError>
+    where
+        I: IntoIterator<Item = (T, V)>,
+        T: AsRef<str>,
+    {
+        let map = Self::new();
+        map.try_extend(pairs)?;
+        Ok(map)
+    }
+
+    /// Stably sort pairs by term before fallible construction.
+    pub fn try_from_iter_sorted<I, T>(pairs: I) -> Result<Self, InsertError>
+    where
+        I: IntoIterator<Item = (T, V)>,
+        T: AsRef<str>,
+    {
+        let map = Self::new();
+        map.try_extend_sorted(pairs)?;
+        Ok(map)
+    }
+
+    /// Fallibly append pairs in iterator order.
+    ///
+    /// Successful pairs preceding a duplicate remain committed. This explicit
+    /// prefix-commit API is used instead of `Extend`, whose signature cannot
+    /// report a broken-bijection error.
+    pub fn try_extend<I, T>(&self, pairs: I) -> Result<usize, InsertError>
+    where
+        I: IntoIterator<Item = (T, V)>,
+        T: AsRef<str>,
+    {
+        let mut inserted = 0;
+        for (term, value) in pairs {
+            self.try_insert(term.as_ref(), value)?;
+            inserted += 1;
+        }
+        Ok(inserted)
+    }
+
+    /// Stably sort pairs by term before fallibly appending them.
+    ///
+    /// On error, the successfully written sorted prefix remains committed.
+    pub fn try_extend_sorted<I, T>(&self, pairs: I) -> Result<usize, InsertError>
+    where
+        I: IntoIterator<Item = (T, V)>,
+        T: AsRef<str>,
+    {
+        let mut pairs: Vec<(String, V)> = pairs
+            .into_iter()
+            .map(|(term, value)| (term.as_ref().to_owned(), value))
+            .collect();
+        pairs.sort_by(|left, right| left.0.cmp(&right.0));
+        self.try_extend(pairs)
+    }
+
     /// Get the value associated with a term.
     ///
     /// Returns `None` if the term is not in the map.

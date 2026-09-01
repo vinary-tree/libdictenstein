@@ -1,6 +1,6 @@
 (library
  (name vinary_tree_libdictenstein)
- (public_name vinary-tree-libdictenstein)
+ (public_name libdictenstein)
  (libraries vinary-tree-interop)
  (foreign_stubs
   (language c)
@@ -11,7 +11,7 @@
 
 (install
  (section lib)
- (package vinary-tree-libdictenstein)
+ (package libdictenstein)
  (files
   (include/libdictenstein.h as include/libdictenstein.h)
   (include/vinary_tree_interop.h as include/vinary_tree_interop.h)

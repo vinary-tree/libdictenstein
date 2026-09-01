@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "component": "libdictenstein",
+  "canonical": "4.0.0-rc.4",
+  "registries": {
+    "cargo": "4.0.0-rc.4",
+    "clojars": "4.0.0-rc.4",
+    "cmake": "4.0.0-rc.4",
+    "fpm": "4.0.0",
+    "goTag": "v4.0.0-rc.4",
+    "hackage": "4.0.0",
+    "luaRocks": "4.0.0rc4-2",
+    "maven": "4.0.0-rc.4",
+    "npm": "4.0.0-rc.4",
+    "nuget": "4.0.0-rc.4",
+    "opam": "4.0.0~rc4",
+    "pkgConfig": "4.0.0-rc.4",
+    "pypi": "4.0.0rc4",
+    "rubygems": "4.0.0.rc.4",
+    "swiftTag": "4.0.0-rc.4"
+  },
+  "dependencies": {
+    "llattice": "0.1.0",
+    "liblevenshtein": "4.0.0-rc.4",
+    "vinary-tree-interop": "4.0.0-rc.4",
+    "@vinary-tree/interop": "4.0.0-rc.4",
+    "@vinary-tree/vinary-tree": "4.0.0-rc.4"
+  },
+  "publication": {
+    "distTag": "next",
+    "luaRocksRevision": 2,
+    "sourceTag": "v4.0.0-rc.4-release.5",
+    "fpm": false,
+    "fpmReason": "fpm accepts numeric package versions only; validate 4.0.0 as a source candidate and defer registry publication until the final release.",
+    "hackage": false,
+    "hackageReason": "Cabal package versions are numeric-only; validate 4.0.0 as a source candidate and defer upload until the final release."
+  }
+}

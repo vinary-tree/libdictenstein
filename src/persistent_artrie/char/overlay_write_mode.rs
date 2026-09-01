@@ -471,14 +471,6 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCheckpoint<CharKey, V, S>
     type CheckpointSnapshot = CheckpointSnapshot<V>;
 
     #[inline]
-    fn has_eviction_coordinator(&self) -> bool {
-        self.eviction_coordinator
-            .lock()
-            .expect("eviction_coordinator mutex poisoned")
-            .is_some()
-    }
-
-    #[inline]
     fn capture_overlay_snapshot(&self) -> Result<CheckpointSnapshot<V>> {
         // The overlay arm — char's existing immutable-overlay capture (persist.rs)
         // with its data-loss-critical watermark-before-root capture ordering.

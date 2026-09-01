@@ -2072,7 +2072,9 @@ impl DictionarySerializer for OptimizedProtobufSerializer {
         // Build adjacency list from packed edge data with pre-allocation
         let est_nodes = (num_edges as f64 * 0.6) as usize; // Estimate nodes from edges
         let mut adjacency: HashMap<u64, Vec<(u8, u64)>> = HashMap::with_capacity(est_nodes);
-        for chunk in proto_dict.edge_data.chunks_exact(3) {
+        let (edges, remainder) = proto_dict.edge_data.as_chunks::<3>();
+        debug_assert!(remainder.is_empty(), "validated edge_data triplets");
+        for chunk in edges {
             let source_id = chunk[0];
             let label = checked_label_u64(chunk[1], "protobuf v2")?;
             let target_id = chunk[2];

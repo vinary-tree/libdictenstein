@@ -1,6 +1,7 @@
 cabal-version: 3.0
-name: vinary-tree-libdictenstein
-version: 0.2.1
+name: libdictenstein
+version: 4.0.0
+x-release-candidate: rc.4
 synopsis: Fast libdictenstein dictionaries for Haskell
 description: Snapshot-retaining dictionary resources for modular Vinary Tree bindings.
 category: Data
@@ -8,6 +9,7 @@ license: Apache-2.0
 author: Dylon Edwards
 maintainer: dylon.devo@gmail.com
 build-type: Simple
+extra-source-files: cbits/dictionary_entries.h
 
 flag strict
   description: Treat compiler warnings as errors during development and CI.
@@ -27,7 +29,17 @@ library
     base >=4.18 && <5,
     bytestring >=0.11 && <0.13,
     text >=2.0 && <2.2,
-    vinary-tree-interop >=0.1 && <0.2
+    vinary-tree-interop >=4 && <5
+
+executable libdictenstein-collection-profile
+  main-is: CollectionTraversalProfile.hs
+  hs-source-dirs: app
+  default-language: GHC2021
+  ghc-options: -Wall
+  build-depends:
+    base >=4.18 && <5,
+    bytestring >=0.11 && <0.13,
+    libdictenstein
 
 -- Uniform facade C1-C10 conformance suite. Self-contained: it needs only
 -- libdictenstein and the canonical fixture, never a liblevenshtein transducer,
@@ -43,6 +55,8 @@ test-suite conformance
     base >=4.18 && <5,
     bytestring >=0.11 && <0.13,
     containers >=0.6 && <0.9,
+    filepath >=1.4 && <1.6,
+    temporary >=1.3 && <1.4,
     text >=2.0 && <2.2,
-    vinary-tree-interop >=0.1 && <0.2,
-    vinary-tree-libdictenstein
+    vinary-tree-interop >=4 && <5,
+    libdictenstein

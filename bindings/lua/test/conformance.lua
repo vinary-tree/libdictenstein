@@ -9,17 +9,16 @@
 --   C3  reachable status arms via pcall (INVALID_UTF8, DOMAIN_MISMATCH, IO_ERROR)
 --   C4  canonical fixture replay (all four backends)
 --   C5  CRUD + value + substring; capability-derived assertions
---   C6  precomposed/combining/multibyte, byte-domain NUL + invalid UTF-8, u64 0/MAX*
+--   C6  precomposed/combining/multibyte, byte-domain NUL + invalid UTF-8, u64 0/MAX
 --   C7  batch sizes 0/1/255/256/257/1000 (double-array-trie construction)
 --   C8  CRUD op-script vs a table oracle; substring vs a naive oracle
 --   C9  leak discipline (>=10k cycles, RSS bounded)
 --   C10 concurrency: N/A (standard Lua has no native threads)
 --
 -- N/A notes:
---   * u64 value 2^64-1 is not representable: lua_Integer is signed, and the
---     facade rejects negative-looking values, so the max tested value is
---     math.maxinteger (2^63-1). Batch insert for DynamicDawg is also absent
---     (only DAT construction batches), so C7 exercises the DAT batch path.
+--   * Batch insert for DynamicDawg is absent (only DAT construction batches),
+--     so C7 exercises the DAT batch path. Full-width u64 values use canonical
+--     decimal strings when they exceed lua_Integer's positive range.
 --
 -- Run (with the module on package.cpath and the cdylib on the loader path):
 --   LUA_CPATH="<dir>/?.so" LD_LIBRARY_PATH=target/release \
@@ -157,7 +156,7 @@ file:close()
 -- ---------------------------------------------------------------------------
 
 check(m.abi_version() == 1, "abi version == 1")
-check(m.api_revision() == 4, "api revision == 4")
+check(m.api_revision() == 5, "api revision == 5")
 
 do
   local dawg <close> = m.dynamic_dawg("unicode")
@@ -330,8 +329,12 @@ do
   local dawg <close> = m.dynamic_dawg("u64")
   check(dawg:put_u64({ 1, 2, 3 }, 0) == true, "u64 value 0 insert")
   check(dawg:put_u64({ 9 }, math.maxinteger) == true, "u64 value MAX insert")
+  check(dawg:put_u64({ "18446744073709551615" }, "18446744073709551615") == true,
+    "u64 full-width decimal insert")
   check(dawg:get_u64({ 1, 2, 3 }).value == 0, "u64 value 0")
   check(dawg:get_u64({ 9 }).value == math.maxinteger, "u64 value math.maxinteger")
+  check(dawg:get_u64({ "18446744073709551615" }).value == "18446744073709551615",
+    "u64 full-width decimal lookup")
 end
 
 -- ---------------------------------------------------------------------------
@@ -423,6 +426,87 @@ do
     check(scdawg:frequency(pattern) == expected, "pbt frequency " .. pattern)
     check(scdawg:contains_substring(pattern) == (expected > 0), "pbt contains " .. pattern)
   end
+end
+
+-- ---------------------------------------------------------------------------
+-- entries-v1: native order, immutable capture, all domains, and early cleanup
+-- ---------------------------------------------------------------------------
+
+do
+  local dawg <close> = m.dynamic_dawg("unicode")
+  dawg:put("cat")
+  dawg:put("caf\195\169", "18446744073709551615")
+  dawg:put("", 0)
+  local cursor <close> = dawg:entry_cursor()
+  local metadata = cursor:metadata()
+  check(metadata.unit_domain == "unicode", "entries unicode domain")
+  check(metadata.value_domain == "optional_u64", "entries optional-u64 values")
+  check(metadata.exact_length == 3, "entries exact length")
+  check(metadata.snapshot_identity ~= nil, "entries snapshot identity")
+  dawg:put("dog", 4)
+  local captured = {}
+  while true do
+    local key, value, has_value = cursor:next()
+    if key == nil then break end
+    captured[#captured + 1] = { key, value, has_value }
+  end
+  check(#captured == 3, "entries capture one immutable revision")
+  check(captured[1][1] == "" and captured[1][2] == 0 and captured[1][3],
+    "entries empty Unicode key/value")
+  check(captured[2][1] == "caf\195\169" and
+      captured[2][2] == "18446744073709551615" and captured[2][3],
+    "entries Unicode/full-width value")
+  check(captured[3][1] == "cat" and captured[3][2] == nil and not captured[3][3],
+    "entries valueless key")
+
+  local seen = 0
+  for _key, _value, _has_value in dawg:entries_iter() do
+    seen = seen + 1
+    break
+  end
+  check(seen == 1 and dawg:contains("cat"), "entries iterator closes on early break")
+
+  local snapshot = dawg:entries()
+  check(snapshot.metadata.exact_length == 4, "materialized entries metadata")
+  local ordered = {}
+  for key, value, has_value in pairs(snapshot) do
+    ordered[#ordered + 1] = { key, value, has_value }
+  end
+  check(#ordered == 4 and ordered[4][1] == "dog", "materialized entries native order")
+end
+
+do
+  local dawg <close> = m.dynamic_dawg("byte")
+  dawg:put("")
+  dawg:put("\000\255", "18446744073709551615")
+  dawg:put("\001", 1)
+  local snapshot = dawg:entries()
+  local ordered = {}
+  for key, value, has_value in pairs(snapshot) do
+    ordered[#ordered + 1] = { key, value, has_value }
+  end
+  check(#ordered == 3 and ordered[1][1] == "" and ordered[2][1] == "\000\255"
+      and ordered[3][1] == "\001", "entries preserve arbitrary byte order")
+  check(ordered[2][2] == "18446744073709551615" and ordered[2][3],
+    "entries preserve byte-key full-width value")
+end
+
+do
+  local dawg <close> = m.dynamic_dawg("u64")
+  dawg:put_u64({ "18446744073709551615" }, "18446744073709551615")
+  dawg:put_u64({ 0 })
+  dawg:put_u64({ "9223372036854775808" }, 0)
+  local snapshot = dawg:entries()
+  local ordered = {}
+  for key, value, has_value in pairs(snapshot) do
+    ordered[#ordered + 1] = { key, value, has_value }
+  end
+  check(#ordered == 3 and ordered[1][1][1] == 0
+      and ordered[2][1][1] == "9223372036854775808"
+      and ordered[3][1][1] == "18446744073709551615",
+    "entries preserve numeric u64 lexicographic order")
+  check(ordered[3][2] == "18446744073709551615" and ordered[3][3],
+    "entries preserve full-width u64 value")
 end
 
 -- ---------------------------------------------------------------------------

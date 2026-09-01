@@ -10,11 +10,12 @@
     to their recursive mathematical definitions.
 *)
 
-From Stdlib Require Import Lists.List.
-From Stdlib Require Import Arith.PeanoNat.
-From Stdlib Require Import Lia.
-From Stdlib Require Import Sorting.Sorted.
+From Coq Require Import Lists.List.
+From Coq Require Import Arith.PeanoNat.
+From Coq Require Import Lia.
+From Coq Require Import Sorting.Sorted.
 Require Import ARTrie.Spec.DynamicDawgU64Spec.
+Require Import ARTrie.Model.ListCompat.
 Import ListNotations.
 
 Definition U64Bytes := list nat.
@@ -244,7 +245,7 @@ Proof.
   pose proof
     (@NoDup_incl_length nat (map fst frames) (seq 0 node_count)
       Hunique Hincl) as Hlength.
-  rewrite length_map, length_seq in Hlength.
+  rewrite length_map, seq_length_portable in Hlength.
   exact Hlength.
 Qed.
 

@@ -8,7 +8,7 @@ This document instantiates the
 for libdictenstein's exported surfaces. The [threat model](threat-model.md)
 analyzes the adversary who supplies *data* to a Rust caller; the `ffi` /
 `bindings-core` features add a new input class — a **foreign ABI caller**: an
-independently compiled binary invoking the 35 `ldict_*` functions
+independently compiled binary invoking the 41 `ldict_*` functions
 ([reference](../bindings/c-abi-reference.md)) or the exported
 `vt.dictionary.v1` vtables
 ([architecture](../bindings/resource-producer.md)). No compiler checks that
@@ -49,7 +49,7 @@ checkable input, under any schedule).
 
 ## Role 1 — hosting the C ABI
 
-All 35 entry points share one containment spine
+All 41 entry points share one containment spine
 ([reference § 3.2](../bindings/c-abi-reference.md#32-the-boundary-contract)):
 
 | Defense | Mechanism | What it kills |

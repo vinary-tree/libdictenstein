@@ -29,7 +29,7 @@
 //! # Seam-boundary rationale (the "sensible > maximal" rule, design §0)
 //!
 //! The skeleton + the eviction branch are the GENERIC part (they read only
-//! `route_overlay()` + `has_eviction_coordinator()`). The
+//! `route_overlay()` plus the snapshot's immutable capture-time route). The
 //! [`CheckpointSnapshot`](Self::CheckpointSnapshot) type, its capture (walking the
 //! overlay root into freshly-allocated arena slots) and its serialize/publish are
 //! GENUINELY per-variant (char arena format ≠ byte arena format) — so they stay
@@ -49,6 +49,19 @@ use crate::persistent_artrie::core::key_encoding::KeyEncoding;
 use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
 use crate::value::DictionaryValue;
 
+/// Immutable routing fact captured in the same phase as an overlay checkpoint.
+///
+/// Eviction enable/disable is a lifecycle operation, so probing the live coordinator
+/// slot again after the (potentially long) serialize creates a TOCTOU race: the
+/// snapshot can contain an eviction registry while the second probe selects the
+/// eviction-off publisher, or it can contain no registry while a newly-installed
+/// coordinator selects the eviction-on publisher. The snapshot therefore owns the
+/// routing decision; publication never derives it from mutable lifecycle state.
+pub(crate) trait CapturedEvictionRoute {
+    /// `true` when capture observed and retained an eviction-coordinator generation.
+    fn captured_with_eviction(&self) -> bool;
+}
+
 /// The SHARED GENERIC checkpoint route-split surface (design trait 3).
 ///
 /// `K`/`V`/`S` as in [`LockFreeOverlay`]. [`Self::CheckpointSnapshot`] is the
@@ -60,16 +73,12 @@ pub(crate) trait OverlayCheckpoint<K: KeyEncoding, V: DictionaryValue, S>:
     /// The variant's frozen, self-consistent checkpoint snapshot (serialized tree →
     /// fresh arena slots + descriptor). GENUINELY per-variant (char arena format ≠
     /// byte arena format), hence a seam type, not a shared struct.
-    type CheckpointSnapshot;
+    type CheckpointSnapshot: CapturedEvictionRoute;
 
     // ========================================================================
     // REQUIRED SEAM (variant provides) — the capture + publish halves of both
     // arms (per-variant on-disk format), plus the eviction-coordinator probe.
     // ========================================================================
-
-    /// `true` iff an eviction coordinator is installed (selects the eviction-aware
-    /// retaining publisher in the overlay arm).
-    fn has_eviction_coordinator(&self) -> bool;
 
     /// **Overlay arm — capture.** Capture a frozen snapshot from the IMMUTABLE
     /// lock-free overlay (walk the overlay root → fresh arena slots), reading the
@@ -94,6 +103,19 @@ pub(crate) trait OverlayCheckpoint<K: KeyEncoding, V: DictionaryValue, S>:
         snapshot: Self::CheckpointSnapshot,
     ) -> Result<()>;
 
+    /// Publish a captured snapshot according to its immutable capture-time route.
+    ///
+    /// This is deliberately a separate reusable step so deterministic tests can
+    /// pause after capture, perform an eviction lifecycle transition, and prove that
+    /// publication cannot re-route the snapshot from mutable current state.
+    fn publish_captured_overlay_snapshot(&self, snapshot: Self::CheckpointSnapshot) -> Result<()> {
+        if snapshot.captured_with_eviction() {
+            self.publish_overlay_snapshot_retaining_with_eviction(snapshot)
+        } else {
+            self.publish_overlay_snapshot_retaining(&snapshot)
+        }
+    }
+
     // ========================================================================
     // DEFAULT-PROVIDED GENERIC METHOD — the data-loss-critical checkpoint skeleton.
     // ========================================================================
@@ -117,10 +139,6 @@ pub(crate) trait OverlayCheckpoint<K: KeyEncoding, V: DictionaryValue, S>:
             "L3.3: checkpoint requires an installed lock-free overlay (the owned tree is gone)"
         );
         let snapshot = self.capture_overlay_snapshot()?;
-        if self.has_eviction_coordinator() {
-            self.publish_overlay_snapshot_retaining_with_eviction(snapshot)
-        } else {
-            self.publish_overlay_snapshot_retaining(&snapshot)
-        }
+        self.publish_captured_overlay_snapshot(snapshot)
     }
 }

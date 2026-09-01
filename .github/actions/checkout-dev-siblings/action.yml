@@ -1,13 +1,15 @@
-name: Checkout dev sibling crates
+name: Checkout development sibling crates
 description: >
-  Clone the in-development related crates (llattice, liblevenshtein-rust)
+  Clone the in-development related crates (llattice, liblevenshtein-rust,
+  vinary-tree-interop)
   into the workspace parent directory so libdictenstein's `path = "../..."`
   dependencies resolve against their development versions (mirroring the
   local checkout layout): `llattice` is a mandatory dependency of every
-  build, and `liblevenshtein-rust` provides the `vinary-tree-interop` path
-  dependency required by the `bindings-core`/`ffi` feature family. This is
-  for development / CI workflows only — release workflows pin the siblings
-  at tagged versions instead (see release-bindings.yml).
+  build, `vinary-tree-interop` provides the shared ABI required by the
+  `bindings-core`/`ffi` feature family, and `liblevenshtein-rust`
+  provides the cross-project integration surface. This is for development /
+  CI workflows only — release workflows pin the siblings at tagged versions
+  instead (see release-bindings.yml).
 
 inputs:
   ref:
@@ -22,6 +24,10 @@ inputs:
     description: Exact liblevenshtein-rust ref; defaults to `ref`.
     required: false
     default: ""
+  vinary-tree-interop-ref:
+    description: Exact vinary-tree-interop ref; defaults to `ref`.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -33,10 +39,11 @@ runs:
         # The main repo is checked out at $GITHUB_WORKSPACE; its parent is
         # where the path dependencies resolve to.
         parent="$(dirname "$GITHUB_WORKSPACE")"
-        for repo in llattice liblevenshtein-rust; do
+        for repo in llattice liblevenshtein-rust vinary-tree-interop; do
           case "$repo" in
             llattice) selected_ref="${{ inputs.llattice-ref }}" ;;
             liblevenshtein-rust) selected_ref="${{ inputs.liblevenshtein-rust-ref }}" ;;
+            vinary-tree-interop) selected_ref="${{ inputs.vinary-tree-interop-ref }}" ;;
           esac
           if [ -z "$selected_ref" ]; then
             selected_ref="${{ inputs.ref }}"
@@ -55,4 +62,7 @@ runs:
           fi
         done
         echo "Sibling crates available under $parent:"
-        ls -1d "$parent"/llattice "$parent"/liblevenshtein-rust
+        ls -1d \
+          "$parent"/llattice \
+          "$parent"/liblevenshtein-rust \
+          "$parent"/vinary-tree-interop

@@ -3,6 +3,8 @@
 //! This implementation supports incremental updates on a lock-free node graph.
 //! Perfect minimality can be restored via explicit compaction.
 
+#[cfg(feature = "bindings-core")]
+use super::lockfree::PublishIfEmpty;
 use super::lockfree::{LockFreeDawg, LockFreeDawgNode};
 use super::zipper::DynamicDawgZipper;
 use crate::iterator::DictionaryIterator;
@@ -480,6 +482,22 @@ impl<V: DictionaryValue> DynamicDawg<V> {
         (DynamicDawgNode { node: root }, term_count)
     }
 
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn root_with_term_count_revision(&self) -> (DynamicDawgNode<V>, usize, u64) {
+        let (root, term_count, revision) = self.inner.root_arc_with_term_count_revision();
+        (DynamicDawgNode { node: root }, term_count, revision)
+    }
+
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn clear_graph(&self) -> bool {
+        self.inner.clear()
+    }
+
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn try_publish_if_empty(&self, frozen: &Self) -> PublishIfEmpty {
+        self.inner.try_publish_if_empty(&frozen.inner)
+    }
+
     /// Get the number of nodes in the DAWG.
     pub fn node_count(&self) -> usize {
         self.inner.node_count()
@@ -594,6 +612,11 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     /// Returns an iterator yielding `(Vec<u8>, V)` tuples in depth-first order.
     /// This is more efficient than `iter()` as it avoids UTF-8 string allocation.
     ///
+    /// This legacy mapped-only iterator omits present terms whose value is
+    /// `None`. Use `(&dictionary).into_iter()` or
+    /// [`DictionaryEntries::entries`](crate::DictionaryEntries::entries) for
+    /// lossless [`DictionaryEntry`](crate::DictionaryEntry) snapshots.
+    ///
     /// # Examples
     ///
     /// ```rust
@@ -628,6 +651,7 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     ///
     /// Returns an iterator yielding `(String, V)` tuples in depth-first order.
     /// For better performance with raw bytes, use `iter_bytes()` instead.
+    /// Like `iter_bytes()`, this legacy iterator omits term-only entries.
     ///
     /// # Examples
     ///
@@ -648,19 +672,169 @@ impl<V: DictionaryValue> DynamicDawg<V> {
     }
 }
 
-impl<V: DictionaryValue> IntoIterator for &DynamicDawg<V> {
-    type Item = (Vec<u8>, V);
-    type IntoIter = DictionaryIterator<DynamicDawgZipper<V>>;
-
-    /// Creates an iterator over all `(term, value)` pairs as raw byte vectors.
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter_bytes()
-    }
-}
-
 impl<V: DictionaryValue> Default for DynamicDawg<V> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<V: DictionaryValue> std::iter::FromIterator<String> for DynamicDawg<V> {
+    /// Builds one minimal immutable revision instead of repeatedly publishing
+    /// path-copied revisions through [`insert`](Self::insert).
+    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
+        Self::from_terms(iter)
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::FromIterator<&'a str> for DynamicDawg<V> {
+    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
+        Self::from_terms(iter)
+    }
+}
+
+impl<V: DictionaryValue> std::iter::FromIterator<Vec<u8>> for DynamicDawg<V> {
+    /// Preserves arbitrary byte keys while routing construction through the
+    /// sorted minimal-graph builder.
+    fn from_iter<I: IntoIterator<Item = Vec<u8>>>(iter: I) -> Self {
+        let mut terms: Vec<Vec<u8>> = iter.into_iter().collect();
+        crate::causal_perf::record_batch_sort_calls(1);
+        crate::causal_perf::record_batch_sort_terms(terms.len() as u64);
+        crate::causal_perf::record_batch_sort_units(
+            terms.iter().map(Vec::len).sum::<usize>() as u64
+        );
+        terms.sort_unstable();
+        Self {
+            inner: Arc::new(DynamicDawgInner::from_sorted_terms_by(
+                terms,
+                |term, units| units.extend_from_slice(term),
+            )),
+        }
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::FromIterator<&'a [u8]> for DynamicDawg<V> {
+    fn from_iter<I: IntoIterator<Item = &'a [u8]>>(iter: I) -> Self {
+        iter.into_iter().map(<[u8]>::to_vec).collect()
+    }
+}
+
+impl<V: DictionaryValue> std::iter::FromIterator<(String, V)> for DynamicDawg<V> {
+    /// Duplicate keys use normal map-style last-value-wins semantics.
+    fn from_iter<I: IntoIterator<Item = (String, V)>>(iter: I) -> Self {
+        Self::from_terms_with_values(iter)
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::FromIterator<(&'a str, V)> for DynamicDawg<V> {
+    fn from_iter<I: IntoIterator<Item = (&'a str, V)>>(iter: I) -> Self {
+        Self::from_terms_with_values(iter)
+    }
+}
+
+impl<V: DictionaryValue> std::iter::FromIterator<(Vec<u8>, V)> for DynamicDawg<V> {
+    fn from_iter<I: IntoIterator<Item = (Vec<u8>, V)>>(iter: I) -> Self {
+        let mut entries: Vec<(Vec<u8>, V)> = iter.into_iter().collect();
+        crate::causal_perf::record_batch_sort_calls(1);
+        crate::causal_perf::record_batch_sort_terms(entries.len() as u64);
+        crate::causal_perf::record_batch_sort_units(
+            entries.iter().map(|(key, _)| key.len()).sum::<usize>() as u64,
+        );
+        // Stable ordering preserves input order among duplicate keys, so the
+        // minimal builder retains the last supplied value.
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        Self {
+            inner: Arc::new(DynamicDawgInner::from_sorted_entries_by(
+                entries.into_iter().map(|(key, value)| (key, Some(value))),
+                |key, units| units.extend_from_slice(key),
+            )),
+        }
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::FromIterator<(&'a [u8], V)> for DynamicDawg<V> {
+    fn from_iter<I: IntoIterator<Item = (&'a [u8], V)>>(iter: I) -> Self {
+        iter.into_iter()
+            .map(|(key, value)| (key.to_vec(), value))
+            .collect()
+    }
+}
+
+impl<V: DictionaryValue> std::iter::Extend<String> for DynamicDawg<V> {
+    fn extend<I: IntoIterator<Item = String>>(&mut self, iter: I) {
+        let _ = DynamicDawg::extend(self, iter);
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::Extend<&'a str> for DynamicDawg<V> {
+    fn extend<I: IntoIterator<Item = &'a str>>(&mut self, iter: I) {
+        let _ = DynamicDawg::extend(self, iter);
+    }
+}
+
+impl<V: DictionaryValue> std::iter::Extend<Vec<u8>> for DynamicDawg<V> {
+    fn extend<I: IntoIterator<Item = Vec<u8>>>(&mut self, iter: I) {
+        let mut terms: Vec<Vec<u8>> = iter.into_iter().collect();
+        terms.sort_unstable();
+        let added = terms
+            .into_iter()
+            .filter(|term| self.insert_bytes(term))
+            .count();
+        if added > 0 {
+            self.compact();
+        }
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::Extend<&'a [u8]> for DynamicDawg<V> {
+    fn extend<I: IntoIterator<Item = &'a [u8]>>(&mut self, iter: I) {
+        <Self as std::iter::Extend<Vec<u8>>>::extend(self, iter.into_iter().map(<[u8]>::to_vec));
+    }
+}
+
+impl<V: DictionaryValue> std::iter::Extend<(String, V)> for DynamicDawg<V> {
+    fn extend<I: IntoIterator<Item = (String, V)>>(&mut self, iter: I) {
+        let mut entries: Vec<(String, V)> = iter.into_iter().collect();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut added = false;
+        for (term, value) in entries {
+            added |= self.insert_with_value(&term, value);
+        }
+        if added {
+            self.compact();
+        }
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::Extend<(&'a str, V)> for DynamicDawg<V> {
+    fn extend<I: IntoIterator<Item = (&'a str, V)>>(&mut self, iter: I) {
+        <Self as std::iter::Extend<(String, V)>>::extend(
+            self,
+            iter.into_iter()
+                .map(|(term, value)| (term.to_owned(), value)),
+        );
+    }
+}
+
+impl<V: DictionaryValue> std::iter::Extend<(Vec<u8>, V)> for DynamicDawg<V> {
+    fn extend<I: IntoIterator<Item = (Vec<u8>, V)>>(&mut self, iter: I) {
+        let mut entries: Vec<(Vec<u8>, V)> = iter.into_iter().collect();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut added = false;
+        for (key, value) in entries {
+            added |= self.insert_bytes_with_value(&key, value);
+        }
+        if added {
+            self.compact();
+        }
+    }
+}
+
+impl<'a, V: DictionaryValue> std::iter::Extend<(&'a [u8], V)> for DynamicDawg<V> {
+    fn extend<I: IntoIterator<Item = (&'a [u8], V)>>(&mut self, iter: I) {
+        <Self as std::iter::Extend<(Vec<u8>, V)>>::extend(
+            self,
+            iter.into_iter().map(|(key, value)| (key.to_vec(), value)),
+        );
     }
 }
 

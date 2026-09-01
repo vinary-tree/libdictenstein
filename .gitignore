@@ -78,6 +78,7 @@ data/corpora/birkbeck/
 data/generated/
 
 rocq/**/.lia.cache
+rocq/**/.nia.cache
 rocq/**/*.vo
 rocq/**/*.vok
 rocq/**/*.vos
@@ -121,6 +122,7 @@ docs/formal/states/
 # Formal Verification - Rocq/Coq
 formal-verification/rocq/.depend
 formal-verification/rocq/.lia.cache
+formal-verification/rocq/.nia.cache
 formal-verification/rocq/**/*.vo
 formal-verification/rocq/**/*.vok
 formal-verification/rocq/**/*.vos

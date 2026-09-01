@@ -199,8 +199,8 @@ managers, the WAL frontier, and the checkpoint counters are all process-local he
 `AtomicNodePtr` holds a virtual address meaningless in another process, and nothing coordinates the
 WAL, `mmap` growth, or checkpoint rewrites across processes. **Exactly one process may own a backing
 file.** A second process — or a second concurrent handle to the same path — is rejected with
-`PersistentARTrieError::FileLocked` by the **Tier-1** advisory lock (`flock` on a `.wlock` sidecar,
-acquired once at the `DiskManager` open chokepoints): see
+`PersistentARTrieError::FileLocked` by the **Tier-1** cross-platform advisory lock on a `.wlock`
+sidecar (acquired once at the `DiskManager` open chokepoints): see
 [os-level-locking.md](../design/os-level-locking.md). Genuine single-writer / multi-reader-**process**
 access is the **Tier-2 SWMR** design, [swmr-multiprocess.md](../design/swmr-multiprocess.md). Both
 preserve the single-process lock-free invariant described here — the lock is taken once per *open*,

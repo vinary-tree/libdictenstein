@@ -3,5 +3,5 @@ go 1.25
 use (
 	./bindings/go
 	../liblevenshtein-rust/bindings/go
-	../liblevenshtein-rust/vinary-tree-interop/bindings/go
+	../vinary-tree-interop/bindings/go
 )

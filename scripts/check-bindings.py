@@ -2,7 +2,7 @@
 """Dependency-free architectural gate for the libdictenstein language bindings.
 
 Cross-checks the machine-readable binding model (bindings/api.json) against the
-three sources it mirrors and the thirteen language facades that consume it:
+three sources it mirrors and the fourteen language facades that consume it:
 
   A. Symbol parity      - api.json cFunctions == `pub extern "C" fn ldict_*` in
                           src/ffi.rs == declarations in include/libdictenstein.h,
@@ -108,9 +108,7 @@ def parse_ffi_exports(source: str) -> dict[str, str | None]:
 
 
 def parse_header_declarations(source: str) -> set[str]:
-    return set(
-        re.findall(r"LDICT_API\s+[^();]*?\b(ldict_[a-z0-9_]+)\s*\(", source)
-    )
+    return set(re.findall(r"LDICT_API\s+[^();]*?\b(ldict_[a-z0-9_]+)\s*\(", source))
 
 
 def parse_ffi_status(source: str) -> dict[str, int]:
@@ -124,12 +122,16 @@ def parse_ffi_status(source: str) -> dict[str, int]:
 
 
 def parse_header_status(source: str) -> dict[str, int]:
-    block = re.search(r"typedef enum LdictStatus \{(.*?)\} LdictStatus;", source, re.DOTALL)
+    block = re.search(
+        r"typedef enum LdictStatus \{(.*?)\} LdictStatus;", source, re.DOTALL
+    )
     if not block:
         return {}
     return {
         name: int(value)
-        for name, value in re.findall(r"LDICT_STATUS_([A-Z0-9_]+) = (\d+)", block.group(1))
+        for name, value in re.findall(
+            r"LDICT_STATUS_([A-Z0-9_]+) = (\d+)", block.group(1)
+        )
     }
 
 
@@ -208,7 +210,11 @@ def c_source_symbols(source: str) -> tuple[set[str], set[str]]:
     ldict_* token is a reference into the shared ABI.
     """
     defined = set(
-        re.findall(r"^[A-Za-z_][^;{}()\n]*?\b(ldict_[a-z0-9_]+)\s*\(", source, re.M)
+        re.findall(
+            r"^[A-Za-z_][^;{}()\n]*?\b(ldict_[a-z0-9_]+)\s*\(",
+            source,
+            re.MULTILINE,
+        )
     )
     referenced = set(SYMBOL.findall(source)) - defined
     return referenced, defined
@@ -239,9 +245,7 @@ def java_downcall_symbols(source: str) -> set[str]:
 
 
 def dotnet_entrypoint_symbols(report: Report, source: str) -> set[str]:
-    referenced = set(
-        re.findall(r'EntryPoint = "(ldict_[a-z0-9_]+)"', source)
-    )
+    referenced = set(re.findall(r'EntryPoint = "(ldict_[a-z0-9_]+)"', source))
     stray = set(SYMBOL.findall(source)) - referenced
     if stray:
         report.fail(
@@ -309,7 +313,9 @@ def swift_symbols(report: Report, model: dict) -> set[str]:
     modulemap = read_text(report, "facades", ROOT / facade["modulemap"])
     shim_header = read_text(report, "facades", ROOT / facade["shimHeader"])
     if modulemap is not None and 'header "CLibdictenstein.h"' not in modulemap:
-        report.fail("facades", "swift: module.modulemap does not import CLibdictenstein.h")
+        report.fail(
+            "facades", "swift: module.modulemap does not import CLibdictenstein.h"
+        )
     if shim_header is not None and "libdictenstein.h" not in shim_header:
         report.fail(
             "facades",
@@ -376,8 +382,10 @@ def javascript_check(report: Report, model: dict) -> dict[str, object]:
         "index.d.ts",
     ):
         if not (ROOT / "bindings" / "javascript" / facade_file).is_file():
-            report.fail("javascript", f"missing facade file bindings/javascript/{facade_file}")
-    exact = re.compile(r"^\d+\.\d+\.\d+$")
+            report.fail(
+                "javascript", f"missing facade file bindings/javascript/{facade_file}"
+            )
+    exact = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
     dependencies = package.get("dependencies", {})
     for name, version in dependencies.items():
         if name.startswith("@vinary-tree/") and not exact.match(version):
@@ -397,7 +405,9 @@ def javascript_check(report: Report, model: dict) -> dict[str, object]:
             "javascript",
             f"{wasm['umbrellaPackage']} pin {umbrella_pin!r} != wasm.umbrellaVersion {wasm['umbrellaVersion']!r}",
         )
-    deps_cljs = read_text(report, "javascript", ROOT / "bindings" / "javascript" / "deps.cljs")
+    deps_cljs = read_text(
+        report, "javascript", ROOT / "bindings" / "javascript" / "deps.cljs"
+    )
     if deps_cljs is not None:
         pin = re.search(r'"@vinary-tree/libdictenstein"\s+"([^"]+)"', deps_cljs)
         if not pin or pin.group(1) != model["packageVersion"]:
@@ -424,12 +434,27 @@ def check_symbol_parity(report: Report, model: dict) -> None:
     declared = parse_header_declarations(header_source)
 
     for label, missing in (
-        ("modeled in api.json but not exported by src/ffi.rs", set(modeled) - set(exported)),
-        ("exported by src/ffi.rs but missing from api.json", set(exported) - set(modeled)),
-        ("modeled in api.json but not declared in the C header", set(modeled) - declared),
+        (
+            "modeled in api.json but not exported by src/ffi.rs",
+            set(modeled) - set(exported),
+        ),
+        (
+            "exported by src/ffi.rs but missing from api.json",
+            set(exported) - set(modeled),
+        ),
+        (
+            "modeled in api.json but not declared in the C header",
+            set(modeled) - declared,
+        ),
         ("declared in the C header but missing from api.json", declared - set(modeled)),
-        ("exported by src/ffi.rs but not declared in the C header", set(exported) - declared),
-        ("declared in the C header but not exported by src/ffi.rs", declared - set(exported)),
+        (
+            "exported by src/ffi.rs but not declared in the C header",
+            set(exported) - declared,
+        ),
+        (
+            "declared in the C header but not exported by src/ffi.rs",
+            declared - set(exported),
+        ),
     ):
         if missing:
             report.fail("symbols", f"{label}: {sorted(missing)}")
@@ -455,7 +480,9 @@ def compare_maps(
             report.fail(check, f"{subject}: {key} missing from {source}")
             clean = False
         elif key not in expected:
-            report.fail(check, f"{subject}: {source} defines unmodeled {key} = {actual[key]}")
+            report.fail(
+                check, f"{subject}: {source} defines unmodeled {key} = {actual[key]}"
+            )
             clean = False
         elif expected[key] != actual[key]:
             report.fail(
@@ -469,7 +496,9 @@ def compare_maps(
 def check_constant_parity(report: Report, model: dict) -> None:
     ffi_source = read_text(report, "constants", ROOT / "src" / "ffi.rs")
     header_source = read_text(report, "constants", ROOT / model["cHeader"])
-    interop_source = read_text(report, "constants", ROOT / model["interop"]["headerMirror"])
+    interop_source = read_text(
+        report, "constants", ROOT / model["interop"]["headerMirror"]
+    )
     if ffi_source is None or header_source is None or interop_source is None:
         return
     clean = True
@@ -487,24 +516,84 @@ def check_constant_parity(report: Report, model: dict) -> None:
             parse_header_define(header_source, "LDICT_API_REVISION"),
         ),
     ):
-        for source, value in (("src/ffi.rs", ffi_value), (model["cHeader"], header_value)):
+        for source, value in (
+            ("src/ffi.rs", ffi_value),
+            (model["cHeader"], header_value),
+        ):
             if value != model_value:
                 report.fail(
-                    "constants", f"{name}: api.json={model_value} but {source} has {value}"
+                    "constants",
+                    f"{name}: api.json={model_value} but {source} has {value}",
                 )
                 clean = False
     status = model["enums"]["status"]["values"]
-    clean &= compare_maps(report, "constants", "LdictStatus", status, parse_ffi_status(ffi_source), "src/ffi.rs")
-    clean &= compare_maps(report, "constants", "LdictStatus", status, parse_header_status(header_source), model["cHeader"])
+    clean &= compare_maps(
+        report,
+        "constants",
+        "LdictStatus",
+        status,
+        parse_ffi_status(ffi_source),
+        "src/ffi.rs",
+    )
+    clean &= compare_maps(
+        report,
+        "constants",
+        "LdictStatus",
+        status,
+        parse_header_status(header_source),
+        model["cHeader"],
+    )
     kinds = model["kinds"]["values"]
-    clean &= compare_maps(report, "constants", "LDICT_KIND_*", kinds, parse_ffi_kinds(ffi_source), "src/ffi.rs")
-    clean &= compare_maps(report, "constants", "LDICT_KIND_*", kinds, parse_header_kinds(header_source), model["cHeader"])
+    clean &= compare_maps(
+        report,
+        "constants",
+        "LDICT_KIND_*",
+        kinds,
+        parse_ffi_kinds(ffi_source),
+        "src/ffi.rs",
+    )
+    clean &= compare_maps(
+        report,
+        "constants",
+        "LDICT_KIND_*",
+        kinds,
+        parse_header_kinds(header_source),
+        model["cHeader"],
+    )
     capabilities = model["capabilities"]["bits"]
-    clean &= compare_maps(report, "constants", "LDICT_CAP_* bit", capabilities, parse_ffi_capabilities(ffi_source), "src/ffi.rs")
-    clean &= compare_maps(report, "constants", "LDICT_CAP_* bit", capabilities, parse_header_capabilities(header_source), model["cHeader"])
+    clean &= compare_maps(
+        report,
+        "constants",
+        "LDICT_CAP_* bit",
+        capabilities,
+        parse_ffi_capabilities(ffi_source),
+        "src/ffi.rs",
+    )
+    clean &= compare_maps(
+        report,
+        "constants",
+        "LDICT_CAP_* bit",
+        capabilities,
+        parse_header_capabilities(header_source),
+        model["cHeader"],
+    )
     domains = model["unitDomains"]
-    clean &= compare_maps(report, "constants", "unit domain", domains, parse_ffi_unit_domains(ffi_source), "src/ffi.rs domain()")
-    clean &= compare_maps(report, "constants", "unit domain", domains, parse_interop_unit_domains(interop_source), model["interop"]["headerMirror"])
+    clean &= compare_maps(
+        report,
+        "constants",
+        "unit domain",
+        domains,
+        parse_ffi_unit_domains(ffi_source),
+        "src/ffi.rs domain()",
+    )
+    clean &= compare_maps(
+        report,
+        "constants",
+        "unit domain",
+        domains,
+        parse_interop_unit_domains(interop_source),
+        model["interop"]["headerMirror"],
+    )
     if clean:
         report.ok(
             "constants",
@@ -577,12 +666,18 @@ def check_facades(report: Report, model: dict) -> None:
             elif parser == "c-source":
                 refs, _ = c_source_symbols(source)
                 referenced |= refs
+            elif parser == "c-header-declarations":
+                referenced |= set(SYMBOL.findall(source))
             else:
-                report.fail("facades", f"{language}: unknown parser {parser!r} in api.json")
+                report.fail(
+                    "facades", f"{language}: unknown parser {parser!r} in api.json"
+                )
         record(language, referenced)
 
-    if len(facades) != 13:
-        report.fail("facades", f"expected 13 modeled facades, api.json lists {len(facades)}")
+    if len(facades) != 14:
+        report.fail(
+            "facades", f"expected 14 modeled facades, api.json lists {len(facades)}"
+        )
     missing_dirs = [
         language
         for language, facade in facades.items()
@@ -600,17 +695,67 @@ def check_facades(report: Report, model: dict) -> None:
 
 
 IDENTITY_SUFFIXES = {
-    ".c", ".cabal", ".cjs", ".clj", ".cljs", ".cmake", ".cs", ".csproj", ".edn",
-    ".f90", ".gemspec", ".go", ".gradle", ".h", ".hpp", ".hs", ".hsc", ".java",
-    ".json", ".kts", ".lua", ".m", ".md", ".mjs", ".ml", ".mli", ".mod",
-    ".modulemap", ".opam", ".pc", ".properties", ".props", ".publish", ".py",
-    ".rb", ".rockspec", ".rs", ".swift", ".template", ".toml", ".ts", ".tsv",
-    ".txt", ".work", ".yml",
+    ".c",
+    ".cabal",
+    ".cjs",
+    ".clj",
+    ".cljs",
+    ".cmake",
+    ".cs",
+    ".csproj",
+    ".edn",
+    ".f90",
+    ".gemspec",
+    ".go",
+    ".gradle",
+    ".h",
+    ".hpp",
+    ".hs",
+    ".hsc",
+    ".java",
+    ".json",
+    ".kts",
+    ".lua",
+    ".m",
+    ".md",
+    ".mjs",
+    ".ml",
+    ".mli",
+    ".mod",
+    ".modulemap",
+    ".opam",
+    ".pc",
+    ".properties",
+    ".props",
+    ".publish",
+    ".py",
+    ".rb",
+    ".rockspec",
+    ".rs",
+    ".swift",
+    ".template",
+    ".toml",
+    ".ts",
+    ".tsv",
+    ".txt",
+    ".work",
+    ".yml",
 }
 IDENTITY_SKIP_PARTS = {
-    ".build", "_build", ".cpcache", ".gradle", ".pytest_cache", ".ruff_cache",
-    ".swiftpm", "__pycache__", "bin", "build", "dist-newstyle", "node_modules",
-    "obj", "target",
+    ".build",
+    "_build",
+    ".cpcache",
+    ".gradle",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".swiftpm",
+    "__pycache__",
+    "bin",
+    "build",
+    "dist-newstyle",
+    "node_modules",
+    "obj",
+    "target",
 }
 
 
@@ -633,7 +778,11 @@ def check_identity(report: Report) -> None:
             files.extend(path for path in root.rglob("*") if path.is_file())
     offenders: list[str] = []
     for path in files:
-        if path.suffix not in IDENTITY_SUFFIXES and path.name not in {"dune", "dune-project", "dune.publish"}:
+        if path.suffix not in IDENTITY_SUFFIXES and path.name not in {
+            "dune",
+            "dune-project",
+            "dune.publish",
+        }:
             continue
         if any(part in IDENTITY_SKIP_PARTS for part in path.parts):
             continue
@@ -642,24 +791,28 @@ def check_identity(report: Report) -> None:
             if forbidden in source:
                 offenders.append(f"{path.relative_to(ROOT)}: {forbidden!r}")
     if offenders:
-        report.fail("identity", "unrelated identities in publishable files: " + "; ".join(offenders))
+        report.fail(
+            "identity",
+            "unrelated identities in publishable files: " + "; ".join(offenders),
+        )
     else:
-        report.ok("identity", "no f1r3fly / universal-automata identities in publishable files")
+        report.ok(
+            "identity",
+            "no f1r3fly / universal-automata identities in publishable files",
+        )
 
 
 def check_interop_header(report: Report, model: dict) -> None:
     mirror = ROOT / model["interop"]["headerMirror"]
     if not mirror.is_file():
-        report.fail("interop", f"header mirror missing: {model['interop']['headerMirror']}")
+        report.fail(
+            "interop", f"header mirror missing: {model['interop']['headerMirror']}"
+        )
         return
     canonical = Path(
         os.environ.get(
             "LDICT_INTEROP_HEADER_CANONICAL",
-            ROOT.parent
-            / "liblevenshtein-rust"
-            / "vinary-tree-interop"
-            / "include"
-            / "vinary_tree_interop.h",
+            ROOT.parent / "vinary-tree-interop" / "include" / "vinary_tree_interop.h",
         )
     )
     if canonical.is_file():
@@ -679,11 +832,16 @@ def check_interop_header(report: Report, model: dict) -> None:
     # The OCaml source package carries copies of both headers for opam builds;
     # they must never drift from the in-repo originals.
     for copy, original in (
-        (ROOT / "bindings" / "ocaml" / "include" / "libdictenstein.h", ROOT / model["cHeader"]),
+        (
+            ROOT / "bindings" / "ocaml" / "include" / "libdictenstein.h",
+            ROOT / model["cHeader"],
+        ),
         (ROOT / "bindings" / "ocaml" / "include" / "vinary_tree_interop.h", mirror),
     ):
         if not copy.is_file():
-            report.fail("interop", f"OCaml header copy missing: {copy.relative_to(ROOT)}")
+            report.fail(
+                "interop", f"OCaml header copy missing: {copy.relative_to(ROOT)}"
+            )
         elif copy.read_bytes() != original.read_bytes():
             report.fail(
                 "interop",
@@ -694,6 +852,7 @@ def check_interop_header(report: Report, model: dict) -> None:
 def check_packages(report: Report, model: dict) -> None:
     packages = model["packages"]
     version = model["packageVersion"]
+    registries = model.get("release", {}).get("registries", {})
     interop_version = model["interop"]["version"]
     clean = True
 
@@ -706,7 +865,10 @@ def check_packages(report: Report, model: dict) -> None:
     cargo_source = read_text(report, "packages", ROOT / "Cargo.toml")
     if cargo_source is not None:
         cargo = tomllib.loads(cargo_source)
-        expect(cargo["package"]["name"] == model["crate"], "Cargo.toml package name != model crate")
+        expect(
+            cargo["package"]["name"] == model["crate"],
+            "Cargo.toml package name != model crate",
+        )
         expect(
             cargo["package"]["version"] == version,
             f"Cargo.toml version {cargo['package']['version']} != packageVersion {version}",
@@ -719,41 +881,69 @@ def check_packages(report: Report, model: dict) -> None:
         )
         interop_dep = cargo.get("dependencies", {}).get("vinary-tree-interop", {})
         expect(
-            interop_dep.get("version") == interop_version,
+            interop_dep.get("version", "").lstrip("=") == interop_version,
             f"Cargo.toml vinary-tree-interop version {interop_dep.get('version')!r} != interop {interop_version!r}",
         )
 
-    python_source = read_text(report, "packages", ROOT / "bindings" / "python" / "pyproject.toml")
+    python_source = read_text(
+        report, "packages", ROOT / "bindings" / "python" / "pyproject.toml"
+    )
     if python_source is not None:
         python = tomllib.loads(python_source)
-        expect(python["project"]["name"] == packages["pypi"], "pyproject.toml name != packages.pypi")
         expect(
-            python["project"]["version"] == version,
-            f"pyproject.toml version {python['project']['version']} != {version}",
+            python["project"]["name"] == packages["pypi"],
+            "pyproject.toml name != packages.pypi",
         )
         expect(
-            f"vinary-tree-interop=={interop_version}" in python["project"]["dependencies"],
-            f"pyproject.toml must pin vinary-tree-interop=={interop_version}",
+            python["project"]["version"] == registries.get("pypi", version),
+            f"pyproject.toml version {python['project']['version']} != {registries.get('pypi', version)}",
+        )
+        expect(
+            f"vinary-tree-interop=={registries.get('pypi', interop_version)}"
+            in python["project"]["dependencies"],
+            f"pyproject.toml must pin vinary-tree-interop=={registries.get('pypi', interop_version)}",
         )
 
-    gradle = read_text(report, "packages", ROOT / "bindings" / "jvm" / "build.gradle.kts")
+    gradle = read_text(
+        report, "packages", ROOT / "bindings" / "jvm" / "build.gradle.kts"
+    )
     if gradle is not None:
         group, artifact = packages["maven"].split(":")
+        jvm_description = (
+            "High-performance dictionaries and trie-maps for approximate string matching"
+        )
         expect(f'group = "{group}"' in gradle, f"build.gradle.kts group != {group}")
         expect(
             f'artifactId = "{artifact}"' in gradle,
             f"build.gradle.kts publication artifactId != {artifact}",
         )
-        expect(f'version = "{version}"' in gradle, f"build.gradle.kts version != {version}")
+        expect(
+            f'version = "{version}"' in gradle, f"build.gradle.kts version != {version}"
+        )
         expect(
             f'api("{model["interop"]["maven"]}:{interop_version}")' in gradle,
             f"build.gradle.kts must pin {model['interop']['maven']}:{interop_version}",
         )
+        expect(
+            f'description = "{jvm_description}"' in gradle,
+            "Maven POM description does not explain the product's purpose",
+        )
+        jreleaser = read_text(
+            report, "packages", ROOT / "bindings" / "jvm" / "jreleaser.yml"
+        )
+        if jreleaser is not None:
+            expect(
+                f"description: {jvm_description}" in jreleaser,
+                "JReleaser and Maven POM descriptions have drifted",
+            )
 
-    project_clj = read_text(report, "packages", ROOT / "bindings" / "clojure" / "project.clj")
+    project_clj = read_text(
+        report, "packages", ROOT / "bindings" / "clojure" / "project.clj"
+    )
     if project_clj is not None:
         expect(
-            f'{packages["clojars"]} "{version}"' in project_clj.replace("(defproject ", ""),
+            f'{packages["clojars"]} "{version}"'
+            in project_clj.replace("(defproject ", ""),
             f"project.clj coordinate != {packages['clojars']} {version}",
         )
         expect(
@@ -770,14 +960,21 @@ def check_packages(report: Report, model: dict) -> None:
     csproj = read_text(
         report,
         "packages",
-        ROOT / "bindings" / "dotnet" / "src" / "VinaryTree.Libdictenstein" / "VinaryTree.Libdictenstein.csproj",
+        ROOT
+        / "bindings"
+        / "dotnet"
+        / "src"
+        / "VinaryTree.Libdictenstein"
+        / "VinaryTree.Libdictenstein.csproj",
     )
     if csproj is not None:
         expect(
             f"<PackageId>{packages['nuget']}</PackageId>" in csproj,
             f"csproj PackageId != {packages['nuget']}",
         )
-        expect(f"<Version>{version}</Version>" in csproj, f"csproj Version != {version}")
+        expect(
+            f"<Version>{version}</Version>" in csproj, f"csproj Version != {version}"
+        )
 
     go_mod = read_text(report, "packages", ROOT / "bindings" / "go" / "go.mod")
     if go_mod is not None:
@@ -786,13 +983,13 @@ def check_packages(report: Report, model: dict) -> None:
             f"go.mod module != {packages['goModule']}",
         )
         expect(
-            f"github.com/vinary-tree/liblevenshtein-rust/vinary-tree-interop/bindings/go v{interop_version}"
+            f"github.com/vinary-tree/vinary-tree-interop/bindings/go/v4 v{interop_version}"
             in go_mod,
             f"go.mod must require the interop module at v{interop_version}",
         )
 
     gemspec = read_text(
-        report, "packages", ROOT / "bindings" / "ruby" / "vinary-tree-libdictenstein.gemspec"
+        report, "packages", ROOT / "bindings" / "ruby" / "libdictenstein.gemspec"
     )
     if gemspec is not None:
         expect(
@@ -800,22 +997,38 @@ def check_packages(report: Report, model: dict) -> None:
             f"gemspec name != {packages['rubygems']}",
         )
     ruby_version = read_text(
-        report, "packages", ROOT / "bindings" / "ruby" / "lib" / "vinary_tree" / "libdictenstein" / "version.rb"
+        report,
+        "packages",
+        ROOT
+        / "bindings"
+        / "ruby"
+        / "lib"
+        / "vinary_tree"
+        / "libdictenstein"
+        / "version.rb",
     )
     if ruby_version is not None:
         expect(
-            f'VERSION = "{version}"' in ruby_version,
-            f"ruby version.rb != {version}",
+            f'VERSION = "{registries.get("rubygems", version)}"' in ruby_version,
+            f"ruby version.rb != {registries.get('rubygems', version)}",
         )
 
     cabal = read_text(
-        report, "packages", ROOT / "bindings" / "haskell" / "vinary-tree-libdictenstein.cabal"
+        report, "packages", ROOT / "bindings" / "haskell" / "libdictenstein.cabal"
     )
     if cabal is not None:
-        expect(f"name: {packages['hackage']}" in cabal, f"cabal name != {packages['hackage']}")
-        expect(f"version: {version}" in cabal, f"cabal version != {version}")
+        expect(
+            f"name: {packages['hackage']}" in cabal,
+            f"cabal name != {packages['hackage']}",
+        )
+        expect(
+            f"version: {registries.get('hackage', version)}" in cabal,
+            f"cabal version != {registries.get('hackage', version)}",
+        )
 
-    dune_project = read_text(report, "packages", ROOT / "bindings" / "ocaml" / "dune-project")
+    dune_project = read_text(
+        report, "packages", ROOT / "bindings" / "ocaml" / "dune-project"
+    )
     if dune_project is not None:
         expect(
             f"(name {packages['opam']})" in dune_project,
@@ -827,11 +1040,22 @@ def check_packages(report: Report, model: dict) -> None:
     )
 
     for fpm_name in ("fpm.toml", "fpm.publish.toml"):
-        fpm_source = read_text(report, "packages", ROOT / "bindings" / "fortran" / fpm_name)
+        fpm_source = read_text(
+            report, "packages", ROOT / "bindings" / "fortran" / fpm_name
+        )
         if fpm_source is not None:
             fpm = tomllib.loads(fpm_source)
-            expect(fpm["name"] == packages["fpm"], f"{fpm_name} name != {packages['fpm']}")
-            expect(fpm["version"] == version, f"{fpm_name} version != {version}")
+            expect(
+                fpm["name"] == packages["fpm"], f"{fpm_name} name != {packages['fpm']}"
+            )
+            expect(
+                fpm["version"] == registries.get("fpm", version),
+                f"{fpm_name} version != {registries.get('fpm', version)}",
+            )
+            expect(
+                fpm.get("build", {}).get("module-naming") is False,
+                f"{fpm_name} must disable fpm module naming for the namespaced public module",
+            )
     fpm_publish_source = read_text(
         report, "packages", ROOT / "bindings" / "fortran" / "fpm.publish.toml"
     )
@@ -839,7 +1063,7 @@ def check_packages(report: Report, model: dict) -> None:
         fpm_publish = tomllib.loads(fpm_publish_source)
         interop_dep = fpm_publish.get("dependencies", {}).get("vinary-tree-interop", {})
         expect(
-            interop_dep.get("v") == interop_version
+            interop_dep.get("v") == registries.get("fpm", interop_version)
             and interop_dep.get("namespace") == model["organization"]["fpmNamespace"],
             f"fpm.publish.toml must depend on {model['organization']['fpmNamespace']}/vinary-tree-interop v{interop_version}",
         )
@@ -856,13 +1080,28 @@ def check_packages(report: Report, model: dict) -> None:
         )
         rock_version = re.search(r'version = "([^"]+)"', rockspec)
         expect(
-            rock_version is not None and rock_version.group(1).split("-")[0] == version,
-            f"{rockspec_path.name} version base != {version}",
+            rock_version is not None
+            and rock_version.group(1) == registries.get("luaRocks", version),
+            f"{rockspec_path.name} version != {registries.get('luaRocks', version)}",
         )
         expect(
             rock_version is not None
-            and rockspec_path.name == f"{packages['luarocks']}-{rock_version.group(1)}.rockspec",
+            and rockspec_path.name
+            == f"{packages['luarocks']}-{rock_version.group(1)}.rockspec",
             f"{rockspec_path.name} filename disagrees with its package/version fields",
+        )
+        for marker in (
+            'LIBDICTENSTEIN = { header = "libdictenstein.h", library = "libdictenstein" }',
+            '"$(LIBDICTENSTEIN_INCDIR)"',
+            '"$(LIBDICTENSTEIN_LIBDIR)"',
+        ):
+            expect(
+                marker in rockspec,
+                f"{rockspec_path.name} external-library contract is missing {marker}",
+            )
+        expect(
+            '"target/release"' not in rockspec,
+            f"{rockspec_path.name} must not link against a source-checkout target directory",
         )
 
     package_swift = read_text(report, "packages", ROOT / "Package.swift")
@@ -910,15 +1149,85 @@ def check_sibling_pins(report: Report, model: dict) -> None:
         report, "sibling-pins", ROOT / ".github" / "workflows" / "release-bindings.yml"
     )
     if release is not None:
+        expect(
+            "rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a"
+            in release,
+            "release-bindings.yml RubyGems job must use the pinned OIDC credential exchange",
+        )
+        expect(
+            "RUBYGEMS_API_KEY" not in release,
+            "release-bindings.yml must not reference a long-lived RubyGems API key",
+        )
+        expect(
+            "CLOJARS_USERNAME: ${{ vars.CLOJARS_USERNAME }}" in release,
+            "release-bindings.yml Clojars job must consume the organization username variable",
+        )
+        expect(
+            "secrets.CLOJARS_USERNAME" not in release,
+            "release-bindings.yml must not store the public Clojars username as a secret",
+        )
+        expect(
+            'LUAROCKS_API_KEY: "${{ secrets.LUAROCKS_API_KEY }}"' in release,
+            "release-bindings.yml LuaRocks job must consume its repository environment key",
+        )
+        expect(
+            '--temp-key "$LUAROCKS_API_KEY"' in release,
+            "release-bindings.yml LuaRocks job must use temporary-key mode",
+        )
+        expect(
+            "luarocks install dkjson" in release,
+            "release-bindings.yml LuaRocks job must install its JSON transport dependency",
+        )
+        for marker in (
+            "luarocks --lua-version 5.4 make --tree",
+            "luarocks-tree",
+            "LIBDICTENSTEIN_INCDIR=",
+            "LIBDICTENSTEIN_LIBDIR=",
+            "lua5.4 bindings/lua/test/conformance.lua",
+        ):
+            expect(
+                marker in release,
+                f"release-bindings.yml LuaRocks lane must prove installed-package behavior: {marker}",
+            )
+        expect(
+            '--api-key "$LUAROCKS_API_KEY"' not in release,
+            "release-bindings.yml must not persist the LuaRocks key in runner configuration",
+        )
+        for marker in (
+            'fork="vinary-tree/opam-repository"',
+            "gh auth setup-git",
+            '["registries"]["opam"]',
+            '--head "vinary-tree:$branch"',
+            "secrets.OPAM_GITHUB_TOKEN",
+            "environment: github-release",
+        ):
+            expect(
+                marker in release,
+                f"release-bindings.yml opam publisher is missing {marker}",
+            )
+        for forbidden in (
+            "account=$(gh api user",
+            "gh repo fork ocaml/opam-repository",
+        ):
+            expect(
+                forbidden not in release,
+                f"release-bindings.yml retains dynamic opam fork logic: {forbidden}",
+            )
         llev_branches = set(
-            re.findall(r"--branch (v[0-9.]+) https://github\.com/vinary-tree/liblevenshtein-rust", release)
+            re.findall(
+                r"--branch (v[0-9A-Za-z.-]+) https://github\.com/vinary-tree/liblevenshtein-rust",
+                release,
+            )
         )
         expect(
             llev_branches == {f"v{llev}"},
             f"release-bindings.yml liblevenshtein-rust clone pins {sorted(llev_branches)} != v{llev}",
         )
         llattice_branches = set(
-            re.findall(r"--branch (v[0-9.]+) https://github\.com/vinary-tree/llattice", release)
+            re.findall(
+                r"--branch (v[0-9A-Za-z.-]+) https://github\.com/vinary-tree/llattice",
+                release,
+            )
         )
         expect(
             llattice_branches == {f"v{llattice}"},
@@ -927,22 +1236,21 @@ def check_sibling_pins(report: Report, model: dict) -> None:
     go_mod = read_text(report, "sibling-pins", ROOT / "bindings" / "go" / "go.mod")
     if go_mod is not None:
         expect(
-            f"github.com/vinary-tree/liblevenshtein-rust/bindings/go v{llev}" in go_mod,
+            f"github.com/vinary-tree/liblevenshtein-rust/bindings/go/v4 v{llev}"
+            in go_mod,
             f"go.mod liblevenshtein module pin != v{llev}",
         )
-    package_swift = read_text(report, "sibling-pins", ROOT / "Package.swift")
-    if package_swift is not None:
-        expect(
-            f'from: "{llev}"' in package_swift,
-            f"Package.swift liblevenshtein-rust pin != {llev}",
-        )
-    gradle = read_text(report, "sibling-pins", ROOT / "bindings" / "jvm" / "build.gradle.kts")
+    gradle = read_text(
+        report, "sibling-pins", ROOT / "bindings" / "jvm" / "build.gradle.kts"
+    )
     if gradle is not None:
         expect(
             f'testImplementation("io.vinarytree:liblevenshtein:{llev}")' in gradle,
             f"build.gradle.kts test pin io.vinarytree:liblevenshtein != {llev}",
         )
-    project_clj = read_text(report, "sibling-pins", ROOT / "bindings" / "clojure" / "project.clj")
+    project_clj = read_text(
+        report, "sibling-pins", ROOT / "bindings" / "clojure" / "project.clj"
+    )
     if project_clj is not None:
         expect(
             f'[io.vinarytree/liblevenshtein "{llev}"]' in project_clj,
@@ -978,11 +1286,31 @@ def main() -> int:
 
     if model is not None:
         required_keys = (
-            "name", "crate", "organization", "interop", "packages", "packageVersion",
-            "siblingPins", "abiVersion", "apiRevision", "cPrefix", "cHeader",
-            "featureGates", "snapshot", "marshalling", "unitDomains", "valueDomain",
-            "structs", "enums", "kinds", "capabilities", "backends", "producers",
-            "cFunctions", "facades", "wasm",
+            "name",
+            "crate",
+            "organization",
+            "interop",
+            "packages",
+            "packageVersion",
+            "siblingPins",
+            "abiVersion",
+            "apiRevision",
+            "cPrefix",
+            "cHeader",
+            "featureGates",
+            "snapshot",
+            "marshalling",
+            "unitDomains",
+            "valueDomain",
+            "structs",
+            "enums",
+            "kinds",
+            "capabilities",
+            "backends",
+            "producers",
+            "cFunctions",
+            "facades",
+            "wasm",
         )
         missing_keys = [key for key in required_keys if key not in model]
         if missing_keys:
@@ -1020,9 +1348,13 @@ def main() -> int:
             for language in sorted(report.facades):
                 stats = report.facades[language]
                 if stats.get("mode") == "symbols":
-                    print(f"  {language:<11} {stats['referenced']:>2} / {stats['modeled']}")
+                    print(
+                        f"  {language:<11} {stats['referenced']:>2} / {stats['modeled']}"
+                    )
                 else:
-                    print(f"  {language:<11} mediated facade (no direct symbol imports)")
+                    print(
+                        f"  {language:<11} mediated facade (no direct symbol imports)"
+                    )
         for line in report.failures:
             print(f"FAIL {line}")
         verdict = "FAILED" if report.failures else "OK"

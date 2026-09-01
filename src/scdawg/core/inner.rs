@@ -21,7 +21,7 @@ use smallvec::SmallVec;
 
 use super::node::{ScdawgNode, NIL};
 use crate::value::DictionaryValue;
-use crate::CharUnit;
+use crate::{CharUnit, SnapshotTraversalCursor};
 
 const INLINE_GRAPH_WORKLIST: usize = 32;
 
@@ -47,6 +47,10 @@ pub struct ScdawgCoreInner<U: CharUnit, V: DictionaryValue> {
     pub term_count: usize,
     /// Stored terms for enumeration.
     pub terms: Vec<String>,
+    /// Insertion-record indices ordered by Unicode scalar/UTF-8 lexicographic
+    /// term order. This keeps entry-cursor creation O(1) while preserving the
+    /// immutable record indices used by occurrence metadata.
+    pub sorted_term_indices: Vec<usize>,
     /// Fast duplicate detection using hash set.
     pub term_set: FxHashSet<String>,
     /// Exact term-to-value table for public mapped-dictionary semantics.
@@ -68,6 +72,7 @@ impl<U: CharUnit, V: DictionaryValue> ScdawgCoreInner<U, V> {
             last: 0,
             term_count: 0,
             terms: Vec::new(),
+            sorted_term_indices: Vec::new(),
             term_set: FxHashSet::default(),
             term_values: FxHashMap::default(),
             left_edges_computed: false,
@@ -85,6 +90,7 @@ impl<U: CharUnit, V: DictionaryValue> ScdawgCoreInner<U, V> {
             last: 0,
             term_count: 0,
             terms: Vec::with_capacity(term_count),
+            sorted_term_indices: Vec::with_capacity(term_count),
             term_set: FxHashSet::with_capacity_and_hasher(term_count, Default::default()),
             term_values: FxHashMap::with_capacity_and_hasher(term_count, Default::default()),
             left_edges_computed: false,
@@ -212,6 +218,10 @@ impl<U: CharUnit, V: DictionaryValue> ScdawgCoreInner<U, V> {
         let term_string = term.to_string();
         self.term_set.insert(term_string.clone());
         self.terms.push(term_string);
+        let sorted_position = self
+            .sorted_term_indices
+            .partition_point(|&index| self.terms[index].as_str() < term);
+        self.sorted_term_indices.insert(sorted_position, term_idx);
         self.term_count += 1;
 
         true
@@ -398,6 +408,106 @@ impl<U: CharUnit, V: DictionaryValue> ScdawgCoreInner<U, V> {
                 traversal.pop();
             }
         }
+    }
+
+    /// Return the dense traversal cursor for one node in this immutable
+    /// revision.
+    #[inline]
+    pub(crate) fn snapshot_cursor(&self, node: usize) -> Option<SnapshotTraversalCursor> {
+        (node < self.nodes.len())
+            .then(|| SnapshotTraversalCursor::from_index(node))
+            .flatten()
+    }
+
+    /// Validate a dense cursor against this exact immutable revision.
+    #[inline]
+    pub(crate) fn contains_snapshot_cursor(&self, cursor: SnapshotTraversalCursor) -> bool {
+        cursor.index() < self.nodes.len()
+    }
+
+    /// Project one cursor node's borrowed forward edges without constructing
+    /// owned node handles for accepted children.
+    #[inline]
+    pub(crate) fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(
+        &self,
+        cursor: SnapshotTraversalCursor,
+        mut project: P,
+        mut visitor: F,
+    ) -> Option<bool>
+    where
+        P: FnMut(U) -> Option<T>,
+        F: FnMut(U, SnapshotTraversalCursor, T),
+    {
+        let node = self.nodes.get(cursor.index())?;
+        for &(label, target) in &node.forward_edges {
+            if let Some(projected) = project(label) {
+                let target = self
+                    .snapshot_cursor(target)
+                    .expect("an SCDAWG edge targets this immutable revision");
+                visitor(label, target, projected);
+            }
+        }
+        Some(node.is_final)
+    }
+
+    /// Read finality through a validated dense cursor.
+    #[inline]
+    pub(crate) fn snapshot_cursor_is_final(&self, cursor: SnapshotTraversalCursor) -> Option<bool> {
+        self.nodes.get(cursor.index()).map(|node| node.is_final)
+    }
+
+    /// Follow one forward edge through a validated dense cursor.
+    #[inline]
+    pub(crate) fn snapshot_cursor_transition(
+        &self,
+        cursor: SnapshotTraversalCursor,
+        label: U,
+    ) -> Option<Option<SnapshotTraversalCursor>> {
+        let node = self.nodes.get(cursor.index())?;
+        Some(node.get_edge(label).map(|target| {
+            self.snapshot_cursor(target)
+                .expect("an SCDAWG edge targets this immutable revision")
+        }))
+    }
+
+    /// Visit one directly sliced page of borrowed forward edges.
+    #[inline]
+    pub(crate) fn visit_snapshot_cursor_edge_page<F>(
+        &self,
+        cursor: SnapshotTraversalCursor,
+        start: usize,
+        capacity: usize,
+        mut visitor: F,
+    ) -> Option<(bool, usize)>
+    where
+        F: FnMut(U, SnapshotTraversalCursor),
+    {
+        let node = self.nodes.get(cursor.index())?;
+        let total = node.forward_edges.len();
+        let start = start.min(total);
+        let end = start.saturating_add(capacity).min(total);
+        for &(label, target) in &node.forward_edges[start..end] {
+            let target = self
+                .snapshot_cursor(target)
+                .expect("an SCDAWG edge targets this immutable revision");
+            visitor(label, target);
+        }
+        Some((node.is_final, total))
+    }
+
+    /// Read the optional mapped value through a validated dense cursor.
+    #[inline]
+    pub(crate) fn snapshot_cursor_value(
+        &self,
+        cursor: SnapshotTraversalCursor,
+    ) -> Option<Option<V>> {
+        self.nodes.get(cursor.index()).map(|node| {
+            if node.is_final {
+                node.value.clone()
+            } else {
+                None
+            }
+        })
     }
 }
 

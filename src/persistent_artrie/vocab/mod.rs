@@ -166,7 +166,6 @@ impl Dictionary for PersistentVocabARTrie {
 
 impl<S: BlockStorage> PersistentVocabARTrie<S> {
     /// Capture a traversal root and exact cardinality from one atomic revision.
-    #[cfg(feature = "bindings-core")]
     pub(crate) fn root_with_term_count(&self) -> (VocabTrieNodeRef, usize) {
         let (root, term_count) = self
             .lockfree_root()

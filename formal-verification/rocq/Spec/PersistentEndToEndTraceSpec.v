@@ -6,7 +6,7 @@
    public API level: storage allocation, syscall outcomes, and byte layouts are
    covered by the lower-level specs. *)
 
-From Stdlib Require Import List Arith Lia.
+From Coq Require Import Lists.List Arith.Arith micromega.Lia.
 Import ListNotations.
 
 Definition Key := nat.

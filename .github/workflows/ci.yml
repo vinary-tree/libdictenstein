@@ -12,9 +12,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Avoid the unconditional `target-cpu=native` from .cargo/config.toml so CI
-  # builds remain portable. AES + SSE2 are required by PathMap's gxhash.
-  RUSTFLAGS: "-C target-feature=+aes,+sse2"
 
 jobs:
   # -----------------------------------------------------------------
@@ -67,9 +64,9 @@ jobs:
             features: ""
             os: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # Path dependencies: ../llattice (every build) and
-      # ../liblevenshtein-rust/vinary-tree-interop (bindings-core/ffi legs).
+      # ../vinary-tree-interop (bindings-core/ffi legs).
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
       - name: cargo build
@@ -97,7 +94,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -120,13 +117,15 @@ jobs:
     name: Supply chain (cargo-deny)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # cargo-deny resolves the full dependency graph, so the path
       # dependencies must be present.
       - uses: ./.github/actions/checkout-dev-siblings
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check advisories bans sources licenses
+      # The Docker-based cargo-deny action mounts only the repository itself,
+      # which hides required sibling path dependencies. Install the native CLI
+      # in the runner namespace so Cargo sees the complete source graph.
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check advisories bans sources licenses
 
   # -----------------------------------------------------------------
   # `cargo doc` with `-D warnings` so broken intra-doc links fail CI.
@@ -137,7 +136,7 @@ jobs:
     env:
       RUSTDOCFLAGS: "-D warnings"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
       - name: cargo doc --all-features --no-deps
@@ -150,7 +149,7 @@ jobs:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -172,7 +171,7 @@ jobs:
     name: MSRV (1.95)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -189,7 +188,7 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -198,7 +197,8 @@ jobs:
       - name: Run coverage
         run: |
           cargo llvm-cov --all-features --branch \
-            --lcov --output-path lcov.info \
+            --lcov --output-path lcov.info
+          cargo llvm-cov report --branch \
             --cobertura --output-path cobertura.xml
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -220,84 +220,89 @@ jobs:
       matrix:
         sanitizer: [address, thread]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
       - name: Run ${{ matrix.sanitizer }}sanitizer
         env:
+          # Environment RUSTFLAGS replaces .cargo/config.toml, so retain
+          # gxhash's portable x86 requirements while adding the sanitizer.
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -Z sanitizer=${{ matrix.sanitizer }}"
+          RUSTDOCFLAGS: "-C target-feature=+aes,+sse2 -Z sanitizer=${{ matrix.sanitizer }}"
+        shell: bash
         run: |
-          # Loom uses stackful generator contexts that LLVM's sanitizers cannot
-          # instrument soundly.  Those schedule-exhaustive targets run in the
-          # ordinary and formal jobs; keep sanitizer coverage on native-stack
-          # targets.  AddressSanitizer's lib pass disables leak checking only
-          # because its crash-recovery unit tests deliberately `mem::forget`
-          # complete dictionaries.  Integration targets that deliberately leak
-          # are excluded from the address pass, so LeakSanitizer remains active
-          # everywhere else.
-          cargo_test=(cargo +nightly test)
-          if [[ "${{ matrix.sanitizer }}" == thread ]]; then
-            # TSan changes Rust's ABI. Rebuild `std` with the same sanitizer;
-            # never suppress the mismatch with unsafe-allow-abi-mismatch.
-            cargo_test+=(-Z build-std)
-          fi
-
-          integration_targets=()
-          for source in tests/*.rs; do
-            if grep -Eq '(^|[^[:alnum:]_])loom::' "$source"; then
-              echo "sanitizer-excluded Loom target: $source"
-              continue
-            fi
-            if [[ "${{ matrix.sanitizer }}" == address ]] && grep -Fq 'mem::forget' "$source"; then
-              echo "address-sanitizer-excluded crash target: $source"
-              continue
-            fi
-            target="${source#tests/}"
-            integration_targets+=(--test "${target%.rs}")
-          done
-          test "${#integration_targets[@]}" -gt 0
-
-          if [[ "${{ matrix.sanitizer }}" == address ]]; then
-            ASAN_OPTIONS=detect_leaks=0 "${cargo_test[@]}" \
-              --target x86_64-unknown-linux-gnu \
-              --all-features \
-              --lib \
-              --no-fail-fast
-          else
-            "${cargo_test[@]}" \
-              --target x86_64-unknown-linux-gnu \
-              --all-features \
-              --lib \
-              --no-fail-fast
-          fi
-
-          "${cargo_test[@]}" \
-            --target x86_64-unknown-linux-gnu \
-            --all-features \
-            "${integration_targets[@]}" \
+          common_args=(
+            -Zbuild-std
+            --target x86_64-unknown-linux-gnu
+            --all-features
             --no-fail-fast
+          )
+
+          # Loom implements deterministic schedule exploration by switching
+          # stacks. ASan and TSan cannot instrument that execution model:
+          # ASan emits its documented __asan_handle_no_return warning and then
+          # reports false stack overflows (google/sanitizers#189). Keep every
+          # dedicated target carrying the `_loom` name token in the
+          # normal/formal lanes, and sanitize
+          # the library, examples, doctests, and every ordinary integration
+          # target here.
+          # Crash-recovery tests deliberately forget complete open dictionaries
+          # to model process death. Scope ASan leak suppression to the library
+          # test target and only those integration targets containing such a
+          # fixture; bins, examples, doctests, and ordinary integration tests
+          # retain LeakSanitizer coverage.
+          if [[ "${{ matrix.sanitizer }}" == address ]]; then
+            ASAN_OPTIONS=detect_leaks=0 cargo +nightly test "${common_args[@]}" --lib
+          else
+            cargo +nightly test "${common_args[@]}" --lib
+          fi
+          cargo +nightly test "${common_args[@]}" --bins --examples
+
+          integration_args=()
+          asan_no_leak_integration_args=()
+          for test_source in tests/*.rs; do
+            case "$test_source" in
+              *_loom.rs | *_loom_*.rs | *dynamic_dawg_u64_correspondence.rs)
+                echo "Loom-only target covered outside sanitizers: $test_source"
+                ;;
+              *)
+                if [[ "${{ matrix.sanitizer }}" == address ]] && grep -Fq 'mem::forget' "$test_source"; then
+                  test_target="${test_source#tests/}"
+                  asan_no_leak_integration_args+=(--test "${test_target%.rs}")
+                  continue
+                fi
+                test_target="${test_source#tests/}"
+                integration_args+=(--test "${test_target%.rs}")
+                ;;
+            esac
+          done
+          cargo +nightly test "${common_args[@]}" "${integration_args[@]}"
+          if (( ${#asan_no_leak_integration_args[@]} > 0 )); then
+            echo "Running ASan crash fixtures with LeakSanitizer disabled"
+            ASAN_OPTIONS=detect_leaks=0 cargo +nightly test \
+              "${common_args[@]}" "${asan_no_leak_integration_args[@]}"
+          fi
+          cargo +nightly test "${common_args[@]}" --doc
 
           # This mixed target has ordinary correspondence tests plus three
           # `loom_*` models.  Preserve sanitizer coverage for its ordinary
           # tests while leaving only the stackful models to the Loom jobs.
-          "${cargo_test[@]}" \
-            --target x86_64-unknown-linux-gnu \
-            --all-features \
+          cargo +nightly test "${common_args[@]}" \
             --test dynamic_dawg_u64_correspondence \
-            --no-fail-fast \
             -- \
             --skip loom_
 
   # -----------------------------------------------------------------
-  # Rocq proofs. Requires `coqc` >= 9.1 on the runner.
+  # Rocq proofs. The sources use Coq's compatibility logical namespace, which
+  # is accepted by both the distro Coq runner and local Rocq 9.1.1.
   # -----------------------------------------------------------------
   rocq:
     name: Rocq proofs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install Rocq (Coq)
         run: |
           sudo apt-get update
@@ -314,17 +319,17 @@ jobs:
     name: Formal correspondence
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
       - name: Install Rocq and TLA+ tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y coq curl
+          sudo apt-get install -y coq curl ripgrep
           curl -L \
             https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar \
             -o tla2tools.jar
@@ -343,6 +348,7 @@ jobs:
         env:
           CARGO_BUILD_JOBS: "2"
           FORMAL_MEM_LIMIT_BYTES: "8589934592"
+          FORMAL_RESOURCE_CONTROL: external
           TLA_JAVA_HEAP: "3g"
         run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- bash scripts/verify-formal-correspondence.sh
 
@@ -354,19 +360,19 @@ jobs:
     name: Formal unsafe boundary (Miri)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri,rust-src
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
       - name: Install Rocq and TLA+ tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y coq curl
+          sudo apt-get install -y coq curl ripgrep
           curl -L \
             https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar \
             -o tla2tools.jar
@@ -390,6 +396,7 @@ jobs:
         env:
           CARGO_BUILD_JOBS: "2"
           FORMAL_MEM_LIMIT_BYTES: "8589934592"
+          FORMAL_RESOURCE_CONTROL: external
           RUN_MIRI: "1"
           TLA_JAVA_HEAP: "3g"
         run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- bash scripts/verify-formal-correspondence.sh
@@ -402,17 +409,17 @@ jobs:
     name: Formal storage backend (io_uring)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
       - name: Install Rocq and TLA+ tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y coq curl
+          sudo apt-get install -y coq curl ripgrep
           curl -L \
             https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar \
             -o tla2tools.jar
@@ -431,6 +438,7 @@ jobs:
         env:
           CARGO_BUILD_JOBS: "2"
           FORMAL_MEM_LIMIT_BYTES: "8589934592"
+          FORMAL_RESOURCE_CONTROL: external
           RUN_IO_URING: "1"
           TLA_JAVA_HEAP: "3g"
         run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- bash scripts/verify-formal-correspondence.sh
@@ -449,23 +457,48 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PLANTUML_VERSION: "1.2026.5"
+      PLANTUML_SHA256: "de65ffc34b5c7fdad4e86309ce2dcceff98778799ae17b93a8f492d7a69080e1"
+      PLANTUML_MATH_PACKAGE: "20171116-4"
+      PLANTUML_MATH_SHA256: "50a7172715a94d65b89b6e7745c59ad715bc9f7d2959664e175d20338fed3b85"
+      JAVA_VERSION: "26"
       D2_VERSION: "0.7.1"
       BYTEFIELD_SVG_VERSION: "1.11.0"
       SVGBOB_VERSION: "0.7.6"
     steps:
-      - uses: actions/checkout@v4
-      - name: Install system renderers (graphviz, gnuplot, java)
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+      - name: Install system renderers (graphviz, gnuplot)
         run: |
           sudo apt-get update
-          sudo apt-get install -y graphviz gnuplot default-jre-headless
-      - name: Install PlantUML (pinned jar)
+          sudo apt-get install -y graphviz gnuplot zstd
+      - name: Install PlantUML and its math renderer (pinned artifacts)
         run: |
+          sudo mkdir -p /opt/plantuml
           curl -fsSL \
             "https://github.com/plantuml/plantuml/releases/download/v${PLANTUML_VERSION}/plantuml-${PLANTUML_VERSION}.jar" \
-            -o /opt/plantuml.jar
+            -o /tmp/plantuml.jar
+          echo "${PLANTUML_SHA256}  /tmp/plantuml.jar" | sha256sum --check --strict
+          sudo install -m 0644 /tmp/plantuml.jar /opt/plantuml/plantuml.jar
+
+          # PlantUML deliberately ships JLaTeXMath separately.  Without these
+          # four companion jars, <latex> nodes degrade to fallback text while
+          # the renderer still exits successfully.  The versioned Arch package
+          # is an immutable distribution of PlantUML's official companion zip;
+          # pinning its digest makes the generated formula SVGs reproducible.
+          curl -fsSL \
+            "https://geo.mirror.pkgbuild.com/extra/os/x86_64/plantuml-ascii-math-${PLANTUML_MATH_PACKAGE}-any.pkg.tar.zst" \
+            -o /tmp/plantuml-ascii-math.pkg.tar.zst
+          echo "${PLANTUML_MATH_SHA256}  /tmp/plantuml-ascii-math.pkg.tar.zst" | sha256sum --check --strict
+          mkdir -p /tmp/plantuml-ascii-math
+          tar --zstd -xf /tmp/plantuml-ascii-math.pkg.tar.zst -C /tmp/plantuml-ascii-math
+          sudo install -m 0644 /tmp/plantuml-ascii-math/usr/share/java/plantuml/*.jar /opt/plantuml/
+
           sudo tee /usr/local/bin/plantuml >/dev/null <<'EOF'
           #!/usr/bin/env bash
-          exec java -jar /opt/plantuml.jar "$@"
+          exec java -Djava.awt.headless=true -jar /opt/plantuml/plantuml.jar "$@"
           EOF
           sudo chmod +x /usr/local/bin/plantuml
       - name: Install D2 (pinned release)
@@ -477,7 +510,7 @@ jobs:
           sudo install "/tmp/d2-v${D2_VERSION}/bin/d2" /usr/local/bin/d2
       - name: Install Svgbob (pinned)
         run: cargo install svgbob_cli --version "${SVGBOB_VERSION}" --locked
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "20"
       - name: Install Node renderers (bytefield-svg, pinned)
@@ -506,25 +539,20 @@ jobs:
   # src/ffi.rs, include/libdictenstein.h, and the 13 language facades:
   # symbol parity, LdictStatus/kind/capability pins, registry
   # coordinates and versions, identity guard, and exact npm pins.
-  # The canonical vinary_tree_interop.h byte-equality leg reads the
-  # liblevenshtein-rust sibling checkout; the gate downgrades that one
-  # leg to a warning when the sibling (or its interop header) is
-  # absent, so the clone step below is best-effort by design.
+  # The canonical vinary_tree_interop.h byte-equality leg reads the standalone
+  # vinary-tree-interop sibling checkout.
   # -----------------------------------------------------------------
   binding-contract:
     name: Binding contract
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Checkout dev sibling (liblevenshtein-rust) for the canonical interop header
-        run: |
-          parent=$(dirname "$GITHUB_WORKSPACE")
-          git clone --depth 1 \
-            https://github.com/vinary-tree/liblevenshtein-rust.git \
-            "$parent/liblevenshtein-rust" \
-            || echo "::warning::liblevenshtein-rust sibling clone failed; the interop-header byte-equality leg will be skipped"
+      - uses: actions/checkout@v6
+      - name: Checkout the complete development sibling graph
+        uses: ./.github/actions/checkout-dev-siblings
       - name: Run the binding architecture gate
         run: python3 scripts/check-bindings.py
+      - name: Run the binding documentation gate
+        run: python3 scripts/check-binding-docs.py
 
   # -----------------------------------------------------------------
   # Scheduled/manual deep bounded model check. This is intentionally
@@ -535,17 +563,17 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
       - name: Install Rocq and TLA+ tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y coq curl
+          sudo apt-get install -y coq curl ripgrep
           curl -L \
             https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar \
             -o tla2tools.jar
@@ -564,6 +592,7 @@ jobs:
         env:
           CARGO_BUILD_JOBS: "2"
           FORMAL_MEM_LIMIT_BYTES: "10737418240"
+          FORMAL_RESOURCE_CONTROL: external
           RUN_TLC: "1"
           TLA_JAVA_HEAP: "5g"
         run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- bash scripts/verify-formal-correspondence.sh

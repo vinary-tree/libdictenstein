@@ -99,6 +99,7 @@ pub struct ScdawgChar<V: DictionaryValue = ()> {
 /// The iterator retains one atomically published SCDAWG revision and clones
 /// only the entry currently yielded; it never clones or materializes the full
 /// term collection.
+#[derive(Clone)]
 pub struct ScdawgCharEntryIterator<V: DictionaryValue = ()> {
     inner: Arc<ScdawgCharInner<V>>,
     index: usize,
@@ -108,12 +109,25 @@ impl<V: DictionaryValue> Iterator for ScdawgCharEntryIterator<V> {
     type Item = (String, Option<V>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let term = self.inner.terms.get(self.index)?.clone();
+        let term_index = *self.inner.sorted_term_indices.get(self.index)?;
+        let term = self.inner.terms.get(term_index)?.clone();
         self.index += 1;
         let value = self.inner.term_values.get(&term).cloned();
         Some((term, value))
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self
+            .inner
+            .sorted_term_indices
+            .len()
+            .saturating_sub(self.index);
+        (remaining, Some(remaining))
+    }
 }
+
+impl<V: DictionaryValue> ExactSizeIterator for ScdawgCharEntryIterator<V> {}
+impl<V: DictionaryValue> std::iter::FusedIterator for ScdawgCharEntryIterator<V> {}
 
 #[derive(Clone, Debug)]
 struct OccurrenceFrame {
@@ -258,6 +272,33 @@ impl<V: DictionaryValue> ScdawgChar<V> {
         })
     }
 
+    fn extend_records(&self, records: Vec<(String, Option<V>)>) {
+        if records.is_empty() {
+            return;
+        }
+        self.inner.mutate(|inner| {
+            let mut added = false;
+            let mut changed = false;
+            for (term, value) in &records {
+                match value {
+                    Some(value) => {
+                        added |= inner.insert_with_value(term, value.clone());
+                        changed = true;
+                    }
+                    None => {
+                        let inserted = inner.insert(term);
+                        added |= inserted;
+                        changed |= inserted;
+                    }
+                }
+            }
+            if added {
+                inner.compute_left_edges();
+            }
+            ((), changed)
+        });
+    }
+
     /// Check if a substring exists in any term.
     pub fn contains_substring(&self, pattern: &str) -> bool {
         let inner = self.inner.load();
@@ -293,6 +334,23 @@ impl<V: DictionaryValue> ScdawgChar<V> {
         let inner = self.inner.load();
         let term_count = inner.term_count();
         (ScdawgCharNodeHandle { inner, node_idx: 0 }, term_count)
+    }
+
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn root_with_term_count_and_entries(
+        &self,
+    ) -> (ScdawgCharNodeHandle<V>, usize, ScdawgCharEntryIterator<V>) {
+        let inner = self.inner.load();
+        let term_count = inner.term_count();
+        let entries = ScdawgCharEntryIterator {
+            inner: Arc::clone(&inner),
+            index: 0,
+        };
+        (
+            ScdawgCharNodeHandle { inner, node_idx: 0 },
+            term_count,
+            entries,
+        )
     }
 
     /// Get the number of nodes in the SCDAWG.
@@ -418,6 +476,62 @@ impl<V: DictionaryValue> ScdawgChar<V> {
     }
 }
 
+impl<V: DictionaryValue> FromIterator<String> for ScdawgChar<V> {
+    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
+        Self::from_terms(iter)
+    }
+}
+
+impl<'a, V: DictionaryValue> FromIterator<&'a str> for ScdawgChar<V> {
+    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
+        Self::from_terms(iter)
+    }
+}
+
+impl<V: DictionaryValue> FromIterator<(String, V)> for ScdawgChar<V> {
+    fn from_iter<I: IntoIterator<Item = (String, V)>>(iter: I) -> Self {
+        Self::from_terms_with_values(iter)
+    }
+}
+
+impl<'a, V: DictionaryValue> FromIterator<(&'a str, V)> for ScdawgChar<V> {
+    fn from_iter<I: IntoIterator<Item = (&'a str, V)>>(iter: I) -> Self {
+        Self::from_terms_with_values(iter)
+    }
+}
+
+impl<V: DictionaryValue> Extend<String> for ScdawgChar<V> {
+    fn extend<I: IntoIterator<Item = String>>(&mut self, iter: I) {
+        self.extend_records(iter.into_iter().map(|term| (term, None)).collect());
+    }
+}
+
+impl<'a, V: DictionaryValue> Extend<&'a str> for ScdawgChar<V> {
+    fn extend<I: IntoIterator<Item = &'a str>>(&mut self, iter: I) {
+        <Self as Extend<String>>::extend(self, iter.into_iter().map(str::to_owned));
+    }
+}
+
+impl<V: DictionaryValue> Extend<(String, V)> for ScdawgChar<V> {
+    fn extend<I: IntoIterator<Item = (String, V)>>(&mut self, iter: I) {
+        self.extend_records(
+            iter.into_iter()
+                .map(|(term, value)| (term, Some(value)))
+                .collect(),
+        );
+    }
+}
+
+impl<'a, V: DictionaryValue> Extend<(&'a str, V)> for ScdawgChar<V> {
+    fn extend<I: IntoIterator<Item = (&'a str, V)>>(&mut self, iter: I) {
+        <Self as Extend<(String, V)>>::extend(
+            self,
+            iter.into_iter()
+                .map(|(term, value)| (term.to_owned(), value)),
+        );
+    }
+}
+
 // ============================================================================
 // Dictionary Trait Implementation
 // ============================================================================
@@ -480,6 +594,80 @@ impl<V: DictionaryValue> DictionaryNode for ScdawgCharNodeHandle<V> {
     #[inline]
     fn snapshot_node_identity(&self) -> Option<crate::SnapshotNodeIdentity> {
         crate::SnapshotNodeIdentity::from_index(self.node_idx)
+    }
+
+    #[inline]
+    fn snapshot_root_cursor(&self) -> Option<Self::SnapshotCursor> {
+        self.inner.snapshot_cursor(self.node_idx)
+    }
+
+    #[inline]
+    fn contains_snapshot_cursor(&self, cursor: Self::SnapshotCursor) -> bool {
+        self.inner.contains_snapshot_cursor(cursor)
+    }
+
+    #[inline]
+    fn supports_snapshot_cursor_nodes(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_node(&self, cursor: Self::SnapshotCursor) -> Option<Self> {
+        self.inner
+            .contains_snapshot_cursor(cursor)
+            .then(|| ScdawgCharNodeHandle {
+                inner: Arc::clone(&self.inner),
+                node_idx: cursor.index(),
+            })
+    }
+
+    #[inline]
+    unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(
+        &self,
+        cursor: Self::SnapshotCursor,
+        project: P,
+        visitor: F,
+    ) -> Option<bool>
+    where
+        P: FnMut(Self::Unit) -> Option<T>,
+        F: FnMut(Self::Unit, Self::SnapshotCursor, T),
+    {
+        self.inner
+            .filter_map_snapshot_cursor_edges_and_finality(cursor, project, visitor)
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_is_final(&self, cursor: Self::SnapshotCursor) -> Option<bool> {
+        self.inner.snapshot_cursor_is_final(cursor)
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_transition(
+        &self,
+        cursor: Self::SnapshotCursor,
+        label: Self::Unit,
+    ) -> Option<Option<Self::SnapshotCursor>> {
+        self.inner.snapshot_cursor_transition(cursor, label)
+    }
+
+    #[inline]
+    fn supports_efficient_snapshot_cursor_edge_paging(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn visit_snapshot_cursor_edge_page<F>(
+        &self,
+        cursor: Self::SnapshotCursor,
+        start: usize,
+        capacity: usize,
+        visitor: F,
+    ) -> Option<(bool, usize)>
+    where
+        F: FnMut(Self::Unit, Self::SnapshotCursor),
+    {
+        self.inner
+            .visit_snapshot_cursor_edge_page(cursor, start, capacity, visitor)
     }
 
     fn is_final(&self) -> bool {
@@ -587,6 +775,19 @@ impl<V: DictionaryValue> crate::MappedDictionaryNode for ScdawgCharNodeHandle<V>
             .filter(|node| node.is_final)
             .and_then(|node| node.value.clone())
     }
+
+    #[inline]
+    fn supports_snapshot_cursor_values(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_value(
+        &self,
+        cursor: Self::SnapshotCursor,
+    ) -> Option<Option<Self::Value>> {
+        self.inner.snapshot_cursor_value(cursor)
+    }
 }
 
 unsafe impl<V: DictionaryValue> Send for ScdawgCharNodeHandle<V> {}
@@ -670,8 +871,15 @@ impl<V: DictionaryValue> BidirectionalDictionaryNode for ScdawgCharNodeHandle<V>
 // ============================================================================
 
 impl<V: DictionaryValue> SubstringDictionary for ScdawgChar<V> {
-    fn find_exact_substring(&self, pattern: &str) -> Vec<SubstringMatch<Self::Node>> {
-        let inner = self.inner.load();
+    fn find_exact_substring_in_snapshot(
+        snapshot_root: &Self::Node,
+        pattern: &str,
+    ) -> Vec<SubstringMatch<Self::Node>> {
+        debug_assert_eq!(
+            snapshot_root.node_idx, 0,
+            "substring snapshots start at root"
+        );
+        let inner = Arc::clone(&snapshot_root.inner);
         let occurrences = inner.find_exact_substring(pattern);
         let pattern_len = pattern.chars().count();
 
@@ -707,6 +915,165 @@ impl<V: DictionaryValue> SubstringDictionary for ScdawgChar<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MappedDictionaryNode;
+    use std::collections::HashSet;
+
+    #[test]
+    fn native_cursor_traversal_exactly_matches_unicode_node_graph() {
+        let scdawg = ScdawgChar::from_terms_with_values([
+            ("café", 21_u32),
+            ("猫", 22),
+            ("猫咪", 23),
+            ("🎉", 24),
+        ]);
+        let owner = scdawg.root();
+        let root_cursor = owner
+            .snapshot_root_cursor()
+            .expect("Unicode SCDAWG root cursor");
+
+        assert!(owner.supports_snapshot_cursor_nodes());
+        assert!(owner.supports_snapshot_cursor_values());
+        assert!(owner.supports_efficient_snapshot_cursor_edge_paging());
+        assert!(owner.contains_snapshot_cursor(root_cursor));
+
+        let mut pending = vec![(owner.clone(), root_cursor)];
+        let mut visited = HashSet::new();
+        while let Some((node, cursor)) = pending.pop() {
+            if !visited.insert(cursor.index()) {
+                continue;
+            }
+
+            let mut owned_edges = Vec::new();
+            node.for_each_edge(|label, child| {
+                owned_edges.push((label, child.node_idx, child));
+            });
+
+            let mut cursor_edges = Vec::new();
+            // SAFETY: `cursor` is the retained root cursor or a child emitted
+            // by this exact immutable owner earlier in this traversal.
+            let finality = unsafe {
+                owner.filter_map_snapshot_cursor_edges_and_finality(
+                    cursor,
+                    |_| Some(()),
+                    |label, child, ()| cursor_edges.push((label, child)),
+                )
+            };
+            assert_eq!(finality, Some(node.is_final()));
+            assert_eq!(
+                cursor_edges
+                    .iter()
+                    .map(|(label, child)| (*label, child.index()))
+                    .collect::<Vec<_>>(),
+                owned_edges
+                    .iter()
+                    .map(|(label, child_idx, _)| (*label, *child_idx))
+                    .collect::<Vec<_>>(),
+                "native cursor traversal must preserve Unicode scalar edge order"
+            );
+
+            // SAFETY: `cursor` has the same retained-revision provenance.
+            assert_eq!(
+                unsafe { owner.snapshot_cursor_is_final(cursor) },
+                Some(node.is_final())
+            );
+            // SAFETY: `cursor` has the same retained-revision provenance.
+            assert_eq!(
+                unsafe { owner.snapshot_cursor_value(cursor) },
+                Some(node.value())
+            );
+            // SAFETY: `cursor` has the same retained-revision provenance.
+            let materialized = unsafe { owner.snapshot_cursor_node(cursor) }
+                .expect("every valid dense cursor materializes a node");
+            assert_eq!(materialized.node_idx, node.node_idx);
+
+            let mut paged_edges = Vec::new();
+            for start in 0..=owned_edges.len() {
+                let mut page = Vec::new();
+                // SAFETY: `cursor` has the same retained-revision provenance.
+                let page_metadata = unsafe {
+                    owner.visit_snapshot_cursor_edge_page(cursor, start, 1, |label, child| {
+                        page.push((label, child.index()));
+                    })
+                };
+                assert_eq!(page_metadata, Some((node.is_final(), owned_edges.len())));
+                paged_edges.extend(page);
+            }
+            assert_eq!(
+                paged_edges,
+                owned_edges
+                    .iter()
+                    .map(|(label, child_idx, _)| (*label, *child_idx))
+                    .collect::<Vec<_>>()
+            );
+
+            for ((label, child_idx, child), (_, child_cursor)) in
+                owned_edges.into_iter().zip(cursor_edges)
+            {
+                // SAFETY: `cursor` has the same retained-revision provenance.
+                let transitioned = unsafe { owner.snapshot_cursor_transition(cursor, label) };
+                assert_eq!(
+                    transitioned.map(|result| result.map(|next| next.index())),
+                    Some(Some(child_idx))
+                );
+                pending.push((child, child_cursor));
+            }
+            // SAFETY: test terms contain no NUL edge and `cursor` belongs to
+            // this retained revision.
+            assert_eq!(
+                unsafe { owner.snapshot_cursor_transition(cursor, '\0') },
+                Some(None)
+            );
+        }
+
+        assert!(visited.contains(&root_cursor.index()));
+        let invalid = crate::SnapshotTraversalCursor::from_index(owner.inner.nodes.len())
+            .expect("one-past-end cursor remains representable");
+        assert!(!owner.contains_snapshot_cursor(invalid));
+    }
+
+    #[test]
+    fn native_cursor_owner_retains_unicode_snapshot_across_publication() {
+        let scdawg = ScdawgChar::from_terms_with_values([("猫", 1_u32), ("café", 2)]);
+        let old_owner = scdawg.root();
+        let old_root = old_owner
+            .snapshot_root_cursor()
+            .expect("old Unicode SCDAWG root cursor");
+        let old_node_count = old_owner.inner.nodes.len();
+
+        assert!(scdawg.insert_with_value("雪豹", 99));
+        let fresh_owner = scdawg.root();
+        let fresh_root = fresh_owner
+            .snapshot_root_cursor()
+            .expect("fresh Unicode SCDAWG root cursor");
+
+        assert!(!Arc::ptr_eq(&old_owner.inner, &fresh_owner.inner));
+        assert_eq!(old_owner.inner.nodes.len(), old_node_count);
+        assert!(fresh_owner.inner.nodes.len() > old_node_count);
+        // SAFETY: each cursor is used only with the owner that created it.
+        assert_eq!(
+            unsafe { old_owner.snapshot_cursor_transition(old_root, '雪') },
+            Some(None),
+            "the retained revision must not observe later publications"
+        );
+        // SAFETY: `fresh_root` belongs to `fresh_owner`.
+        let snow = unsafe { fresh_owner.snapshot_cursor_transition(fresh_root, '雪') }
+            .expect("cursor traversal supported")
+            .expect("fresh revision contains 雪");
+        // SAFETY: `snow` was emitted by `fresh_owner` immediately above.
+        let leopard = unsafe { fresh_owner.snapshot_cursor_transition(snow, '豹') }
+            .expect("cursor traversal supported")
+            .expect("fresh revision contains 雪豹");
+        // SAFETY: `leopard` descends from `fresh_root` in this retained revision.
+        assert_eq!(
+            unsafe { fresh_owner.snapshot_cursor_is_final(leopard) },
+            Some(true)
+        );
+        // SAFETY: `leopard` descends from `fresh_root` in this retained revision.
+        assert_eq!(
+            unsafe { fresh_owner.snapshot_cursor_value(leopard) },
+            Some(Some(99))
+        );
+    }
 
     #[test]
     fn test_scdawg_char_empty() {

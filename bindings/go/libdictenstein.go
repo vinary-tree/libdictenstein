@@ -3,7 +3,7 @@
 package libdictenstein
 
 /*
-#cgo CFLAGS: -std=c17 -I${SRCDIR}/../../include -I${SRCDIR}/../../../liblevenshtein-rust/vinary-tree-interop/include
+#cgo CFLAGS: -std=c17 -I${SRCDIR}/../../include -I${SRCDIR}/../../../vinary-tree-interop/include
 #cgo LDFLAGS: -llibdictenstein
 #include <stdint.h>
 #include <stdlib.h>

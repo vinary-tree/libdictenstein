@@ -486,7 +486,9 @@ if command -v tla2sany >/dev/null 2>&1; then
       ConcurrentCheckpointPublication \
       LockFreeDurableCheckpoint \
       LockFreeDurableCheckpointEviction \
+      CapturedCheckpointEvictionRoute \
       DetachedCallbackSeparation \
+      DetachedCompatibilityInstall \
       CachelessOwnedRegistry \
       EvictionExactRootPublication \
       HelpedRootResidency \
@@ -528,6 +530,7 @@ if command -v tla2sany >/dev/null 2>&1; then
       ConcurrentCheckpointSerialization \
       RetainedEdgeRangeTraversal \
       AbiProducerSnapshot \
+      DictionaryEntryBatchLease \
       AbiSnapshotQuiescence
     do
       run_capped tla2sany "${module}.tla"
@@ -563,7 +566,9 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       ConcurrentCheckpointPublication \
       LockFreeDurableCheckpoint \
       LockFreeDurableCheckpointEviction \
+      CapturedCheckpointEvictionRoute \
       DetachedCallbackSeparation \
+      DetachedCompatibilityInstall \
       CachelessOwnedRegistry \
       EvictionExactRootPublication \
       HelpedRootResidency \
@@ -605,6 +610,7 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       ConcurrentCheckpointSerialization \
       RetainedEdgeRangeTraversal \
       AbiProducerSnapshot \
+      DictionaryEntryBatchLease \
       AbiSnapshotQuiescence
     do
       tlc_workers=1
@@ -651,6 +657,12 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
     #     exact authority, exact publication checks the captured root and catalog
     #     stamp, exact operations revalidate the current pair, and recovery ignores
     #     detached advisory state. Each obligation has its own unsafe control.
+    #   * CapturedCheckpointEvictionRoute re-probes the live coordinator slot at
+    #     publish time and MUST violate `PublicationUsesCapturedRoute`, proving
+    #     capture-off cannot reroute on and generation A cannot be replaced by B.
+    #   * DetachedCompatibilityInstall mutates either total-wrapper behavior or
+    #     rejection atomicity. The controls MUST respectively violate
+    #     `LegacyWrapperNeverPanics` and `RejectedInstallPreservesCatalog`.
     #   * OverlayEvictionCas sets USE_FAULT_IN = FALSE (lets the overlay evictor
     #     fire on a LIVE node with NO fault-in recovery) and MUST violate
     #     `ReadNeverMissesCommitted` — proving the read/write fault-in path is
@@ -716,11 +728,14 @@ LockFreeDurableCheckpointEviction|invariant|ExactRootRegistryAgreement|LockFreeD
 LockFreeDurableCheckpointEviction|invariant|PublishedCatalogIsStamped|LockFreeDurableCheckpointEviction_PreStampUnsafe
 LockFreeDurableCheckpointEviction|invariant|NoInexactUse|LockFreeDurableCheckpointEviction_InexactUseUnsafe
 LockFreeDurableCheckpointEviction|invariant|RecoveryIndependentOfDetached|LockFreeDurableCheckpointEviction_RecoveryDetachedUnsafe
+CapturedCheckpointEvictionRoute|invariant|PublicationUsesCapturedRoute|CapturedCheckpointEvictionRoute_LiveReprobeUnsafe
 DetachedCallbackSeparation|invariant|DetachedCallbackHasOnlyDetachedCapability|DetachedCallbackSeparation_LegacyReadsExactUnsafe
 DetachedCallbackSeparation|invariant|DetachedNeverAuthorizesExactCommit|DetachedCallbackSeparation_DetachedAuthorizesUnsafe
 DetachedCallbackSeparation|invariant|DetachedCatalogContainsOnlyDetached|DetachedCallbackSeparation_CheckpointPopulatesDetachedUnsafe
 DetachedCallbackSeparation|invariant|SemanticClearsExactAuthority|DetachedCallbackSeparation_SemanticPreservesBindingUnsafe
 DetachedCallbackSeparation|invariant|CatalogNeverAuthorizesExactCommit|DetachedCallbackSeparation_CatalogAuthorizesUnsafe
+DetachedCompatibilityInstall|invariant|LegacyWrapperNeverPanics|DetachedCompatibilityInstall_PanicUnsafe
+DetachedCompatibilityInstall|invariant|RejectedInstallPreservesCatalog|DetachedCompatibilityInstall_OverwriteUnsafe
 CachelessOwnedRegistry|invariant|LastCollisionOccurrenceEquivalent|CachelessOwnedRegistry_FirstCollisionUnsafe
 CachelessOwnedRegistry|invariant|FailedRemovePreservesProjection|CachelessOwnedRegistry_MutateBeforeMaterializeUnsafe
 EvictionExactRootPublication|invariant|ExactRootRegistryAgreement|EvictionExactRootPublication_SemanticBindingUnsafe

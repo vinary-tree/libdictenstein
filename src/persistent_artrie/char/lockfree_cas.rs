@@ -69,25 +69,19 @@ enum MembershipCasContext<'permit, 'gate> {
     RecoveryOnly,
 }
 
-/// **OD4 deterministic-regression rendezvous (test-only).** The two phases a
-/// durable lock-free op crosses between Order-A step 1 (WAL append) and the ack:
-/// `AfterAppend` fires right after the data record is durable (LSN fixed) and
-/// BEFORE the visibility CAS; `AfterCommit` fires right after the winning CAS and
-/// BEFORE the `CommitRank` append + return. A test installs a per-thread closure
-/// (see `set_commit_rendezvous`) to deterministically stage the s019 interleaving
-/// — both threads append first (fixing WAL/LSN order), then one CAS is forced to
-/// land before the other (commit/generation order). Production builds never
-/// reference this (every call site is `#[cfg(test)]`).
+/// **S4 deterministic-regression rendezvous (test-only).** `AfterAppend` fires
+/// after an Order-A data record is durable (its LSN is fixed) and before the
+/// visibility CAS. Tests use this one boundary to force another same-key writer
+/// to win first, exercising the race-appended idempotent arm without timing or
+/// sleeps. Production builds never reference it (every call site is `#[cfg(test)]`).
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RendezvousPhase {
     /// Step 1 complete: the data record is durable; the CAS has not run.
     AfterAppend,
-    /// Step 2 complete: the visibility CAS won; the `CommitRank` is not yet appended.
-    AfterCommit,
 }
 
-/// A test-only hook invoked by the durable producers at each rendezvous phase.
+/// A test-only hook invoked after a durable producer appends its data record.
 #[cfg(test)]
 pub(crate) type CommitRendezvousHook = Box<dyn Fn(RendezvousPhase)>;
 
@@ -99,7 +93,7 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// Install (or clear, with `None`) this thread's OD4 commit rendezvous closure.
+/// Install (or clear, with `None`) this thread's S4 append rendezvous closure.
 #[cfg(test)]
 pub(crate) fn set_commit_rendezvous(hook: Option<CommitRendezvousHook>) {
     COMMIT_RENDEZVOUS.with(|h| *h.borrow_mut() = hook);
@@ -115,10 +109,11 @@ fn commit_rendezvous(phase: RendezvousPhase) {
     });
 }
 
-/// Default bound on read/write fault-in install-CAS retries before falling back to
-/// a single read-only walk (design §3 liveness bound; OE8 regression-guards it).
-/// Generous: each retry rebases off a freshly-published root, so contention is the
-/// only reason to loop, and the fallback is correct (durable) anyway.
+/// Default bound on read/write fault-in install-CAS retries before returning the
+/// exact answer privately walked from the last loaded durable snapshot (the OE8
+/// regression guards termination). Publication warms the resident overlay but is
+/// not required for read correctness: root-CAS contention cannot turn a loaded
+/// committed term into absence.
 ///
 /// **Flip F0:** un-gated to production. Once the production write path routes
 /// through the overlay (`route_overlay()`), evicted overlay nodes must be
@@ -582,9 +577,8 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             value: None,
         })?;
 
-        // OD4 (test-only): the data record is durable; the CAS has not run. A
-        // regression test rendezvouses here to fix the WAL/LSN order before any
-        // CAS lands.
+        // S4 (test-only): the data record is durable; the CAS has not run. A
+        // regression test parks one same-key caller here so another wins first.
         #[cfg(test)]
         commit_rendezvous(RendezvousPhase::AfterAppend);
 
@@ -599,11 +593,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // the caller-claimed generation via `commit_rank_and_mark`.
         //
         // The read epoch is entered HERE (it must span every CAS retry inside the
-        // driver) — the driver itself does not enter the epoch. (The OD4 `AfterCommit`
-        // test rendezvous on the durable-INSERT path is dropped — it fed ONLY the
-        // `#[ignore]`d, obsolete-under-S4 `replay_orders_by_commit_rank_not_lsn*`
-        // staging tests; `AfterAppend` stays in this caller above. Production never
-        // referenced it — `#[cfg(test)]`.)
+        // driver) — the driver itself does not enter the epoch. The test-only
+        // `AfterAppend` boundary above deterministically exercises a concurrent
+        // winner turning this operation into the S4 idempotent/no-rank arm.
         let _epoch = self.epoch_manager.enter_read();
         <Self as crate::persistent_artrie::core::overlay::cas_walk::OverlayCasWalk<CharKey, V, S>>::drive_insert_cas(
             self,
@@ -749,7 +741,7 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             term: term.as_bytes().to_vec(),
         })?;
 
-        // OD4 (test-only): the Remove record is durable; the CAS has not run.
+        // S4 (test-only): the Remove record is durable; the CAS has not run.
         #[cfg(test)]
         commit_rendezvous(RendezvousPhase::AfterAppend);
 
@@ -763,10 +755,9 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // caller-claimed generation via `commit_rank_and_mark`. `term.as_bytes()` is
         // the raw key the durable `Remove@lsn` record mutated.
         //
-        // (The OD4 `AfterCommit` test rendezvous on the durable-REMOVE path is
-        // dropped — it fed ONLY the `#[ignore]`d, obsolete-under-S4
-        // `replay_orders_by_commit_rank_not_lsn*` staging tests; `AfterAppend` stays
-        // in this caller above. Production never referenced it — `#[cfg(test)]`.)
+        // The test-only `AfterAppend` boundary above deterministically exercises a
+        // concurrent winner turning this operation into the S4 idempotent/no-rank
+        // arm. Production never references that hook.
         <Self as crate::persistent_artrie::core::overlay::cas_walk::OverlayCasWalk<CharKey, V, S>>::drive_remove_cas(
             self,
             term.as_bytes(),
@@ -3170,201 +3161,88 @@ mod durable_write_tests {
     }
 
     // ====================================================================
-    // OD4 — DETERMINISTIC s019 regression (Order-A replay-order fix, C′).
+    // S4 — DETERMINISTIC RACE-APPENDED IDEMPOTENCE REGRESSIONS.
     //
-    // Forces the s019 interleaving with a controlled scheduler (the test-only
-    // `commit_rendezvous` hooks): the Insert APPENDS FIRST (lower LSN) but its
-    // visibility CAS lands LAST; the Remove APPENDS SECOND (higher LSN) but its
-    // CAS lands FIRST. So the WAL physical/LSN order is `Insert@lsnI,
-    // Remove@lsnR` with lsnI < lsnR, while the CAS/visibility last-writer is the
-    // Insert ⇒ the quiesced overlay is PRESENT. The PUBLISHED-ROOT versions make
-    // the Insert's commit GENERATION strictly greater than the Remove's.
-    //
-    // Drop WITHOUT a checkpoint and reopen: recovery MUST reconstruct PRESENT.
-    // With OD2's CommitRank append in place, `reconcile_lww` orders by generation
-    // ⇒ the Insert wins ⇒ present (PASS). With the rank append reverted, recovery
-    // falls back to LSN order ⇒ the higher-LSN Remove wins ⇒ ABSENT (FAIL).
-    //
-    // DIFFERENTIAL CONFIRMED (OD4): reverting the four `append_commit_rank(...)`
-    // calls in `insert_cas_durable`/`remove_cas_durable` to `rank_lsn = lsn` makes
-    // `replay_orders_by_commit_rank_not_lsn` FAIL ("s019 LOST after reopen") and
-    // the resurrection twin FAIL ("s019 RESURRECTED"); restoring the rank append
-    // makes both PASS. The differential proves the tests have teeth.
-    //
-    // GENERATION SOURCE (the §3.6 fix): the commit generation is the
-    // PUBLISHED-ROOT `version` (bumped by the spine path-copy on EVERY
-    // publication, fixed at the root CAS), NOT the leaf version — the insert
-    // finalize is an in-place `try_set_final` that does NOT bump the leaf, so an
-    // insert re-finalizing a leaf a remove cleared would otherwise TIE the
-    // remove's generation and lose this race even WITH CommitRank present.
+    // The ordinary already-present insert and already-absent remove are hoisted
+    // before WAL append. A redundant record is therefore possible only when the
+    // preflight observed the old state, appended, and another same-key writer won
+    // before its CAS. Such a loser has no causal publication point: it must return
+    // `Ok(false)`, emit no CommitRank, mark its burned data LSN for watermark
+    // liveness, and be dropped by Overlay-regime replay. `AfterAppend` plus two
+    // reusable barriers forces that exact schedule without sleeps.
     // ====================================================================
 
-    /// Shared scheduler state for the OD4 rendezvous. `i_appended` is raised by
-    /// the insert thread once its data record is durable; `r_committed` is raised
-    /// by the remove thread once its clear CAS has won. The condvar wakes the
-    /// waiter on each transition.
-    struct S019Sched {
-        state: std::sync::Mutex<S019Flags>,
-        cv: std::sync::Condvar,
-    }
-    #[derive(Default)]
-    struct S019Flags {
-        i_appended: bool,
-        r_committed: bool,
-    }
-    impl S019Sched {
-        fn new() -> Arc<Self> {
-            Arc::new(S019Sched {
-                state: std::sync::Mutex::new(S019Flags::default()),
-                cv: std::sync::Condvar::new(),
-            })
-        }
-        fn set_i_appended(&self) {
-            self.state.lock().expect("lock").i_appended = true;
-            self.cv.notify_all();
-        }
-        fn set_r_committed(&self) {
-            self.state.lock().expect("lock").r_committed = true;
-            self.cv.notify_all();
-        }
-        fn wait_i_appended(&self) {
-            let mut g = self.state.lock().expect("lock");
-            while !g.i_appended {
-                g = self.cv.wait(g).expect("wait");
-            }
-        }
-        fn wait_r_committed(&self) {
-            let mut g = self.state.lock().expect("lock");
-            while !g.r_committed {
-                g = self.cv.wait(g).expect("wait");
-            }
-        }
-    }
-
-    /// Stage the s019 interleaving on a shared trie and return the path. The trie
-    /// is dropped WITHOUT a checkpoint inside (durability rests on the WAL).
-    fn stage_s019(prefix: &str) -> tempfile::TempDir {
+    #[test]
+    fn s4_race_appended_idempotent_insert_cannot_resurrect_after_remove() {
         use super::{set_commit_rendezvous, RendezvousPhase};
 
-        let dir = scratch(prefix);
+        let dir = scratch("s4-race-idempotent-insert");
         let path = dir.path().join("t.artc");
         {
             let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.install_overlay();
-
-            // Pre-seed "s019" PRESENT (committed), then drop ONLY its positive
-            // cache entry: the overlay still holds it final (so the remove's
-            // presence precheck finds it), but the insert thread's fast-path cache
-            // check will MISS and proceed to append (so we get a real Insert
-            // record with a lower LSN than the Remove).
-            trie.insert_cas_durable("s019").expect("seed insert");
-            trie.lockfree_cache
-                .as_ref()
-                .expect("cache enabled")
-                .remove("s019");
-
             let trie = Arc::new(trie);
-            let sched = S019Sched::new();
+            let first_appended = Arc::new(Barrier::new(2));
+            let winner_committed = Arc::new(Barrier::new(2));
 
-            // INSERT thread: appends first (lower LSN), parks post-append until the
-            // remove has committed, THEN its CAS lands last (higher generation).
-            let ti = {
+            // This caller appends while the key is absent, then parks. The second
+            // caller publishes first, so this data record becomes an unranked
+            // idempotent orphan when it resumes.
+            let first = {
                 let trie = Arc::clone(&trie);
-                let sched = Arc::clone(&sched);
+                let first_appended = Arc::clone(&first_appended);
+                let winner_committed = Arc::clone(&winner_committed);
                 thread::spawn(move || {
-                    let s = Arc::clone(&sched);
                     set_commit_rendezvous(Some(Box::new(move |phase| {
-                        if phase == RendezvousPhase::AfterAppend {
-                            // Data durable: announce, then block so the remove's
-                            // CAS lands before ours.
-                            s.set_i_appended();
-                            s.wait_r_committed();
-                        }
+                        assert_eq!(phase, RendezvousPhase::AfterAppend);
+                        first_appended.wait();
+                        winner_committed.wait();
                     })));
-                    let r = trie.insert_cas_durable("s019").expect("durable insert");
+                    let result = trie.insert_cas_durable("s4-key").expect("first insert");
                     set_commit_rendezvous(None);
-                    r
+                    result
                 })
             };
 
-            // REMOVE thread: waits until the insert has appended (so the remove's
-            // append gets the HIGHER LSN), then runs to completion; its CAS lands
-            // first and signals the insert to proceed.
-            let tr = {
-                let trie = Arc::clone(&trie);
-                let sched = Arc::clone(&sched);
-                thread::spawn(move || {
-                    sched.wait_i_appended();
-                    let s = Arc::clone(&sched);
-                    set_commit_rendezvous(Some(Box::new(move |phase| {
-                        if phase == RendezvousPhase::AfterCommit {
-                            s.set_r_committed();
-                        }
-                    })));
-                    let r = trie.remove_cas_durable("s019").expect("durable remove");
-                    set_commit_rendezvous(None);
-                    r
-                })
-            };
-
-            let _i_added = ti.join().expect("insert thread");
-            let _r_removed = tr.join().expect("remove thread");
-
-            // QUIESCED: the overlay's committed-visible state is PRESENT (the
-            // insert's CAS was the last writer).
-            let trie = Arc::try_unwrap(trie).unwrap_or_else(|_| panic!("outstanding trie refs"));
+            first_appended.wait();
+            let winning_insert = trie.insert_cas_durable("s4-key");
+            // Always release the parked caller before asserting the winner's
+            // result, so a semantic failure reports instead of stranding a thread.
+            winner_committed.wait();
             assert!(
-                trie.contains_lockfree("s019"),
-                "pre-drop: s019 must be PRESENT (insert is the CAS last-writer); \
-                 the staging did not realize the s019 interleaving"
+                winning_insert.expect("winning insert"),
+                "the unparked second writer must publish the absent key"
             );
-            // DROP WITHOUT CHECKPOINT — durability is WAL-only.
-            drop(trie);
-        }
-        dir
-    }
+            assert!(
+                !first.join().expect("first insert thread"),
+                "the first-to-append caller lost publication and must be idempotent"
+            );
+            assert!(trie.contains_lockfree("s4-key"));
 
-    /// THE OD4 regression: after the s019 interleaving + drop-no-checkpoint +
-    /// reopen, the net-present key MUST be recovered present. Fails pre-OD2 (rank
-    /// reverted ⇒ LSN-order replay drops it); passes post-OD2.
-    ///
-    /// OBSOLETE UNDER S4 (ignored, NOT deleted — the staging premise is gone BY
-    /// DESIGN): the staged op is an idempotent insert of an already-present term, which
-    /// S4's NON-FAULTING present-hoist now short-circuits to a no-op BEFORE the append —
-    /// so it never appends, never signals `AfterAppend`, and the remove thread's
-    /// `wait_i_appended` deadlocks; and the asserted PRESENT outcome is now ABSENT (an
-    /// idempotent insert cannot "win" — it changes nothing). The rank-over-LSN replay
-    /// property is covered by the `reconcile_lww` unit tests (recovery.rs) + the new S4
-    /// `overlay_drops_unranked_orphan_*` reconcile test; no-resurrection by `fixa_*` +
-    /// `s4_cross_restart_*`.
-    #[test]
-    #[ignore = "obsolete under S4: idempotent insert is hoisted to a no-op (no append); see doc"]
-    fn replay_orders_by_commit_rank_not_lsn() {
-        let dir = stage_s019("od4-s019-present");
-        let path = dir.path().join("t.artc");
+            // A later ranked remove must not be outranked by the earlier unranked
+            // Insert record during replay.
+            assert!(trie.remove_cas_durable("s4-key").expect("later remove"));
+            assert!(!trie.contains_lockfree("s4-key"));
+            let trie = Arc::try_unwrap(trie).unwrap_or_else(|_| panic!("outstanding trie refs"));
+            drop(trie); // WAL-only recovery; no checkpoint.
+        }
+
         let trie = PersistentARTrieChar::<()>::open(&path).expect("reopen");
         assert!(
-            Dictionary::contains(&trie, "s019"),
-            "s019 LOST after reopen: replay used LSN order (Remove@higher-LSN won) \
-             instead of commit generation — the Order-A replay-order bug"
+            !Dictionary::contains(&trie, "s4-key"),
+            "an unranked race-appended Insert resurrected the later-removed key"
         );
     }
 
-    /// FIX-A (S2) regression: a cache-cold IDEMPOTENT insert reaches the
-    /// `AlreadyExists` arm and ranks its `CommitRank` with the OBSERVED-root version
-    /// (the present-root version), which is `<` a subsequent real remove's published
-    /// version — so after drop-no-checkpoint + reopen the term is recovered ABSENT
-    /// (the remove sorts last and wins), NOT resurrected. Exercises the idempotent
-    /// arm's observed-version path end-to-end through WAL replay. (The fully
-    /// concurrent observe-stale-snapshot race that further distinguishes FIX-A from a
-    /// second-load/global-claim rank is proven by the version-chain argument in
-    /// docs/design/dg-recon-commitseq-stamp-seed-step.md §11; staging it
-    /// deterministically needs finer interleaving control than the OD4 harness
-    /// exposes; the S4 Overlay-drop gate covers that replay-order property.)
+    /// S4 present-hoist regression: removing the positive-cache entry does not make
+    /// an already-present insert a durable mutation. The non-faulting overlay
+    /// preflight still sees the final node, returns `Ok(false)` before append, and
+    /// leaves the watermark unchanged. A later real remove therefore remains the
+    /// sole subsequent mutation and survives WAL-only reopen.
     #[test]
-    fn fixa_idempotent_cache_cold_observed_version_then_remove_stays_absent() {
-        let dir = scratch("fixa-observed-absent");
+    fn s4_cache_cold_present_insert_is_hoisted_without_wal() {
+        let dir = scratch("s4-present-hoist-no-wal");
         let path = dir.path().join("t.artc");
         {
             let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
@@ -3375,119 +3253,105 @@ mod durable_write_tests {
                 trie.insert_cas_durable("obs").expect("seed insert"),
                 "seed must be newly inserted"
             );
-            // Drop ONLY its positive-cache entry so the next insert MISSES the
-            // fast-path, appends, and reaches the idempotent AlreadyExists arm (the
-            // term is still final in the overlay).
+            // Drop ONLY its positive-cache entry so the next insert misses the
+            // cache fast path; the term remains final in the overlay and must be
+            // caught by the S4 present-hoist before append.
             trie.lockfree_cache
                 .as_ref()
                 .expect("cache enabled")
                 .remove("obs");
-            // Idempotent insert: cache-cold ⇒ AlreadyExists arm ⇒ Ok(false). FIX-A
-            // ranks this with the OBSERVED-root version (where "obs" is present).
+            let watermark_before_idempotent = trie.committed_watermark.watermark();
+            // Cache-cold idempotent insert: the overlay present-hoist still finds
+            // the term and returns before append.
             assert!(
                 !trie.insert_cas_durable("obs").expect("idempotent insert"),
-                "the cache-cold re-insert must be a NO-OP (idempotent AlreadyExists arm)"
+                "the cache-cold re-insert must be a hoisted no-op"
             );
-            // A real remove publishes a strictly-higher version (v_rem > v_obs).
+            assert_eq!(
+                trie.committed_watermark.watermark(),
+                watermark_before_idempotent,
+                "a present-hoisted insert must not append WAL or advance the watermark"
+            );
+            // A real remove is the next durable mutation.
             assert!(
                 trie.remove_cas_durable("obs").expect("remove"),
                 "remove must clear a present 'obs'"
             );
             drop(trie); // DROP WITHOUT CHECKPOINT — durability is WAL-only.
         }
-        // Reopen: pure WAL replay. The idempotent insert's OBSERVED (lower) version
-        // sorts BEFORE the remove's higher version ⇒ obs stays ABSENT.
+        // Reopen: pure WAL replay contains no record for the idempotent insert.
         let trie = PersistentARTrieChar::<()>::open(&path).expect("reopen");
         assert!(
             !Dictionary::contains(&trie, "obs"),
-            "RESURRECTION: the idempotent insert out-ranked the remove — obs was \
-             wrongly recovered present"
+            "the cache-cold hoisted no-op must not resurrect the later-removed key"
         );
     }
 
-    /// Resurrection-polarity twin: the same controlled scheduler but the net op is
-    /// a REMOVE — the Insert APPENDS SECOND (higher LSN) yet the Remove's CAS lands
-    /// LAST (higher generation), so the quiesced overlay is ABSENT. Reopen MUST NOT
-    /// resurrect it. This guards the opposite direction (no false-present).
-    ///
-    /// OBSOLETE UNDER S4 (ignored, NOT deleted): same cause as the present-polarity
-    /// twin — the staged idempotent insert is hoisted to a no-op (never signals
-    /// `AfterAppend`), deadlocking `wait_i_appended`. The no-resurrection property is
-    /// covered by `fixa_idempotent_cache_cold_*` + the new `s4_cross_restart_*` and
-    /// `overlay_drops_unranked_orphan_*` tests.
+    /// Remove-polarity twin: two removers both pass the present preflight, then the
+    /// first-to-append caller is parked while the second publishes. The parked
+    /// caller resumes into `AlreadyAbsent`, so its durable Remove record is an
+    /// unranked idempotent orphan. A later ranked reinsert must remain present after
+    /// WAL-only reopen; the orphan must not erase it.
     #[test]
-    #[ignore = "obsolete under S4: idempotent insert is hoisted to a no-op (no append); see doc"]
-    fn replay_orders_by_commit_rank_not_lsn_resurrection_polarity() {
+    fn s4_race_appended_idempotent_remove_cannot_erase_reinsert() {
         use super::{set_commit_rendezvous, RendezvousPhase};
 
-        let dir = scratch("od4-s019-absent");
+        let dir = scratch("s4-race-idempotent-remove");
         let path = dir.path().join("t.artc");
         {
             let mut trie = PersistentARTrieChar::<()>::create(&path).expect("create");
             trie.set_durability_policy(DurabilityPolicy::Immediate);
             trie.install_overlay();
-            // Seed present (so the remove can clear it), drop only the cache entry
-            // so the insert thread still appends.
-            trie.insert_cas_durable("s019").expect("seed insert");
-            trie.lockfree_cache
-                .as_ref()
-                .expect("cache enabled")
-                .remove("s019");
+            assert!(trie.insert_cas_durable("s4-key").expect("seed insert"));
 
             let trie = Arc::new(trie);
-            let sched = S019Sched::new();
+            let first_appended = Arc::new(Barrier::new(2));
+            let winner_committed = Arc::new(Barrier::new(2));
 
-            // REMOVE thread appends FIRST (lower LSN) but parks until the insert
-            // has committed, so the remove's CAS lands LAST (higher generation) ⇒
-            // net ABSENT. (i_appended/r_committed are reused as generic "first op
-            // appended" / "second op committed" signals.)
-            let tr = {
+            let first = {
                 let trie = Arc::clone(&trie);
-                let sched = Arc::clone(&sched);
+                let first_appended = Arc::clone(&first_appended);
+                let winner_committed = Arc::clone(&winner_committed);
                 thread::spawn(move || {
-                    let s = Arc::clone(&sched);
                     set_commit_rendezvous(Some(Box::new(move |phase| {
-                        if phase == RendezvousPhase::AfterAppend {
-                            s.set_i_appended();
-                            s.wait_r_committed();
-                        }
+                        assert_eq!(phase, RendezvousPhase::AfterAppend);
+                        first_appended.wait();
+                        winner_committed.wait();
                     })));
-                    trie.remove_cas_durable("s019").expect("durable remove");
+                    let result = trie.remove_cas_durable("s4-key").expect("first remove");
                     set_commit_rendezvous(None);
+                    result
                 })
             };
-            // INSERT thread appends SECOND (higher LSN); its CAS lands FIRST and
-            // signals the remove to proceed.
-            let ti = {
-                let trie = Arc::clone(&trie);
-                let sched = Arc::clone(&sched);
-                thread::spawn(move || {
-                    sched.wait_i_appended();
-                    let s = Arc::clone(&sched);
-                    set_commit_rendezvous(Some(Box::new(move |phase| {
-                        if phase == RendezvousPhase::AfterCommit {
-                            s.set_r_committed();
-                        }
-                    })));
-                    trie.insert_cas_durable("s019").expect("durable insert");
-                    set_commit_rendezvous(None);
-                })
-            };
-            tr.join().expect("remove thread");
-            ti.join().expect("insert thread");
 
-            let trie = Arc::try_unwrap(trie).unwrap_or_else(|_| panic!("outstanding trie refs"));
+            first_appended.wait();
+            let winning_remove = trie.remove_cas_durable("s4-key");
+            // Always release the parked caller before asserting the winner's
+            // result, so a semantic failure reports instead of stranding a thread.
+            winner_committed.wait();
             assert!(
-                !trie.contains_lockfree("s019"),
-                "pre-drop: s019 must be ABSENT (remove is the CAS last-writer)"
+                winning_remove.expect("winning remove"),
+                "the unparked second remover must publish the clear"
             );
-            drop(trie);
+            assert!(
+                !first.join().expect("first remove thread"),
+                "the first-to-append remover lost publication and must be idempotent"
+            );
+            assert!(!trie.contains_lockfree("s4-key"));
+
+            assert!(
+                trie.insert_cas_durable("s4-key").expect("later reinsert"),
+                "a later ranked insert must republish the removed key"
+            );
+            assert!(trie.contains_lockfree("s4-key"));
+            let trie = Arc::try_unwrap(trie).unwrap_or_else(|_| panic!("outstanding trie refs"));
+            drop(trie); // WAL-only recovery; no checkpoint.
         }
+
         let trie = PersistentARTrieChar::<()>::open(&path).expect("reopen");
         assert!(
-            !Dictionary::contains(&trie, "s019"),
-            "s019 RESURRECTED after reopen: replay used LSN order (Insert@higher-LSN \
-             won) instead of commit generation"
+            Dictionary::contains(&trie, "s4-key"),
+            "an unranked race-appended Remove erased the later reinsert"
         );
     }
 

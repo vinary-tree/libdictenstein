@@ -301,7 +301,8 @@ fn concurrent_prefix_finalize_has_exactly_one_winner() {
 // CAS-install it InMem; a writer concurrently path-copies a sibling. The single
 // `FaultRootSlot` CAS (pointer-identity, `Arc::ptr_eq`) must arbitrate so that:
 //   * exactly one faulter's install is the published version for that slot
-//     (the loser rebases, its loaded Arc drops — no double-link, no clobber);
+//     (the loser rebases without publishing — no double-link, no clobber — while
+//     its owned loaded Arc remains a valid result for its captured read);
 //   * the writer's sibling is never lost (loser-safe);
 //   * the final published root has the faulted child InMem (XOR OnDisk) and final.
 // This is the loom witness for `OverlayEvictionCas.tla`'s FaultInCas ‖ WriterCas
@@ -398,8 +399,10 @@ impl FaultRootSlot {
 }
 
 /// Model `find_leaf_faulting` for a length-1 key: if the slot is OnDisk, LOAD our
-/// own InMem copy (the per-faulter Arc) and CAS-install it; on loss, rebase and
-/// retry (now possibly already InMem ⇒ done). Bounded retries (liveness).
+/// own InMem copy (the per-faulter Arc) and CAS-install it; on loss, retain the
+/// loaded final bit for this captured read and rebase for best-effort publication
+/// (now possibly already InMem ⇒ done). Bounded retries (liveness), but retry
+/// exhaustion returns the captured durable answer rather than manufacturing a miss.
 fn faultin_one_char(
     root: &FaultRootSlot,
     key: u8,
@@ -407,12 +410,14 @@ fn faultin_one_char(
     candidate_count: &AtomicUsize,
     candidate_drop_count: &Arc<AtomicUsize>,
 ) -> bool {
+    let mut captured_final = None;
     for _ in 0..=max_retries {
         let cur = root.load();
         match cur.find_child(key) {
             Some(ModelChild::InMem(_)) => return true, // already faulted (by a racer)
             Some(ModelChild::OnDisk { is_final }) => {
                 // Load OUR OWN Arc (each faulter independently) and install it.
+                captured_final = Some(*is_final);
                 candidate_count.fetch_add(1, Ordering::AcqRel);
                 let loaded =
                     FaultModelNode::loaded_candidate(*is_final, Arc::clone(candidate_drop_count));
@@ -425,7 +430,7 @@ fn faultin_one_char(
             None => return false,
         }
     }
-    false
+    captured_final.unwrap_or(false)
 }
 
 /// Model a writer path-copying a NEW InMem sibling child under the root.

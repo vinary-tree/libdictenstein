@@ -12,18 +12,16 @@
     C3  error-mapping matrix       (IO_ERROR + message; others N/A, see below)
     C4  canonical fixture replay   (cross-language oracle)
     C5  CRUD/value/batch/substring (+ capability-derived assertions)
-    C6  text domains / values      (é/🦀/combining + embedded NUL; u64/invalid N/A)
+    C6  domains / values           (é/🦀/combining, embedded NUL, u64 collections)
     C7  batch edges                (0/1/255/256/257/large)
     C8  property vs oracle         (CRUD script + substring naive)
     C9  leak discipline            (>=10k cycles, RSS bounded)
     C10 concurrency                (parallel snapshot/mutate)
 
-  The Clojure facade is deliberately String/text-oriented, so a few contract
-  points are marked N/A:
-    - INVALID_UTF8 (C3) and invalid-UTF-8 byte terms (C6): unrepresentable as a
-      Clojure String, which is the only term type the facade accepts.
-    - DOMAIN_MISMATCH (C3) and the u64 token domain (C6): the facade exposes no
-      u64-token surface."
+  Typed constructors prevent DOMAIN_MISMATCH through the public facade.
+  INVALID_UTF8 and invalid-UTF-8 mutation terms remain N/A because mutation's
+  text surface accepts Clojure strings; collection reads preserve arbitrary
+  byte keys and full-range u64 token keys losslessly."
   (:require [clojure.test :refer [deftest is]]
             [clojure.data.json :as json]
             [vinary-tree.libdictenstein :as d])
@@ -56,7 +54,7 @@
 
 (deftest c1-identity-constants
   (is (= 1 (d/abi-version)))
-  (is (= 4 (d/api-revision))))
+  (is (= 5 (d/api-revision))))
 
 (deftest c1-kind-and-capabilities
   (with-open [dawg (d/dynamic-dawg)]
@@ -183,7 +181,7 @@
       (is (zero? (bit-and caps (bit-or cap-insert cap-remove cap-clear cap-compact)))))))
 
 ;; --------------------------------------------------------------------------
-;; C6 text domains and values (String-oriented facade)
+;; C6 text mutation plus lossless byte/u64 collection values
 ;; --------------------------------------------------------------------------
 
 (deftest c6-precomposed-and-multibyte
@@ -211,6 +209,66 @@
 ;; --------------------------------------------------------------------------
 ;; C7 batch/paging edges
 ;; --------------------------------------------------------------------------
+
+(deftest c7-native-collection-idioms-preserve-snapshot-and-values
+  (let [maximum 18446744073709551615N
+        dawg (d/dynamic-dawg)]
+    (d/put! dawg "" nil)
+    (d/put! dawg "a" 0)
+    (d/put! dawg "é" maximum)
+    (let [captured (d/snapshot dawg)
+          captured-seq (vec (d/entry-seq dawg))
+          captured-eduction (into [] (d/entry-eduction dawg (map :key)))]
+      (d/put! dawg "later" 7)
+      (d/close! dawg)
+      (is (= ["" "a" "é"] (mapv :key captured)))
+      (is (= [nil 0N maximum] (mapv :value captured)))
+      (is (= [:unicode-scalar :unicode-scalar :unicode-scalar]
+             (mapv :domain captured)))
+      (is (= captured captured-seq))
+      (is (= ["" "a" "é"] captured-eduction))
+      (is (= captured (reduce conj [] captured))))))
+
+(deftest c7-resource-scoped-stream-and-fold-close-on-early-exit
+  (with-open [dawg (d/dynamic-dawg)]
+    (doseq [term ["a" "b" "c"]] (d/put! dawg term nil))
+    (let [stream (d/open-entry-stream dawg 2)]
+      (try
+        (is (= "a" (:key (first (d/stream-seq stream)))))
+        (finally (d/close! stream)))
+      (is (.isClosed stream)))
+    (let [calls (atom 0)
+          first-key (d/reduce-entries
+                     dawg 3
+                     (fn [_ entry]
+                       (swap! calls inc)
+                       (reduced (:key entry)))
+                     nil)]
+      (is (= "a" first-key))
+      (is (= 1 @calls)))
+    (let [captured-stream (atom nil)]
+      (try
+        (d/with-entry-stream [stream dawg 2]
+          (reset! captured-stream stream)
+          (throw (ex-info "stop" {})))
+        (catch clojure.lang.ExceptionInfo _))
+      (is (.isClosed @captured-stream)))
+    (is (= ["a" "b" "c"]
+           (d/transduce-entries dawg 2 (map :key) conj [])))))
+
+(deftest c7-collection-domain-keys-are-lossless
+  (with-open [bytes (d/dynamic-dawg :bytes)]
+    (let [term (str "a" (char 0) "b")]
+      (d/put! bytes term nil)
+      (is (= {:key [97 0 98] :value nil :domain :bytes}
+             (first (d/snapshot bytes))))))
+  (let [maximum 18446744073709551615N]
+    (with-open [tokens (d/dynamic-dawg :u64)]
+      (d/put-u64! tokens [1 maximum] 0)
+      (is (d/contains-u64? tokens [1 maximum]))
+      (is (= 0N (:value (d/get-u64 tokens [1 maximum]))))
+      (is (= {:key [1N maximum] :value 0N :domain :u64}
+             (first (d/snapshot tokens)))))))
 
 (deftest c7-batch-sizes
   (doseq [size [0 1 255 256 257 1000]]

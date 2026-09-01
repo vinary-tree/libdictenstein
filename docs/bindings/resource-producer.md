@@ -40,7 +40,7 @@ graph for the whole revision on first request.
 
 ## 2. Architecture
 
-<img src="../diagrams/abi-producer-component.svg" alt="Component diagram of the libdictenstein producer stack. At the top, inside a red trust-boundary rectangle, sit the foreign consumers: the liblevenshtein transducer, the duallity WFST constructor, and any C-ABI or facade caller. They call into the green libdictenstein cdylib package: the C ABI layer (35 ldict_* functions with catch_unwind and a thread-local last error, owning LdictDictionary handles) which fans out to the four producer bindings — DynamicDawgBinding over RwLock(DynamicBackend), DoubleArrayTrieBinding and ScdawgBinding over Arc(SecondaryBackend), and PersistentARTrieBinding over Arc(PersistentBackend) — each wrapping its dictionary core. Every binding produces an OwnedDictionaryResource (drawn in the green handle color, born with one retain) which holds an Arc(ResourceContext) whose strong count is the retain ledger. The context creates TraversalSnapshot values with a lazy compact-graph publication path and a fallback append-only ABI-local-id arena via O(1) revision capture. query_interface selects the static base, dictionary, visit, compact-graph, and snapshot-identity vtables. The OwnedDictionaryResource exports the two borrowed words as a VtResource conforming to the pink vinary-tree-interop family contract at the bottom; consumers call retain, release, query_interface, and either compact-graph or node-walk operations against it across the trust boundary." width="100%"/>
+<img src="../diagrams/abi-producer-component.svg" alt="Component diagram of the libdictenstein producer stack. At the top, inside a red trust-boundary rectangle, sit the foreign consumers: the liblevenshtein transducer, the duallity WFST constructor, and any C-ABI or facade caller. They call into the green libdictenstein cdylib package: the C ABI layer (41 ldict_* functions with catch_unwind and a thread-local last error, including bounded entry snapshot cursors and reduction, owning LdictDictionary handles) which fans out to the four producer bindings — DynamicDawgBinding over a fixed-domain DynamicBackend with inner GraphVersion CAS, DoubleArrayTrieBinding and ScdawgBinding over Arc(SecondaryBackend), and PersistentARTrieBinding over Arc(PersistentBackend) — each wrapping its dictionary core. Every binding produces an OwnedDictionaryResource (drawn in the green handle color, born with one retain) which holds an Arc(ResourceContext) whose strong count is the retain ledger. The context creates TraversalSnapshot values with a lazy compact-graph publication path and a fallback append-only ABI-local-id arena via O(1) revision capture. query_interface selects the static base, dictionary, visit, compact-graph, and snapshot-identity vtables. The OwnedDictionaryResource exports the two borrowed words as a VtResource conforming to the pink vinary-tree-interop family contract at the bottom; consumers call retain, release, query_interface, and either compact-graph or node-walk operations against it across the trust boundary." width="100%"/>
 
 Five layers, from the metal up:
 
@@ -57,27 +57,31 @@ Five layers, from the metal up:
 3. **Bindings** — the four public structs `src/ffi.rs` dispatches into; each
    is `Clone` (an `Arc` bump) and each has `resource() → OwnedDictionaryResource`.
 4. **Resource machinery** — `ResourceContext` (payload + domain + flags),
-   `SnapshotMemo` (one warmed snapshot per source revision plus bounded
-   writer-admission quiescence),
+   `SnapshotMemo` (one warmed snapshot per source revision plus lock-free
+   seqlock-style capture validation),
    `TraversalSnapshot` (revision root, graph once-cells, and chunked fallback
    arena), `OwnedDictionaryResource` (the retain guard), and the `'static`
    base/dictionary/visit/graph/identity vtables.
 5. **The exported words** — a `VtResource { context, vtable }` whose vtable
    pointers live in the producer's read-only data for the process lifetime.
 
-### 2.1 Why the DynamicDAWG binding holds an `RwLock`
+### 2.1 Why the DynamicDAWG binding needs no outer lock
 
-`SharedDictionary` wraps its `DynamicBackend` in an `RwLock` even though the
-DAWG cores are internally synchronized. The lock is **not** protecting CRUD —
-every CRUD path takes the *read* side and relies on the engine's own
-synchronization. The single write-side user is
-[`ldict_dictionary_clear`](c-abi-reference.md#ldict_dictionary_clear), which
-implements "remove everything" by **replacing the whole backend value** with a
-fresh empty engine of the same domain: an atomic swap of the published
-dictionary, after which readers see the empty revision and pre-existing
-snapshots keep the old one. Lock poisoning is neutralized everywhere with
-`unwrap_or_else(PoisonError::into_inner)` — a panicking writer elsewhere in
-the process cannot brick the resource surface.
+`SharedDictionary` stores a fixed-domain `DynamicBackend` directly. The byte,
+Unicode-scalar, and u64 engines share a unit-generic immutable `GraphVersion`
+core: CRUD, compaction, clear, and empty frozen-batch installation all publish
+with the same retained-`Arc` CAS. A retained expected generation prevents
+pointer ABA. Reads load one generation and never retry; old roots remain alive
+for snapshots.
+
+The empty-dictionary batch fast path sorts and builds a minimal candidate
+privately, then installs the entire candidate with one CAS only if the current
+generation is still empty. If another insertion wins first, the batch falls
+back to the baseline per-term CAS loop, preserving the union and duplicate
+last-value-wins semantics. Therefore whole-batch atomicity is guaranteed only
+for a successful empty fast-path publication; fallback batches retain the
+baseline per-term visibility contract. `clear` similarly publishes an empty
+generation instead of replacing the backend object.
 
 ---
 
@@ -112,29 +116,64 @@ an instance of persistent-data-structure theory (Driscoll et al.
 
 | Backend | Revision mechanism | Why `root()` is $`\Theta(1)`$ | What keeps the revision alive |
 |---|---|---|---|
-| **DynamicDAWG** (`Live`) | Immutable revisions with atomic root publication: every mutation builds new structure and publishes a new root; published structure is never edited. | Load the current root handle — a reference-counted pointer read under the binding's read lock (held only for the call, never across it). | The root handle: reference-counted structural sharing keeps everything reachable from it alive, however far the live dictionary moves on. |
+| **DynamicDAWG** (`Live`) | Immutable revisions with atomic root publication: every mutation builds new structure and publishes a new root; published structure is never edited. | One acquire load captures root, term count, and graph revision from the same `GraphVersion`. | The root handle: reference-counted structural sharing keeps everything reachable from it alive, however far the live dictionary moves on. |
 | **DoubleArrayTrie** (`Secondary`) | The whole trie is one frozen revision — read-only after construction, by contract. | Return the root cursor over the shared `Arc`'d base/check arrays. | The arena's node handles share the `Arc` of the trie itself. |
 | **SCDAWG** (`Secondary`) | Insert-only graph; a root view over the current node table. | Return the root node view. | The node handles keep the shared structure reachable. |
 | **Persistent ARTrie** (`Persistent`) | Copy-on-write revisions over the lock-free overlay (path-copying — the on-disk WAL/checkpoint machinery sits *below* this and is invisible to capture). | Load the current revision root from the overlay. | The revision root pins its copy-on-write structure in memory; eviction and checkpointing never mutate captured paths. |
 | **Snapshot** (re-capture) | Already immutable. | `Arc::clone` of the existing `TraversalSnapshot` — the **self-snapshot law**: snapshotting a snapshot yields a resource sharing the same arena. | Itself. |
 
-The DynamicDAWG memo first tries 64 optimistic captures. Its single
-`writer_state` atomic packs an admission bit above the active-writer count, so
-root/count capture and the memo revision can be validated without a mutation
-lock. If sustained writers consume every optimistic window, one snapshotter
-serializes the rare fallback, sets the admission bit, waits only for already
-admitted writers to drain, captures, and clears the bit through an RAII guard.
-New writers yield at the admission bit and resume immediately after capture.
-Thus neither continuous writers nor continuous snapshotters can create the
-previous circular starvation schedule, and ordinary mutations still perform
-one compare/exchange rather than acquiring a global lock.
+DynamicDAWG snapshot identity comes directly from the same atomically captured
+`GraphVersion` as its root and term count, so it requires no separate writer
+handshake. `SnapshotMemo` uses its seqlock-style handshake for heterogeneous
+secondary and persistent producers whose backend descriptor and memo revision
+are separate. A writer increments `active_writers` before touching backend state,
+publishes a new memo revision after every possibly dirty mutation, and then
+decrements the active count through an RAII guard. A snapshotter reads the memo
+revision, requires a zero active-writer count, captures the backend's immutable
+root/count pair, then validates the active count followed by the revision. It
+returns only when the revision is unchanged and no writer is active. Acquire /
+release ordering makes a writer visible either as active or as a completed
+revision advance. AcqRel writer withdrawals form a completion chain, so the
+writer performing the final 1→0 decrement carries every preceding concurrent
+writer's revision publication to the reader. A writer that begins after final
+validation linearizes after the capture. Loom checks the positive
+active-then-revision order, one explicitly bounded overlapping two-writer
+completion-chain schedule, and a negative revision-then-active witness that
+accepts a torn root/identity pair. The two-writer check is correspondence for
+the `2→1→0` AcqRel handoff, not exhaustive three-thread schedule exploration.
+
+There is deliberately no writer-admission bit and no quiescence mutex. A cold
+snapshotter CAS-publishes an empty per-revision generation and initializes it;
+normal contenders poll its `OnceLock`, so the usual path constructs exactly
+one provider snapshot. A boundedly stalled or panicking initializer can be
+superseded by a successor generation, whose CAS winner initializes instead.
+Consequently abandoned work cannot convoy another snapshotter, and a suspended
+snapshotter cannot stop writers. Mutation unwind conservatively invalidates the
+memo, advances the revision, and withdraws the writer announcement before the
+panic propagates. Fallible persistent mutations also remain dirty on `Err`,
+because an I/O error may follow partial overlay or durable publication; only a
+proven `Ok(false)` suppresses revision invalidation.
+
+Every invalidated attempt contributes one bounded backoff credit. The next
+writer atomically consumes the accumulated credits and performs a bounded CPU
+pause before entering; it never waits for a reader or for a state to drain.
+This widens practical zero-writer windows under churn without turning the hint
+into a lock. If a snapshotter is permanently suspended or panics, at most one
+finite residual pause remains, after which later mutations pay nothing.
+
+The exact progress claim is **lock-free system-wide and obstruction-free for an
+individual snapshotter**, not wait-free or starvation-free for every reader.
+The heterogeneous backends publish their root/count descriptor separately from
+the producer memo revision, so no finite number of reader steps can guarantee
+success against an adversary that completes a mutation between every capture
+and validation. A wait-free reader would require a common atomic descriptor
+containing both the backend revision owner and producer identity, or a
+helpable multi-version publication protocol implemented by every backend.
 
 Three consequences worth internalizing:
 
-- **Capture never holds exclusion for the snapshot lifetime.** The optimistic
-  path does not block writers. The bounded starvation fallback closes new
-  writer admission only for the constant-time root/count capture; the pin is
-  ownership, not exclusion.
+- **Capture never holds exclusion.** Snapshot construction and memo publication
+  do not block writers; the pin is ownership, not exclusion.
 - **`ldict_dictionary_free` does not end a snapshot.** The arena's handles own
   the revision; the handle's death merely releases the handle's own retain
   (see [§ 7](#7-the-retain-ledger--owneddictionaryresource)).
@@ -144,14 +183,14 @@ Three consequences worth internalizing:
   state on both sides and therefore linearizes wholly before or after the
   revision change; a new root can never be mislabeled with an old identity.
 
-The deterministic regression
-`bindings::tests::snapshot_quiescence_closes_writer_admission_and_prevents_starvation`
-holds one writer active until the fallback closes admission, proves a second
-writer cannot enter, releases the first, and requires both the snapshot and
-waiting writer to complete. The concurrent FFI test then performs 12,000
-coherent root/count captures under uninterrupted insert/remove churn; it
-completes in the ordinary debug profile and checks every walked final-node
-count against the captured count.
+The deterministic regressions prove that a waiting snapshot never closes writer
+admission, a stalled cold initializer blocks neither another snapshotter nor a
+writer, mutation/snapshot panics leave progress state recoverable, and byte,
+Unicode-scalar, and `u64` producers share identical revision-memo semantics.
+The concurrent FFI test additionally performs 12,000 coherent root/count
+captures under insert/remove churn and checks every walked final-node count
+against the captured count. Continuous churn is a safety stress test, not a
+per-thread starvation-freedom claim.
 
 The empirical counterpart: the run-verified example in the
 [C ABI reference § 15](c-abi-reference.md#15-a-complete-verified-c-example)
@@ -370,8 +409,8 @@ Three facts the table encodes:
 1. **`PARALLEL_REENTRANT` is universal — and it is a *claim*, honored by
    construction.** Consumers seeing this bit skip their serializing call
    gates. The producer earns it: engine reads are internally synchronized,
-   the DynamicDAWG binding's `RwLock` is held only within a call, and arena
-   access serializes on its own mutex without ever calling out. Nothing in
+   DynamicDAWG reads are wait-free generation loads while writes use inner
+   graph CAS, and arena access uses lock-free chunk publication without calling out. Nothing in
    the producer requires callers to serialize.
 2. **`SUFFIX_BASED` marks semantics, not structure.** A suffix-flagged
    resource indexes substrings; a Levenshtein consumer must interpret finality
@@ -447,7 +486,7 @@ The checklist, in dependency order — "done" means every gate below is green:
    `include/libdictenstein.h`; new capability bits only for genuinely new
    operation families. New `ldict_*` functions (if any) bump
    `LDICT_API_REVISION` — additive only, per the
-   [evolution policy](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/abi-evolution.md).
+   [evolution policy](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/abi-evolution.md).
 5. **Flags honesty.** Claim `PARALLEL_REENTRANT` only if every path is
    internally synchronized; set `SUFFIX_BASED` for substring semantics; extend
    the `dictionary_vtable()` dispatch (new `'static` vtables) if a new
@@ -519,7 +558,7 @@ SCDAWG) are kept with the per-backend sections of the
 
 ## Family documents
 
-- [ABI reference — `vinary_tree_interop.h`, annotated](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/abi-reference.md)
-- [ABI evolution policy — the four version counters](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/abi-evolution.md)
-- [Family security model — trust zones and validation duties](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/vinary-tree-interop/docs/security-model.md)
+- [ABI reference — `vinary_tree_interop.h`, annotated](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/abi-reference.md)
+- [ABI evolution policy — the four version counters](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/abi-evolution.md)
+- [Family security model — trust zones and validation duties](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/security-model.md)
 - [liblevenshtein language-binding architecture (the consumer side)](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/docs/language-bindings.md)

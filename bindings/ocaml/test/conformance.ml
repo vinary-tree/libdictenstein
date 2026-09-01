@@ -88,7 +88,7 @@ let assert_fixture_reads dictionary =
 
 let c1 () =
   check (D.abi_version () = 1) "abi version == 1";
-  check (D.api_revision () = 4) "api revision == 4";
+  check (D.api_revision () = 5) "api revision == 5";
   let dawg = D.dynamic_dawg () in
   check (D.kind dawg = 1) "dawg kind";
   let caps = D.capabilities dawg in
@@ -406,6 +406,75 @@ let c10_readers_during_writer () =
   check ((D.get dawg "w2999").value = Some 2999L) "final write present";
   D.close dawg
 
+(* entries-v1: ordered immutable snapshots, exact optional values, all unit
+   domains, and deterministic cleanup on early return/exception. *)
+let entries_conformance () =
+  let unicode = D.dynamic_dawg ~domain:I.Unicode_scalar () in
+  ignore (D.put unicode "cat" None);
+  ignore (D.put unicode "caf\195\169" (Some (-1L)));
+  ignore (D.put unicode "" (Some 0L));
+  let captured =
+    D.with_entries_seq ~max_entries:1 unicode (fun metadata entries ->
+      check (metadata.unit_domain = I.Unicode_scalar) "entries unicode domain";
+      check (metadata.value_domain = D.Optional_u64) "entries optional-u64 values";
+      check (metadata.exact_length = Some 3L) "entries exact length";
+      check (Option.is_some metadata.snapshot_identity) "entries snapshot identity";
+      ignore (D.put unicode "dog" (Some 4L));
+      let result = List.of_seq entries in
+      check (match entries () with Seq.Nil -> true | _ -> false)
+        "entries sequence remains ended";
+      result)
+  in
+  check
+    (captured =
+      [ { D.key = D.Unicode ""; value = Some 0L };
+        { D.key = D.Unicode "caf\195\169"; value = Some (-1L) };
+        { D.key = D.Unicode "cat"; value = None } ])
+    "entries immutable lexicographic Unicode snapshot";
+  check
+    (D.fold_entries unicode ~init:0 ~f:(fun count _ -> count + 1) = 4)
+    "entries fold sees later revision";
+  let raised =
+    try
+      D.with_entries_seq unicode (fun _ entries ->
+        match entries () with
+        | Seq.Nil -> ()
+        | Seq.Cons _ -> raise Exit);
+      false
+    with Exit -> true
+  in
+  check raised "entries action exception propagated";
+  check (D.contains unicode "cat") "dictionary usable after early entries close";
+  D.close unicode;
+
+  let bytes_dictionary = D.dynamic_dawg ~domain:I.Byte () in
+  ignore (D.put bytes_dictionary "" None);
+  ignore (D.put bytes_dictionary "\000\255" (Some (-1L)));
+  ignore (D.put bytes_dictionary "\001" (Some 1L));
+  let byte_entries = D.with_entries_seq bytes_dictionary
+      (fun _ entries -> List.of_seq entries) in
+  check
+    (byte_entries =
+      [ { D.key = D.Bytes (Bytes.of_string ""); value = None };
+        { D.key = D.Bytes (Bytes.of_string "\000\255"); value = Some (-1L) };
+        { D.key = D.Bytes (Bytes.of_string "\001"); value = Some 1L } ])
+    "entries preserve arbitrary byte keys and byte order";
+  D.close bytes_dictionary;
+
+  let u64_dictionary = D.dynamic_dawg ~domain:I.U64 () in
+  ignore (D.put_u64 u64_dictionary [| -1L |] (Some (-1L)));
+  ignore (D.put_u64 u64_dictionary [| 0L |] None);
+  ignore (D.put_u64 u64_dictionary [| Int64.min_int |] (Some 0L));
+  let u64_entries = D.with_entries_seq u64_dictionary
+      (fun _ entries -> List.of_seq entries) in
+  check
+    (u64_entries =
+      [ { D.key = D.U64 [| 0L |]; value = None };
+        { D.key = D.U64 [| Int64.min_int |]; value = Some 0L };
+        { D.key = D.U64 [| -1L |]; value = Some (-1L) } ])
+    "entries preserve full-width u64 keys and values";
+  D.close u64_dictionary
+
 (* --------------------------------------------------------------------- *)
 
 let () =
@@ -421,6 +490,7 @@ let () =
   c9 ();
   c10_independent ();
   c10_readers_during_writer ();
+  entries_conformance ();
   if !failures = 0 then print_endline "ocaml conformance: all checks passed"
   else begin
     Printf.eprintf "ocaml conformance: %d check(s) failed\n" !failures;

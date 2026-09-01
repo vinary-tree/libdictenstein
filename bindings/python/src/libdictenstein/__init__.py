@@ -1,8 +1,10 @@
 """High-performance dictionaries that compose with Vinary Tree consumers."""
 
 from ._native import (
+    DictionarySnapshot,
     DoubleArrayTrie,
     DynamicDawg,
+    EntryStream,
     NativeError,
     PersistentARTrie,
     PersistentVocabulary,
@@ -13,8 +15,10 @@ from ._native import (
 )
 
 __all__ = [
+    "DictionarySnapshot",
     "DoubleArrayTrie",
     "DynamicDawg",
+    "EntryStream",
     "NativeError",
     "PersistentARTrie",
     "PersistentVocabulary",
