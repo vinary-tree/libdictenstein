@@ -33,7 +33,10 @@
 //! Total: ~240 bytes (32-byte aligned for AVX2)
 //! ```
 
-use super::{AddChildError, CharArtNode, CharCompressedPrefix, CharNodeHeader};
+use super::{
+    AddChildError, CharArtNode, CharCompressedPrefix, CharNodeHeader, CHAR_NODE16_TAG,
+    CHAR_NODE48_TAG, CHAR_NODE4_TAG,
+};
 use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
 /// Maximum number of children in a CharNode16
@@ -61,7 +64,7 @@ impl CharNode16 {
     /// Create a new empty CharNode16
     pub fn new() -> Self {
         Self {
-            header: CharNodeHeader::new(116), // CHARNODE16 type
+            header: CharNodeHeader::new(CHAR_NODE16_TAG),
             prefix: CharCompressedPrefix::empty(),
             keys: [0; CHARNODE16_MAX_CHILDREN],
             children: [
@@ -167,7 +170,7 @@ impl CharNode16 {
 
         let mut node4 = super::CharNode4::new();
         node4.header = self.header.clone();
-        node4.header.node_type = 4;
+        node4.header.node_type = CHAR_NODE4_TAG;
         node4.prefix = self.prefix;
         node4.value_ptr = self.value_ptr.clone();
 
@@ -184,7 +187,7 @@ impl CharNode16 {
     pub fn grow(&self) -> super::CharNode48 {
         let mut node48 = super::CharNode48::new();
         node48.header = self.header.clone();
-        node48.header.node_type = 48;
+        node48.header.node_type = CHAR_NODE48_TAG;
         node48.prefix = self.prefix;
         node48.value_ptr = self.value_ptr.clone();
 
@@ -298,7 +301,7 @@ mod tests {
     #[test]
     fn test_new_charnode16() {
         let node = CharNode16::new();
-        assert_eq!(node.header.node_type, 116); // CHARNODE16
+        assert_eq!(node.header.node_type, CHAR_NODE16_TAG);
         assert_eq!(node.header.num_children, 0);
         assert!(!node.is_full());
     }
@@ -418,7 +421,7 @@ mod tests {
         node.header.set_final(true);
         let node4 = node.shrink();
 
-        assert_eq!(node4.header.node_type, 4);
+        assert_eq!(node4.header.node_type, CHAR_NODE4_TAG);
         assert_eq!(node4.header.num_children, 4);
         assert!(node4.header.is_final());
 
@@ -440,7 +443,7 @@ mod tests {
         node.header.set_final(true);
         let node48 = node.grow();
 
-        assert_eq!(node48.header.node_type, 48);
+        assert_eq!(node48.header.node_type, CHAR_NODE48_TAG);
         assert_eq!(node48.header.num_children, 16);
         assert!(node48.header.is_final());
 

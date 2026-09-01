@@ -64,7 +64,7 @@ fn assert_same_logical_node(expected: &CharNode, actual: &CharNode) {
     assert_eq!(value_signature(expected), value_signature(actual));
 }
 
-fn decode_v2(
+fn decode_current_record(
     bytes: &[u8],
     parent: ArenaSlot,
 ) -> libdictenstein::persistent_artrie::Result<CharNode> {
@@ -72,9 +72,9 @@ fn decode_v2(
     deserialize_char_node_v2(&mut cursor, &DeserializationContext::new(parent))
 }
 
-fn serialize_v2(node: &CharNode, ctx: &SerializationContext) -> Vec<u8> {
+fn serialize_current_record(node: &CharNode, ctx: &SerializationContext) -> Vec<u8> {
     let mut bytes = Vec::new();
-    serialize_char_node_v2(node, &mut bytes, ctx).expect("serialize v2 char node");
+    serialize_char_node_v2(node, &mut bytes, ctx).expect("serialize current char node");
     bytes
 }
 
@@ -124,7 +124,7 @@ fn make_bucket() -> CharNode {
 }
 
 #[test]
-fn valid_v2_layouts_roundtrip_exactly() {
+fn current_fixed_v2_and_compact_v3_layouts_roundtrip_exactly() {
     let relative_parent = ArenaSlot::new(0, 80);
     let node4 = make_node4();
     let node16 = make_node16();
@@ -157,17 +157,20 @@ fn valid_v2_layouts_roundtrip_exactly() {
     ];
 
     for (node, ctx, parent) in cases {
-        let bytes = serialize_v2(&node, &ctx);
-        let decoded = decode_v2(&bytes, parent).expect("decode valid v2 node");
+        let expected_version = if ctx.use_relative { 3 } else { 2 };
+        let bytes = serialize_current_record(&node, &ctx);
+        assert_eq!(bytes[4], expected_version);
+        let decoded =
+            decode_current_record(&bytes, parent).expect("decode valid current node record");
         assert_same_logical_node(&node, &decoded);
     }
 }
 
 #[test]
-fn valid_v2_decoder_stops_at_exact_node_boundary() {
+fn current_decoder_stops_at_exact_node_boundary() {
     let parent = ArenaSlot::new(0, 80);
     let node = make_node4();
-    let node_bytes = serialize_v2(&node, &SerializationContext::new(parent));
+    let node_bytes = serialize_current_record(&node, &SerializationContext::new(parent));
     let mut with_suffix = node_bytes.clone();
     with_suffix.extend_from_slice(&[0xa5; 21]);
 
@@ -184,14 +187,14 @@ fn valid_v2_decoder_stops_at_exact_node_boundary() {
 }
 
 #[test]
-fn valid_v2_layouts_reject_every_truncated_prefix_without_panicking() {
+fn current_layouts_reject_every_truncated_prefix_without_panicking() {
     let parent = ArenaSlot::new(0, 80);
     let node = make_node16();
-    let bytes = serialize_v2(&node, &SerializationContext::new(parent));
+    let bytes = serialize_current_record(&node, &SerializationContext::new(parent));
 
     for cut in 0..bytes.len() {
         let truncated = bytes[..cut].to_vec();
-        let attempt = panic::catch_unwind(move || decode_v2(&truncated, parent));
+        let attempt = panic::catch_unwind(move || decode_current_record(&truncated, parent));
         assert!(attempt.is_ok(), "truncated input panicked at cut {cut}");
         assert!(
             attempt.unwrap().is_err(),
@@ -216,7 +219,7 @@ fn set_u32(header: &mut [u8], offset: usize, value: u32) {
 #[test]
 fn corrupt_header_fields_fail_closed() {
     let parent = ArenaSlot::new(0, 80);
-    let valid = serialize_v2(&make_node4(), &SerializationContext::new(parent));
+    let valid = serialize_current_record(&make_node4(), &SerializationContext::new(parent));
     let data_size = u32::from_le_bytes(valid[12..16].try_into().unwrap());
 
     let corruptions = vec![
@@ -224,7 +227,7 @@ fn corrupt_header_fields_fail_closed() {
         mutate_header(valid.clone(), |h| h[4] = CHAR_FORMAT_VERSION + 1),
         mutate_header(valid.clone(), |h| h[5] = 0xff),
         mutate_header(valid.clone(), |h| h[6] = FLAG_SEQUENTIAL_SIBLINGS),
-        mutate_header(valid.clone(), |h| h[7] = 1),
+        mutate_header(valid.clone(), |h| h[6] |= 0x08),
         mutate_header(valid.clone(), |h| set_u16(h, 8, 5)),
         mutate_header(valid.clone(), |h| h[10] = 7),
         mutate_header(valid.clone(), |h| h[11] = 1),
@@ -232,12 +235,12 @@ fn corrupt_header_fields_fail_closed() {
     ];
 
     for corrupted in corruptions {
-        assert!(decode_v2(&corrupted, parent).is_err());
+        assert!(decode_current_record(&corrupted, parent).is_err());
     }
 
     let mut too_large = mutate_header(valid, |h| set_u32(h, 12, data_size + 1));
     too_large.push(0);
-    assert!(decode_v2(&too_large, parent).is_err());
+    assert!(decode_current_record(&too_large, parent).is_err());
 
     assert_eq!(&CHAR_NODE_MAGIC, b"ARC\0");
     assert_eq!(char_node_types::CHARNODE4, 104);
@@ -246,10 +249,10 @@ fn corrupt_header_fields_fail_closed() {
 #[test]
 fn bucket_header_entry_count_mismatch_fails_closed() {
     let parent = ArenaSlot::new(2, 90);
-    let valid = serialize_v2(&make_bucket(), &SerializationContext::new(parent));
+    let valid = serialize_current_record(&make_bucket(), &SerializationContext::new(parent));
     let corrupted = mutate_header(valid, |h| set_u16(h, 8, 48));
 
-    assert!(decode_v2(&corrupted, parent).is_err());
+    assert!(decode_current_record(&corrupted, parent).is_err());
 }
 
 #[test]
@@ -280,10 +283,10 @@ fn sequential_flag_without_relative_flag_fails_closed_even_with_valid_payload() 
     let first = ArenaSlot::new(0, 30);
     let parent = ArenaSlot::new(0, 80);
     let node = make_node48_sequential(first.slot_id);
-    let valid = serialize_v2(&node, &SerializationContext::sequential(parent, first));
+    let valid = serialize_current_record(&node, &SerializationContext::sequential(parent, first));
     let corrupted = mutate_header(valid, |h| {
         h[6] = (h[6] | FLAG_SEQUENTIAL_SIBLINGS) & !FLAG_RELATIVE_OFFSETS;
     });
 
-    assert!(decode_v2(&corrupted, parent).is_err());
+    assert!(decode_current_record(&corrupted, parent).is_err());
 }

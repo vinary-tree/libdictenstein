@@ -344,7 +344,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         // borrows `node_data`, which borrows `am`). A value-less (legacy) root has
         // HAS_VALUE clear → `read_node_value` returns None — back-compat. This mirrors
         // `load_single_child_data`, which already reads child values (M4a).
-        let value = serialization::v2::read_node_value(node_data);
+        let value = serialization::v2::try_read_node_value(node_data)?;
 
         // Collect child pointers before dropping the arena lock
         let child_data: Vec<(u8, SwizzledPtr)> = node
@@ -400,7 +400,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
                 // M4a / D-VAL: capture the leaf value BEFORE `drop(am)` below (it
                 // borrows `data`, which borrows `am`).
-                let value = serialization::v2::read_node_value(data);
+                let value = serialization::v2::try_read_node_value(data)?;
 
                 let is_final = node.header().is_final();
 

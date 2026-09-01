@@ -4,7 +4,7 @@ version = "4.0.0-rc.4"
 edition = "2021"
 # Effective floor across `--all-features`: pathmap 0.2.2 and sysinfo 0.39 are the
 # binding constraints. The previously declared 1.70 was inaccurate — bincode 2.0.1
-# and lru 0.18 already required 1.85, and pathmap 0.2.2 required 1.88.
+# already required 1.85, and pathmap 0.2.2 required 1.88.
 rust-version = "1.95"
 authors = ["Dylon Edwards <dylon.devo@gmail.com>"]
 license = "Apache-2.0"
@@ -89,7 +89,7 @@ rayon = { version = "1.12", optional = true }
 # Fast non-cryptographic hashing for node deduplication
 xxhash-rust = { version = "0.8", features = ["xxh3"], optional = true }
 
-# LRU cache for reverse lookups in vocabulary trie
+# LRU cache for reverse lookups in vocabulary tries.
 lru = { version = "0.18", optional = true }
 
 # Concurrent hash map for LRU tracking in eviction
@@ -345,6 +345,10 @@ required-features = ["persistent-artrie"]
 
 [[example]]
 name = "test_checkpoint_debug"
+required-features = ["persistent-artrie"]
+
+[[example]]
+name = "char_node_format_probe"
 required-features = ["persistent-artrie"]
 
 [[bench]]

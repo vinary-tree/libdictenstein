@@ -230,6 +230,16 @@ impl<V: DictionaryValue> PersistentARTrie<V> {
                 percent_complete: 100.0,
             });
 
+            // A registry generation names records in the CURRENT mmap/arena address
+            // space. Stop and join the eviction worker before releasing those
+            // managers or renaming a different image over their file. Production
+            // workers hold a `Weak<PersistentARTrie>` and retain a strong `Arc` for
+            // the whole callback; `compact(&mut self)` already excludes such a
+            // shared callback in safe code, while this explicit close also covers
+            // the bare-trie bench/test coordinator and makes the destruction order
+            // local and auditable. No per-selection storage lease or hot-path
+            // reference-count operation is required.
+            self.close();
             self.buffer_manager = None;
             self.wal_writer = None;
             self.arena_manager = None;

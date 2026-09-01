@@ -1,0 +1,14 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index e87f0b0..1a92e34 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -18,8 +18,8 @@ exclude = ["docs/", "formal-verification/"]
+ [dependencies]
+ # Stable retained-resource ABI shared with independently packaged Vinary Tree
+ # consumers. The path is development-only; crates.io publication resolves the
+ # exact version requirement.
+-vinary-tree-interop = { path = "../liblevenshtein-rust/vinary-tree-interop", version = "0.1.0", optional = true }
++vinary-tree-interop = { path = "../liblevenshtein-rust/vinary-tree-interop", version = "=4.0.0-rc.2", optional = true }
+ # Logging facade
+ log = "0.4"
+ # SmallVec for stack-allocated vectors (performance optimization)

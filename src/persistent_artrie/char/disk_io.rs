@@ -30,18 +30,90 @@ use std::sync::Arc;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::buffer_manager::BufferManager;
+use crate::persistent_artrie::core::eviction::{
+    DiskRecordAddress, DurableRecordRef, DurableRegistryRecord,
+};
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 use crate::sync_compat::RwLock;
 use crate::value::DictionaryValue;
 
 use super::dict_impl_char::{ROOT_TYPE_EMPTY, ROOT_TYPE_NODE};
-use super::types::CharTrieNodeInner;
+use super::types::{CharTrieNodeInner, NonResidentCharChild};
 
 const ROOT_DESCRIPTOR_OFFSET: usize = 64;
 const ROOT_DESCRIPTOR_LEN: usize = 18;
 
 impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
+    /// Read one exact durable char-node record without deserializing `V` and
+    /// without manufacturing a node type for relative child references.
+    pub(crate) fn read_char_registry_record(
+        &self,
+        record_ref: DurableRecordRef,
+    ) -> Result<DurableRegistryRecord<u32>> {
+        use super::arena_manager::ArenaSlot;
+        use super::serialization_char::{
+            decode_char_node_metadata, DecodedCharMetadataChild, DeserializationContext,
+        };
+
+        let arena_id = record_ref.address.block_id.checked_sub(1).ok_or_else(|| {
+            PersistentARTrieError::corrupted(
+                "char registry metadata record uses reserved block zero",
+            )
+        })?;
+        let slot = ArenaSlot::new(arena_id, record_ref.address.slot_id);
+        let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
+            PersistentARTrieError::internal("No arena manager for char registry metadata read")
+        })?;
+        let arena = arena_manager.read();
+        let record_bytes = arena.read(slot)?;
+        let metadata = decode_char_node_metadata(
+            record_bytes,
+            &DeserializationContext::new(slot),
+            record_ref.expected_type,
+        )?;
+        drop(arena);
+
+        let mut children = Vec::new();
+        children
+            .try_reserve_exact(metadata.children.len())
+            .map_err(|error| {
+                PersistentARTrieError::allocation_failed(
+                    "char registry metadata child references",
+                    metadata.children.len(),
+                    error,
+                )
+            })?;
+        for (edge, child) in metadata.children {
+            let child_ref = match child {
+                DecodedCharMetadataChild::Typed(pointer) => {
+                    DurableRecordRef::from_typed_pointer(&pointer)?
+                }
+                DecodedCharMetadataChild::Untyped(slot) => {
+                    let block_id = slot.arena_id.checked_add(1).ok_or_else(|| {
+                        PersistentARTrieError::corrupted(
+                            "char metadata child arena id exceeds persistent block range",
+                        )
+                    })?;
+                    DurableRecordRef::untyped(DiskRecordAddress {
+                        block_id,
+                        slot_id: slot.slot_id,
+                    })
+                }
+            };
+            children.push((edge, child_ref));
+        }
+
+        Ok(DurableRegistryRecord {
+            canonical_ptr: record_ref.address.canonical_pointer(metadata.node_type)?,
+            address: record_ref.address,
+            node_type: metadata.node_type,
+            serialized_bytes: metadata.serialized_bytes,
+            prefix: metadata.prefix,
+            children,
+        })
+    }
+
     /// **L3.1 — read ONE char node RECORD's fields (no `CharTrieNodeInner`).**
     /// `load_char_node_from_disk_lazy` minus the owned-node construction: decode the dense
     /// `CharNode` record via the proven `deserialize_char_node_v2`, read its value blob, and
@@ -56,7 +128,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         node_ptr: &SwizzledPtr,
     ) -> Result<(bool, Option<V>, Vec<u32>, Vec<(u32, SwizzledPtr)>)> {
         use super::arena_manager::ArenaSlot;
-        use super::serialization_char::{deserialize_char_node_v2, DeserializationContext};
+        use super::serialization_char::{
+            char_record_node_type, deserialize_char_node_record, resolve_legacy_v2_child_types,
+            DeserializationContext,
+        };
         use std::io::Cursor;
 
         let arena_manager = self.arena_manager.as_ref().ok_or_else(|| {
@@ -77,7 +152,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
 
         let deser_ctx = DeserializationContext::new(slot);
         let mut cursor = Cursor::new(node_data);
-        let char_node = deserialize_char_node_v2(&mut cursor, &deser_ctx)?;
+        let (mut char_node, wire_header) = deserialize_char_node_record(&mut cursor, &deser_ctx)?;
+        resolve_legacy_v2_child_types(&wire_header, &mut char_node, |child_slot| {
+            char_record_node_type(am.read(child_slot)?)
+        })?;
 
         // Value blob follows the node bytes (variable-size v2): [value_len:u32][value_bytes].
         let offset = cursor.position() as usize;
@@ -276,8 +354,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         node_ptr: &crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
     ) -> Result<CharTrieNodeInner<V>> {
         use super::arena_manager::ArenaSlot;
-        use super::serialization_char::{deserialize_char_node_v2, DeserializationContext};
-        use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
+        use super::serialization_char::{
+            char_record_node_type, deserialize_char_node_record, resolve_legacy_v2_child_types,
+            DeserializationContext,
+        };
         use std::io::Cursor;
 
         let arena_manager = self
@@ -305,10 +385,21 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         // Deserialize the CharNode using v2 format with context
         let deser_ctx = DeserializationContext::new(slot);
         let mut cursor = Cursor::new(node_data);
-        let char_node = deserialize_char_node_v2(&mut cursor, &deser_ctx)?;
+        let (mut char_node, wire_header) = deserialize_char_node_record(&mut cursor, &deser_ctx)?;
+        resolve_legacy_v2_child_types(&wire_header, &mut char_node, |child_slot| {
+            char_record_node_type(am.read(child_slot)?)
+        })?;
 
-        // Use cursor position to find where value data starts (v2 format is variable size)
+        // Use cursor position to find where value data starts (v2 format is variable size).
         let offset = cursor.position() as usize;
+        let value_length_end = offset.checked_add(4).ok_or_else(|| {
+            PersistentARTrieError::corrupted("char value-length field offset overflow")
+        })?;
+        if value_length_end > node_data.len() {
+            return Err(PersistentARTrieError::corrupted(
+                "char value-length field extends beyond its node record",
+            ));
+        }
 
         // Read value_len and value_bytes
         let value_len = u32::from_le_bytes([
@@ -319,23 +410,52 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         ]) as usize;
 
         let value: Option<V> = if value_len > 0 {
-            let value_start = offset + 4;
-            let value_end = value_start + value_len;
+            let value_start = value_length_end;
+            let value_end = value_start.checked_add(value_len).ok_or_else(|| {
+                PersistentARTrieError::corrupted("char value byte range overflow")
+            })?;
+            if value_end > node_data.len() {
+                return Err(PersistentARTrieError::corrupted(
+                    "char value bytes extend beyond their node record",
+                ));
+            }
             let value_bytes = &node_data[value_start..value_end];
             Some(
                 crate::serialization::bincode_compat::deserialize(value_bytes).map_err(|e| {
-                    PersistentARTrieError::internal(format!("Failed to deserialize value: {}", e))
+                    PersistentARTrieError::corrupted(format!(
+                        "failed to deserialize char value: {e}"
+                    ))
                 })?,
             )
         } else {
             None
         };
 
-        // Collect child pointers from the CharNode (as-is, for lazy loading)
-        let child_data: Vec<(char, SwizzledPtr)> = char_node
-            .iter_children()
-            .filter_map(|(key, ptr)| char::from_u32(key).map(|c| (c, ptr.clone())))
-            .collect();
+        // Validate every key and nonresident pointer before constructing an
+        // owning projection. Invalid Unicode must not be silently omitted.
+        let mut child_data = Vec::new();
+        child_data
+            .try_reserve_exact(char_node.num_children())
+            .map_err(|error| {
+                PersistentARTrieError::allocation_failed(
+                    "decoded char child metadata",
+                    char_node.num_children(),
+                    error,
+                )
+            })?;
+        for (key, pointer) in char_node.iter_children() {
+            let character = char::from_u32(key).ok_or_else(|| {
+                PersistentARTrieError::corrupted(format!(
+                    "decoded char child key {key:#x} is not a Unicode scalar value"
+                ))
+            })?;
+            let child = NonResidentCharChild::try_from(pointer.clone()).map_err(|error| {
+                PersistentARTrieError::corrupted(format!(
+                    "decoded child {character:?} has invalid pointer state: {error}"
+                ))
+            })?;
+            child_data.push((character, child));
+        }
 
         drop(am);
 
@@ -345,20 +465,33 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         result.set_final(is_final);
         result.value = value;
 
-        // CX/#43 (4A): preserve the path-compression prefix the v2 decoder put on `char_node`.
-        // The prior code built a fresh `CharTrieNodeInner::new()` and never copied the prefix, so a
-        // compressed node (`prefix_len > 0`) silently LOST its prefix on fault-in — the keys under
-        // it would be shortened/mis-keyed. No-op for `prefix_len == 0` (every current production
-        // image), so existing reopen / #39 eviction are byte-for-byte unchanged. `inner_to_overlay`
-        // then EXPANDS this prefix into a chain (traversal is prefix-unaware).
-        result.node.header_mut().prefix_len = char_node.header().prefix_len;
-        *result.node.prefix_mut() = *char_node.prefix();
+        // CX/#43 (4A): preserve and validate the decoded path-compression prefix.
+        // `inner_to_overlay` expands it into a traversal-aware chain.
+        let prefix_length = char_node.header().prefix_len as usize;
+        if prefix_length > super::nodes::CHAR_MAX_PREFIX_LEN {
+            return Err(PersistentARTrieError::corrupted(format!(
+                "decoded char prefix length {prefix_length} exceeds capacity {}",
+                super::nodes::CHAR_MAX_PREFIX_LEN
+            )));
+        }
+        let prefix = char_node.prefix().as_slice(prefix_length);
+        result.set_compressed_prefix(prefix).map_err(|error| {
+            PersistentARTrieError::corrupted(format!(
+                "decoded char node has invalid compressed prefix: {error}"
+            ))
+        })?;
 
-        // Insert children using insert_child_ptr (stores raw SwizzledPtrs without loading)
-        for (c, child_ptr) in child_data {
-            // If there's an old in-memory pointer, we'd need to free it,
-            // but for fresh loading there shouldn't be any
-            let _old = result.insert_child_ptr(c, child_ptr);
+        // Insert decoded nonresident children without loading them. The owned
+        // projection rejects resident/transitional states and duplicate keys so
+        // malformed durable topology cannot manufacture Box ownership.
+        for (c, child) in child_data {
+            result
+                .try_add_nonresident_child(c, child)
+                .map_err(|error| {
+                    PersistentARTrieError::corrupted(format!(
+                        "invalid decoded child {c:?} in char node: {error}"
+                    ))
+                })?;
         }
 
         Ok(result)
@@ -395,17 +528,14 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
             PersistentARTrieError::internal("No buffer manager for overlay fault-in load")
         })?;
         let inner = self.load_char_node_from_disk_lazy(bm, disk_ptr)?;
-        let top = super::persist::inner_to_overlay::<V>(&inner);
-        // CX/#43 (#6 eviction-ON): stamp the TOP-of-span node with `disk_ptr` IFF this is a COMPRESSED
-        // node (`prefix_len > 0`), so a fault-then-evict re-installs `Child::OnDisk` for the whole
-        // re-expanded span (the evictor walks to the top intermediate + checks
-        // `durable_stamp == disk_ptr`). NO-OP for `prefix_len == 0` (every current production image),
-        // so the production fault path + #39 eviction stay byte-for-byte unchanged (the prior code
-        // stamped nothing here). Red-team-confirmed safe: the registry is rebuilt+replaced wholesale
-        // each checkpoint, so a faulted node's `disk_ptr` matches the live registry's ptr.
-        if inner.node.header().prefix_len > 0 {
-            top.set_durable_stamp(disk_ptr.to_raw());
-        }
+        let top = super::persist::inner_to_overlay::<V>(&inner)?;
+        // `top` is the exact in-memory representation of `disk_ptr`: either the decoded
+        // uncompressed node or the head of a losslessly expanded compressed span. Stamp both cases
+        // before publication so a winning fault can later be re-evicted. This does not grant
+        // eviction authority by itself: the evictor also revalidates the exact root/registry
+        // generation, path, disk address, and residency. All structural path copies clear their
+        // stamp, preserving the stale-image guard after a write.
+        top.set_durable_stamp(disk_ptr.to_raw());
         Ok(Arc::new(top))
     }
 }

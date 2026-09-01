@@ -1,5 +1,12 @@
 # Design: The Irreversible "Lock-Free Flip" (Phase E2/E1/Checkpoint/Eviction/Recovery + Phase F)
 
+> **Historical design record.** This document preserves the pre-F7 flip plan and
+> its then-current terminology. In particular, references below to mutable
+> registry invalidation are superseded by the exact-root authority protocol:
+> semantic writers clear the eviction binding in their existing root CAS, while
+> only cold checkpoint/retirement lifecycle operations mutate registry-builder
+> state. See [Eviction Strategy](../persistence/eviction.md#exact-root-authority-and-cold-lifecycle-publication).
+
 **Synthesized in:** [Concurrency model](../persistence/concurrency-model.md) · [Durability, checkpoints & crash recovery](../persistence/durability-and-recovery.md). This record is the mechanism-detail design for the owner-gated, irreversible "lock-free flip" that makes the overlay the production default (Phase E write / read / checkpoint / eviction / recovery flips + Phase F owned-tree removal and `RwLock`→`Arc`). The resulting fully-lock-free architecture — the **F4 lock collapse** — is presented at the architecture level in those pages; its field-disposition record is [`f4-lock-collapse-implementation.md`](f4-lock-collapse-implementation.md).
 
 **Repo:** `/home/dylon/Workspace/f1r3fly.io/libdictenstein` · 2026-06-02 · implementation-ready design for the

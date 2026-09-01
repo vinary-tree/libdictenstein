@@ -959,6 +959,91 @@ impl<V: DictionaryValue> DictionaryNode for DynamicDawgNode<V> {
         })
     }
 
+    #[inline]
+    fn supports_efficient_snapshot_cursor_edge_paging(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn visit_snapshot_cursor_edge_page<F>(
+        &self,
+        cursor: Self::SnapshotCursor,
+        start: usize,
+        capacity: usize,
+        visitor: F,
+    ) -> Option<(bool, usize)>
+    where
+        F: FnMut(u8, Self::SnapshotCursor),
+    {
+        // SAFETY: inherited from the trait contract; `self` retains the exact
+        // immutable revision that produced `cursor` and all emitted children.
+        Some(unsafe {
+            LockFreeDawgNode::<u8, V>::visit_cursor_edge_page(cursor, start, capacity, visitor)
+        })
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_edge_at(
+        &self,
+        cursor: Self::SnapshotCursor,
+        index: usize,
+    ) -> Option<crate::SnapshotCursorEdgeObservation<u8, Self::SnapshotCursor>> {
+        // SAFETY: inherited from the trait contract; `self` retains the exact
+        // immutable revision that produced `cursor` and the returned child.
+        Some(unsafe { LockFreeDawgNode::<u8, V>::cursor_edge_at(cursor, index) })
+    }
+
+    #[inline]
+    fn supports_efficient_snapshot_cursor_edge_ranges(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_edge_range_start(
+        &self,
+        cursor: Self::SnapshotCursor,
+    ) -> Option<crate::SnapshotEdgeRangeStart<u8, Self::SnapshotCursor, Self>> {
+        // SAFETY: inherited from the trait contract; `self` retains the exact
+        // immutable revision that owns the cursor and returned edge storage.
+        let native = unsafe { LockFreeDawgNode::<u8, V>::cursor_edge_range_start(cursor) };
+        let is_final = native.is_final();
+        let total = native.total_edge_count();
+        let (first, remaining) = native.into_first_and_remaining();
+        let remaining = remaining.map(|token| {
+            let (current, end) = token.into_raw_parts();
+            // SAFETY: this wrapper's `Self` is the public node type for the
+            // exact native backend and retained revision represented above.
+            unsafe { crate::SnapshotEdgeRangeToken::from_raw_parts(current, end) }
+        });
+        Some(crate::SnapshotEdgeRangeStart::new(
+            is_final, total, first, remaining,
+        ))
+    }
+
+    #[inline]
+    unsafe fn snapshot_cursor_edge_range_step(
+        &self,
+        token: crate::SnapshotEdgeRangeToken<Self>,
+    ) -> Option<(
+        u8,
+        Self::SnapshotCursor,
+        Option<crate::SnapshotEdgeRangeToken<Self>>,
+    )> {
+        let (current, end) = token.into_raw_parts();
+        // SAFETY: inherited from the trait contract. The wrapper changes only
+        // the invariant backend marker; it preserves both pointer provenances.
+        let native = unsafe { crate::SnapshotEdgeRangeToken::from_raw_parts(current, end) };
+        // SAFETY: `native` denotes the same retained immutable edge range.
+        let (label, child, remaining) =
+            unsafe { LockFreeDawgNode::<u8, V>::cursor_edge_range_step(native) };
+        let remaining = remaining.map(|token| {
+            let (current, end) = token.into_raw_parts();
+            // SAFETY: same exact wrapper/backend relation as at method entry.
+            unsafe { crate::SnapshotEdgeRangeToken::from_raw_parts(current, end) }
+        });
+        Some((label, child, remaining))
+    }
+
     fn is_final(&self) -> bool {
         self.node.is_final()
     }
@@ -1192,6 +1277,29 @@ impl<V: DictionaryValue> crate::MutableMappedDictionary for DynamicDawg<V> {
 mod tests {
     use super::*;
     use log::debug;
+
+    #[test]
+    fn native_cursor_paging_does_not_change_child_arc_strong_counts() {
+        let dawg: DynamicDawg<()> = DynamicDawg::from_terms(vec!["alpha", "beta", "gamma"]);
+        let root = dawg.root();
+        let child = &root.node.edges.edges[0].1;
+        let before = Arc::strong_count(child);
+        let cursor = root.snapshot_root_cursor().expect("root cursor");
+        let mut visited = 0usize;
+
+        // SAFETY: `cursor` was produced by `root`, which retains the exact
+        // immutable revision throughout the call and the count observation.
+        let metadata = unsafe {
+            root.visit_snapshot_cursor_edge_page(cursor, 0, usize::MAX, |_, _| {
+                visited += 1;
+            })
+        }
+        .expect("native cursor page");
+
+        assert_eq!(metadata, (false, 3));
+        assert_eq!(visited, 3);
+        assert_eq!(Arc::strong_count(child), before);
+    }
 
     #[test]
     fn test_dynamic_dawg_insert() {

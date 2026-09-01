@@ -86,13 +86,22 @@ fn scratch_dir() -> std::path::PathBuf {
 
 fn dir_size(path: &Path) -> u64 {
     let mut total = 0;
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                total += dir_size(&p);
-            } else if let Ok(m) = e.metadata() {
-                total += m.len();
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        if let Ok(entries) = std::fs::read_dir(directory) {
+            for entry in entries.flatten() {
+                // Do not follow symbolic links: besides matching physical disk
+                // accounting, this prevents a link cycle from making the walk
+                // unbounded. Directory depth is represented only by `pending`.
+                match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => pending.push(entry.path()),
+                    Ok(kind) if kind.is_file() => {
+                        if let Ok(metadata) = entry.metadata() {
+                            total += metadata.len();
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }

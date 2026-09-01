@@ -11,6 +11,9 @@
 use std::sync::Arc;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
+use crate::persistent_artrie::core::overlay::durable_write::{
+    PendingDurableMutation, RegistryEligibleMutation,
+};
 use crate::persistent_artrie::dict_impl::DurabilityPolicy;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::wal::WalRecord;
@@ -62,7 +65,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     /// visibility-publishing root CAS. Returns `0` when no WAL writer is
     /// installed (no durability is available — Order-A callers MUST treat a `0`
     /// return as "no WAL" and refuse to acknowledge durability).
-    pub(super) fn append_to_wal_returning_lsn(&self, record: WalRecord) -> Result<u64> {
+    pub(super) fn append_to_wal_returning_lsn(
+        &self,
+        record: WalRecord,
+    ) -> Result<PendingDurableMutation<'_, RegistryEligibleMutation>> {
         self.append_to_wal_inner(record)
     }
 
@@ -82,7 +88,11 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         term: &[u8],
         generation: u64,
     ) -> Result<u64> {
-        self.append_to_wal_returning_lsn(WalRecord::CommitRank {
+        #[cfg(test)]
+        crate::persistent_artrie::core::overlay::durable_write::inject_semantic_wal_fault(
+            crate::persistent_artrie::core::overlay::durable_write::SemanticWalFaultPoint::CommitRankAppend,
+        )?;
+        self.append_wal_record(WalRecord::CommitRank {
             data_lsn,
             term: term.to_vec(),
             generation,
@@ -90,16 +100,26 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
     }
 
     /// Shared body for [`Self::append_to_wal`] / [`Self::append_to_wal_returning_lsn`].
-    fn append_to_wal_inner(&self, record: WalRecord) -> Result<u64> {
-        // A durable mutation is being logged: the in-memory trie is diverging
-        // from the last checkpoint's on-disk image, so any published eviction
-        // registry now references potentially-stale on-disk data. Invalidate it
-        // here — the single chokepoint every public mutation passes through — so
-        // eviction cannot unswizzle a live node onto a stale disk location until
-        // the next checkpoint rebuilds a fresh registry. No-op when eviction is
-        // disabled. See `invalidate_eviction_registry` for the full rationale.
-        self.invalidate_eviction_registry();
+    fn append_to_wal_inner(
+        &self,
+        record: WalRecord,
+    ) -> Result<PendingDurableMutation<'_, RegistryEligibleMutation>> {
+        // Preserve the established raw-handle diagnostic exactly once at the
+        // durable mutation chokepoint. Eviction authority is independent: the
+        // later semantic root CAS atomically clears its exact binding.
+        self.record_durable_structural_mutation();
+        let permit = self.begin_semantic_publication();
+        #[cfg(test)]
+        crate::persistent_artrie::core::overlay::durable_write::inject_semantic_wal_fault(
+            crate::persistent_artrie::core::overlay::durable_write::SemanticWalFaultPoint::DataAppend,
+        )?;
+        let appended_lsn = self.append_wal_record(record)?;
+        #[cfg(test)]
+        crate::persistent_artrie::core::overlay::durable_write::semantic_wal_rendezvous();
+        Ok(PendingDurableMutation::guarded(appended_lsn, permit))
+    }
 
+    pub(super) fn append_wal_record(&self, record: WalRecord) -> Result<u64> {
         let wal_bytes = record.serialized_size();
 
         // Check if group commit is enabled first. F4: clone the coordinator Arc out
@@ -158,6 +178,10 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         }
 
         if let Some(ref wal_writer) = self.wal_writer {
+            #[cfg(test)]
+            crate::persistent_artrie::core::overlay::durable_write::inject_semantic_wal_fault(
+                crate::persistent_artrie::core::overlay::durable_write::SemanticWalFaultPoint::DataSync,
+            )?;
             let synced_lsn = wal_writer
                 .sync()
                 .map_err(|e| PersistentARTrieError::WalError {

@@ -141,45 +141,80 @@ src/double_array_trie/core/shared.rs	unsafe_block	let state = unsafe { self.trus
 src/double_array_trie/core/shared.rs	unsafe_block	let trusted_final = unsafe {	1	snapshot-dat-sealed-layout
 src/double_array_trie/core/shared.rs	unsafe_block	unsafe { ValidatedDATCoreShared::<u8, u32, 1>::from_builder_parts_unchecked(raw, 1) };	1	snapshot-dat-sealed-layout
 src/double_array_trie/core/shared.rs	unsafe_fn	unsafe fn trusted_state(&self, cursor: SnapshotTraversalCursor) -> usize {	1	snapshot-dat-sealed-layout
-src/dynamic_dawg/ascii.rs	unsafe_block	Some(unsafe {	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/ascii.rs	unsafe_block	Some(unsafe {	2	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/ascii.rs	unsafe_block	Some(unsafe { LockFreeDawgNode::<u8, V>::cursor_edge_at(cursor, index) })	1	snapshot-retained-edge-range-token
 src/dynamic_dawg/ascii.rs	unsafe_block	Some(unsafe { LockFreeDawgNode::<u8, V>::cursor_value(cursor) })	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/ascii.rs	unsafe_block	Some(unsafe { LockFreeDawgNode::<u8, V>::cursor_value(value_cursor) })	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/ascii.rs	unsafe_block	let metadata = unsafe {	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/ascii.rs	unsafe_block	let native = unsafe { LockFreeDawgNode::<u8, V>::cursor_edge_range_start(cursor) };	1	snapshot-retained-edge-range-token
+src/dynamic_dawg/ascii.rs	unsafe_block	let native = unsafe { crate::SnapshotEdgeRangeToken::from_raw_parts(current, end) };	1	snapshot-retained-edge-range-token
 src/dynamic_dawg/ascii.rs	unsafe_block	node: unsafe { LockFreeDawgNode::arc_from_cursor(cursor) },	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/ascii.rs	unsafe_block	unsafe { LockFreeDawgNode::<u8, V>::cursor_edge_range_step(native) };	1	snapshot-retained-edge-range-token
+src/dynamic_dawg/ascii.rs	unsafe_block	unsafe { crate::SnapshotEdgeRangeToken::from_raw_parts(current, end) }	2	snapshot-retained-edge-range-token
 src/dynamic_dawg/ascii.rs	unsafe_fn	unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/ascii.rs	unsafe_fn	unsafe fn snapshot_cursor_edge_at(	1	snapshot-retained-edge-range-token
+src/dynamic_dawg/ascii.rs	unsafe_fn	unsafe fn snapshot_cursor_edge_range_start(	1	snapshot-retained-edge-range-token
+src/dynamic_dawg/ascii.rs	unsafe_fn	unsafe fn snapshot_cursor_edge_range_step(	1	snapshot-retained-edge-range-token
 src/dynamic_dawg/ascii.rs	unsafe_fn	unsafe fn snapshot_cursor_node(&self, cursor: Self::SnapshotCursor) -> Option<Self> {	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/ascii.rs	unsafe_fn	unsafe fn snapshot_cursor_value(	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/ascii.rs	unsafe_fn	unsafe fn snapshot_graph_cursor_value(	1	snapshot-dawg-native-cursor-ownership
-src/dynamic_dawg/char.rs	unsafe_block	Some(unsafe {	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/ascii.rs	unsafe_fn	unsafe fn visit_snapshot_cursor_edge_page<F>(	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/char.rs	unsafe_block	Some(unsafe {	2	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/char.rs	unsafe_block	Some(unsafe { LockFreeDawgNode::<char, V>::cursor_value(cursor) })	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/char.rs	unsafe_block	Some(unsafe { LockFreeDawgNode::<char, V>::cursor_value(value_cursor) })	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/char.rs	unsafe_block	let native = unsafe { LockFreeDawgNode::<char, V>::cursor_edge_range_start(cursor) };	1	snapshot-retained-edge-range-token
+src/dynamic_dawg/char.rs	unsafe_block	let native = unsafe { crate::SnapshotEdgeRangeToken::from_raw_parts(current, end) };	1	snapshot-retained-edge-range-token
 src/dynamic_dawg/char.rs	unsafe_block	node: unsafe { LockFreeDawgNode::arc_from_cursor(cursor) },	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/char.rs	unsafe_block	unsafe { LockFreeDawgNode::<char, V>::cursor_edge_range_step(native) };	1	snapshot-retained-edge-range-token
+src/dynamic_dawg/char.rs	unsafe_block	unsafe { crate::SnapshotEdgeRangeToken::from_raw_parts(current, end) }	2	snapshot-retained-edge-range-token
 src/dynamic_dawg/char.rs	unsafe_fn	unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/char.rs	unsafe_fn	unsafe fn snapshot_cursor_edge_range_start(	1	snapshot-retained-edge-range-token
+src/dynamic_dawg/char.rs	unsafe_fn	unsafe fn snapshot_cursor_edge_range_step(	1	snapshot-retained-edge-range-token
 src/dynamic_dawg/char.rs	unsafe_fn	unsafe fn snapshot_cursor_node(&self, cursor: Self::SnapshotCursor) -> Option<Self> {	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/char.rs	unsafe_fn	unsafe fn snapshot_cursor_value(	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/char.rs	unsafe_fn	unsafe fn snapshot_graph_cursor_value(	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/char.rs	unsafe_fn	unsafe fn visit_snapshot_cursor_edge_page<F>(	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/lockfree.rs	unsafe_block	assert_eq!(unsafe { LockFreeDawgNode::cursor_value(cursor) }, Some(7));	1	snapshot-dawg-native-cursor-ownership
-src/dynamic_dawg/lockfree.rs	unsafe_block	let node = unsafe { pointer.as_ref() };	2	snapshot-dawg-native-cursor-ownership
-src/dynamic_dawg/lockfree.rs	unsafe_block	let pointer = unsafe { cursor.node_pointer::<Self>() };	3	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/lockfree.rs	unsafe_block	Some(unsafe {	1	snapshot-retained-edge-range-token
+src/dynamic_dawg/lockfree.rs	unsafe_block	Some(unsafe { crate::SnapshotEdgeRangeToken::from_raw_parts(current, end) })	1	snapshot-retained-edge-range-token
+src/dynamic_dawg/lockfree.rs	unsafe_block	let (label, child) = unsafe { current.as_ref() };	1	snapshot-retained-edge-range-token
+src/dynamic_dawg/lockfree.rs	unsafe_block	let advanced = unsafe { current.as_ptr().add(1) };	1	snapshot-retained-edge-range-token
+src/dynamic_dawg/lockfree.rs	unsafe_block	let metadata = unsafe {	1	snapshot-retained-edge-range-token
+src/dynamic_dawg/lockfree.rs	unsafe_block	let node = unsafe { pointer.as_ref() };	5	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/lockfree.rs	unsafe_block	let pointer = unsafe { cursor.node_pointer::<Self>() };	6	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/lockfree.rs	unsafe_block	let root_final = unsafe {	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/lockfree.rs	unsafe_block	let start = unsafe { LockFreeDawgNode::cursor_edge_range_start(cursor) };	2	snapshot-retained-edge-range-token
 src/dynamic_dawg/lockfree.rs	unsafe_block	unsafe {	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/lockfree.rs	unsafe_block	unsafe { Arc::from_raw(pointer.as_ptr()) }	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/lockfree.rs	unsafe_block	unsafe { Arc::increment_strong_count(pointer.as_ptr()) };	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/lockfree.rs	unsafe_block	unsafe { LockFreeDawgNode::<u8, ()>::cursor_edge_range_step(token) };	2	snapshot-retained-edge-range-token
+src/dynamic_dawg/lockfree.rs	unsafe_block	unsafe { std::ptr::NonNull::new_unchecked(edges.as_ptr().add(1) as *mut ()) };	1	snapshot-retained-edge-range-token
+src/dynamic_dawg/lockfree.rs	unsafe_block	unsafe { std::ptr::NonNull::new_unchecked(edges.as_ptr().add(total) as *mut ()) };	1	snapshot-retained-edge-range-token
 src/dynamic_dawg/mod.rs	unsafe_impl	unsafe impl<U: Send + Sync, V: Send + Sync> Send for DynamicDawgSnapshotCursor<U, V> {}	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/mod.rs	unsafe_impl	unsafe impl<U: Send + Sync, V: Send + Sync> Sync for DynamicDawgSnapshotCursor<U, V> {}	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/u64.rs	unsafe_block	Some(unsafe {	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/u64.rs	unsafe_block	Some(unsafe { DawgNodeU64::<V>::visit_cursor_edge_page(cursor, start, capacity, visitor) })	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/u64.rs	unsafe_block	Some(unsafe { LockFreeDawgNode::<u64, V>::cursor_value(cursor) })	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/u64.rs	unsafe_block	Some(unsafe { LockFreeDawgNode::<u64, V>::cursor_value(value_cursor) })	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/u64.rs	unsafe_block	let (label, child, remaining) = unsafe { DawgNodeU64::<V>::cursor_edge_range_step(native) };	1	snapshot-retained-edge-range-token
+src/dynamic_dawg/u64.rs	unsafe_block	let native = unsafe { DawgNodeU64::<V>::cursor_edge_range_start(cursor) };	1	snapshot-retained-edge-range-token
+src/dynamic_dawg/u64.rs	unsafe_block	let native = unsafe { crate::SnapshotEdgeRangeToken::from_raw_parts(current, end) };	1	snapshot-retained-edge-range-token
 src/dynamic_dawg/u64.rs	unsafe_block	node: unsafe { LockFreeDawgNode::arc_from_cursor(cursor) },	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/u64.rs	unsafe_block	unsafe { crate::SnapshotEdgeRangeToken::from_raw_parts(current, end) }	2	snapshot-retained-edge-range-token
 src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn snapshot_cursor_edge_range_start(	1	snapshot-retained-edge-range-token
+src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn snapshot_cursor_edge_range_step(	1	snapshot-retained-edge-range-token
 src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn snapshot_cursor_node(&self, cursor: Self::SnapshotCursor) -> Option<Self> {	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn snapshot_cursor_value(	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn snapshot_graph_cursor_value(	1	snapshot-dawg-native-cursor-ownership
+src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn visit_snapshot_cursor_edge_page<F>(	1	snapshot-dawg-native-cursor-ownership
 src/ffi.rs	unsafe_fn	unsafe fn entry_cursor_mut<'a>(	1	ffi-entry-cursor-handle-ownership
 src/ffi.rs	unsafe_fn	unsafe fn persistent_open_or_create(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn persistent_path<'a>(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn slice<'a, T>(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn text_operation(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn u64_operation(	1	ffi-caller-pointer-contracts
+src/lib.rs	unsafe_block	let (is_final, total_edge_count) = unsafe {	1	snapshot-retained-edge-range-token
 src/lib.rs	unsafe_block	let edges = unsafe { std::slice::from_raw_parts(self.edges.as_ptr().add(start), len) };	1	snapshot-dense-cursor-contract
 src/lib.rs	unsafe_block	let is_final = unsafe {	1	snapshot-dense-cursor-contract
 src/lib.rs	unsafe_block	let node = unsafe { *self.nodes.get_unchecked(index) };	1	snapshot-dense-cursor-contract
@@ -188,6 +223,9 @@ src/lib.rs	unsafe_block	unsafe { self.snapshot_cursor_value(cursor) }	1	snapshot
 src/lib.rs	unsafe_block	unsafe { self.snapshot_graph_cursor_value(graph, cursor) }	1	snapshot-dense-cursor-contract
 src/lib.rs	unsafe_fn	pub unsafe fn edges_and_finality_unchecked(	1	snapshot-dense-cursor-contract
 src/lib.rs	unsafe_fn	unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(	1	snapshot-dense-cursor-contract
+src/lib.rs	unsafe_fn	unsafe fn snapshot_cursor_edge_at(	1	snapshot-retained-edge-range-token
+src/lib.rs	unsafe_fn	unsafe fn snapshot_cursor_edge_range_start(	1	snapshot-retained-edge-range-token
+src/lib.rs	unsafe_fn	unsafe fn snapshot_cursor_edge_range_step(	1	snapshot-retained-edge-range-token
 src/lib.rs	unsafe_fn	unsafe fn snapshot_cursor_is_final(&self, cursor: Self::SnapshotCursor) -> Option<bool>	1	snapshot-dense-cursor-contract
 src/lib.rs	unsafe_fn	unsafe fn snapshot_cursor_key_units(	1	snapshot-dense-cursor-contract
 src/lib.rs	unsafe_fn	unsafe fn snapshot_cursor_node(&self, cursor: Self::SnapshotCursor) -> Option<Self>	1	snapshot-dense-cursor-contract
@@ -198,16 +236,18 @@ src/lib.rs	unsafe_fn	unsafe fn snapshot_graph_cursor_value(	1	snapshot-dense-cur
 src/lib.rs	unsafe_fn	unsafe fn snapshot_graph_cursor_value_with_units(	1	snapshot-dense-cursor-contract
 src/lib.rs	unsafe_fn	unsafe fn visit_snapshot_cursor_edge_page<F>(	1	snapshot-dense-cursor-contract
 src/persistent_artrie/char/nodes/node16_char.rs	unsafe_block	unsafe {	1	char-node16-prefix-copy
+src/persistent_artrie/char/types.rs	unsafe_block	(c, unsafe { &*p })	1	char-child-read-only-traversal
+src/persistent_artrie/char/types.rs	unsafe_block	*unsafe { Box::from_raw(pointer.as_ptr()) }	1	char-child-prepublication-ownership
+src/persistent_artrie/char/types.rs	unsafe_block	.map(|pointer| (key, unsafe { &*pointer }))	1	char-child-read-only-traversal
+src/persistent_artrie/char/types.rs	unsafe_block	.map(|pointer| unsafe { Box::from_raw(pointer.cast_mut()) });	1	char-child-box-replacement
+src/persistent_artrie/char/types.rs	unsafe_block	Ok(unsafe { &mut *published.as_ptr() })	2	char-child-unique-mutation
 src/persistent_artrie/char/overlay_dictionary_node_faulting_tests.rs	unsafe_block	if unsafe { node.snapshot_cursor_is_final(cursor) }.expect("cursor finality") {	1	snapshot-dense-cursor-contract
 src/persistent_artrie/char/overlay_dictionary_node_faulting_tests.rs	unsafe_block	unsafe {	1	snapshot-dense-cursor-contract
 src/persistent_artrie/char/types.rs	unsafe_block	Some(unsafe { Box::from_raw(ptr as *mut CharTrieNodeInner<V>) })	1	char-child-box-reclaim
-src/persistent_artrie/char/types.rs	unsafe_block	let child_ref = unsafe { &*p };	1	char-child-read-only-traversal
-src/persistent_artrie/char/types.rs	unsafe_block	let child_ref = unsafe { &*ptr };	1	char-child-read-only-traversal
-src/persistent_artrie/char/types.rs	unsafe_block	let old_child = unsafe { Box::from_raw(ptr as *mut CharTrieNodeInner<V>) };	1	char-child-box-replacement
-src/persistent_artrie/char/types.rs	unsafe_block	unsafe {	2	char-child-raw-map-iteration
+src/persistent_artrie/char/types.rs	unsafe_block	pending.push(unsafe { Box::from_raw(pointer.cast_mut()) });	1	char-child-box-reclaim
 src/persistent_artrie/char/types.rs	unsafe_block	unsafe { &*ptr }	1	char-child-read-only-traversal
 src/persistent_artrie/char/types.rs	unsafe_block	unsafe { &mut *(ptr as *mut CharTrieNodeInner<V>) }	1	char-child-unique-mutation
-src/persistent_artrie/char/types.rs	unsafe_block	unsafe { &mut *ptr }	1	char-child-unique-mutation
+src/persistent_artrie/char/types.rs	unsafe_block	unsafe { drop(Box::from_raw(pointer.as_ptr())) };	1	char-child-prepublication-ownership
 src/persistent_artrie/core/block_storage.rs	unsafe_block	unsafe {	1	block-storage-default-fixed-buffer-registration
 src/persistent_artrie/core/block_storage.rs	unsafe_fn	unsafe fn register_buffer_pool(&self, _buffers: &[(*mut u8, usize)]) -> Result<()> {	1	block-storage-fixed-buffer-registration-contract
 src/persistent_artrie/core/buffer_manager.rs	unsafe_block	let fixed_buffers_registered = unsafe { storage.register_buffer_pool(&buffers).is_ok() }	2	buffer-manager-fixed-buffer-registration
@@ -327,5 +367,19 @@ src/scdawg/char.rs	unsafe_fn	unsafe fn snapshot_cursor_value(	1	snapshot-dense-c
 src/scdawg/char.rs	unsafe_fn	unsafe fn visit_snapshot_cursor_edge_page<F>(	1	snapshot-dense-cursor-contract
 src/scdawg/char.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Send for ScdawgCharNodeHandle<V> {}	1	scdawg-char-handle-rwlock-thread-contract
 src/scdawg/char.rs	unsafe_impl	unsafe impl<V: DictionaryValue> Sync for ScdawgCharNodeHandle<V> {}	1	scdawg-char-handle-rwlock-thread-contract
+src/serialization/protobuf_impl.rs	unsafe_block	let final_slot = unsafe { final_spare.get_unchecked_mut(0) };	1	protobuf-v2-exact-spare-commit
+src/serialization/protobuf_impl.rs	unsafe_block	let first_metadata = unsafe {	1	protobuf-retained-cursor-traversal
+src/serialization/protobuf_impl.rs	unsafe_block	let label_slot = unsafe { edge_spare.get_unchecked_mut(1) };	1	protobuf-v2-exact-spare-commit
+src/serialization/protobuf_impl.rs	unsafe_block	let observation = unsafe { self.owner.snapshot_cursor_edge_at(cursor.raw, index) }?;	2	protobuf-retained-cursor-traversal
+src/serialization/protobuf_impl.rs	unsafe_block	let sibling_metadata = unsafe {	1	protobuf-retained-cursor-traversal
+src/serialization/protobuf_impl.rs	unsafe_block	let source_slot = unsafe { edge_spare.get_unchecked_mut(0) };	1	protobuf-v2-exact-spare-commit
+src/serialization/protobuf_impl.rs	unsafe_block	let start = unsafe { self.owner.snapshot_cursor_edge_range_start(cursor.raw) }?;	2	protobuf-retained-cursor-traversal
+src/serialization/protobuf_impl.rs	unsafe_block	let target_slot = unsafe { edge_spare.get_unchecked_mut(2) };	1	protobuf-v2-exact-spare-commit
+src/serialization/protobuf_impl.rs	unsafe_block	unsafe {	1	protobuf-retained-cursor-traversal
+src/serialization/protobuf_impl.rs	unsafe_block	unsafe { commit_v2_event_to_spare(self.final_node_ids, self.edge_data, event) };	1	protobuf-v2-exact-spare-commit
+src/serialization/protobuf_impl.rs	unsafe_block	unsafe { edge_data.set_len(edge_len + 3) };	1	protobuf-v2-exact-spare-commit
+src/serialization/protobuf_impl.rs	unsafe_block	unsafe { final_node_ids.set_len(final_len + 1) };	1	protobuf-v2-exact-spare-commit
+src/serialization/protobuf_impl.rs	unsafe_block	unsafe { self.owner.snapshot_cursor_edge_range_step(token.raw) }?;	1	protobuf-retained-cursor-traversal
+src/serialization/protobuf_impl.rs	unsafe_fn	unsafe fn commit_v2_event_to_spare(	1	protobuf-v2-exact-spare-commit
 src/substring.rs	unsafe_impl	unsafe impl Send for MockNode {}	1	substring-test-mock-thread-contract
 src/substring.rs	unsafe_impl	unsafe impl Sync for MockNode {}	1	substring-test-mock-thread-contract

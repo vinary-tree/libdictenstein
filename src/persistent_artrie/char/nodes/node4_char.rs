@@ -20,7 +20,10 @@
 //! Total: ~96 bytes
 //! ```
 
-use super::{AddChildError, CharArtNode, CharCompressedPrefix, CharNodeHeader};
+use super::{
+    AddChildError, CharArtNode, CharCompressedPrefix, CharNodeHeader, CHAR_NODE16_TAG,
+    CHAR_NODE4_TAG,
+};
 use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
 /// Maximum number of children in a CharNode4
@@ -49,7 +52,7 @@ impl CharNode4 {
     /// Create a new empty CharNode4
     pub fn new() -> Self {
         Self {
-            header: CharNodeHeader::new(104), // CHARNODE4 type
+            header: CharNodeHeader::new(CHAR_NODE4_TAG),
             prefix: CharCompressedPrefix::empty(),
             keys: [0; CHARNODE4_MAX_CHILDREN],
             children: [
@@ -99,7 +102,7 @@ impl CharNode4 {
     pub fn grow(&self) -> super::CharNode16 {
         let mut node16 = super::CharNode16::new();
         node16.header = self.header.clone();
-        node16.header.node_type = 16;
+        node16.header.node_type = CHAR_NODE16_TAG;
         node16.prefix = self.prefix;
         node16.value_ptr = self.value_ptr.clone();
 
@@ -203,7 +206,7 @@ mod tests {
     #[test]
     fn test_new_charnode4() {
         let node = CharNode4::new();
-        assert_eq!(node.header.node_type, 104); // CHARNODE4
+        assert_eq!(node.header.node_type, CHAR_NODE4_TAG);
         assert_eq!(node.header.num_children, 0);
         assert!(!node.is_full());
     }
@@ -349,7 +352,7 @@ mod tests {
         let node16 = node.grow();
 
         // Verify type changed
-        assert_eq!(node16.header.node_type, 16);
+        assert_eq!(node16.header.node_type, CHAR_NODE16_TAG);
         assert_eq!(node16.header.num_children, 4);
 
         // Verify all children transferred

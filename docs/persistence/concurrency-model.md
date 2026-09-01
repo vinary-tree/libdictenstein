@@ -111,9 +111,86 @@ off** rather than publish a stale image:
 
 <img src="../diagrams/serial-disk-ptr-stamp.svg" alt="A sequence diagram of the serial_disk_ptr eviction guard. Setup: when node N is checkpointed to disk_ptr D, the DiskLocationRegistry records path→D and N.serial_disk_ptr is stamped D. Case A (safe): the evictor looks up the registry (D), reads N's stamp (D), sees D==D, and unswizzles the child to OnDisk(D) — safe, because readers can fault it back in from D. Case B (race): a concurrent writer path-copies N into N′ and publishes a new root, so N′'s stamp differs from D; the evictor looks up the registry (still D, stale), reads the live node N′'s stamp (not equal to D), sees the mismatch, and backs off — refusing to publish the stale image that would hide the writer's update." width="100%"/>
 
+Checkpoint serialization and exact decoding are the only provenance sources.
+An exact fault decoder stamps the top-level node with the precise pointer it
+loaded before publication; compressed expansion leaves synthetic descendants
+unstamped. Every structural path copy clears the stamp. A winning fault root CAS
+publishes the node and its exact point-residency mark in one immutable root
+revision; a loser publishes neither. Therefore a successfully faulted record is
+immediately re-evictable, while a stamp by itself never grants authority.
+
 This is model-checked by `OverlayEvictionCas.tla` and `OverlayEvictionStale.tla` (each with
 an `_Unsafe` negative control that removes the stamp and exhibits the loss). The full
 subsystem is in [eviction.md](eviction.md).
+
+### Exact root authority and detached compatibility catalogs
+
+The immutable published root carries the exact eviction-generation binding.
+Every byte or character semantic write uses its existing root CAS as the sole
+semantic linearization point and clears that binding in the same atomic
+publication. The compile-time publication witness is zero-sized; constructing
+or dropping it performs no lock, allocation, branch, atomic operation, registry
+lookup, or coordinator lookup. Thus a writer never waits for checkpoint or
+legacy callback bookkeeping.
+
+Exact eviction and fault publication are hot-path lock-free root-CAS
+transitions. Semantic writes use the same root CAS while clearing the eviction
+binding. Checkpoint publication, coordinator retirement, and detached-catalog
+installation are cold lifecycle operations; only those operations take the
+coordinator's lifecycle mutex. The only relevant nesting is:
+
+```text
+coordinator slot → cold lifecycle → root CAS
+```
+
+No mutable exact-registry lock participates in authority or residency
+publication. The immutable catalog and packed residency payload are carried by
+the root revision itself.
+
+Legacy materialized callbacks are not participants in that order. They load an
+immutable `Arc` from a separate ArcSwap compatibility catalog, materialize
+advisory candidates, and retain that snapshot across concurrent replacement.
+They cannot observe, preserve, clear, or construct exact root authority. A
+detached clear is one nonblocking ArcSwap publication and never touches the
+exact catalog or root. A detached install uses the cold lifecycle boundary only
+to reject a retired coordinator; callbacks do not block it, and neither install
+nor clear is consulted by semantic writers.
+
+The separation is model-checked by `DetachedCallbackSeparation.tla`, including
+semantic/checkpoint/callback races and detached clear, and proved in
+`DetachedCallbackSeparationSpec.v`. Unsafe controls demonstrate that reading an
+exact catalog through the callback boundary, authorizing an exact commit from a
+detached capability, populating detached state at checkpoint, or preserving a
+binding across semantic mutation violates the intended invariants. Rust
+regressions cover retained callback snapshots, concurrent replacement, callback
+panic, exact-publication overlap, and exact invisibility.
+
+### Generation-qualified resident selection
+
+Checkpoint-tail budget selection captures and helps one immutable root revision,
+then snapshots the packed residency words and clones immutable topology and
+record-table `Arc`s from that root's exact catalog. It takes no registry or
+lifecycle lock. A final root-identity, generation, catalog, and ordinal check
+turns a changed root into `Retry` and lost exact authority into `Unavailable`.
+Sorting and both topology passes operate on the retained immutable snapshot.
+
+The resulting snapshot is intentionally not an authority lease. Its batch keeps
+the captured root identity and exact binding, and the root CAS revalidates the
+generation, catalog, ordinal, candidate paths/disk pointers, and residency.
+CAS loss returns `RootAdvanced` only when the defeating revision retains the
+same exact binding, so a retry remains authorized. An unbound or differently
+bound winner returns `AuthorityLost` and terminates without a futile retry.
+Neither loser outcome clears residency or LRU state. The TLA+, Rocq, and Loom
+negative controls demonstrate that omitting exact-root revalidation can clear a
+successor generation.
+
+Resident-budget execution differs from manual eviction. Manual and
+memory-pressure batches remain descendant-first. Budget batches are
+ancestor-first over an exact laminar closure: a valid ancestor prunes selected
+descendants, while a stale ancestor falls through. Warmest-descendant priority
+makes selected resident records downward-closed, so the configured anchor cap
+also bounds cleared resident-record count. Both unary and branching executors
+are explicit PDAs with constant native-stack consumption.
 
 ## Process boundary — this model is single-process
 
@@ -138,6 +215,9 @@ never per *operation*.
 | No lost update on the value/counter CAS | `LockFreeOverlayValueCas.tla`, `LockFreeCounterMergeAtomicity.tla` |
 | Reads observe only completed visible state | `SharedPersistentConcurrency.tla` (`ReadsObserveCompletedVisibleState`) |
 | Eviction stamp safety | `OverlayEvictionCas.tla`, `OverlayEvictionStale.tla` |
+| Exact eviction authority during mutation, retirement, and re-enable | `EvictionExactRootPublication.tla`, `HelpedRootResidency.tla`, `DetachedCallbackSeparation.tla`, `Spec/EvictionExactRootPublicationSpec.v`, `Spec/HelpedRootResidencySpec.v`, `Spec/DetachedCallbackSeparationSpec.v`, `tests/persistent_eviction_publication_gate_loom.rs` |
+| Resident closure, cap, stale fallback, and snapshot revalidation | `ResidentBudgetEviction.tla`, `Spec/ResidentBudgetEvictionSpec.v`, `tests/persistent_eviction_publication_gate_loom.rs`, `tests/persistent_lockfree_overlay_loom.rs` |
+| Exact fault winner provenance and re-eviction | `OverlayEvictionStale.tla`, `Spec/OverlayFaultProvenanceSpec.v`, `tests/persistent_lockfree_overlay_loom.rs` |
 
 The full invariant $`\leftrightarrow`$ model $`\leftrightarrow`$ proof correspondence is in
 [formal-verification-map.md](formal-verification-map.md).

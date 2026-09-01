@@ -6,8 +6,9 @@
 //! drive real char-node reclamation through `force_eviction`, which now routes
 //! to the char-aware `force_eviction_char` (it was previously a byte-only no-op
 //! for char tries). They also cover the **A1 data-loss fix**: a mutation after a
-//! checkpoint invalidates the published registry so eviction cannot unswizzle a
-//! newer in-memory node onto a now-stale on-disk pointer.
+//! checkpoint clears the exact eviction binding in the semantic root CAS so
+//! eviction cannot unswizzle a newer in-memory node onto a now-stale on-disk
+//! pointer.
 //!
 //! **G9 — `MappedDictionaryNode::value()`** on `PersistentARTrieCharNode<V>`.
 //!
@@ -110,11 +111,11 @@ fn force_eviction_is_zero_when_disabled() {
 }
 
 #[test]
-fn post_checkpoint_write_invalidates_registry() {
-    // A1 data-loss fix: a mutation after checkpoint must invalidate the published
-    // registry so eviction cannot unswizzle a newer in-memory node onto a stale
-    // on-disk pointer (a lost update). Invalidation happens at the single
-    // mutation chokepoint `append_to_wal`.
+fn post_checkpoint_write_clears_exact_eviction_binding() {
+    // A1 data-loss fix: a mutation after checkpoint must clear exact eviction
+    // authority in the same root CAS that publishes the semantic successor, so
+    // eviction cannot unswizzle a newer in-memory node onto a stale on-disk
+    // pointer (a lost update).
     let dir = tempdir().expect("tempdir");
     let shared = deep_shared_trie(&dir.path().join("invalidate.trie"));
     shared
@@ -129,13 +130,13 @@ fn post_checkpoint_write_invalidates_registry() {
 
     // Republish a fresh, valid registry, then mutate it out from under eviction.
     shared.write().checkpoint().expect("checkpoint 2");
-    assert!(put(&shared, "newkey", 99)); // append_to_wal -> invalidate
+    assert!(put(&shared, "newkey", 99)); // semantic root CAS -> unbound successor
 
     // Registry now invalid: eviction must select nothing until the next checkpoint.
     assert_eq!(
         shared.force_eviction(1 << 20).expect("force post-write"),
         (0, 0),
-        "a post-checkpoint write must invalidate the eviction registry"
+        "a post-checkpoint write must clear exact eviction authority"
     );
 
     // A fresh checkpoint rebuilds + republishes; eviction works again, and the newly

@@ -24,7 +24,7 @@
 //! control for the parallel reader/writer metric. Criterion mode remains
 //! available for the usual local performance workflow.
 
-use criterion::{BenchmarkId, Criterion, Throughput};
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput};
 use libdictenstein::persistent_artrie::u64::EncodedPersistentARTrieU64;
 use libdictenstein::persistent_artrie::{
     PersistentARTrieU64Compact, PersistentARTrieU64Prefix3Compat,
@@ -44,6 +44,7 @@ use std::time::{Duration, Instant};
 const LOOKUP_SIZE: usize = 8_192;
 const LOOKUP_LEN: usize = 12;
 const LOOKUP_QUERIES: usize = 16_384;
+const MUTATION_SIZE: usize = 2_048;
 const FIXED_SAMPLES: usize = 51;
 const FIXED_WARMUPS: usize = 3;
 const PARALLEL_KEYS: usize = 8_192;
@@ -279,6 +280,22 @@ fn lookup_encoded(trie: &EncodedPersistentARTrieU64<u64>, queries: &[Vec<u64>]) 
     black_box(hits)
 }
 
+fn consume_sequences(sequences: impl Iterator<Item = Vec<u64>>) -> (usize, u64) {
+    let mut count = 0usize;
+    let mut checksum = 0u64;
+    for sequence in sequences {
+        count += 1;
+        checksum = checksum.rotate_left(7) ^ sequence.len() as u64;
+        if let Some(&first) = sequence.first() {
+            checksum ^= first;
+        }
+        if let Some(&last) = sequence.last() {
+            checksum = checksum.rotate_left(11) ^ last;
+        }
+    }
+    black_box((count, checksum))
+}
+
 fn directory_bytes(path: &Path) -> u64 {
     let mut total = 0;
     let mut stack = vec![path.to_path_buf()];
@@ -510,10 +527,94 @@ fn bench_lookup(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_iteration(c: &mut Criterion) {
+    let sequences = generate_sequences(LOOKUP_SIZE, LOOKUP_LEN);
+    let native = build_native(&sequences);
+    let native_prefix3 = build_native_prefix3(&sequences);
+    let encoded = build_encoded(&sequences);
+
+    let mut group = c.benchmark_group("persistent_artrie_u64_iteration");
+    group.sample_size(30);
+    group.throughput(Throughput::Elements(LOOKUP_SIZE as u64));
+    group.bench_function(BenchmarkId::new("native_u64_prefix4", LOOKUP_LEN), |b| {
+        b.iter(|| consume_sequences(native.iter_sequences()));
+    });
+    group.bench_function(BenchmarkId::new("native_u64_prefix3", LOOKUP_LEN), |b| {
+        b.iter(|| consume_sequences(native_prefix3.iter_sequences()));
+    });
+    group.bench_function(BenchmarkId::new("encoded_u64_as_bytes", LOOKUP_LEN), |b| {
+        b.iter(|| consume_sequences(encoded.iter_sequences()));
+    });
+    group.finish();
+
+    let mut lazy_group = c.benchmark_group("persistent_artrie_u64_iteration_laziness");
+    lazy_group.sample_size(30);
+    lazy_group.bench_function("construct_and_drop_without_next", |b| {
+        b.iter(|| {
+            let iterator = black_box(&native).iter_sequences();
+            drop(black_box(iterator));
+        });
+    });
+    lazy_group.bench_function("first_item_then_drop", |b| {
+        b.iter(|| {
+            let mut iterator = black_box(&native).iter_sequences();
+            black_box(iterator.next());
+            drop(black_box(iterator));
+        });
+    });
+    lazy_group.bench_function("take_16_then_drop", |b| {
+        b.iter(|| consume_sequences(black_box(&native).iter_sequences().take(16)));
+    });
+    let hit_prefix = sequences[LOOKUP_SIZE / 2][..4].to_vec();
+    let miss_prefix = vec![u64::MAX; 4];
+    lazy_group.bench_function("prefix_hit_complete", |b| {
+        b.iter(|| {
+            consume_sequences(black_box(&native).iter_sequence_prefix(black_box(&hit_prefix)))
+        });
+    });
+    lazy_group.bench_function("prefix_miss", |b| {
+        b.iter(|| {
+            consume_sequences(black_box(&native).iter_sequence_prefix(black_box(&miss_prefix)))
+        });
+    });
+    lazy_group.finish();
+
+    const DEEP_SEQUENCE_LEN: usize = 1_024;
+    let deep_sequence = (0..DEEP_SEQUENCE_LEN)
+        .map(|index| u64::try_from(index).expect("benchmark index fits u64"))
+        .collect::<Vec<_>>();
+    let deep = build_native(std::slice::from_ref(&deep_sequence));
+    let mut deep_group = c.benchmark_group("persistent_artrie_u64_deep_iteration");
+    deep_group.sample_size(20);
+    deep_group.throughput(Throughput::Elements(DEEP_SEQUENCE_LEN as u64));
+    deep_group.bench_function("native_u64_single_sparse_terminal", |b| {
+        b.iter(|| consume_sequences(deep.iter_sequences()));
+    });
+    deep_group.bench_function("native_u64_first_item_then_drop", |b| {
+        b.iter(|| {
+            let mut iterator = black_box(&deep).iter_sequences();
+            black_box(iterator.next());
+            drop(black_box(iterator));
+        });
+    });
+    deep_group.finish();
+
+    let iterator = native.iter_sequences();
+    eprintln!(
+        "persistent_artrie_u64_iterator_size_bytes={}",
+        std::mem::size_of_val(&iterator)
+    );
+}
+
 fn bench_insert(c: &mut Criterion) {
     let sequences = generate_sequences(LOOKUP_SIZE, LOOKUP_LEN);
     let mut group = c.benchmark_group("persistent_artrie_u64_insert");
-    group.sample_size(20);
+    // Use the same within-process Criterion sample count as the other fixed
+    // workloads. These samples estimate local harness noise; they are not
+    // independent experimental runs. The paired base/treatment experiment
+    // launches separately randomized processes and records those observations
+    // in pgmcp.
+    group.sample_size(FIXED_SAMPLES);
     group.throughput(Throughput::Elements(LOOKUP_SIZE as u64));
 
     group.bench_function(BenchmarkId::new("native_u64_prefix4", LOOKUP_LEN), |b| {
@@ -547,6 +648,74 @@ fn bench_insert(c: &mut Criterion) {
         });
     });
 
+    group.finish();
+}
+
+fn bench_update_remove(c: &mut Criterion) {
+    let sequences = generate_sequences(MUTATION_SIZE, LOOKUP_LEN);
+    let mut group = c.benchmark_group("persistent_artrie_u64_update_remove");
+    group.sample_size(20);
+    group.throughput(Throughput::Elements(MUTATION_SIZE as u64));
+
+    group.bench_function("native_u64_update_existing", |b| {
+        b.iter_batched(
+            || build_native(&sequences),
+            |trie| {
+                for sequence in &sequences {
+                    let updated = terminal_value_bits(sequence).wrapping_add(1);
+                    black_box(trie.insert_sequence_with_value(black_box(sequence), updated));
+                }
+                black_box(trie)
+            },
+            BatchSize::PerIteration,
+        );
+    });
+    group.bench_function("native_u64_remove_existing", |b| {
+        b.iter_batched(
+            || build_native(&sequences),
+            |trie| {
+                for sequence in &sequences {
+                    black_box(trie.remove_sequence(black_box(sequence)));
+                }
+                black_box(trie)
+            },
+            BatchSize::PerIteration,
+        );
+    });
+    group.finish();
+}
+
+fn bench_checkpoint_reopen(c: &mut Criterion) {
+    let sequences = generate_sequences(MUTATION_SIZE, LOOKUP_LEN);
+    let mut group = c.benchmark_group("persistent_artrie_u64_checkpoint_reopen");
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(MUTATION_SIZE as u64));
+    group.bench_function("native_u64", |b| {
+        b.iter_batched(
+            || {
+                let dir = tempfile::Builder::new()
+                    .prefix("part_u64_checkpoint_reopen")
+                    .tempdir_in(scratch_dir())
+                    .expect("native checkpoint/reopen tempdir");
+                let path = dir.path().join("native.partu64");
+                let trie = PersistentARTrieU64Compact::<u64>::create(&path)
+                    .expect("create native checkpoint/reopen trie");
+                for sequence in &sequences {
+                    trie.insert_sequence_with_value(sequence, terminal_value_bits(sequence));
+                }
+                (dir, path, trie)
+            },
+            |(dir, path, trie)| {
+                trie.checkpoint().expect("checkpoint native u64 trie");
+                drop(trie);
+                let reopened =
+                    PersistentARTrieU64Compact::<u64>::open(&path).expect("reopen native u64 trie");
+                black_box(reopened.term_count());
+                black_box(dir);
+            },
+            BatchSize::PerIteration,
+        );
+    });
     group.finish();
 }
 
@@ -719,7 +888,10 @@ fn run_fixed_samples() {
 fn run_criterion() {
     let mut criterion = Criterion::default().configure_from_args();
     bench_lookup(&mut criterion);
+    bench_iteration(&mut criterion);
     bench_insert(&mut criterion);
+    bench_update_remove(&mut criterion);
+    bench_checkpoint_reopen(&mut criterion);
     bench_checkpoint_disk_bytes(&mut criterion);
     bench_parallel_reads_writes(&mut criterion);
     criterion.final_summary();

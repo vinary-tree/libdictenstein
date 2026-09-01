@@ -26,7 +26,10 @@
 //! Binary search on 48 sorted u32 keys requires at most 6 comparisons (log₂(48) ≈ 5.58).
 //! This is still very fast and significantly better than linear scan for 48 elements.
 
-use super::{AddChildError, CharArtNode, CharCompressedPrefix, CharNodeHeader};
+use super::{
+    AddChildError, CharArtNode, CharCompressedPrefix, CharNodeHeader, CHAR_BUCKET_TAG,
+    CHAR_NODE16_TAG, CHAR_NODE48_TAG,
+};
 use crate::persistent_artrie::swizzled_ptr::SwizzledPtr;
 
 /// Maximum number of children in a CharNode48
@@ -54,7 +57,7 @@ impl CharNode48 {
     /// Create a new empty CharNode48
     pub fn new() -> Self {
         Self {
-            header: CharNodeHeader::new(148), // CHARNODE48 type
+            header: CharNodeHeader::new(CHAR_NODE48_TAG),
             prefix: CharCompressedPrefix::empty(),
             keys: [0; CHARNODE48_MAX_CHILDREN],
             children: std::array::from_fn(|_| SwizzledPtr::null()),
@@ -101,7 +104,7 @@ impl CharNode48 {
 
         let mut node16 = super::CharNode16::new();
         node16.header = self.header.clone();
-        node16.header.node_type = 16;
+        node16.header.node_type = CHAR_NODE16_TAG;
         node16.prefix = self.prefix;
         node16.value_ptr = self.value_ptr.clone();
 
@@ -118,7 +121,7 @@ impl CharNode48 {
     pub fn grow(&self) -> super::CharBucket {
         let mut bucket = super::CharBucket::new();
         bucket.header = self.header.clone();
-        bucket.header.node_type = 49; // Use 49 to distinguish from Node48
+        bucket.header.node_type = CHAR_BUCKET_TAG;
         bucket.prefix = self.prefix;
         bucket.value_ptr = self.value_ptr.clone();
 
@@ -223,7 +226,7 @@ mod tests {
     #[test]
     fn test_new_charnode48() {
         let node = CharNode48::new();
-        assert_eq!(node.header.node_type, 148); // CHARNODE48
+        assert_eq!(node.header.node_type, CHAR_NODE48_TAG);
         assert_eq!(node.header.num_children, 0);
         assert!(!node.is_full());
     }
@@ -331,7 +334,7 @@ mod tests {
         node.header.set_final(true);
         let node16 = node.shrink();
 
-        assert_eq!(node16.header.node_type, 16);
+        assert_eq!(node16.header.node_type, CHAR_NODE16_TAG);
         assert_eq!(node16.header.num_children, 16);
         assert!(node16.header.is_final());
 

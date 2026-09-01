@@ -32,7 +32,8 @@ use super::error::{PersistentARTrieError, Result};
 use crate::persistent_artrie::core::durability::DurabilityPolicy;
 use crate::persistent_artrie::core::key_encoding::{ByteKey, KeyEncoding};
 use crate::persistent_artrie::core::overlay::durable_write::{
-    DurableOverlayWrite, ValuePublishOutcome, ValueWriteMode,
+    DurableOverlayWrite, PendingDurableMutation, RegistryEligibleMutation,
+    SemanticMutationPublicationPermit, ValuePublishOutcome, ValueWriteMode,
 };
 use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
 use crate::persistent_artrie::core::wal::{Lsn, RankRegime, WalRecord};
@@ -122,39 +123,40 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
         self.contains_lockfree(units)
     }
 
-    fn overlay_publish_value(&self, units: &[u8], value: V) {
+    fn overlay_publish_value(&self, units: &[u8], value: V) -> Result<()> {
         // G5/F1: no-WAL path-copy value SET (recovered terms are already durable).
         // Fresh overlay at reestablish ⇒ no OnDisk children, no contention. `units`
         // ARE the raw key bytes for byte.
         use super::nodes::persistent_node::PersistentNode;
-        let lockfree_root = match self.lockfree_root.as_ref() {
-            Some(r) => r,
-            None => return,
-        };
+        let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
+            PersistentARTrieError::internal(
+                "recovery value publish requires an installed byte overlay",
+            )
+        })?;
         let _epoch = self.epoch_manager.enter_read();
         loop {
-            let root = match lockfree_root.load() {
-                Some(r) => r,
+            let root_revision = match lockfree_root.load_revision() {
+                Some(revision) => revision,
                 None => {
                     let _ = lockfree_root.try_init(Arc::new(PersistentNode::<V>::new()));
                     continue;
                 }
             };
-            let term_count_delta = isize::from(self.find_leaf_recursive(&root, units, 0).is_none());
-            match self.build_value_path_recursive(&root, units, 0, value.clone()) {
-                Some(new_root) => {
-                    match lockfree_root.compare_exchange_counted(&root, new_root, term_count_delta)
-                    {
-                        Ok(_) => {
-                            if let Some(ref cache) = self.lockfree_cache {
-                                cache.insert(units.to_vec(), true);
-                            }
-                            return;
-                        }
-                        Err(_) => continue,
+            let root = Arc::clone(root_revision.node());
+            let term_count_delta = isize::from(self.find_leaf_iterative(&root, units, 0).is_none());
+            let new_root = self.build_value_path_iterative(&root, units, 0, value.clone())?;
+            match lockfree_root.compare_exchange_revision_counted(
+                &root_revision,
+                new_root,
+                term_count_delta,
+            ) {
+                Ok(_) => {
+                    if let Some(ref cache) = self.lockfree_cache {
+                        cache.insert(units.to_vec(), true);
                     }
+                    return Ok(());
                 }
-                None => return,
+                Err(_) => continue,
             }
         }
     }
@@ -225,6 +227,8 @@ impl<V: DictionaryValue, S: BlockStorage> LockFreeOverlay<ByteKey, V, S>
 impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
     for PersistentARTrie<V, S>
 {
+    type PublicationEligibility = RegistryEligibleMutation;
+
     #[inline]
     fn durability_policy(&self) -> DurabilityPolicy {
         // The inherent accessor (persistence_api.rs) — unchanged value.
@@ -232,7 +236,10 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
     }
 
     #[inline]
-    fn append_durable_wal(&self, record: WalRecord) -> Result<Lsn> {
+    fn append_durable_wal(
+        &self,
+        record: WalRecord,
+    ) -> Result<PendingDurableMutation<'_, RegistryEligibleMutation>> {
         // Order-A step 1: byte's LSN-returning durable append (persistence_api.rs).
         self.append_to_wal_returning_lsn(record)
     }
@@ -280,7 +287,12 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
         }
     }
 
-    fn increment_publish_inner(&self, key: &str, delta: u64) -> Result<(u64, u64)> {
+    fn increment_publish_inner(
+        &self,
+        key: &str,
+        delta: u64,
+        _permit: &SemanticMutationPublicationPermit<'_, RegistryEligibleMutation>,
+    ) -> Result<(u64, u64)> {
         // `try_increment_cas_inner` is u64-specialized (`impl<S> ...<u64, S>`), so
         // downcast `self` to the nameable `<u64, S>` monomorph via a SAFE `Any`
         // (the same zero-`unsafe` pattern as `overlay_counter_get`). The counter
@@ -295,7 +307,7 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
         // operates on UTF-8 keys — the public wrapper validates this).
         use std::any::Any;
         match (self as &dyn Any).downcast_ref::<PersistentARTrie<u64, S>>() {
-            Some(trie_u64) => trie_u64.try_increment_cas_inner(key.as_bytes(), delta),
+            Some(trie_u64) => trie_u64.try_increment_cas_inner(key.as_bytes(), delta, _permit),
             None => Ok((0, 0)),
         }
     }
@@ -332,6 +344,7 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
         key_bytes: &[u8],
         value: V,
         mode: ValueWriteMode,
+        _permit: &SemanticMutationPublicationPermit<'_, RegistryEligibleMutation>,
     ) -> Result<ValuePublishOutcome> {
         use super::nodes::persistent_node::PersistentNode;
         let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
@@ -342,16 +355,17 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
         let _epoch = self.epoch_manager.enter_read();
         loop {
             let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
-            let root = match lockfree_root.load() {
-                Some(r) => r,
+            let root_revision = match lockfree_root.load_revision() {
+                Some(revision) => revision,
                 None => {
                     let new_root = Arc::new(PersistentNode::<V>::new());
                     let _ = lockfree_root.try_init(new_root);
                     continue;
                 }
             };
+            let root = Arc::clone(root_revision.node());
             // Mode pre-check on the FRESHLY-loaded root.
-            let was_present = self.find_leaf_recursive(&root, key_bytes, 0).is_some();
+            let was_present = self.find_leaf_iterative(&root, key_bytes, 0).is_some();
             match &mode {
                 ValueWriteMode::InsertOnce => {
                     if was_present {
@@ -361,7 +375,7 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
                 ValueWriteMode::Upsert => {}
                 ValueWriteMode::CompareAndSwap { expected_bytes } => {
                     let cur = self
-                        .find_leaf_recursive(&root, key_bytes, 0)
+                        .find_leaf_iterative(&root, key_bytes, 0)
                         .and_then(|leaf| leaf.get_value());
                     let cur_bytes = match &cur {
                         Some(v) => Some(
@@ -379,19 +393,12 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
                     }
                 }
             }
-            let new_root = match self.build_value_path_recursive(&root, key_bytes, 0, value.clone())
-            {
-                Some(r) => r,
-                None => {
-                    self.cas_retries.fetch_add(1, Ordering::Relaxed);
-                    return Err(PersistentARTrieError::internal(
-                        "value_publish_inner: an on-disk overlay child blocked the path-copy; \
-                         the record is durable and replays on reopen",
-                    ));
-                }
-            };
-            match lockfree_root.compare_exchange_counted(&root, new_root, isize::from(!was_present))
-            {
+            let new_root = self.build_value_path_iterative(&root, key_bytes, 0, value.clone())?;
+            match lockfree_root.compare_exchange_revision_counted(
+                &root_revision,
+                new_root,
+                isize::from(!was_present),
+            ) {
                 Ok(_) => {
                     if let Some(ref cache) = self.lockfree_cache {
                         cache.insert(key_bytes.to_vec(), true);

@@ -26,6 +26,8 @@ use smallvec::SmallVec;
 use std::collections::HashMap;
 
 const ADAPTIVE_LINEAR_EDGE_LIMIT: usize = 16;
+const INLINE_GRAPH_WORKLIST: usize = 32;
+type DfsFrames = SmallVec<[(usize, usize); INLINE_GRAPH_WORKLIST]>;
 
 /// Generic DAWG node that can use any character unit type for edge labels.
 ///
@@ -495,8 +497,10 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     ///
     /// Returns the number of nodes removed.
     pub fn compact(&mut self) -> usize {
+        let mut dfs_frames = DfsFrames::new();
+
         // Extract all terms and their optional values before rebuilding.
-        let entries = self.extract_all_entries();
+        let entries = self.extract_all_entries_with_frames(&mut dfs_frames);
         let old_node_count = self.nodes.len();
 
         // Preserve settings
@@ -525,7 +529,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         }
 
         // Now minimize to merge equivalent suffixes
-        let minimized = self.minimize_incremental();
+        let minimized = self.minimize_incremental_with_frames(&mut dfs_frames);
         old_node_count.saturating_sub(self.nodes.len()) + minimized
     }
 
@@ -533,10 +537,17 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     ///
     /// Returns the number of nodes merged.
     pub fn minimize_incremental(&mut self) -> usize {
+        let mut dfs_frames = DfsFrames::new();
+        self.minimize_incremental_with_frames(&mut dfs_frames)
+    }
+
+    /// Minimize while reusing an explicit traversal stack across the signature
+    /// and reachability phases.
+    fn minimize_incremental_with_frames(&mut self, dfs_frames: &mut DfsFrames) -> usize {
         let initial_count = self.nodes.len();
 
         // Step 1: Compute node signatures
-        let signatures = self.compute_signatures();
+        let signatures = self.compute_signatures_with_frames(dfs_frames);
 
         // Step 2: Build equivalence classes
         let mut sig_to_canonical: HashMap<NodeSignature, Vec<usize>> =
@@ -580,7 +591,7 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         }
 
         // Step 4: Remove unreachable nodes
-        let reachable = self.find_reachable_nodes();
+        let reachable = self.find_reachable_nodes_with_frames(dfs_frames);
         if reachable.len() < self.nodes.len() {
             self.compact_with_reachable(&reachable);
         }
@@ -723,45 +734,65 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
     }
 
     /// Compute signatures for all nodes.
+    #[cfg(test)]
     pub(crate) fn compute_signatures(&self) -> Vec<NodeSignature> {
+        let mut frames = DfsFrames::new();
+        self.compute_signatures_with_frames(&mut frames)
+    }
+
+    fn compute_signatures_with_frames(&self, frames: &mut DfsFrames) -> Vec<NodeSignature> {
         let mut signatures = vec![NodeSignature::zero(); self.nodes.len()];
         let mut visited = vec![false; self.nodes.len()];
-        self.compute_signatures_dfs(0, &mut signatures, &mut visited);
+        self.compute_signatures_dfs_with_frames(0, &mut signatures, &mut visited, frames);
         signatures
     }
 
-    pub(crate) fn compute_signatures_dfs(
+    fn compute_signatures_dfs_with_frames(
         &self,
         node_idx: usize,
         signatures: &mut [NodeSignature],
         visited: &mut [bool],
+        frames: &mut DfsFrames,
     ) {
         if visited[node_idx] {
             return;
         }
         visited[node_idx] = true;
+        frames.clear();
+        frames.push((node_idx, 0));
 
-        let node = &self.nodes[node_idx];
+        while let Some((current, next_edge)) = frames.last_mut() {
+            if let Some((_, child)) = self.nodes[*current].edges.get(*next_edge) {
+                *next_edge += 1;
+                if !visited[*child] {
+                    visited[*child] = true;
+                    frames.push((*child, 0));
+                }
+                continue;
+            }
 
-        // Visit all children first (post-order)
-        for (_, child_idx) in &node.edges {
-            self.compute_signatures_dfs(*child_idx, signatures, visited);
+            let completed = *current;
+            let node = &self.nodes[completed];
+            let edge_iter = node
+                .edges
+                .iter()
+                .map(|(label, child)| (*label, signatures[*child]));
+            signatures[completed] = NodeSignature::compute(node.is_final, edge_iter);
+            frames.pop();
         }
-
-        // Compute signature for this node
-        let edge_iter = node
-            .edges
-            .iter()
-            .map(|(label, child_idx)| (*label, signatures[*child_idx]));
-
-        signatures[node_idx] = NodeSignature::compute(node.is_final, edge_iter);
     }
 
     /// Find all nodes reachable from root.
+    #[cfg(test)]
     pub(crate) fn find_reachable_nodes(&self) -> Vec<usize> {
+        let mut pending = DfsFrames::new();
+        self.find_reachable_nodes_with_frames(&mut pending)
+    }
+
+    fn find_reachable_nodes_with_frames(&self, pending: &mut DfsFrames) -> Vec<usize> {
         let mut reachable = Vec::with_capacity(self.nodes.len());
         let mut visited = vec![false; self.nodes.len()];
-        self.find_reachable_dfs(0, &mut visited);
+        self.find_reachable_dfs_with_frames(0, &mut visited, pending);
 
         for (idx, &is_reachable) in visited.iter().enumerate() {
             if is_reachable {
@@ -772,14 +803,26 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         reachable
     }
 
-    pub(crate) fn find_reachable_dfs(&self, node_idx: usize, visited: &mut [bool]) {
-        if visited[node_idx] {
-            return;
-        }
-        visited[node_idx] = true;
-
-        for (_, child_idx) in &self.nodes[node_idx].edges {
-            self.find_reachable_dfs(*child_idx, visited);
+    fn find_reachable_dfs_with_frames(
+        &self,
+        node_idx: usize,
+        visited: &mut [bool],
+        pending: &mut DfsFrames,
+    ) {
+        pending.clear();
+        pending.push((node_idx, 0));
+        while let Some((current, _)) = pending.pop() {
+            if visited[current] {
+                continue;
+            }
+            visited[current] = true;
+            pending.extend(
+                self.nodes[current]
+                    .edges
+                    .iter()
+                    .rev()
+                    .map(|(_, child)| (*child, 0)),
+            );
         }
     }
 
@@ -805,30 +848,51 @@ impl<U: CharUnit, V: DictionaryValue> DawgCore<U, V> {
         self.recompute_ref_counts();
     }
 
+    #[cfg(any(feature = "serialization", test))]
     pub(crate) fn extract_all_entries(&self) -> Vec<(Vec<U>, Option<V>)> {
+        let mut frames = DfsFrames::new();
+        self.extract_all_entries_with_frames(&mut frames)
+    }
+
+    fn extract_all_entries_with_frames(&self, frames: &mut DfsFrames) -> Vec<(Vec<U>, Option<V>)> {
         let mut entries = Vec::with_capacity(self.term_count);
         let mut current_term = Vec::with_capacity(32);
-        self.dfs_collect_entries(0, &mut current_term, &mut entries);
+        self.dfs_collect_entries_with_frames(0, &mut current_term, &mut entries, frames);
         entries
     }
 
-    fn dfs_collect_entries(
+    fn dfs_collect_entries_with_frames(
         &self,
         node_idx: usize,
         current_term: &mut Vec<U>,
         entries: &mut Vec<(Vec<U>, Option<V>)>,
+        frames: &mut DfsFrames,
     ) {
-        let node = &self.nodes[node_idx];
-
-        if node.is_final {
-            entries.push((current_term.clone(), node.value.clone()));
+        let initial_length = current_term.len();
+        if self.nodes[node_idx].is_final {
+            entries.push((current_term.clone(), self.nodes[node_idx].value.clone()));
         }
+        frames.clear();
+        frames.push((node_idx, 0));
 
-        for (unit, child_idx) in &node.edges {
-            current_term.push(*unit);
-            self.dfs_collect_entries(*child_idx, current_term, entries);
-            current_term.pop();
+        while let Some((current, next_edge)) = frames.last_mut() {
+            if let Some((unit, child)) = self.nodes[*current].edges.get(*next_edge) {
+                *next_edge += 1;
+                current_term.push(*unit);
+                if self.nodes[*child].is_final {
+                    entries.push((current_term.clone(), self.nodes[*child].value.clone()));
+                }
+                frames.push((*child, 0));
+                continue;
+            }
+
+            frames.pop();
+            if !frames.is_empty() {
+                let removed = current_term.pop();
+                debug_assert!(removed.is_some());
+            }
         }
+        debug_assert_eq!(current_term.len(), initial_length);
     }
 
     /// Direct insert preserving an optional value, without bloom or auto-minimize.
@@ -978,5 +1042,23 @@ mod tests {
             .map(|(label, _)| *label)
             .collect();
         assert_eq!(root_edges, vec![b'a', b'z']);
+    }
+
+    #[test]
+    fn one_hundred_thousand_deep_graph_traversals_are_stack_safe() {
+        const DEPTH: usize = 100_000;
+        let mut core: DawgCore<u8, u32> = DawgCore::new();
+        let term = vec![b'x'; DEPTH];
+        core.insert_direct_with_value(&term, Some(29));
+
+        let signatures = core.compute_signatures();
+        assert_eq!(signatures.len(), DEPTH + 1);
+        assert_ne!(signatures[0], NodeSignature::zero());
+
+        let reachable = core.find_reachable_nodes();
+        assert_eq!(reachable.len(), DEPTH + 1);
+
+        let entries = core.extract_all_entries();
+        assert_eq!(entries, vec![(term, Some(29))]);
     }
 }

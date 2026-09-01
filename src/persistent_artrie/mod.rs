@@ -194,9 +194,9 @@ mod overlay_routing_tests;
 
 // Phase 5/6 byte overlay-eviction correspondence tests (OE3/OE5/OE8 twins of char's
 // `overlay_eviction_driver_correspondence`). In-crate because they drive the lifted
-// `pub(crate)` `OverlayEvictable` primitives + the `pub(crate)` `evict_overlay_nodes`
-// byte driver + the `bench_*` eviction surface, and inspect the overlay-internal state
-// (an OnDisk overlay child after eviction, the M-2a stamp 1c guard).
+// `pub(crate)` `OverlayEvictable` primitives, the generation-qualified compact-batch
+// byte driver, and the `bench_*` eviction surface, and inspect overlay-internal state
+// (an OnDisk overlay child after eviction and the M-2a stamp 1c guard).
 #[cfg(test)]
 mod overlay_eviction_byte_tests;
 
@@ -576,8 +576,8 @@ pub use adaptive_pool::{
 
 // Eviction types for bounded-memory operation
 pub use eviction::{
-    AccessTracker, DiskLocationRegistry, EvictionConfig, EvictionCoordinator, EvictionStats,
-    EvictionUrgency, LruRegistry,
+    AccessTracker, DiskLocationRegistry, EvictableCharNode, EvictableNode, EvictionConfig,
+    EvictionCoordinator, EvictionStats, EvictionUrgency, LruRegistry,
 };
 
 // Per-node logging types

@@ -10,7 +10,16 @@
 //! Run with: cargo bench --bench persistent_artrie_char_benchmarks --features persistent-artrie
 
 use criterion::{BenchmarkId, Criterion, Throughput};
-use libdictenstein::{persistent_artrie::char::PersistentARTrieChar, DictionaryNode};
+use libdictenstein::persistent_artrie::char::relative_encoding::SerializationContext;
+use libdictenstein::persistent_artrie::char::serialization_char::{
+    deserialize_char_node_v2, serialize_char_node_v2, DeserializationContext,
+};
+use libdictenstein::persistent_artrie::char::{
+    ArenaSlot, CharArtNode, CharBucket, CharNode, CharNode16, CharNode4, CharNode48,
+    PersistentARTrieChar,
+};
+use libdictenstein::persistent_artrie::{NodeType, SwizzledPtr};
+use libdictenstein::DictionaryNode;
 use rand::distr::{weighted::WeightedIndex, Distribution};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -30,6 +39,123 @@ const FIXED_OPS_PER_READER: usize = 12_000;
 const FIXED_WRITES_PER_SAMPLE: usize = 2_000;
 const FIXED_READER_COUNT: usize = 8;
 const FIXED_SEED: u64 = 0x5041_5254_4348_4152;
+
+fn char_codec_workloads() -> Vec<(&'static str, CharNode, SerializationContext)> {
+    let parent = ArenaSlot::new(0, 10_000);
+    let types = [
+        NodeType::CharNode4,
+        NodeType::CharNode16,
+        NodeType::CharNode48,
+        NodeType::CharBucket,
+    ];
+
+    let mut node4 = CharNode4::new();
+    for index in 0..4 {
+        node4
+            .add_child(
+                0x100 + index,
+                SwizzledPtr::on_disk(1, 9_900 + index, types[index as usize]),
+            )
+            .expect("build node4 codec workload");
+    }
+
+    let mut node16 = CharNode16::new();
+    for index in 0..16 {
+        node16
+            .add_child(
+                0x200 + index,
+                SwizzledPtr::on_disk(1, 9_800 + index, types[index as usize % types.len()]),
+            )
+            .expect("build node16 codec workload");
+    }
+
+    let mut node48 = CharNode48::new();
+    for index in 0..48 {
+        node48
+            .add_child(
+                0x400 + index,
+                SwizzledPtr::on_disk(1, 9_700 + index, types[index as usize % types.len()]),
+            )
+            .expect("build node48 codec workload");
+    }
+
+    let mut bucket = CharBucket::new();
+    for index in 0..256 {
+        bucket
+            .add_child(
+                0x1_000 + index,
+                SwizzledPtr::on_disk(1, 9_000 + index, NodeType::CharNode48),
+            )
+            .expect("build homogeneous bucket codec workload");
+    }
+
+    let mut cross_arena = CharNode4::new();
+    for index in 0..4 {
+        cross_arena
+            .add_child(
+                0x2_000 + index,
+                SwizzledPtr::on_disk(2 + index, 100 + index, types[index as usize]),
+            )
+            .expect("build cross-arena codec workload");
+    }
+
+    vec![
+        (
+            "n4_relative_mixed",
+            CharNode::N4(Box::new(node4)),
+            SerializationContext::new(parent),
+        ),
+        (
+            "n16_packed_mixed",
+            CharNode::N16(Box::new(node16)),
+            SerializationContext::new(parent),
+        ),
+        (
+            "n48_packed_mixed",
+            CharNode::N48(Box::new(node48)),
+            SerializationContext::new(parent),
+        ),
+        (
+            "bucket256_homogeneous",
+            CharNode::Bucket(Box::new(bucket)),
+            SerializationContext::new(parent),
+        ),
+        (
+            "n4_typed_full",
+            CharNode::N4(Box::new(cross_arena)),
+            SerializationContext::full_encoding(parent),
+        ),
+    ]
+}
+
+fn bench_char_record_codec(c: &mut Criterion) {
+    let mut group = c.benchmark_group("char_record_codec");
+    for (name, node, context) in char_codec_workloads() {
+        let mut encoded = Vec::new();
+        serialize_char_node_v2(&node, &mut encoded, &context)
+            .expect("prepare char codec benchmark bytes");
+        group.throughput(Throughput::Bytes(encoded.len() as u64));
+        group.bench_function(BenchmarkId::new("encode", name), |b| {
+            b.iter(|| {
+                let mut output = Vec::with_capacity(encoded.len());
+                serialize_char_node_v2(black_box(&node), &mut output, black_box(&context))
+                    .expect("benchmark char encode");
+                black_box(output)
+            });
+        });
+        group.bench_function(BenchmarkId::new("decode", name), |b| {
+            let decode_context = DeserializationContext::new(context.parent_slot);
+            b.iter(|| {
+                let mut cursor = std::io::Cursor::new(black_box(encoded.as_slice()));
+                black_box(
+                    deserialize_char_node_v2(&mut cursor, black_box(&decode_context))
+                        .expect("benchmark char decode"),
+                )
+            });
+        });
+    }
+    group.finish();
+}
 
 /// Generate realistic Unicode dictionary terms for benchmarking
 fn generate_unicode_terms(size: usize) -> Vec<String> {
@@ -902,6 +1028,7 @@ fn bench_char_atomic_ops(c: &mut Criterion) {
 
 fn run_criterion() {
     let mut criterion = Criterion::default().configure_from_args();
+    bench_char_record_codec(&mut criterion);
     bench_char_construction(&mut criterion);
     bench_char_construction_ascii(&mut criterion);
     bench_char_lookup(&mut criterion);
@@ -918,9 +1045,17 @@ fn run_criterion() {
     criterion.final_summary();
 }
 
+fn run_char_codec_criterion() {
+    let mut criterion = Criterion::default().configure_from_args();
+    bench_char_record_codec(&mut criterion);
+    criterion.final_summary();
+}
+
 fn main() {
     if std::env::var_os("PART_CHAR_FIXED_SAMPLES").is_some() {
         run_fixed_samples();
+    } else if std::env::var_os("PART_CHAR_CODEC_ONLY").is_some() {
+        run_char_codec_criterion();
     } else {
         run_criterion();
     }

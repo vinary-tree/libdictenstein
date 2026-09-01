@@ -9,8 +9,45 @@
 //! - Concurrency errors (lock poisoning, swizzle failures)
 //! - Resource errors (out of space, buffer pool exhausted)
 
+use std::collections::TryReserveError;
 use std::io;
 use thiserror::Error;
+
+/// Typed failure reported by a fallible collection reservation.
+///
+/// The persistent structures use both standard collections and inline-first
+/// SmallVec worklists. Keeping their native failures in one public type
+/// preserves capacity-overflow versus allocator-rejection information without
+/// forcing a heap-first container onto shallow hot paths.
+#[derive(Error, Debug)]
+pub enum CollectionAllocationError {
+    /// A standard-library collection reservation failed.
+    #[error(transparent)]
+    Standard(#[from] TryReserveError),
+    /// Computing the requested collection capacity overflowed usize.
+    #[error("collection capacity arithmetic overflow")]
+    CapacityOverflow,
+    /// The allocator rejected a concrete layout.
+    #[error("allocator rejected layout of {size} bytes with alignment {align}")]
+    AllocatorRejected {
+        /// Requested allocation size in bytes.
+        size: usize,
+        /// Requested allocation alignment in bytes.
+        align: usize,
+    },
+}
+
+impl From<smallvec::CollectionAllocErr> for CollectionAllocationError {
+    fn from(source: smallvec::CollectionAllocErr) -> Self {
+        match source {
+            smallvec::CollectionAllocErr::CapacityOverflow => Self::CapacityOverflow,
+            smallvec::CollectionAllocErr::AllocErr { layout } => Self::AllocatorRejected {
+                size: layout.size(),
+                align: layout.align(),
+            },
+        }
+    }
+}
 
 /// Result type alias for persistent ARTrie operations
 pub type Result<T> = std::result::Result<T, PersistentARTrieError>;
@@ -112,6 +149,20 @@ pub enum PersistentARTrieError {
         pinned_pages: usize,
         /// Total pages in pool
         total_pages: usize,
+    },
+
+    /// A fallible collection reservation could not be satisfied.
+    #[error(
+        "Memory allocation failed during {operation} while reserving {requested_entries} entries: {source}"
+    )]
+    AllocationFailed {
+        /// Operation whose bounded working collection was being reserved.
+        operation: String,
+        /// Number of entries requested from the collection.
+        requested_entries: usize,
+        /// Typed reservation failure from the collection implementation.
+        #[source]
+        source: CollectionAllocationError,
     },
 
     /// Lock was poisoned (panic occurred while holding lock)
@@ -335,6 +386,22 @@ impl PersistentARTrieError {
         }
     }
 
+    /// Create a typed fallible-allocation error with operation context.
+    pub fn allocation_failed<E>(
+        operation: impl Into<String>,
+        requested_entries: usize,
+        source: E,
+    ) -> Self
+    where
+        E: Into<CollectionAllocationError>,
+    {
+        Self::AllocationFailed {
+            operation: operation.into(),
+            requested_entries,
+            source: source.into(),
+        }
+    }
+
     /// Check if this error is recoverable (can retry operation)
     pub fn is_recoverable(&self) -> bool {
         matches!(
@@ -358,7 +425,10 @@ impl PersistentARTrieError {
 
     /// Check if this error is transient (e.g., out of buffer space)
     pub fn is_transient(&self) -> bool {
-        matches!(self, Self::BufferPoolExhausted { .. })
+        matches!(
+            self,
+            Self::BufferPoolExhausted { .. } | Self::AllocationFailed { .. }
+        )
     }
 }
 
@@ -500,6 +570,53 @@ mod tests {
                 assert_eq!(source.kind(), io::ErrorKind::NotFound);
             }
             _ => panic!("Expected IoError variant"),
+        }
+    }
+
+    #[test]
+    fn test_allocation_failure_is_transient_but_not_corruption() {
+        let mut entries = Vec::<u8>::new();
+        let source = entries
+            .try_reserve_exact(usize::MAX)
+            .expect_err("an impossible capacity must be rejected");
+        let error = PersistentARTrieError::allocation_failed("test arena", usize::MAX, source);
+
+        assert!(error.is_transient());
+        assert!(!error.is_corruption());
+        match error {
+            PersistentARTrieError::AllocationFailed {
+                operation,
+                requested_entries,
+                ..
+            } => {
+                assert_eq!(operation, "test arena");
+                assert_eq!(requested_entries, usize::MAX);
+            }
+            _ => panic!("expected AllocationFailed variant"),
+        }
+    }
+
+    #[test]
+    fn test_inline_collection_capacity_failure_preserves_typed_category() {
+        let mut entries = smallvec::SmallVec::<[u8; 16]>::new();
+        let source = entries
+            .try_reserve_exact(usize::MAX)
+            .expect_err("an impossible inline collection capacity must be rejected");
+        let error =
+            PersistentARTrieError::allocation_failed("inline test arena", usize::MAX, source);
+
+        assert!(error.is_transient());
+        assert!(!error.is_corruption());
+        match error {
+            PersistentARTrieError::AllocationFailed {
+                operation,
+                requested_entries,
+                source: CollectionAllocationError::CapacityOverflow,
+            } => {
+                assert_eq!(operation, "inline test arena");
+                assert_eq!(requested_entries, usize::MAX);
+            }
+            other => panic!("expected typed inline capacity overflow, found {other:?}"),
         }
     }
 }

@@ -23,6 +23,9 @@ use std::sync::Arc;
 
 use crate::persistent_artrie::core::concurrency::{TrieStats, TrieStatsSnapshot};
 use crate::persistent_artrie::core::durability::DurabilityPolicy;
+use crate::persistent_artrie::core::overlay::durable_write::{
+    PendingDurableMutation, RegistryEligibleMutation, SemanticMutationPublicationPermit,
+};
 use crate::persistent_artrie::core::prefetch::PrefetchStatsSnapshot;
 use crate::value::DictionaryValue;
 
@@ -135,45 +138,42 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         self.durability_policy.store(policy);
     }
 
-    /// Invalidate the published eviction registry on a durable in-place mutation
-    /// (Phase 6 — the byte twin of char's `invalidate_eviction_registry`).
+    /// Construct the zero-sized witness required by semantic root-CAS writers.
     ///
-    /// A durable mutation diverges the in-memory trie from the last checkpoint's on-disk
-    /// image, so any published eviction registry now references potentially-stale on-disk
-    /// data. Marking the registry invalid makes the coordinator refuse to select any node
-    /// for eviction (`force_eviction`/`select_for_eviction` gate on `is_valid()`) until
-    /// the next checkpoint rebuilds and republishes a fresh, durable registry.
-    ///
-    /// This is the coarse early-out; the CORRECTNESS mechanism is the per-node M-2a
-    /// `serial_disk_ptr` guard (invalidation alone can't catch a mid-eviction-list
-    /// overwrite — the stamp guard does). No-op when eviction is disabled. Byte has no
-    /// `structural_generation` (char-only — the owned `DictionaryNode` walk detector), so
-    /// this only invalidates the coordinator's registry.
-    pub(crate) fn invalidate_eviction_registry(&self) {
-        if let Some(coordinator) = self
-            .eviction_coordinator
-            .lock()
-            .expect("eviction_coordinator mutex poisoned")
-            .as_ref()
-        {
-            coordinator.invalidate_registry();
-        }
+    /// The root CAS itself clears exact eviction authority. This function is
+    /// deliberately independent of the coordinator slot and registry, and is
+    /// always inlined so it contributes no runtime operation to the write path.
+    #[inline(always)]
+    pub(crate) fn begin_semantic_publication(
+        &self,
+    ) -> SemanticMutationPublicationPermit<'static, RegistryEligibleMutation> {
+        SemanticMutationPublicationPermit::exact_root_cas()
     }
 
     pub(super) fn append_mutation_wal_record(
         &self,
         record: WalRecord,
         operation: &'static str,
-    ) -> Result<Lsn> {
-        // Phase 6 (byte invalidation, byte twin of char's `append_to_wal_inner` head):
-        // a durable mutation is being logged → the in-memory trie diverges from the last
-        // checkpoint's on-disk image, so invalidate any published eviction registry HERE
-        // — the single chokepoint every byte overlay durable mutation funnels through —
-        // BEFORE the WAL append/visibility, so eviction cannot unswizzle a freshly-
-        // overwritten live node onto its STALE pre-write disk ptr. No-op when eviction is
-        // disabled.
-        self.invalidate_eviction_registry();
+    ) -> Result<PendingDurableMutation<'_, RegistryEligibleMutation>> {
+        // Construct the compile-time root-CAS witness before the optional WAL;
+        // ownership follows the pending visibility disposition without runtime
+        // admission or release work.
+        let permit = self.begin_semantic_publication();
+        #[cfg(test)]
+        crate::persistent_artrie::core::overlay::durable_write::inject_semantic_wal_fault(
+            crate::persistent_artrie::core::overlay::durable_write::SemanticWalFaultPoint::DataAppend,
+        )?;
+        let appended_lsn = self.append_control_wal_record(record, operation)?;
+        #[cfg(test)]
+        crate::persistent_artrie::core::overlay::durable_write::semantic_wal_rendezvous();
+        Ok(PendingDurableMutation::guarded(appended_lsn, permit))
+    }
 
+    pub(super) fn append_control_wal_record(
+        &self,
+        record: WalRecord,
+        operation: &'static str,
+    ) -> Result<Lsn> {
         let Some(ref wal_writer) = self.wal_writer else {
             return Ok(0);
         };
@@ -196,7 +196,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// available — Order-A callers MUST treat a `0` return as "no WAL" and refuse to
     /// acknowledge durability). The op label `"order_a_durable"` is the durable
     /// overlay write path's chokepoint for error attribution.
-    pub(super) fn append_to_wal_returning_lsn(&self, record: WalRecord) -> Result<Lsn> {
+    pub(super) fn append_to_wal_returning_lsn(
+        &self,
+        record: WalRecord,
+    ) -> Result<PendingDurableMutation<'_, RegistryEligibleMutation>> {
         self.append_mutation_wal_record(record, "order_a_durable")
     }
 
@@ -217,11 +220,18 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         term: &[u8],
         generation: u64,
     ) -> Result<Lsn> {
-        self.append_to_wal_returning_lsn(WalRecord::CommitRank {
-            data_lsn,
-            term: term.to_vec(),
-            generation,
-        })
+        #[cfg(test)]
+        crate::persistent_artrie::core::overlay::durable_write::inject_semantic_wal_fault(
+            crate::persistent_artrie::core::overlay::durable_write::SemanticWalFaultPoint::CommitRankAppend,
+        )?;
+        self.append_control_wal_record(
+            WalRecord::CommitRank {
+                data_lsn,
+                term: term.to_vec(),
+                generation,
+            },
+            "order_a_commit_rank",
+        )
     }
 
     pub(super) fn sync_wal_after_append(
@@ -238,6 +248,11 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 let Some(ref wal_writer) = self.wal_writer else {
                     return Ok(());
                 };
+
+                #[cfg(test)]
+                crate::persistent_artrie::core::overlay::durable_write::inject_semantic_wal_fault(
+                    crate::persistent_artrie::core::overlay::durable_write::SemanticWalFaultPoint::DataSync,
+                )?;
 
                 let synced_lsn = wal_writer.sync().map_err(|e| {
                     PersistentARTrieError::io_error(

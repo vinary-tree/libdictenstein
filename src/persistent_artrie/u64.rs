@@ -11,6 +11,7 @@
 //! `CommitRank` after the winning CAS, advance `CommittedWatermark`, and retain
 //! WAL records beyond the checkpoint watermark for recovery.
 
+use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::marker::PhantomData;
@@ -20,10 +21,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
+use crate::persistent_artrie::core::adaptive_edge_store::SortedUniqueEntries;
 use crate::persistent_artrie::core::committed_watermark::CommittedWatermark;
 use crate::persistent_artrie::core::key_encoding::{KeyEncoding, U64Key};
-use crate::persistent_artrie::core::overlay::atomic_ptr::AtomicNodePtr;
-use crate::persistent_artrie::core::overlay::compressed_serialize::OverlayCompressedSerialize;
+use crate::persistent_artrie::core::overlay::atomic_ptr::{AtomicNodePtr, RootRevision};
+use crate::persistent_artrie::core::overlay::compressed_serialize::{
+    OverlayCompressedSerialize, OverlaySerializationBuild,
+};
 use crate::persistent_artrie::core::overlay::dict_node::OverlayDictionaryNode;
 use crate::persistent_artrie::core::overlay::node::{Child, OverlayNode};
 use crate::persistent_artrie::core::recovery::{reconcile_lww_with_regime, RecoveredOperation};
@@ -32,7 +36,7 @@ use crate::persistent_artrie::core::wal::{
 };
 use crate::persistent_artrie::disk_manager::MmapDiskManager;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
-use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr};
+use crate::persistent_artrie::swizzled_ptr::{NodeType, SwizzledPtr, MAX_OFFSET};
 use crate::persistent_artrie::{PersistentARTrie, RecoveryReport};
 use crate::serialization::bincode_compat;
 use crate::value::DictionaryValue;
@@ -40,12 +44,18 @@ use crate::{
     CharUnit, Dictionary, MappedDictionary, MutableDictionary, MutableMappedDictionary,
     SyncStrategy,
 };
+use smallvec::SmallVec;
 
 const SNAPSHOT_MAGIC: [u8; 8] = *b"AR64CX01";
 const SNAPSHOT_VERSION: u32 = 1;
+const SNAPSHOT_FLAG_IS_FINAL: u8 = 0b0000_0001;
+const SNAPSHOT_FLAG_HAS_VALUE: u8 = 0b0000_0010;
+const SNAPSHOT_KNOWN_FLAGS: u8 = SNAPSHOT_FLAG_IS_FINAL | SNAPSHOT_FLAG_HAS_VALUE;
 const NONE_VALUE_LEN: u64 = u64::MAX;
 const MAX_VALUE_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_NODE_COUNT: u64 = 16 * 1024 * 1024;
+/// Maximum number of records whose zero-based indices fit the 22-bit disk
+/// offset carried by [`SwizzledPtr`].
+const MAX_NODE_COUNT: u64 = MAX_OFFSET as u64 + 1;
 const MAX_PREFIX_UNITS: u32 = 4096;
 const MAX_CHILDREN_PER_NODE: u32 = 1_000_000;
 
@@ -99,6 +109,13 @@ pub type PersistentARTrieU64CompactNode<V = ()> = PersistentARTrieU64Node<V, U64
 pub type PersistentARTrieU64Prefix3CompatNode<V = ()> =
     PersistentARTrieU64Node<V, U64_CX_PREFIX_COMPAT>;
 
+/// Boxed fallible iterator returned by native-u64 prefix traversal.
+pub type PersistentARTrieU64TrySequenceIter<'a> = Box<dyn Iterator<Item = Result<Vec<u64>>> + 'a>;
+
+/// Boxed fallible valued iterator returned by native-u64 prefix traversal.
+pub type PersistentARTrieU64TryValuedSequenceIter<'a, V> =
+    Box<dyn Iterator<Item = Result<(Vec<u64>, Option<V>)>> + 'a>;
+
 struct U64Projected {
     is_final: bool,
     prefix: Vec<u64>,
@@ -106,12 +123,55 @@ struct U64Projected {
     children: Vec<(u64, u64)>,
 }
 
-#[derive(Clone)]
 struct U64DiskNode {
     is_final: bool,
     prefix: Vec<u64>,
     value: Option<Vec<u8>>,
     children: Vec<(u64, u64)>,
+}
+
+/// A format-bounded, validated index into the native-u64 checkpoint table.
+/// The AR64CX01 pointer field is 22 bits, so `u32` is both sufficient and
+/// materially smaller than `usize` in traversal frames on 64-bit targets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct U64NodeIndex(u32);
+
+impl U64NodeIndex {
+    #[inline]
+    fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// Reader-side record after pointer canonicality, range, and child-label order
+/// have been validated exactly once.
+struct U64DecodedNode {
+    is_final: bool,
+    prefix: Vec<u64>,
+    value: Option<Vec<u8>>,
+    children: SortedUniqueEntries<u64, U64NodeIndex>,
+}
+
+#[derive(Clone, Copy)]
+enum U64PointerRole {
+    Root,
+    Child {
+        node: usize,
+        ordinal: usize,
+    },
+    #[cfg(test)]
+    Test,
+}
+
+impl fmt::Display for U64PointerRole {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Root => formatter.write_str("root"),
+            Self::Child { node, ordinal } => write!(formatter, "node {node} child {ordinal}"),
+            #[cfg(test)]
+            Self::Test => formatter.write_str("test"),
+        }
+    }
 }
 
 enum U64CasOutcome {
@@ -125,10 +185,12 @@ struct U64CxSnapshotBuilder {
 }
 
 impl U64CxSnapshotBuilder {
-    fn into_nodes(self) -> Vec<U64DiskNode> {
+    fn into_nodes(self) -> Result<Vec<U64DiskNode>> {
         self.nodes
             .into_inner()
-            .expect("u64 snapshot builder mutex poisoned")
+            .map_err(|_| PersistentARTrieError::LockPoisoned {
+                resource: "u64 snapshot builder".to_string(),
+            })
     }
 }
 
@@ -179,18 +241,16 @@ impl<V: DictionaryValue, const PREFIX: usize> OverlayCompressedSerialize<U64Key<
         projected: &Self::Projected,
         _child_disk_ptrs: &[(u64, SwizzledPtr)],
         _path: &[u64],
+        _registry_path: crate::persistent_artrie::core::eviction::RegistryPathId,
         _registry: Option<&mut crate::persistent_artrie::eviction::DiskLocationRegistry>,
     ) -> Result<SwizzledPtr> {
         let mut nodes = self
             .nodes
             .lock()
-            .expect("u64 snapshot builder mutex poisoned");
-        if nodes.len() as u64 >= MAX_NODE_COUNT {
-            return Err(PersistentARTrieError::corrupted(format!(
-                "u64 CX checkpoint exceeds maximum node count {MAX_NODE_COUNT}"
-            )));
-        }
-        let index = nodes.len() as u32;
+            .map_err(|_| PersistentARTrieError::LockPoisoned {
+                resource: "u64 snapshot builder".to_string(),
+            })?;
+        let index = checkpoint_node_index(nodes.len())?;
         nodes.push(U64DiskNode {
             is_final: projected.is_final,
             prefix: projected.prefix.clone(),
@@ -203,10 +263,20 @@ impl<V: DictionaryValue, const PREFIX: usize> OverlayCompressedSerialize<U64Key<
     fn new_synth_node() -> U64Node<V, PREFIX> {
         U64Node::<V, PREFIX>::new()
     }
+}
 
-    fn stamp_durable(live: &U64Node<V, PREFIX>, raw: u64) {
-        live.set_durable_stamp(raw);
+fn checkpoint_node_index(node_count: usize) -> Result<u32> {
+    let index = u64::try_from(node_count).map_err(|_| {
+        PersistentARTrieError::corrupted("u64 CX checkpoint node count does not fit u64")
+    })?;
+    if index >= MAX_NODE_COUNT {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "u64 CX checkpoint exceeds maximum node count {MAX_NODE_COUNT}"
+        )));
     }
+    u32::try_from(index).map_err(|_| {
+        PersistentARTrieError::corrupted("u64 CX checkpoint node index does not fit u32")
+    })
 }
 
 fn encode_sequence(sequence: &[u64]) -> Vec<u8> {
@@ -271,6 +341,54 @@ fn write_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(bytes);
 }
 
+fn snapshot_u32_len(section: &str, length: usize, maximum: u32) -> Result<u32> {
+    let encoded = u32::try_from(length).map_err(|_| {
+        PersistentARTrieError::InvalidOperation(format!(
+            "cannot encode u64 CX checkpoint: {section} length {length} does not fit u32"
+        ))
+    })?;
+    if encoded > maximum {
+        return Err(PersistentARTrieError::InvalidOperation(format!(
+            "cannot encode u64 CX checkpoint: {section} length {encoded} exceeds format limit {maximum}"
+        )));
+    }
+    Ok(encoded)
+}
+
+fn snapshot_u64_len(section: &str, length: usize, maximum: u64) -> Result<u64> {
+    let encoded = u64::try_from(length).map_err(|_| {
+        PersistentARTrieError::InvalidOperation(format!(
+            "cannot encode u64 CX checkpoint: {section} length {length} does not fit u64"
+        ))
+    })?;
+    if encoded > maximum {
+        return Err(PersistentARTrieError::InvalidOperation(format!(
+            "cannot encode u64 CX checkpoint: {section} length {encoded} exceeds format limit {maximum}"
+        )));
+    }
+    Ok(encoded)
+}
+
+fn validate_snapshot_flags(flags: u8) -> Result<()> {
+    let unknown = flags & !SNAPSHOT_KNOWN_FLAGS;
+    if unknown != 0 {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "u64 checkpoint contains unknown node flag bits 0b{unknown:08b}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_snapshot_value_flag(flags: u8, value_present: bool) -> Result<()> {
+    let flagged = flags & SNAPSHOT_FLAG_HAS_VALUE != 0;
+    if flagged != value_present {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "u64 checkpoint value flag disagrees with value bytes: flag={flagged}, bytes={value_present}"
+        )));
+    }
+    Ok(())
+}
+
 struct Cursor<'a> {
     bytes: &'a [u8],
     pos: usize,
@@ -312,6 +430,11 @@ impl<'a> Cursor<'a> {
         Ok(u64::from_le_bytes(buf))
     }
 
+    #[inline]
+    fn remaining(&self) -> usize {
+        self.bytes.len() - self.pos
+    }
+
     fn finish(self) -> Result<()> {
         if self.pos == self.bytes.len() {
             Ok(())
@@ -332,38 +455,58 @@ fn write_snapshot_file<V: DictionaryValue, const PREFIX: usize>(
     ensure_parent(path)?;
 
     let builder = U64CxSnapshotBuilder::default();
-    let root_ptr = builder.serialize_compressed_loop(root, None)?;
-    let nodes = builder.into_nodes();
+    let mut serialization = OverlaySerializationBuild::dag_disabled();
+    let root_ptr = builder.serialize_compressed_loop(root, &mut serialization)?;
+    let nodes = builder.into_nodes()?;
+
+    let encoded_prefix = u32::try_from(PREFIX).map_err(|_| {
+        PersistentARTrieError::InvalidOperation(format!(
+            "cannot encode u64 CX checkpoint: prefix budget {PREFIX} does not fit u32"
+        ))
+    })?;
+    let encoded_term_count = u64::try_from(term_count).map_err(|_| {
+        PersistentARTrieError::InvalidOperation(format!(
+            "cannot encode u64 CX checkpoint: term count {term_count} does not fit u64"
+        ))
+    })?;
+    let encoded_node_count = snapshot_u64_len("node table", nodes.len(), MAX_NODE_COUNT)?;
 
     let mut bytes = Vec::new();
     write_bytes(&mut bytes, &SNAPSHOT_MAGIC);
     write_u32(&mut bytes, SNAPSHOT_VERSION);
-    write_u32(&mut bytes, PREFIX as u32);
-    write_u64(&mut bytes, term_count as u64);
+    write_u32(&mut bytes, encoded_prefix);
+    write_u64(&mut bytes, encoded_term_count);
     write_u64(&mut bytes, root_ptr.to_raw());
-    write_u64(&mut bytes, nodes.len() as u64);
+    write_u64(&mut bytes, encoded_node_count);
 
     for node in nodes {
         let mut flags = 0u8;
         if node.is_final {
-            flags |= 0b0000_0001;
+            flags |= SNAPSHOT_FLAG_IS_FINAL;
         }
         if node.value.is_some() {
-            flags |= 0b0000_0010;
+            flags |= SNAPSHOT_FLAG_HAS_VALUE;
         }
         write_u8(&mut bytes, flags);
-        write_u32(&mut bytes, node.prefix.len() as u32);
+        let prefix_len = snapshot_u32_len("node prefix", node.prefix.len(), MAX_PREFIX_UNITS)?;
+        write_u32(&mut bytes, prefix_len);
         for unit in node.prefix {
             write_u64(&mut bytes, unit);
         }
         match node.value {
             Some(value) => {
-                write_u64(&mut bytes, value.len() as u64);
+                let value_len = snapshot_u64_len("node value", value.len(), MAX_VALUE_BYTES)?;
+                write_u64(&mut bytes, value_len);
                 write_bytes(&mut bytes, &value);
             }
             None => write_u64(&mut bytes, NONE_VALUE_LEN),
         }
-        write_u32(&mut bytes, node.children.len() as u32);
+        let child_count = snapshot_u32_len(
+            "node child table",
+            node.children.len(),
+            MAX_CHILDREN_PER_NODE,
+        )?;
+        write_u32(&mut bytes, child_count);
         for (label, raw_ptr) in node.children {
             write_u64(&mut bytes, label);
             write_u64(&mut bytes, raw_ptr);
@@ -414,25 +557,48 @@ fn read_snapshot_file<V: DictionaryValue, const PREFIX: usize>(
             "u64 checkpoint prefix budget mismatch: file={prefix}, type={PREFIX}"
         )));
     }
-    let term_count = cursor.u64()? as usize;
+    let term_count = cursor.u64()?;
     let root_raw = cursor.u64()?;
-    let node_count = cursor.u64()?;
-    if node_count > MAX_NODE_COUNT {
+    let encoded_node_count = cursor.u64()?;
+    if encoded_node_count > MAX_NODE_COUNT {
         return Err(PersistentARTrieError::corrupted(format!(
-            "u64 checkpoint node count {node_count} exceeds maximum {MAX_NODE_COUNT}"
+            "u64 checkpoint node count {encoded_node_count} exceeds maximum {MAX_NODE_COUNT}"
         )));
     }
+    let node_count = usize::try_from(encoded_node_count).map_err(|_| {
+        PersistentARTrieError::corrupted(format!(
+            "u64 checkpoint node count {encoded_node_count} does not fit this target"
+        ))
+    })?;
+    let term_count_usize = usize::try_from(term_count).map_err(|_| {
+        PersistentARTrieError::corrupted(format!(
+            "u64 checkpoint term count {term_count} does not fit this target"
+        ))
+    })?;
+    let root_index = decode_node_index(root_raw, node_count, U64PointerRole::Root)?;
 
-    let mut nodes = Vec::with_capacity(node_count as usize);
-    for _ in 0..node_count {
+    // Every node needs flags, prefix length, value length, and child count even
+    // when all variable sections are empty. Prove the minimum encoded extent
+    // before reserving from an untrusted count so a tiny truncated image cannot
+    // trigger a multi-million-element allocation.
+    const MIN_NODE_BYTES: usize = 1 + 4 + 8 + 4;
+    ensure_encoded_extent(cursor.remaining(), node_count, MIN_NODE_BYTES, "node table")?;
+
+    let mut nodes = Vec::new();
+    try_reserve_exact(&mut nodes, node_count, "u64 checkpoint node table")?;
+    for node_index in 0..node_count {
         let flags = cursor.u8()?;
+        validate_snapshot_flags(flags)?;
         let prefix_len = cursor.u32()?;
         if prefix_len > MAX_PREFIX_UNITS {
             return Err(PersistentARTrieError::corrupted(format!(
                 "u64 checkpoint prefix length {prefix_len} exceeds maximum {MAX_PREFIX_UNITS}"
             )));
         }
-        let mut prefix = Vec::with_capacity(prefix_len as usize);
+        let prefix_len = prefix_len as usize;
+        ensure_encoded_extent(cursor.remaining(), prefix_len, 8, "node prefix")?;
+        let mut prefix = Vec::new();
+        try_reserve_exact(&mut prefix, prefix_len, "u64 checkpoint node prefix")?;
         for _ in 0..prefix_len {
             prefix.push(cursor.u64()?);
         }
@@ -445,25 +611,48 @@ fn read_snapshot_file<V: DictionaryValue, const PREFIX: usize>(
                     "u64 checkpoint value length {value_len} exceeds maximum {MAX_VALUE_BYTES}"
                 )));
             }
-            Some(cursor.take(value_len as usize)?.to_vec())
+            let value_len = usize::try_from(value_len).map_err(|_| {
+                PersistentARTrieError::corrupted(
+                    "u64 checkpoint value length does not fit this target",
+                )
+            })?;
+            let encoded = cursor.take(value_len)?;
+            let mut value = Vec::new();
+            try_reserve_exact(&mut value, value_len, "u64 checkpoint value")?;
+            value.extend_from_slice(encoded);
+            Some(value)
         };
-        if flags & 0b0000_0010 != 0 && value.is_none() {
-            return Err(PersistentARTrieError::corrupted(
-                "u64 checkpoint value flag set without value bytes",
-            ));
-        }
+        validate_snapshot_value_flag(flags, value.is_some())?;
         let child_count = cursor.u32()?;
         if child_count > MAX_CHILDREN_PER_NODE {
             return Err(PersistentARTrieError::corrupted(format!(
                 "u64 checkpoint child count {child_count} exceeds maximum {MAX_CHILDREN_PER_NODE}"
             )));
         }
-        let mut children = Vec::with_capacity(child_count as usize);
-        for _ in 0..child_count {
-            children.push((cursor.u64()?, cursor.u64()?));
+        let child_count = child_count as usize;
+        ensure_encoded_extent(cursor.remaining(), child_count, 16, "child table")?;
+        let mut children = Vec::new();
+        try_reserve_exact(&mut children, child_count, "u64 checkpoint child table")?;
+        for child_ordinal in 0..child_count {
+            let label = cursor.u64()?;
+            let child_raw = cursor.u64()?;
+            let child_index = decode_node_index(
+                child_raw,
+                node_count,
+                U64PointerRole::Child {
+                    node: node_index,
+                    ordinal: child_ordinal,
+                },
+            )?;
+            children.push((label, child_index));
         }
-        nodes.push(U64DiskNode {
-            is_final: flags & 0b0000_0001 != 0,
+        let children = SortedUniqueEntries::try_new(children).map_err(|bad_index| {
+            PersistentARTrieError::corrupted(format!(
+                "u64 checkpoint node {node_index} child labels are not strictly ascending and unique at position {bad_index}"
+            ))
+        })?;
+        nodes.push(U64DecodedNode {
+            is_final: flags & SNAPSHOT_FLAG_IS_FINAL != 0,
             prefix,
             value,
             children,
@@ -471,56 +660,235 @@ fn read_snapshot_file<V: DictionaryValue, const PREFIX: usize>(
     }
     cursor.finish()?;
 
-    let mut memo: Vec<Option<Arc<U64Node<V, PREFIX>>>> = vec![None; nodes.len()];
-    let root = build_overlay_from_disk::<V, PREFIX>(root_raw, &nodes, &mut memo)?;
-    Ok((root, term_count))
+    let root = build_overlay_from_disk::<V, PREFIX>(root_index, &nodes, term_count)?;
+    Ok((root, term_count_usize))
 }
 
-fn ptr_index(raw: u64, node_count: usize) -> Result<usize> {
+fn ensure_encoded_extent(
+    remaining: usize,
+    count: usize,
+    bytes_per_item: usize,
+    section: &str,
+) -> Result<()> {
+    let required = count.checked_mul(bytes_per_item).ok_or_else(|| {
+        PersistentARTrieError::corrupted(format!("u64 checkpoint {section} encoded-size overflow"))
+    })?;
+    if required > remaining {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "truncated u64 checkpoint {section}: need at least {required} bytes, have {remaining}"
+        )));
+    }
+    Ok(())
+}
+
+fn try_reserve_exact<T>(items: &mut Vec<T>, count: usize, section: &str) -> Result<()> {
+    items
+        .try_reserve_exact(count)
+        .map_err(|error| PersistentARTrieError::allocation_failed(section, count, error))
+}
+
+fn decode_node_index(raw: u64, node_count: usize, role: U64PointerRole) -> Result<U64NodeIndex> {
     let ptr = SwizzledPtr::from_raw(raw);
     let loc = ptr.disk_location().ok_or_else(|| {
-        PersistentARTrieError::corrupted("u64 checkpoint contains null or memory pointer")
+        PersistentARTrieError::corrupted(format!(
+            "u64 checkpoint {role} contains a null, memory, or invalid disk pointer"
+        ))
     })?;
+    if loc.block_id != 0 || loc.node_type != NodeType::CharBucket {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "u64 checkpoint {role} pointer is noncanonical: block={}, type={:?}",
+            loc.block_id, loc.node_type
+        )));
+    }
+    let canonical = SwizzledPtr::on_disk(0, loc.offset, NodeType::CharBucket).to_raw();
+    if raw != canonical {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "u64 checkpoint {role} pointer has noncanonical reserved flag bits"
+        )));
+    }
     let index = loc.offset as usize;
     if index >= node_count {
         return Err(PersistentARTrieError::corrupted(format!(
-            "u64 checkpoint child pointer index {index} out of {node_count}"
+            "u64 checkpoint {role} pointer index {index} out of {node_count}"
         )));
     }
-    Ok(index)
+    Ok(U64NodeIndex(loc.offset))
 }
 
 fn build_overlay_from_disk<V: DictionaryValue, const PREFIX: usize>(
-    raw: u64,
-    nodes: &[U64DiskNode],
-    memo: &mut [Option<Arc<U64Node<V, PREFIX>>>],
+    root_index: U64NodeIndex,
+    nodes: &[U64DecodedNode],
+    expected_term_count: u64,
 ) -> Result<Arc<U64Node<V, PREFIX>>> {
-    let index = ptr_index(raw, nodes.len())?;
-    if let Some(node) = &memo[index] {
-        return Ok(Arc::clone(node));
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Visit {
+        Unseen,
+        Visiting,
+        Done,
     }
 
-    let disk = nodes[index].clone();
-    let mut node = U64Node::<V, PREFIX>::new();
-    if disk.is_final {
-        node = node.as_final();
+    struct Frame {
+        index: U64NodeIndex,
+        next_child: u32,
     }
-    if let Some(value_bytes) = disk.value {
-        let value: V = bincode_compat::deserialize(&value_bytes)
-            .map_err(|error| codec_error("deserialize u64 checkpoint value", error))?;
-        node = node.with_value(value);
+
+    // Phase 1 validates the complete root-reachable pointer graph before value
+    // deserialization or Arc construction. Each frame is two u32 values rather
+    // than two machine words or a topology-sized OverlayNode.
+    let mut visits = Vec::new();
+    try_reserve_exact(&mut visits, nodes.len(), "u64 checkpoint DFS colors")?;
+    visits.resize(nodes.len(), Visit::Unseen);
+    let mut postorder = Vec::new();
+    try_reserve_exact(&mut postorder, nodes.len(), "u64 checkpoint DFS postorder")?;
+    let mut preorder = Vec::new();
+    try_reserve_exact(&mut preorder, nodes.len(), "u64 checkpoint DFS preorder")?;
+    visits[root_index.as_usize()] = Visit::Visiting;
+    preorder.push(root_index);
+    let mut frames: SmallVec<[Frame; 32]> = SmallVec::new();
+    frames.push(Frame {
+        index: root_index,
+        next_child: 0,
+    });
+
+    while let Some(frame) = frames.last_mut() {
+        let node_index = frame.index.as_usize();
+        let disk = &nodes[node_index];
+        let children = disk.children.as_slice();
+        if (frame.next_child as usize) < children.len() {
+            let edge_index = frame.next_child as usize;
+            let (_, child_index) = children[edge_index];
+            frame.next_child += 1;
+            match visits[child_index.as_usize()] {
+                Visit::Unseen => {
+                    visits[child_index.as_usize()] = Visit::Visiting;
+                    preorder.push(child_index);
+                    frames.push(Frame {
+                        index: child_index,
+                        next_child: 0,
+                    });
+                }
+                Visit::Visiting => {
+                    return Err(PersistentARTrieError::corrupted(format!(
+                        "u64 checkpoint contains a cycle from node {} to node {child_index}",
+                        frame.index.0,
+                        child_index = child_index.0
+                    )));
+                }
+                Visit::Done => {}
+            }
+            continue;
+        }
+
+        let completed_index = frame.index;
+        frames.pop();
+        visits[completed_index.as_usize()] = Visit::Done;
+        postorder.push(completed_index);
     }
-    for (label, child_raw) in disk.children {
-        let child = build_overlay_from_disk::<V, PREFIX>(child_raw, nodes, memo)?;
-        node = node.with_child(label, Child::InMem(child));
+
+    // Count logical accepted paths over the validated DAG before invoking any
+    // user-provided value deserializer. Shared nodes contribute once per incoming
+    // path, which is the trie language cardinality rather than the record count.
+    let mut logical_counts = Vec::new();
+    try_reserve_exact(
+        &mut logical_counts,
+        nodes.len(),
+        "u64 checkpoint logical term counts",
+    )?;
+    logical_counts.resize(nodes.len(), 0u64);
+    for &index in &postorder {
+        let disk = &nodes[index.as_usize()];
+        let mut count = u64::from(disk.is_final);
+        for &(_, child_index) in disk.children.as_slice() {
+            count = count
+                .checked_add(logical_counts[child_index.as_usize()])
+                .ok_or_else(|| {
+                    PersistentARTrieError::corrupted(
+                        "u64 checkpoint logical term count overflows u64",
+                    )
+                })?;
+        }
+        logical_counts[index.as_usize()] = count;
     }
-    let mut current = Arc::new(node);
-    for unit in disk.prefix.into_iter().rev() {
-        let wrapper = U64Node::<V, PREFIX>::new().with_child(unit, Child::InMem(current));
-        current = Arc::new(wrapper);
+    let computed_term_count = logical_counts[root_index.as_usize()];
+    if computed_term_count != expected_term_count {
+        return Err(PersistentARTrieError::corrupted(format!(
+            "u64 checkpoint term count mismatch: header={expected_term_count}, graph={computed_term_count}"
+        )));
     }
-    memo[index] = Some(Arc::clone(&current));
-    Ok(current)
+
+    // Preserve the recursive reader's parent-before-children value decode and
+    // error order while retaining the stronger all-structure-before-user-code
+    // boundary. Values are held in a flat vector until postorder construction.
+    let mut values = Vec::new();
+    try_reserve_exact(&mut values, nodes.len(), "u64 checkpoint decoded values")?;
+    values.resize_with(nodes.len(), || None);
+    for &index in &preorder {
+        if let Some(value_bytes) = &nodes[index.as_usize()].value {
+            let value = bincode_compat::deserialize(value_bytes)
+                .map_err(|error| codec_error("deserialize u64 checkpoint value", error))?;
+            values[index.as_usize()] = Some(value);
+        }
+    }
+
+    // Phase 2 constructs each reachable node once, in child-before-parent order.
+    // `from_sorted_children` chooses the adaptive tier in O(degree) instead of
+    // performing O(degree^2) copy-on-write insertions on wide nodes.
+    let mut memo = Vec::new();
+    try_reserve_exact(
+        &mut memo,
+        nodes.len(),
+        "u64 checkpoint materialization memo",
+    )?;
+    memo.resize_with(nodes.len(), || None);
+    for index in postorder {
+        let node_index = index.as_usize();
+        let disk = &nodes[node_index];
+        let children = disk.children.try_map(
+            |child_index| {
+                let child = memo[child_index.as_usize()].as_ref().ok_or_else(|| {
+                    PersistentARTrieError::corrupted(format!(
+                        "u64 checkpoint materializer lost completed node {}",
+                        child_index.0
+                    ))
+                })?;
+                Ok(Child::InMem(Arc::clone(child)))
+            },
+            |error| {
+                PersistentARTrieError::allocation_failed(
+                    "u64 checkpoint materialized children",
+                    disk.children.as_slice().len(),
+                    error,
+                )
+            },
+        )?;
+        let node = U64Node::<V, PREFIX>::try_from_sorted_children(
+            disk.is_final,
+            values[node_index].take(),
+            children,
+        )
+        .map_err(|error| {
+            PersistentARTrieError::allocation_failed(
+                format!("u64 checkpoint node {node_index} sparse child index"),
+                disk.children.as_slice().len(),
+                error,
+            )
+        })?;
+        let mut completed = Arc::new(node);
+        for &unit in disk.prefix.iter().rev() {
+            completed =
+                Arc::new(U64Node::<V, PREFIX>::new().with_child(unit, Child::InMem(completed)));
+        }
+        memo[node_index] = Some(completed);
+    }
+
+    memo[root_index.as_usize()]
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| {
+            PersistentARTrieError::corrupted(
+                "u64 checkpoint materializer did not construct the root",
+            )
+        })
 }
 
 fn create_wal(path: &Path) -> Result<Arc<WalWriter>> {
@@ -559,30 +927,105 @@ fn append_and_sync(wal_writer: &WalWriter, record: WalRecord) -> Result<Lsn> {
     Ok(lsn)
 }
 
-fn collect_sequences<V: DictionaryValue, const PREFIX: usize>(
-    root: Arc<U64Node<V, PREFIX>>,
-) -> Vec<(Vec<u64>, Option<V>)> {
-    let mut out = Vec::new();
-    let mut stack = vec![(root, Vec::<u64>::new())];
-    while let Some((node, path)) = stack.pop() {
-        if node.is_final() {
-            out.push((path.clone(), node.get_value()));
-        }
-        let mut children = Vec::new();
-        for (&label, child) in node.iter_children() {
-            if let Some(child) = child.as_in_mem() {
-                children.push((label, Arc::clone(child)));
+struct U64SequenceFrame<V: DictionaryValue, const PREFIX: usize> {
+    node: Arc<U64Node<V, PREFIX>>,
+    next_child: usize,
+    path_len: usize,
+    emitted: bool,
+}
+
+struct U64SequenceIterator<V: DictionaryValue, const PREFIX: usize> {
+    frames: SmallVec<[U64SequenceFrame<V, PREFIX>; 16]>,
+    path: Vec<u64>,
+}
+
+fn nonresident_u64_edge(label: u64) -> PersistentARTrieError {
+    PersistentARTrieError::corrupted(format!(
+        "native-u64 topology contains unresolved on-disk edge with label {label}; native-u64 snapshots must be fully resident"
+    ))
+}
+
+fn assume_resident_u64_topology<T>(result: Result<T>) -> T {
+    result.unwrap_or_else(|error| {
+        panic!("PersistentARTrieU64 resident-topology invariant violated: {error}")
+    })
+}
+
+impl<V: DictionaryValue, const PREFIX: usize> U64SequenceIterator<V, PREFIX> {
+    fn new(root: Arc<U64Node<V, PREFIX>>, path: Vec<u64>) -> Self {
+        let path_len = path.len();
+        let mut frames = SmallVec::new();
+        frames.push(U64SequenceFrame {
+            node: root,
+            next_child: 0,
+            path_len,
+            emitted: false,
+        });
+        Self { frames, path }
+    }
+}
+
+impl<V: DictionaryValue, const PREFIX: usize> Iterator for U64SequenceIterator<V, PREFIX> {
+    type Item = Result<(Vec<u64>, Option<V>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            // Native-u64 checkpoint reopen materializes every reachable edge.  Keep
+            // that cross-module invariant executable: an unresolved edge is a typed,
+            // terminal corruption result, never a silently omitted language branch.
+            let action = {
+                let frame = self.frames.last_mut()?;
+                if !frame.emitted {
+                    frame.emitted = true;
+                    if frame.node.is_final() {
+                        return Some(Ok((self.path.clone(), frame.node.get_value())));
+                    }
+                }
+
+                match frame.node.child_at(frame.next_child) {
+                    Some((&label, child)) => {
+                        frame.next_child += 1;
+                        match child {
+                            Child::InMem(child) => {
+                                Ok(Some((label, Arc::clone(child), frame.path_len)))
+                            }
+                            Child::OnDisk(_) => Err(nonresident_u64_edge(label)),
+                        }
+                    }
+                    None => Ok(None),
+                }
+            };
+
+            match action {
+                Ok(Some((label, child, parent_path_len))) => {
+                    self.path.truncate(parent_path_len);
+                    self.path.push(label);
+                    self.frames.push(U64SequenceFrame {
+                        node: child,
+                        next_child: 0,
+                        path_len: self.path.len(),
+                        emitted: false,
+                    });
+                }
+                Ok(None) => {
+                    self.frames.pop();
+                    let parent_path_len =
+                        self.frames.last().map(|frame| frame.path_len).unwrap_or(0);
+                    self.path.truncate(parent_path_len);
+                }
+                Err(error) => {
+                    self.frames.clear();
+                    self.path.clear();
+                    return Some(Err(error));
+                }
             }
         }
-        children.reverse();
-        for (label, child) in children {
-            let mut child_path = path.clone();
-            child_path.push(label);
-            stack.push((child, child_path));
-        }
     }
-    out.sort_by(|left, right| left.0.cmp(&right.0));
-    out
+}
+
+impl<V: DictionaryValue, const PREFIX: usize> std::iter::FusedIterator
+    for U64SequenceIterator<V, PREFIX>
+{
 }
 
 struct U64ReplayPlan {
@@ -779,9 +1222,16 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
     }
 
     pub fn root_arc(&self) -> Arc<U64Node<V, PREFIX>> {
-        self.root
-            .load()
-            .unwrap_or_else(|| Arc::new(U64Node::<V, PREFIX>::new()))
+        Arc::clone(self.root_revision().node())
+    }
+
+    fn root_revision(&self) -> RootRevision<U64Key<PREFIX>, V> {
+        loop {
+            if let Some(revision) = self.root.load_revision() {
+                return revision;
+            }
+            let _ = self.root.try_init(Arc::new(U64Node::<V, PREFIX>::new()));
+        }
     }
 
     /// Capture a traversal root and exact cardinality from one atomic revision.
@@ -796,25 +1246,24 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
         )
     }
 
-    fn find_node(&self, sequence: &[u64]) -> Option<Arc<U64Node<V, PREFIX>>> {
-        let mut current = self.root.load()?;
+    fn try_find_node(&self, sequence: &[u64]) -> Result<Option<Arc<U64Node<V, PREFIX>>>> {
+        let Some(mut current) = self.root.load() else {
+            return Ok(None);
+        };
         for &label in sequence {
-            let child = current.find_child(label)?;
-            current = Arc::clone(child.as_in_mem()?);
+            let Some(child) = current.find_child(label) else {
+                return Ok(None);
+            };
+            current = match child {
+                Child::InMem(child) => Arc::clone(child),
+                Child::OnDisk(_) => return Err(nonresident_u64_edge(label)),
+            };
         }
-        Some(current)
+        Ok(Some(current))
     }
 
-    fn build_spine(sequence: &[u64], index: usize, value: Option<V>) -> Arc<U64Node<V, PREFIX>> {
-        if index == sequence.len() {
-            let mut node = U64Node::<V, PREFIX>::new().as_final();
-            if let Some(value) = value {
-                node = node.with_value(value);
-            }
-            return Arc::new(node);
-        }
-        let child = Self::build_spine(sequence, index + 1, value);
-        Arc::new(U64Node::<V, PREFIX>::new().with_child(sequence[index], Child::InMem(child)))
+    fn find_node(&self, sequence: &[u64]) -> Option<Arc<U64Node<V, PREFIX>>> {
+        assume_resident_u64_topology(self.try_find_node(sequence))
     }
 
     fn build_insert_path(
@@ -823,41 +1272,77 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
         index: usize,
         value: Option<V>,
     ) -> Option<(Arc<U64Node<V, PREFIX>>, bool)> {
-        if index == sequence.len() {
-            let inserted = !node.is_final();
-            if !inserted && value.is_none() {
-                return None;
-            }
-            let mut next = node.as_ref().clone().as_final();
-            if let Some(value) = value {
-                next = next.with_value(value);
-            }
-            return Some((Arc::new(next), inserted));
-        }
+        type Parent<'a, V, const PREFIX: usize> = &'a U64Node<V, PREFIX>;
 
-        let label = sequence[index];
-        let (child, inserted) = match node.find_child(label).and_then(|child| child.as_in_mem()) {
-            Some(child) => Self::build_insert_path(child, sequence, index + 1, value)?,
-            None => (Self::build_spine(sequence, index + 1, value), true),
+        // The labels are already stored in `sequence[index..depth]`; retaining
+        // them in every frame would double the zipper working set on 64-bit
+        // targets. Sixteen borrowed parents fit inline, while arbitrary depth
+        // spills to the heap without growing the native call stack.
+        let mut spine: SmallVec<[Parent<'_, V, PREFIX>; 16]> = SmallVec::new();
+        let mut current = node.as_ref();
+        let mut depth = index;
+
+        let unwind = |spine: SmallVec<[Parent<'_, V, PREFIX>; 16]>,
+                      labels: &[u64],
+                      mut child: Arc<U64Node<V, PREFIX>>| {
+            debug_assert_eq!(spine.len(), labels.len());
+            for (parent, &label) in spine.into_iter().rev().zip(labels.iter().rev()) {
+                child = Arc::new(parent.with_child(label, Child::InMem(child)));
+            }
+            child
         };
-        Some((
-            Arc::new(node.as_ref().clone().with_child(label, Child::InMem(child))),
-            inserted,
-        ))
+
+        loop {
+            if depth == sequence.len() {
+                let inserted = !current.is_final();
+                if !inserted && value.is_none() {
+                    return None;
+                }
+                let mut terminal = current.as_final();
+                if let Some(value) = value {
+                    terminal = terminal.with_value(value);
+                }
+                return Some((
+                    unwind(spine, &sequence[index..depth], Arc::new(terminal)),
+                    inserted,
+                ));
+            }
+
+            let label = sequence[depth];
+            if let Some(child) = current.find_child(label).and_then(Child::as_in_mem) {
+                spine.push(current);
+                current = child.as_ref();
+                depth += 1;
+                continue;
+            }
+
+            let mut leaf = U64Node::<V, PREFIX>::new().as_final();
+            if let Some(value) = value {
+                leaf = leaf.with_value(value);
+            }
+            let mut child = Arc::new(leaf);
+            for &unit in sequence[depth + 1..].iter().rev() {
+                child = Arc::new(U64Node::<V, PREFIX>::new().with_child(unit, Child::InMem(child)));
+            }
+            let parent = Arc::new(current.with_child(label, Child::InMem(child)));
+            return Some((unwind(spine, &sequence[index..depth], parent), true));
+        }
     }
 
     fn insert_sequence_cas(&self, sequence: &[u64], value: Option<V>) -> bool {
         loop {
-            let root = self.root_arc();
+            let revision = self.root_revision();
+            let root = revision.node();
             let Some((new_root, inserted)) =
-                Self::build_insert_path(&root, sequence, 0, value.clone())
+                Self::build_insert_path(root, sequence, 0, value.clone())
             else {
                 return false;
             };
-            match self
-                .root
-                .compare_exchange_counted(&root, new_root, isize::from(inserted))
-            {
+            match self.root.compare_exchange_revision_counted(
+                &revision,
+                new_root,
+                isize::from(inserted),
+            ) {
                 Ok(_) => {
                     if inserted {
                         self.term_count.fetch_add(1, Ordering::AcqRel);
@@ -872,16 +1357,18 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
     fn insert_sequence_cas_ranked(&self, sequence: &[u64], value: Option<V>) -> U64CasOutcome {
         loop {
             let generation = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
-            let root = self.root_arc();
+            let revision = self.root_revision();
+            let root = revision.node();
             let Some((new_root, inserted)) =
-                Self::build_insert_path(&root, sequence, 0, value.clone())
+                Self::build_insert_path(root, sequence, 0, value.clone())
             else {
                 return U64CasOutcome::Idempotent;
             };
-            match self
-                .root
-                .compare_exchange_counted(&root, new_root, isize::from(inserted))
-            {
+            match self.root.compare_exchange_revision_counted(
+                &revision,
+                new_root,
+                isize::from(inserted),
+            ) {
                 Ok(_) => {
                     if inserted {
                         self.term_count.fetch_add(1, Ordering::AcqRel);
@@ -901,35 +1388,49 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
         sequence: &[u64],
         index: usize,
     ) -> Option<(Arc<U64Node<V, PREFIX>>, bool)> {
-        if index == sequence.len() {
-            if !node.is_final() {
-                return None;
+        type Parent<'a, V, const PREFIX: usize> = &'a U64Node<V, PREFIX>;
+
+        let mut spine: SmallVec<[Parent<'_, V, PREFIX>; 16]> = SmallVec::new();
+        let mut current = node.as_ref();
+        let mut depth = index;
+
+        loop {
+            if depth == sequence.len() {
+                if !current.is_final() {
+                    return None;
+                }
+                let mut child = Arc::new(current.as_non_final());
+                debug_assert_eq!(spine.len(), depth - index);
+                for (parent, &label) in spine
+                    .into_iter()
+                    .rev()
+                    .zip(sequence[index..depth].iter().rev())
+                {
+                    child = Arc::new(parent.with_child(label, Child::InMem(child)));
+                }
+                return Some((child, true));
             }
-            return Some((Arc::new(node.as_ref().clone().as_non_final()), true));
+
+            let label = sequence[depth];
+            let child = current.find_child(label)?.as_in_mem()?;
+            spine.push(current);
+            current = child.as_ref();
+            depth += 1;
         }
-        let label = sequence[index];
-        let child = node.find_child(label)?.as_in_mem()?;
-        let (new_child, removed) = Self::build_remove_path(child, sequence, index + 1)?;
-        Some((
-            Arc::new(
-                node.as_ref()
-                    .clone()
-                    .with_child(label, Child::InMem(new_child)),
-            ),
-            removed,
-        ))
     }
 
     fn remove_sequence_cas(&self, sequence: &[u64]) -> bool {
         loop {
-            let root = self.root_arc();
-            let Some((new_root, removed)) = Self::build_remove_path(&root, sequence, 0) else {
+            let revision = self.root_revision();
+            let root = revision.node();
+            let Some((new_root, removed)) = Self::build_remove_path(root, sequence, 0) else {
                 return false;
             };
-            match self
-                .root
-                .compare_exchange_counted(&root, new_root, -isize::from(removed))
-            {
+            match self.root.compare_exchange_revision_counted(
+                &revision,
+                new_root,
+                -isize::from(removed),
+            ) {
                 Ok(_) => {
                     if removed {
                         self.term_count.fetch_sub(1, Ordering::AcqRel);
@@ -944,14 +1445,16 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
     fn remove_sequence_cas_ranked(&self, sequence: &[u64]) -> U64CasOutcome {
         loop {
             let generation = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
-            let root = self.root_arc();
-            let Some((new_root, removed)) = Self::build_remove_path(&root, sequence, 0) else {
+            let revision = self.root_revision();
+            let root = revision.node();
+            let Some((new_root, removed)) = Self::build_remove_path(root, sequence, 0) else {
                 return U64CasOutcome::Idempotent;
             };
-            match self
-                .root
-                .compare_exchange_counted(&root, new_root, -isize::from(removed))
-            {
+            match self.root.compare_exchange_revision_counted(
+                &revision,
+                new_root,
+                -isize::from(removed),
+            ) {
                 Ok(_) => {
                     if removed {
                         self.term_count.fetch_sub(1, Ordering::AcqRel);
@@ -1121,33 +1624,69 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
         self.root.term_count()
     }
 
+    /// Fallible snapshot iterator over native-u64 sequences.
+    ///
+    /// Native-u64 construction and reopen produce fully resident topologies. If
+    /// that invariant is violated internally, the iterator reports corruption
+    /// instead of silently omitting an unresolved branch.
+    pub fn try_iter_sequences(&self) -> impl Iterator<Item = Result<Vec<u64>>> + '_ {
+        U64SequenceIterator::new(self.root_arc(), Vec::new())
+            .map(|item| item.map(|(sequence, _)| sequence))
+    }
+
     pub fn iter_sequences(&self) -> impl Iterator<Item = Vec<u64>> + '_ {
-        collect_sequences(self.root_arc())
-            .into_iter()
-            .map(|(sequence, _)| sequence)
+        self.try_iter_sequences().map(assume_resident_u64_topology)
+    }
+
+    /// Fallible valued counterpart to [`Self::iter_sequences_with_values`].
+    pub fn try_iter_sequences_with_values(
+        &self,
+    ) -> impl Iterator<Item = Result<(Vec<u64>, Option<V>)>> + '_ {
+        U64SequenceIterator::new(self.root_arc(), Vec::new())
     }
 
     pub fn iter_sequences_with_values(&self) -> impl Iterator<Item = (Vec<u64>, Option<V>)> + '_ {
-        collect_sequences(self.root_arc()).into_iter()
+        self.try_iter_sequences_with_values()
+            .map(assume_resident_u64_topology)
+    }
+
+    /// Construct a fallible, prefix-local snapshot iterator.
+    pub fn try_iter_sequence_prefix(
+        &self,
+        prefix: &[u64],
+    ) -> Result<PersistentARTrieU64TrySequenceIter<'_>> {
+        let Some(root) = self.try_find_node(prefix)? else {
+            return Ok(Box::new(std::iter::empty()));
+        };
+        Ok(Box::new(
+            U64SequenceIterator::new(root, prefix.to_vec())
+                .map(|item| item.map(|(sequence, _)| sequence)),
+        ))
     }
 
     pub fn iter_sequence_prefix(&self, prefix: &[u64]) -> Box<dyn Iterator<Item = Vec<u64>> + '_> {
-        let prefix = prefix.to_vec();
-        Box::new(
-            self.iter_sequences()
-                .filter(move |sequence| sequence.starts_with(&prefix)),
-        )
+        let iterator = assume_resident_u64_topology(self.try_iter_sequence_prefix(prefix));
+        Box::new(iterator.map(assume_resident_u64_topology))
+    }
+
+    /// Construct a fallible valued, prefix-local snapshot iterator.
+    pub fn try_iter_sequence_prefix_with_values(
+        &self,
+        prefix: &[u64],
+    ) -> Result<PersistentARTrieU64TryValuedSequenceIter<'_, V>> {
+        let Some(root) = self.try_find_node(prefix)? else {
+            return Ok(Box::new(std::iter::empty()));
+        };
+        Ok(Box::new(U64SequenceIterator::new(root, prefix.to_vec())))
     }
 
     pub fn iter_sequence_prefix_with_values(
         &self,
         prefix: &[u64],
     ) -> Box<dyn Iterator<Item = (Vec<u64>, Option<V>)> + '_> {
-        let prefix = prefix.to_vec();
-        Box::new(
-            self.iter_sequences_with_values()
-                .filter(move |(sequence, _)| sequence.starts_with(&prefix)),
-        )
+        let iterator =
+            assume_resident_u64_topology(self.try_iter_sequence_prefix_with_values(prefix));
+        Box::new(iterator.map(assume_resident_u64_topology))
     }
 
     pub fn insert_f64(&self, series: &[f64]) -> bool {
@@ -1204,26 +1743,27 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
         let Some(path) = self.path.as_ref() else {
             return Ok(());
         };
-        let _guard = self
-            .checkpoint_lock
-            .lock()
-            .expect("u64 checkpoint mutex poisoned");
+        let _guard =
+            self.checkpoint_lock
+                .lock()
+                .map_err(|_| PersistentARTrieError::LockPoisoned {
+                    resource: "u64 checkpoint".to_string(),
+                })?;
         let checkpoint_lsn = self.committed_watermark.watermark();
         let synced_frontier = self
             .wal_writer
             .as_ref()
             .map(|writer| writer.synced_lsn())
             .unwrap_or(0);
-        assert!(
-            checkpoint_lsn <= synced_frontier,
-            "PersistentARTrieU64 checkpoint watermark {checkpoint_lsn} exceeds synced WAL frontier \
-             {synced_frontier}"
-        );
+        if checkpoint_lsn > synced_frontier {
+            return Err(PersistentARTrieError::internal(format!(
+                "PersistentARTrieU64 checkpoint watermark {checkpoint_lsn} exceeds synced WAL frontier {synced_frontier}"
+            )));
+        }
         let commit_seq_at_capture = self.commit_seq.load(Ordering::Acquire);
-        let (root, term_count) = self
-            .root
-            .load_with_term_count()
-            .expect("persistent u64 root is always initialized");
+        let (root, term_count) = self.root.load_with_term_count().ok_or_else(|| {
+            PersistentARTrieError::internal("persistent u64 root is not initialized")
+        })?;
         write_snapshot_file::<V, PREFIX>(path, &root, term_count)?;
         if let Some(wal_writer) = &self.wal_writer {
             let checkpoint_record_lsn = wal_writer
@@ -1491,5 +2031,333 @@ impl<V: DictionaryValue, S: BlockStorage> EncodedPersistentARTrieU64<V, S> {
 impl<V: DictionaryValue> Default for EncodedPersistentARTrieU64<V> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    static ITERATOR_VALUE_CLONES: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    struct CloneObservedValue(u64);
+
+    impl Clone for CloneObservedValue {
+        fn clone(&self) -> Self {
+            ITERATOR_VALUE_CLONES.fetch_add(1, Ordering::Relaxed);
+            Self(self.0)
+        }
+    }
+
+    impl DictionaryValue for CloneObservedValue {}
+
+    fn disk_ptr(index: usize) -> u64 {
+        SwizzledPtr::on_disk(
+            0,
+            u32::try_from(index).expect("test node index fits disk pointer"),
+            NodeType::CharBucket,
+        )
+        .to_raw()
+    }
+
+    fn node_index(index: usize) -> U64NodeIndex {
+        U64NodeIndex(u32::try_from(index).expect("test node index fits u32"))
+    }
+
+    fn decoded_node(children: Vec<(u64, U64NodeIndex)>, is_final: bool) -> U64DecodedNode {
+        U64DecodedNode {
+            is_final,
+            prefix: Vec::new(),
+            value: None,
+            children: SortedUniqueEntries::try_new(children)
+                .expect("test children are strictly ascending and unique"),
+        }
+    }
+
+    #[test]
+    fn disk_materializer_rejects_self_cycle() {
+        let nodes = vec![decoded_node(vec![(7, node_index(0))], false)];
+
+        let error = build_overlay_from_disk::<(), U64_CX_PREFIX_COMPACT>(node_index(0), &nodes, 0)
+            .expect_err("self-cycle must be rejected");
+
+        assert!(error.to_string().contains("cycle from node 0 to node 0"));
+    }
+
+    #[test]
+    fn disk_materializer_rejects_deep_cycle_without_native_recursion() {
+        const NODE_COUNT: usize = 100_000;
+
+        let nodes = (0..NODE_COUNT)
+            .map(|index| {
+                let successor = if index + 1 == NODE_COUNT {
+                    0
+                } else {
+                    index + 1
+                };
+                decoded_node(vec![(index as u64, node_index(successor))], false)
+            })
+            .collect::<Vec<_>>();
+
+        let error = build_overlay_from_disk::<(), U64_CX_PREFIX_COMPACT>(node_index(0), &nodes, 0)
+            .expect_err("deep cycle must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("cycle from node 99999 to node 0"));
+    }
+
+    #[test]
+    fn disk_materializer_preserves_shared_acyclic_child() {
+        let nodes = vec![
+            decoded_node(vec![(3, node_index(1)), (5, node_index(1))], false),
+            decoded_node(Vec::new(), true),
+        ];
+
+        let root = build_overlay_from_disk::<(), U64_CX_PREFIX_COMPACT>(node_index(0), &nodes, 2)
+            .expect("shared acyclic child must materialize");
+        let left = root
+            .find_child(3)
+            .and_then(Child::as_in_mem)
+            .expect("left shared edge");
+        let right = root
+            .find_child(5)
+            .and_then(Child::as_in_mem)
+            .expect("right shared edge");
+
+        assert!(left.is_final());
+        assert!(Arc::ptr_eq(left, right));
+    }
+
+    #[test]
+    fn iterator_emits_every_labeled_path_to_a_shared_child() {
+        let value = bincode_compat::serialize(&41u64).expect("serialize shared test value");
+        let mut shared = decoded_node(Vec::new(), true);
+        shared.value = Some(value);
+        let nodes = vec![
+            decoded_node(vec![(3, node_index(1)), (5, node_index(1))], false),
+            shared,
+        ];
+        let root = build_overlay_from_disk::<u64, U64_CX_PREFIX_COMPACT>(node_index(0), &nodes, 2)
+            .expect("shared acyclic child must materialize");
+
+        let emitted = U64SequenceIterator::new(root, Vec::new())
+            .collect::<Result<Vec<_>>>()
+            .expect("resident shared DAG must enumerate exactly");
+
+        assert_eq!(emitted, vec![(vec![3], Some(41)), (vec![5], Some(41))]);
+    }
+
+    #[test]
+    fn iterator_rejects_an_unresolved_on_disk_edge_without_omission() {
+        let pointer = SwizzledPtr::on_disk(0, 7, NodeType::CharBucket);
+        let root = Arc::new(
+            U64Node::<(), U64_CX_PREFIX_COMPACT>::new().with_child(9, Child::OnDisk(pointer)),
+        );
+        let mut iterator = U64SequenceIterator::new(root, Vec::new());
+
+        let error = iterator
+            .next()
+            .expect("unresolved edge must produce one result")
+            .expect_err("unresolved edge must fail closed");
+        assert!(error
+            .to_string()
+            .contains("native-u64 snapshots must be fully resident"));
+        assert!(
+            iterator.next().is_none(),
+            "failure must terminate traversal"
+        );
+    }
+
+    #[test]
+    fn iterator_clones_values_only_when_their_terms_are_yielded() {
+        let root = Arc::new(
+            U64Node::<CloneObservedValue, U64_CX_PREFIX_COMPACT>::new()
+                .as_final()
+                .with_value(CloneObservedValue(7)),
+        );
+        ITERATOR_VALUE_CLONES.store(0, Ordering::Relaxed);
+
+        let mut iterator = U64SequenceIterator::new(root, Vec::new());
+        assert_eq!(ITERATOR_VALUE_CLONES.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            iterator.next().expect("root term").expect("resident root"),
+            (Vec::new(), Some(CloneObservedValue(7)))
+        );
+        assert_eq!(ITERATOR_VALUE_CLONES.load(Ordering::Relaxed), 1);
+        assert!(iterator.next().is_none());
+    }
+
+    #[test]
+    fn iterator_preserves_order_across_every_u64_child_store_tier_boundary() {
+        for degree in [4usize, 5, 16, 17, 128, 129] {
+            let children = (0..degree)
+                .map(|label| {
+                    (
+                        label as u64,
+                        Child::InMem(Arc::new(
+                            U64Node::<(), U64_CX_PREFIX_COMPACT>::new().as_final(),
+                        )),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let witness = SortedUniqueEntries::try_new(children)
+                .expect("generated labels are strictly ascending");
+            let root = Arc::new(U64Node::<(), U64_CX_PREFIX_COMPACT>::from_sorted_children(
+                false, None, witness,
+            ));
+
+            let emitted = U64SequenceIterator::new(root, Vec::new())
+                .map(|item| item.expect("tier topology is resident").0)
+                .collect::<Vec<_>>();
+            let expected = (0..degree)
+                .map(|label| vec![label as u64])
+                .collect::<Vec<_>>();
+            assert_eq!(emitted, expected, "u64 child tier degree {degree}");
+        }
+    }
+
+    #[test]
+    fn disk_materializer_preserves_shared_path_compressed_child() {
+        let mut shared = decoded_node(Vec::new(), true);
+        shared.prefix = vec![7, 8];
+        let nodes = vec![
+            decoded_node(vec![(3, node_index(1)), (5, node_index(1))], false),
+            shared,
+        ];
+
+        let root = build_overlay_from_disk::<(), U64_CX_PREFIX_COMPACT>(node_index(0), &nodes, 2)
+            .expect("shared compressed child must materialize");
+        let left = root
+            .find_child(3)
+            .and_then(Child::as_in_mem)
+            .expect("left shared edge");
+        let right = root
+            .find_child(5)
+            .and_then(Child::as_in_mem)
+            .expect("right shared edge");
+
+        assert!(Arc::ptr_eq(left, right));
+        let after_seven = left
+            .find_child(7)
+            .and_then(Child::as_in_mem)
+            .expect("first expanded prefix unit");
+        let terminal = after_seven
+            .find_child(8)
+            .and_then(Child::as_in_mem)
+            .expect("second expanded prefix unit");
+        assert!(terminal.is_final());
+    }
+
+    #[test]
+    fn disk_materializer_ignores_unreachable_cycle_by_version_one_policy() {
+        let nodes = vec![
+            decoded_node(Vec::new(), true),
+            decoded_node(vec![(9, node_index(1))], false),
+        ];
+
+        let root = build_overlay_from_disk::<(), U64_CX_PREFIX_COMPACT>(node_index(0), &nodes, 1)
+            .expect("unreachable records do not participate in materialization semantics");
+
+        assert!(root.is_final());
+        assert_eq!(root.num_children(), 0);
+    }
+
+    #[test]
+    fn checkpoint_pointer_decoder_rejects_null_out_of_range_and_noncanonical_fields() {
+        let null_error = decode_node_index(SwizzledPtr::null().to_raw(), 1, U64PointerRole::Test)
+            .expect_err("null child pointer must be rejected");
+        assert!(null_error.to_string().contains("null, memory, or invalid"));
+
+        let range_error = decode_node_index(disk_ptr(1), 1, U64PointerRole::Test)
+            .expect_err("out-of-range child pointer must be rejected");
+        assert!(range_error.to_string().contains("index 1 out of 1"));
+
+        let block_error = decode_node_index(
+            SwizzledPtr::on_disk(1, 0, NodeType::CharBucket).to_raw(),
+            1,
+            U64PointerRole::Test,
+        )
+        .expect_err("nonzero block must be rejected");
+        assert!(block_error.to_string().contains("noncanonical"));
+
+        let type_error = decode_node_index(
+            SwizzledPtr::on_disk(0, 0, NodeType::Bucket).to_raw(),
+            1,
+            U64PointerRole::Test,
+        )
+        .expect_err("wrong node type must be rejected");
+        assert!(type_error.to_string().contains("noncanonical"));
+
+        let reserved_error = decode_node_index(disk_ptr(0) | (1 << 17), 1, U64PointerRole::Test)
+            .expect_err("reserved pointer bits must be rejected");
+        assert!(reserved_error.to_string().contains("reserved flag bits"));
+    }
+
+    #[test]
+    fn disk_materializer_rejects_term_count_mismatch_before_construction() {
+        let nodes = vec![decoded_node(Vec::new(), true)];
+        let error = build_overlay_from_disk::<(), U64_CX_PREFIX_COMPACT>(node_index(0), &nodes, 2)
+            .expect_err("header count must match the reachable graph language");
+        assert!(error.to_string().contains("term count mismatch"));
+    }
+
+    #[test]
+    fn sorted_child_witness_rejects_duplicate_and_descending_labels() {
+        assert!(
+            SortedUniqueEntries::try_new(vec![(3u64, node_index(0)), (3, node_index(0))]).is_err()
+        );
+        assert!(
+            SortedUniqueEntries::try_new(vec![(5u64, node_index(0)), (3, node_index(0))]).is_err()
+        );
+    }
+
+    #[test]
+    fn checkpoint_node_bound_matches_disk_pointer_cardinality() {
+        assert_eq!(MAX_NODE_COUNT, MAX_OFFSET as u64 + 1);
+        assert_eq!(
+            checkpoint_node_index(MAX_OFFSET as usize).expect("maximum index is admitted"),
+            MAX_OFFSET
+        );
+        assert!(checkpoint_node_index(MAX_NODE_COUNT as usize).is_err());
+        assert_eq!(
+            SwizzledPtr::on_disk(0, MAX_OFFSET, NodeType::CharBucket)
+                .disk_location()
+                .expect("maximum offset is representable")
+                .offset,
+            MAX_OFFSET
+        );
+    }
+
+    #[test]
+    fn checkpoint_length_encoding_enforces_reader_limits() {
+        assert_eq!(
+            snapshot_u32_len("prefix", MAX_PREFIX_UNITS as usize, MAX_PREFIX_UNITS)
+                .expect("maximum prefix length is encodable"),
+            MAX_PREFIX_UNITS
+        );
+        assert!(
+            snapshot_u32_len("prefix", MAX_PREFIX_UNITS as usize + 1, MAX_PREFIX_UNITS,).is_err()
+        );
+        assert_eq!(
+            snapshot_u64_len("value", MAX_VALUE_BYTES as usize, MAX_VALUE_BYTES)
+                .expect("maximum value length is encodable"),
+            MAX_VALUE_BYTES
+        );
+        assert!(snapshot_u64_len("value", MAX_VALUE_BYTES as usize + 1, MAX_VALUE_BYTES,).is_err());
+    }
+
+    #[test]
+    fn checkpoint_flags_are_canonical_and_match_value_presence() {
+        validate_snapshot_flags(SNAPSHOT_FLAG_IS_FINAL | SNAPSHOT_FLAG_HAS_VALUE)
+            .expect("known flags are accepted");
+        assert!(validate_snapshot_flags(0b1000_0000).is_err());
+        validate_snapshot_value_flag(SNAPSHOT_FLAG_HAS_VALUE, true)
+            .expect("flagged bytes are canonical");
+        validate_snapshot_value_flag(0, false).expect("absent value is canonical");
+        assert!(validate_snapshot_value_flag(SNAPSHOT_FLAG_HAS_VALUE, false).is_err());
+        assert!(validate_snapshot_value_flag(0, true).is_err());
     }
 }

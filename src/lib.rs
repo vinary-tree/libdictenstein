@@ -93,6 +93,12 @@ pub mod concurrent_slots;
 pub use causal_perf::{
     causal_construction_stats, reset_causal_construction_stats, CausalConstructionStats,
 };
+#[cfg(feature = "perf-instrumentation")]
+#[doc(hidden)]
+pub use causal_perf::{
+    persistent_serialization_stats, reset_persistent_serialization_stats,
+    PersistentSerializationStats,
+};
 pub mod bijective;
 #[cfg(feature = "bindings-core")]
 pub mod bindings;
@@ -142,7 +148,7 @@ pub mod artrie_trait;
 #[cfg(feature = "persistent-artrie")]
 pub mod persistent_artrie;
 
-#[cfg(feature = "serialization")]
+#[cfg(any(feature = "serialization", feature = "protobuf"))]
 pub mod serialization;
 
 // Re-export core types at crate root
@@ -625,6 +631,172 @@ pub trait Dictionary {
     }
 }
 
+/// One closure-free indexed observation of an immutable cursor node.
+///
+/// The observation reports node finality and total fanout alongside the edge
+/// at the requested index. A valid retained cursor has an edge exactly when
+/// `index < total_edge_count`. Backends return this value without cloning an
+/// owning child handle.
+#[derive(Clone, Copy)]
+pub struct SnapshotCursorEdgeObservation<U, C> {
+    is_final: bool,
+    total_edge_count: usize,
+    edge: Option<(U, C)>,
+}
+
+impl<U, C> SnapshotCursorEdgeObservation<U, C> {
+    /// Construct one complete indexed cursor observation.
+    #[inline]
+    pub const fn new(is_final: bool, total_edge_count: usize, edge: Option<(U, C)>) -> Self {
+        Self {
+            is_final,
+            total_edge_count,
+            edge,
+        }
+    }
+
+    /// Whether the observed node accepts the path reaching it.
+    #[inline]
+    pub const fn is_final(&self) -> bool {
+        self.is_final
+    }
+
+    /// Exact number of deterministic outgoing edges on the observed node.
+    #[inline]
+    pub const fn total_edge_count(&self) -> usize {
+        self.total_edge_count
+    }
+
+    /// Consume the observation and return the indexed label and child cursor.
+    #[inline]
+    pub fn into_edge(self) -> Option<(U, C)> {
+        self.edge
+    }
+}
+
+/// Opaque nonempty suffix of one immutable node's outgoing edge storage.
+///
+/// The two pointers retain their original allocation provenance. The backend
+/// type parameter is invariant, preventing a token created for one node
+/// implementation from being passed to another implementation in safe code.
+/// The token owns no allocation and changes no child ownership count; its
+/// producing snapshot root must remain retained until the token is consumed.
+#[repr(C)]
+pub struct SnapshotEdgeRangeToken<N: ?Sized> {
+    current: std::ptr::NonNull<()>,
+    end: std::ptr::NonNull<()>,
+    _backend: std::marker::PhantomData<fn(&mut N) -> &mut N>,
+}
+
+impl<N: ?Sized> Copy for SnapshotEdgeRangeToken<N> {}
+
+impl<N: ?Sized> Clone for SnapshotEdgeRangeToken<N> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<N: ?Sized> std::fmt::Debug for SnapshotEdgeRangeToken<N> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SnapshotEdgeRangeToken(..)")
+    }
+}
+
+impl<N: ?Sized> SnapshotEdgeRangeToken<N> {
+    /// Construct a nonempty retained edge range without destroying pointer
+    /// provenance.
+    ///
+    /// # Safety
+    ///
+    /// `current` must point to an initialized edge in immutable storage owned
+    /// transitively by the retained snapshot root. `end` must be the one-past
+    /// pointer for the same allocation and exact edge element type, with
+    /// `current < end`. The storage must not move, mutate, or be reclaimed
+    /// while this token or any token derived from it can be consumed. `N` must
+    /// be the exact [`DictionaryNode`] backend that will interpret the token.
+    #[inline]
+    pub const unsafe fn from_raw_parts(
+        current: std::ptr::NonNull<()>,
+        end: std::ptr::NonNull<()>,
+    ) -> Self {
+        Self {
+            current,
+            end,
+            _backend: std::marker::PhantomData,
+        }
+    }
+
+    /// Consume the opaque token and recover its provenance-bearing pointers.
+    ///
+    /// Dereferencing, advancing, or otherwise interpreting either pointer is
+    /// unsafe and remains subject to [`from_raw_parts`](Self::from_raw_parts)'s
+    /// complete contract.
+    #[inline]
+    pub const fn into_raw_parts(self) -> (std::ptr::NonNull<()>, std::ptr::NonNull<()>) {
+        (self.current, self.end)
+    }
+}
+
+/// Fused observation that begins one retained immutable edge range.
+///
+/// Empty nodes return neither a first edge nor a remaining token. Unary nodes
+/// return only the first edge. Branching nodes return the first edge and a
+/// nonempty token for every untouched sibling. The total therefore agrees
+/// exactly with the shape `(None, None)`, `(Some, None)`, or `(Some, Some)`.
+pub struct SnapshotEdgeRangeStart<U, C, N: ?Sized> {
+    is_final: bool,
+    total_edge_count: usize,
+    first: Option<(U, C)>,
+    remaining: Option<SnapshotEdgeRangeToken<N>>,
+}
+
+impl<U, C, N: ?Sized> SnapshotEdgeRangeStart<U, C, N> {
+    /// Construct one complete range-start observation.
+    ///
+    /// Implementations of the unsafe range-start trait method must uphold the
+    /// documented shape, count, provenance, and retained-owner contract.
+    #[inline]
+    pub const fn new(
+        is_final: bool,
+        total_edge_count: usize,
+        first: Option<(U, C)>,
+        remaining: Option<SnapshotEdgeRangeToken<N>>,
+    ) -> Self {
+        Self {
+            is_final,
+            total_edge_count,
+            first,
+            remaining,
+        }
+    }
+
+    /// Whether the observed node accepts the path reaching it.
+    #[inline]
+    pub const fn is_final(&self) -> bool {
+        self.is_final
+    }
+
+    /// Exact deterministic fanout of the observed node.
+    #[inline]
+    pub const fn total_edge_count(&self) -> usize {
+        self.total_edge_count
+    }
+
+    /// Consume the observation into its direct edge and untouched suffix.
+    #[inline]
+    pub fn into_first_and_remaining(self) -> (Option<(U, C)>, Option<SnapshotEdgeRangeToken<N>>) {
+        (self.first, self.remaining)
+    }
+}
+
+/// One exact step of a retained immutable edge range.
+///
+/// The optional token is present precisely when another edge remains in the
+/// same retained allocation. Naming the observation keeps backend trait
+/// signatures readable without changing its tuple representation.
+pub type SnapshotEdgeRangeStep<U, C, N> = (U, C, Option<SnapshotEdgeRangeToken<N>>);
+
 /// Traversable dictionary node.
 ///
 /// Nodes form a graph structure representing the dictionary, where edges
@@ -936,6 +1108,117 @@ pub trait DictionaryNode: Clone + Send + Sync {
         Some((is_final, total))
     }
 
+    /// Observe one indexed outgoing edge without a callback.
+    ///
+    /// The outer `Option` reports cursor-capability availability. A successful
+    /// observation returns stable node finality, exact total fanout, and
+    /// `Some(edge)` exactly when `index < total_edge_count`. The compatibility
+    /// implementation refines a capacity-one page and rejects a backend that
+    /// invokes the page callback more than once.
+    ///
+    /// Native immutable backends should override this method with direct
+    /// indexing. That removes callback and page-range machinery from explicit
+    /// continuation schedulers while retaining the same observable contract.
+    ///
+    /// # Safety
+    ///
+    /// `cursor` must satisfy this node's retained-revision cursor contract.
+    /// Every returned child cursor belongs to that same retained revision and
+    /// may be used only while the producing owner remains alive.
+    #[inline]
+    unsafe fn snapshot_cursor_edge_at(
+        &self,
+        cursor: Self::SnapshotCursor,
+        index: usize,
+    ) -> Option<SnapshotCursorEdgeObservation<Self::Unit, Self::SnapshotCursor>>
+    where
+        Self: Sized,
+    {
+        let mut edge = None;
+        let mut saw_excess_callback = false;
+        // SAFETY: the caller supplies the cursor contract unchanged.
+        let (is_final, total_edge_count) = unsafe {
+            self.visit_snapshot_cursor_edge_page(cursor, index, 1, |label, child| {
+                if edge.is_none() {
+                    edge = Some((label, child));
+                } else {
+                    saw_excess_callback = true;
+                }
+            })?
+        };
+        if saw_excess_callback {
+            return None;
+        }
+        Some(SnapshotCursorEdgeObservation::new(
+            is_final,
+            total_edge_count,
+            edge,
+        ))
+    }
+
+    /// Whether this backend implements native retained edge ranges.
+    ///
+    /// A backend returning `true` commits callers to the range contract for
+    /// every valid cursor in the retained revision. Returning `false` selects
+    /// the indexed-page or owned-node compatibility traversal instead.
+    #[inline]
+    fn supports_efficient_snapshot_cursor_edge_ranges(&self) -> bool {
+        false
+    }
+
+    /// Begin a closure-free traversal of one immutable node's edge storage.
+    ///
+    /// A successful observation dereferences the node once, reports stable
+    /// finality and exact fanout, returns the first edge directly, and returns
+    /// a nonempty token only for the untouched sibling suffix. Backends that
+    /// do not advertise native range support may retain this `None` default.
+    ///
+    /// # Safety
+    ///
+    /// `cursor` must belong to the exact immutable revision retained by
+    /// `self`. Every returned child cursor and range token belongs to that
+    /// revision. The first/token shape must agree exactly with the reported
+    /// total: neither for zero, first only for one, and both for two or more.
+    /// A returned token must satisfy [`SnapshotEdgeRangeToken::from_raw_parts`]
+    /// and must remain valid until fully consumed while `self` stays alive.
+    #[inline]
+    unsafe fn snapshot_cursor_edge_range_start(
+        &self,
+        cursor: Self::SnapshotCursor,
+    ) -> Option<SnapshotEdgeRangeStart<Self::Unit, Self::SnapshotCursor, Self>>
+    where
+        Self: Sized,
+    {
+        let _ = cursor;
+        None
+    }
+
+    /// Consume the first edge of a nonempty retained sibling range.
+    ///
+    /// Success returns exactly one label/child and `Some(next)` precisely when
+    /// another edge remains. The backend must borrow any owning child handle;
+    /// stepping must not clone, move, retain, or release it.
+    ///
+    /// # Safety
+    ///
+    /// `token` must have been produced by this exact backend, receiver, and
+    /// retained revision, or by an earlier successful step from that token.
+    /// The producing owner must remain alive. The implementation may read the
+    /// current edge and advance by exactly one element only; it must never
+    /// dereference the one-past pointer. On failure it must not consume any
+    /// externally observable traversal or writer state.
+    #[inline]
+    unsafe fn snapshot_cursor_edge_range_step(
+        &self,
+        token: SnapshotEdgeRangeToken<Self>,
+    ) -> Option<SnapshotEdgeRangeStep<Self::Unit, Self::SnapshotCursor, Self>>
+    where
+        Self: Sized,
+    {
+        let _ = token;
+        None
+    }
+
     /// Check if this node marks the end of a valid term
     fn is_final(&self) -> bool;
 
@@ -1209,6 +1492,7 @@ mod snapshot_traversal_cursor_tests {
 #[inline]
 #[cfg(any(
     feature = "bindings-core",
+    feature = "protobuf",
     feature = "serialization",
     feature = "persistent-artrie"
 ))]

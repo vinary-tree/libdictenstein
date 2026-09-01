@@ -59,6 +59,10 @@ Opening a persistent ARTrie replays a WAL and maps a checkpoint image. These par
 `WalError::CorruptedRecord` / `PersistentARTrieError::corrupted` rather than panicking — e.g.
 `wal/codec.rs` guards `payload.len() < offset + N` on every field, and `wal/reader.rs` rejects a
 record whose declared `length` is below the header size, so the subtraction can never underflow.
+An otherwise valid image whose bounded working collection cannot be reserved returns
+`PersistentARTrieError::AllocationFailed`. That error is transient and is deliberately not
+classified as corruption, so resource pressure cannot cause a valid checkpoint to be mistaken for
+damaged data.
 
 The residual edge is the same as the serializers': **upfront allocation sized from an untrusted
 `u32`**, before the data backing it is fully verified. Representative sites:
@@ -69,10 +73,22 @@ The residual edge is the same as the serializers': **upfront allocation sized fr
 - `arena.rs::from_bytes` — `Vec::with_capacity(node_count)` for the mmap image loader.
 
 **The good model to imitate** lives right beside these: `persistent_artrie/u64.rs` checks
-`MAX_NODE_COUNT` (16 Mi), `MAX_PREFIX_UNITS`, `MAX_VALUE_BYTES`, and `MAX_CHILDREN_PER_NODE`
-*before* allocating, and the persistent suffix families cap `MAX_WAL_RECORD_BYTES` (64 MiB). These
-bound the allocation to a sane ceiling regardless of the declared count. The unbounded sites above
-are candidates to adopt the same pattern.
+`MAX_NODE_COUNT` (4,194,304 records, exactly the cardinality of the checkpoint pointer's 22-bit
+offset), `MAX_PREFIX_UNITS`, `MAX_VALUE_BYTES`, and `MAX_CHILDREN_PER_NODE`. It additionally proves
+that the remaining encoded extent can contain each declared table before reserving it and uses
+fallible exact reservations for decoded tables, mapped child vectors, and input-sized sparse child
+indexes. The persistent suffix families cap `MAX_WAL_RECORD_BYTES` (64 MiB). These checks bound
+allocation independently of attacker-declared counts. The unbounded sites above are candidates to
+adopt the same extent-proof pattern.
+
+The native-u64 loader also separates validation from construction: a tri-color
+explicit-frame pass rejects reachable cycles before any `Arc` edge is installed,
+then a child-before-parent postorder pass materializes one resident overlay node
+per reachable disk record and preserves valid DAG sharing. Native-u64 iterators
+therefore require a fully resident root. Their `try_iter_*` variants return a
+typed corruption error and terminate if an unresolved `OnDisk` child is ever
+observed, rather than treating that branch as absent. This remains fail-closed if
+future eviction work accidentally crosses the current resident-only boundary.
 
 > **Coverage note.** The persistent parsers are covered *for torn-record and partial-replay
 > correctness* by TLA⁺ models (`PointerOwnership`, `StorageSyscallOutcome`) and reopen tests. The

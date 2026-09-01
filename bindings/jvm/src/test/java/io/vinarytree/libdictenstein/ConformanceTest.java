@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -534,7 +535,59 @@ final class ConformanceTest {
     // minimal JSON parser (Map / List / String / Long / Boolean / null)
     // -----------------------------------------------------------------------
 
+    @Test
+    void jsonParserUsesAStackSafeContainerMachine() {
+        int depth = 100_000;
+        Object value = Json.parse("[".repeat(depth) + "0" + "]".repeat(depth));
+        for (int level = 0; level < depth; level++) {
+            List<?> array = (List<?>) value;
+            assertEquals(1, array.size());
+            value = array.get(0);
+        }
+        assertEquals(0L, value);
+        assertThrows(IllegalArgumentException.class, () -> Json.parse("[] trailing"));
+        assertThrows(IllegalArgumentException.class, () -> Json.parse("{\"missing\":}"));
+    }
+
     private static final class Json {
+        private static final class ContainerFrame {
+            private final Map<String, Object> object;
+            private final List<Object> array;
+            private String pendingKey;
+
+            private ContainerFrame(Map<String, Object> object, List<Object> array) {
+                this.object = object;
+                this.array = array;
+            }
+
+            static ContainerFrame object(Map<String, Object> object, String pendingKey) {
+                ContainerFrame frame = new ContainerFrame(object, null);
+                frame.pendingKey = pendingKey;
+                return frame;
+            }
+
+            static ContainerFrame array(List<Object> array) {
+                return new ContainerFrame(null, array);
+            }
+
+            boolean isObject() {
+                return object != null;
+            }
+
+            void accept(Object value) {
+                if (isObject()) {
+                    object.put(pendingKey, value);
+                    pendingKey = null;
+                } else {
+                    array.add(value);
+                }
+            }
+
+            Object completedValue() {
+                return isObject() ? object : array;
+            }
+        }
+
         private final String s;
         private int i;
 
@@ -542,82 +595,163 @@ final class ConformanceTest {
 
         static Object parse(String text) {
             Json parser = new Json(text);
+            Object value = parser.value();
             parser.ws();
-            return parser.value();
+            if (parser.i != parser.s.length()) {
+                throw parser.error("trailing input");
+            }
+            return value;
         }
 
         private Object value() {
-            ws();
-            char c = s.charAt(i);
-            return switch (c) {
-                case '{' -> object();
-                case '[' -> array();
-                case '"' -> string();
-                case 't' -> { i += 4; yield Boolean.TRUE; }
-                case 'f' -> { i += 5; yield Boolean.FALSE; }
-                case 'n' -> { i += 4; yield null; }
-                default -> number();
-            };
-        }
+            ArrayDeque<ContainerFrame> frames = new ArrayDeque<>();
+            Object completed = null;
+            boolean hasCompletedValue = false;
 
-        private Map<String, Object> object() {
-            Map<String, Object> map = new LinkedHashMap<>();
-            i++; // '{'
-            ws();
-            if (s.charAt(i) == '}') { i++; return map; }
             for (;;) {
-                ws();
-                String key = string();
-                ws();
-                i++; // ':'
-                map.put(key, value());
-                ws();
-                if (s.charAt(i) == ',') { i++; continue; }
-                i++; // '}'
-                break;
-            }
-            return map;
-        }
+                if (!hasCompletedValue) {
+                    ws();
+                    if (i == s.length()) {
+                        throw error("expected a value");
+                    }
 
-        private List<Object> array() {
-            List<Object> list = new ArrayList<>();
-            i++; // '['
-            ws();
-            if (s.charAt(i) == ']') { i++; return list; }
-            for (;;) {
-                list.add(value());
+                    char c = s.charAt(i);
+                    switch (c) {
+                        case '{' -> {
+                            i++;
+                            Map<String, Object> object = new LinkedHashMap<>();
+                            ws();
+                            if (consume('}')) {
+                                completed = object;
+                                hasCompletedValue = true;
+                            } else {
+                                String key = string();
+                                ws();
+                                expect(':');
+                                frames.push(ContainerFrame.object(object, key));
+                                continue;
+                            }
+                        }
+                        case '[' -> {
+                            i++;
+                            List<Object> array = new ArrayList<>();
+                            ws();
+                            if (consume(']')) {
+                                completed = array;
+                                hasCompletedValue = true;
+                            } else {
+                                frames.push(ContainerFrame.array(array));
+                                continue;
+                            }
+                        }
+                        case '"' -> {
+                            completed = string();
+                            hasCompletedValue = true;
+                        }
+                        case 't' -> {
+                            literal("true");
+                            completed = Boolean.TRUE;
+                            hasCompletedValue = true;
+                        }
+                        case 'f' -> {
+                            literal("false");
+                            completed = Boolean.FALSE;
+                            hasCompletedValue = true;
+                        }
+                        case 'n' -> {
+                            literal("null");
+                            completed = null;
+                            hasCompletedValue = true;
+                        }
+                        default -> {
+                            completed = number();
+                            hasCompletedValue = true;
+                        }
+                    }
+                }
+
+                if (frames.isEmpty()) {
+                    return completed;
+                }
+
+                ContainerFrame parent = frames.peek();
+                parent.accept(completed);
                 ws();
-                if (s.charAt(i) == ',') { i++; continue; }
-                i++; // ']'
-                break;
+                if (parent.isObject()) {
+                    if (consume(',')) {
+                        ws();
+                        parent.pendingKey = string();
+                        ws();
+                        expect(':');
+                        hasCompletedValue = false;
+                        continue;
+                    }
+                    expect('}');
+                } else {
+                    if (consume(',')) {
+                        hasCompletedValue = false;
+                        continue;
+                    }
+                    expect(']');
+                }
+
+                frames.pop();
+                completed = parent.completedValue();
+                hasCompletedValue = true;
             }
-            return list;
         }
 
         private String string() {
             ws();
-            i++; // opening quote
+            expect('"');
             StringBuilder builder = new StringBuilder();
-            while (s.charAt(i) != '"') {
+            while (i < s.length() && s.charAt(i) != '"') {
                 char c = s.charAt(i++);
                 if (c != '\\') { builder.append(c); continue; }
+                if (i == s.length()) throw error("unterminated escape");
                 char e = s.charAt(i++);
                 switch (e) {
                     case 'n' -> builder.append('\n');
                     case 't' -> builder.append('\t');
                     case 'r' -> builder.append('\r');
-                    case 'u' -> { builder.append((char) Integer.parseInt(s.substring(i, i + 4), 16)); i += 4; }
+                    case 'u' -> {
+                        if (i + 4 > s.length()) throw error("truncated Unicode escape");
+                        builder.append((char) Integer.parseInt(s.substring(i, i + 4), 16));
+                        i += 4;
+                    }
                     default -> builder.append(e);
                 }
             }
-            i++; // closing quote
+            expect('"');
             return builder.toString();
         }
 
         private Object number() {
             int start = i;
             while (i < s.length() && "+-.eE0123456789".indexOf(s.charAt(i)) >= 0) i++;
+            if (start == i) throw error("expected a number");
             return Long.valueOf(Long.parseLong(s.substring(start, i)));
+        }
+
+        private void literal(String literal) {
+            if (!s.startsWith(literal, i)) throw error("expected " + literal);
+            i += literal.length();
+        }
+
+        private boolean consume(char expected) {
+            if (i < s.length() && s.charAt(i) == expected) {
+                i++;
+                return true;
+            }
+            return false;
+        }
+
+        private void expect(char expected) {
+            if (!consume(expected)) throw error("expected '" + expected + "'");
+        }
+
+        private IllegalArgumentException error(String message) {
+            return new IllegalArgumentException(message + " at byte " + i);
         }
 
         private void ws() {

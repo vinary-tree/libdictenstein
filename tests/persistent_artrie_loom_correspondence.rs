@@ -803,25 +803,96 @@ fn has_linearizable_vocab_order(
             && order_matches_sequential_vocab(history, order);
     }
 
-    for idx in 0..history.len() {
-        if used[idx] {
+    struct SearchFrame {
+        next_candidate: usize,
+        chosen_from_parent: Option<usize>,
+        visible: [Option<usize>; 2],
+        next_index: usize,
+    }
+
+    let mut initial_visible = [None; 2];
+    let mut initial_next_index = 0;
+    for &idx in order.iter() {
+        let Some((visible, next_index)) =
+            apply_vocab_op(initial_visible, initial_next_index, history[idx])
+        else {
+            return false;
+        };
+        initial_visible = visible;
+        initial_next_index = next_index;
+    }
+
+    let predecessors: Vec<Vec<usize>> = history
+        .iter()
+        .map(|candidate| {
+            history
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, earlier)| (earlier.finish < candidate.start).then_some(idx))
+                .collect()
+        })
+        .collect();
+
+    let initial_order_len = order.len();
+    let mut frames = vec![SearchFrame {
+        next_candidate: 0,
+        chosen_from_parent: None,
+        visible: initial_visible,
+        next_index: initial_next_index,
+    }];
+
+    loop {
+        let frame = frames
+            .last_mut()
+            .expect("the root search frame is retained");
+        while frame.next_candidate < history.len() && used[frame.next_candidate] {
+            frame.next_candidate += 1;
+        }
+
+        if frame.next_candidate == history.len() {
+            let exhausted = frames.pop().expect("the current frame exists");
+            if let Some(chosen) = exhausted.chosen_from_parent {
+                let removed = order.pop().expect("a child frame owns one choice");
+                debug_assert_eq!(removed, chosen);
+                used[chosen] = false;
+            }
+            if frames.is_empty() {
+                debug_assert_eq!(order.len(), initial_order_len);
+                return false;
+            }
             continue;
         }
 
-        used[idx] = true;
-        order.push(idx);
+        let candidate = frame.next_candidate;
+        frame.next_candidate += 1;
 
-        if order_respects_real_time(history, order)
-            && has_linearizable_vocab_order(history, used, order)
+        if predecessors[candidate]
+            .iter()
+            .any(|&predecessor| !used[predecessor])
         {
+            continue;
+        }
+
+        let Some((visible, next_index)) =
+            apply_vocab_op(frame.visible, frame.next_index, history[candidate])
+        else {
+            continue;
+        };
+
+        used[candidate] = true;
+        order.push(candidate);
+
+        if order.len() == history.len() {
             return true;
         }
 
-        order.pop();
-        used[idx] = false;
+        frames.push(SearchFrame {
+            next_candidate: 0,
+            chosen_from_parent: Some(candidate),
+            visible,
+            next_index,
+        });
     }
-
-    false
 }
 
 fn assert_vocab_history_linearizable(history: &[ObservedVocabOp]) {
@@ -1079,7 +1150,7 @@ fn char_create_vs_increment_race_has_one_leaf_and_total_value() {
 #[test]
 fn byte_create_vs_increment_race_has_one_leaf_and_total_value() {
     // G4: the BYTE overlay increment changed from an in-place `fetch_add` to the
-    // same PATH-COPY CAS char uses (`build_value_path_recursive`; the root CAS is
+    // same PATH-COPY CAS char uses (`build_value_path_iterative`; the root CAS is
     // the single linearization point). The model is key-agnostic — it abstracts
     // "leaf-init + root-CAS publish" — so this byte-named mirror of
     // `char_create_vs_increment_race_…` attests the byte path-copy increment's

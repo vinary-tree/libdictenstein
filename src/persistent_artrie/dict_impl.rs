@@ -348,6 +348,9 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     /// `shutdown()`).
     pub(crate) eviction_coordinator:
         std::sync::Mutex<Option<Arc<super::eviction::EvictionCoordinator>>>,
+    /// Trie-lifetime registry-publication gate shared across coordinator replacement.
+    pub(crate) registry_publication_gate:
+        Arc<crate::persistent_artrie::core::eviction::RegistryPublicationGate>,
 
     // L3.3c: the owned `dirty_prefixes: Mutex<HashSet<Vec<u8>>>` field (the
     // selective-dirty-subtree set written by the deleted owned mutators) is DELETED with
@@ -546,18 +549,33 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// relying on `Arc`-refcount drop order. The workers hold only a `Weak`, so
     /// this teardown — and the managers' own `Drop` backstops — actually run.
     pub fn close(&self) {
-        // **F4 drop-before-join (V11.3 site 3, byte):** take the coordinator OUT of
-        // the EC `Mutex` into a statement-temporary so the EC guard DROPS before
-        // `shutdown()` joins the eviction thread — the eviction callback takes OR
-        // (and briefly EC), so joining while holding EC would deadlock. Runs on
-        // every teardown.
-        let coordinator = self
-            .eviction_coordinator
-            .lock()
-            .expect("eviction_coordinator mutex poisoned")
-            .take();
+        // Retire while the coordinator slot is still occupied. The stable
+        // lifecycle gate makes retirement indivisible with publication and exact
+        // residency commits; the irreversible retired bit prevents stale `Arc`s
+        // from regaining authority after teardown. The slot guard then drops before
+        // `shutdown()` joins, preserving the F4 drop-before-join lock order.
+        let (coordinator, retirement_outcome) = {
+            let mut slot = self
+                .eviction_coordinator
+                .lock()
+                .expect("eviction_coordinator mutex poisoned");
+            let retirement_outcome = slot.as_ref().map_or(
+                crate::persistent_artrie::core::eviction::RetirementOutcome::AlreadyUnbound,
+                |coordinator| match self.lockfree_root.as_ref() {
+                    Some(root) => coordinator.retire_from_trie_with_root(root),
+                    None => {
+                        coordinator.retire_from_trie();
+                        crate::persistent_artrie::core::eviction::RetirementOutcome::AlreadyUnbound
+                    }
+                },
+            );
+            (slot.take(), retirement_outcome)
+        };
         if let Some(coordinator) = coordinator {
             coordinator.shutdown();
+        }
+        if retirement_outcome.repaired_invariant() {
+            log::error!("repaired an inconsistent eviction root binding during close");
         }
 
         // Best-effort sync on close.
@@ -589,6 +607,92 @@ impl<V: DictionaryValue, S: BlockStorage> Drop for PersistentARTrie<V, S> {
 #[allow(deprecated)]
 mod tests {
     use super::*;
+
+    fn persistent_test_scratch(prefix: &str) -> tempfile::TempDir {
+        std::fs::create_dir_all("target/test-tmp").expect("create persistent test scratch root");
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("target/test-tmp")
+            .expect("persistent test scratch directory")
+    }
+
+    #[test]
+    fn close_retires_byte_coordinator_before_removing_its_slot() {
+        use crate::persistent_artrie::core::eviction::{DiskLocationRegistry, EvictionConfig};
+        use crate::EvictableARTrie;
+
+        let dir = persistent_test_scratch("byte-close-retirement");
+        let path = dir.path().join("byte-close-retirement.part");
+        let shared = Arc::new(PersistentARTrie::<()>::create(&path).expect("create"));
+        shared
+            .enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable eviction");
+        let stale = shared
+            .eviction_coordinator
+            .lock()
+            .expect("eviction coordinator slot")
+            .as_ref()
+            .map(Arc::clone)
+            .expect("coordinator installed");
+
+        shared.close();
+
+        assert!(
+            stale
+                .try_install_detached_compatibility_catalog(DiskLocationRegistry::new())
+                .is_err(),
+            "a coordinator retained by a stale Arc must not accept a detached catalog after close"
+        );
+        assert!(shared
+            .eviction_coordinator
+            .lock()
+            .expect("eviction coordinator slot")
+            .is_none());
+    }
+
+    #[test]
+    fn disable_retires_old_byte_coordinator_before_reenable() {
+        use crate::persistent_artrie::core::eviction::{DiskLocationRegistry, EvictionConfig};
+        use crate::EvictableARTrie;
+
+        let dir = persistent_test_scratch("byte-retire-reenable");
+        let path = dir.path().join("byte-retire-reenable.part");
+        let shared = Arc::new(PersistentARTrie::<()>::create(&path).expect("create"));
+        shared
+            .enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable initial coordinator");
+        let old = shared
+            .eviction_coordinator
+            .lock()
+            .expect("eviction coordinator slot")
+            .as_ref()
+            .map(Arc::clone)
+            .expect("initial coordinator installed");
+
+        shared
+            .disable_eviction()
+            .expect("disable initial coordinator");
+        assert!(
+            old.try_install_detached_compatibility_catalog(DiskLocationRegistry::new())
+                .is_err(),
+            "the retired coordinator must reject detached catalog installation"
+        );
+        shared
+            .enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("re-enable with replacement coordinator");
+        let replacement = shared
+            .eviction_coordinator
+            .lock()
+            .expect("replacement coordinator slot")
+            .as_ref()
+            .map(Arc::clone)
+            .expect("replacement coordinator installed");
+        assert!(!Arc::ptr_eq(&old, &replacement));
+        replacement
+            .try_install_detached_compatibility_catalog(DiskLocationRegistry::new())
+            .expect("live replacement accepts a detached catalog");
+        shared.disable_eviction().expect("disable replacement");
+    }
 
     #[test]
     fn test_new_dictionary() {
@@ -2027,7 +2131,7 @@ mod tests {
 
         assert!(resolve_child_for_mutation_with_bm(&mut child, Some(bm)));
 
-        let ChildNode::Bucket(restored) = child else {
+        let ChildNode::Bucket(restored) = &child else {
             panic!("DiskRef should resolve to a StringBucket");
         };
         assert_eq!(restored.len(), 2);

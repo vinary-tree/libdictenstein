@@ -1,12 +1,12 @@
-(** Persistent char-trie eviction DiskLocationRegistry model (HEAD commit
-    f10c43e, feature G6).
+(** Persistent char-trie exact eviction-catalog model.
 
     A checkpoint serializes the trie bottom-up, assigning each node a fresh
     on-disk pointer, and registers an [Entry] (path, ptr, depth) per node
     (serialize_char_node_to_disk + register_char). This specification models
     that serialize-and-register pass over a finite char tree and proves the
-    invariants the Rust implementation and the companion TLA+ spec
-    (EvictionRegistryPublication.tla) rely on:
+    invariants used by the Rust implementation and the current companion TLA+
+    specifications [EvictionExactRootPublication.tla] and
+    [LockFreeDurableCheckpointEviction.tla]:
 
     - every registered entry's depth equals its path length;
     - the root's entry carries exactly the pointer the serializer returned;
@@ -16,12 +16,19 @@
       the path or whether the registry is built -- the registry is a pure
       side-effect on serialization, so recovery (which reads only the
       serialized bytes / on-disk root) is unaffected;
-    - publication is the identity when verified and empty otherwise, and the
-      recovered on-disk root never depends on the registry.
+    - a verified serializer result is only a candidate catalog;
+    - a candidate becomes exact authority only when it is stamped, names the
+      captured revision, and the captured root pair is still current;
+    - semantic root publication clears the exact binding atomically;
+    - exact use implies equality with the current root pair; and
+    - recovery depends only on durable checkpoint and WAL state, never on an
+      exact catalog or a detached advisory snapshot.
 
-    The char tree is encoded as a mutual inductive Tree/Forest (the textbook
-    rose-tree encoding) so that the bottom-up serializer is structurally
-    recursive and proofs use the generated mutual induction principle.
+    The mathematical reference encodes a char tree as a mutual inductive
+    Tree/Forest (the textbook rose-tree encoding), so its proofs use structural
+    mutual induction. This is not an implementation prescription: the Rust
+    serializer uses an explicit iterative continuation worklist and is
+    independently tested at input depth 100000.
 
     Filesystem/kernel ordering below a successful sync and certified Rust
     compilation are outside this proof boundary. No Admitted, Axiom, or
@@ -305,7 +312,7 @@ Proof.
   apply (proj1 serialize_pc_mut t path1 path2 next reg1 reg2).
 Qed.
 
-(* ===== Theorem (iii): publication ordering / recovery independence ==== *)
+(* == Candidate construction: verification and recovery independence ===== *)
 
 Record Publication := mkPub {
   pub_verified : bool;
@@ -313,9 +320,9 @@ Record Publication := mkPub {
   pub_disk_root : Ptr
 }.
 
-(* The coordinator's published registry: identity when verified, empty
-   otherwise (checkpoint() calls update_disk_registry only after
-   verify_checkpoint() succeeds). *)
+(* A verified serializer result is a candidate registry. It is not yet exact
+   authority; exact publication additionally checks the captured root pair and
+   durable catalog stamp below. *)
 Definition published (p : Publication) : Registry :=
   if pub_verified p then pub_registry p else [].
 
@@ -335,3 +342,167 @@ Theorem recovery_independent_of_registry :
   forall v r1 r2 d,
     recovered_root (mkPub v r1 d) = recovered_root (mkPub v r2 d).
 Proof. intros. reflexivity. Qed.
+
+(* ============= Exact-root publication and semantic clearing ========== *)
+
+Record RootState := mkRootState {
+  root_revision : nat;
+  root_generation : option nat
+}.
+
+Record ExactCatalog := mkExactCatalog {
+  catalog_revision : nat;
+  catalog_generation : nat;
+  catalog_stamped : bool;
+  catalog_disk_root : Ptr;
+  catalog_registry : Registry
+}.
+
+Definition root_state_eqb (left right : RootState) : bool :=
+  Nat.eqb (root_revision left) (root_revision right) &&
+  match root_generation left, root_generation right with
+  | None, None => true
+  | Some left_generation, Some right_generation =>
+      Nat.eqb left_generation right_generation
+  | _, _ => false
+  end.
+
+Lemma root_state_eqb_true_iff :
+  forall left right, root_state_eqb left right = true <-> left = right.
+Proof.
+  intros [left_revision left_generation] [right_revision right_generation].
+  unfold root_state_eqb. simpl.
+  rewrite andb_true_iff, Nat.eqb_eq.
+  destruct left_generation as [left_generation |],
+           right_generation as [right_generation |]; simpl.
+  - rewrite Nat.eqb_eq. split.
+    + intros [Hrevision Hgeneration]. subst. reflexivity.
+    + intros H. inversion H. auto.
+  - split; [intros [_ H]; discriminate H | discriminate].
+  - split; [intros [_ H]; discriminate H | discriminate].
+  - split.
+    + intros [Hrevision _]. subst. reflexivity.
+    + intros H. inversion H. auto.
+Qed.
+
+Definition semantic_successor (root : RootState) : RootState :=
+  mkRootState (S (root_revision root)) None.
+
+Definition exact_authority
+    (root : RootState) (catalog : ExactCatalog) : Prop :=
+  root_revision root = catalog_revision catalog /\
+  root_generation root = Some (catalog_generation catalog) /\
+  catalog_stamped catalog = true.
+
+Definition publish_exact
+    (captured current : RootState) (candidate : ExactCatalog)
+    : option (RootState * ExactCatalog) :=
+  if root_state_eqb captured current &&
+     Nat.eqb (catalog_revision candidate) (root_revision captured) &&
+     catalog_stamped candidate
+  then Some (mkRootState (root_revision current)
+                         (Some (catalog_generation candidate)),
+             candidate)
+  else None.
+
+Theorem semantic_successor_clears_exact_binding :
+  forall root catalog,
+    ~ exact_authority (semantic_successor root) catalog.
+Proof.
+  intros root catalog [_ [Hgeneration _]].
+  unfold semantic_successor in Hgeneration. simpl in Hgeneration.
+  discriminate.
+Qed.
+
+Theorem exact_publication_success_establishes_authority :
+  forall captured current candidate published_root published_catalog,
+    publish_exact captured current candidate =
+      Some (published_root, published_catalog) ->
+    captured = current /\
+    published_catalog = candidate /\
+    exact_authority published_root published_catalog.
+Proof.
+  intros captured current candidate published_root published_catalog Hpublish.
+  unfold publish_exact in Hpublish.
+  destruct (root_state_eqb captured current &&
+            Nat.eqb (catalog_revision candidate) (root_revision captured) &&
+            catalog_stamped candidate) eqn:Hchecks;
+    [| discriminate].
+  inversion Hpublish. subst published_root published_catalog. clear Hpublish.
+  repeat rewrite andb_true_iff in Hchecks.
+  destruct Hchecks as [[Hroot Hrevision] Hstamped].
+  apply root_state_eqb_true_iff in Hroot.
+  apply Nat.eqb_eq in Hrevision.
+  subst current.
+  split; [reflexivity |].
+  split; [reflexivity |].
+  unfold exact_authority. simpl. auto.
+Qed.
+
+Theorem exact_publication_failure_has_no_successor :
+  forall captured current candidate,
+    publish_exact captured current candidate = None ->
+    forall successor,
+      publish_exact captured current candidate <> Some successor.
+Proof.
+  intros captured current candidate Hfailure successor Hsuccess.
+  rewrite Hfailure in Hsuccess. discriminate.
+Qed.
+
+Definition exact_use_authorized
+    (root : RootState) (catalog : ExactCatalog) : bool :=
+  Nat.eqb (root_revision root) (catalog_revision catalog) &&
+  match root_generation root with
+  | Some generation => Nat.eqb generation (catalog_generation catalog)
+  | None => false
+  end && catalog_stamped catalog.
+
+Theorem exact_use_authorization_implies_current_pair :
+  forall root catalog,
+    exact_use_authorized root catalog = true ->
+    exact_authority root catalog.
+Proof.
+  intros [revision [generation |]] catalog Hauthorized;
+    unfold exact_use_authorized in Hauthorized; simpl in Hauthorized.
+  - repeat rewrite andb_true_iff in Hauthorized.
+    destruct Hauthorized as [[Hrevision Hgeneration] Hstamped].
+    apply Nat.eqb_eq in Hrevision.
+    apply Nat.eqb_eq in Hgeneration.
+    unfold exact_authority. simpl. auto.
+  - rewrite andb_false_r in Hauthorized. discriminate.
+Qed.
+
+(* ================= Durable recovery composition ====================== *)
+
+Record DurableImage := mkDurableImage {
+  durable_root : Ptr;
+  durable_checkpoint_entries : list nat;
+  durable_wal_entries : list nat
+}.
+
+Definition recover_durable (image : DurableImage) : Ptr * list nat * list nat :=
+  (durable_root image,
+   durable_checkpoint_entries image,
+   durable_wal_entries image).
+
+Definition recover_with_detached_advisory
+    (image : DurableImage) (_ : Registry) : Ptr * list nat * list nat :=
+  recover_durable image.
+
+Definition recover_with_exact_catalog
+    (image : DurableImage) (_ : ExactCatalog) : Ptr * list nat * list nat :=
+  recover_durable image.
+
+Theorem recovery_independent_of_detached_advisory :
+  forall (image : DurableImage) (detached_left detached_right : Registry),
+    recover_with_detached_advisory image detached_left =
+      recover_with_detached_advisory image detached_right /\
+    recover_with_detached_advisory image detached_left = recover_durable image.
+Proof. intros. split; reflexivity. Qed.
+
+Theorem recovery_independent_of_exact_catalog :
+  forall (image : DurableImage) (catalog_left catalog_right : ExactCatalog),
+    recover_with_exact_catalog image catalog_left =
+      recover_with_exact_catalog image catalog_right /\
+    recover_with_exact_catalog image catalog_left = recover_durable image.
+Proof. intros. split; reflexivity. Qed.

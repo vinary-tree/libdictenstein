@@ -20,7 +20,8 @@ use crate::persistent_artrie::core::concurrency::EpochManager;
 use crate::persistent_artrie::core::durability::DurabilityPolicy;
 use crate::persistent_artrie::core::key_encoding::{CharKey, KeyEncoding};
 use crate::persistent_artrie::core::overlay::durable_write::{
-    DurableOverlayWrite, ValuePublishOutcome, ValueWriteMode,
+    DurableOverlayWrite, EvictionIneligibleMutation, PendingDurableMutation,
+    SemanticMutationPublicationPermit, ValuePublishOutcome, ValueWriteMode,
 };
 use crate::persistent_artrie::core::overlay::evict::OverlayEvictable;
 use crate::persistent_artrie::core::overlay::f5_build::build_overlay_root_from_terms;
@@ -35,6 +36,7 @@ use crate::persistent_artrie::eviction::EvictionCoordinator;
 use dashmap::DashMap;
 
 use super::dict_impl::PersistentVocabARTrie;
+use super::lockfree_cas::VocabPathInsertError;
 
 // The vocab overlay node alias (V = u64).
 type VocabOverlayNode = OverlayNode<CharKey, u64>;
@@ -56,12 +58,59 @@ impl<S: BlockStorage> OverlayEvictable<CharKey, u64, S> for PersistentVocabARTri
 
     #[inline]
     fn overlay_eviction_coordinator(&self) -> Option<Arc<EvictionCoordinator>> {
-        // Vocab's coordinator is a bare `Option<Arc<..>>` (no Mutex, unlike char).
         self.eviction_coordinator
             .lock()
-            .expect("eviction_coordinator mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .map(Arc::clone)
+    }
+
+    #[inline]
+    fn prepare_overlay_eviction_commit(
+        &self,
+        coordinator: &EvictionCoordinator,
+        root_revision: &crate::persistent_artrie::core::overlay::RootRevision<CharKey, u64>,
+        batch: &crate::persistent_artrie::core::eviction::CompactEvictionBatch<u32>,
+        successful: &mut [usize],
+    ) -> Option<crate::persistent_artrie::core::eviction::PreparedPackedResidency> {
+        coordinator.prepare_char_eviction_commit(root_revision, batch, successful)
+    }
+
+    #[inline]
+    fn commit_overlay_eviction(
+        &self,
+        coordinator: &EvictionCoordinator,
+        root: &AtomicNodePtr<CharKey, u64>,
+        root_transition: crate::persistent_artrie::core::overlay::PreparedBoundRootTransition<
+            CharKey,
+            u64,
+        >,
+    ) -> crate::persistent_artrie::core::eviction::ExactEvictionOutcome {
+        coordinator.commit_char_eviction_transaction(root, root_transition)
+    }
+
+    #[inline]
+    fn prepare_overlay_fault_commit(
+        &self,
+        coordinator: &EvictionCoordinator,
+        root_revision: &crate::persistent_artrie::core::overlay::RootRevision<CharKey, u64>,
+        path: &[u32],
+        disk_ptr: &SwizzledPtr,
+    ) -> Option<crate::persistent_artrie::core::eviction::PreparedPackedResidency> {
+        coordinator.prepare_char_fault_commit(root_revision, path, disk_ptr)
+    }
+
+    #[inline]
+    fn commit_overlay_fault(
+        &self,
+        coordinator: &EvictionCoordinator,
+        root: &AtomicNodePtr<CharKey, u64>,
+        root_transition: crate::persistent_artrie::core::overlay::PreparedBoundRootTransition<
+            CharKey,
+            u64,
+        >,
+    ) -> crate::persistent_artrie::core::eviction::ExactFaultOutcome {
+        coordinator.commit_char_fault_transaction(root, root_transition)
     }
 
     #[inline]
@@ -76,13 +125,19 @@ impl<S: BlockStorage> OverlayEvictable<CharKey, u64, S> for PersistentVocabARTri
 
 impl<S: BlockStorage> OverlayFaulter<CharKey, u64> for PersistentVocabARTrie<S> {
     #[inline]
-    fn fault_overlay_slot(&self, _slot: &SwizzledPtr) -> Option<Arc<VocabOverlayNode>> {
+    fn try_fault_overlay_slot(
+        &self,
+        _slot: &SwizzledPtr,
+    ) -> crate::persistent_artrie::core::error::Result<Arc<VocabOverlayNode>> {
         // Vocab's lock-free overlay never evicts its finals to disk in production
         // (RT5 — overlay finals are not eviction targets), so there is no overlay-node
-        // disk loader. Degrade to "no child" (matches byte, which also has neither
-        // eviction nor production fault-in). Overlay eviction is not part of the
-        // vocab write-once storage contract.
-        None
+        // disk loader. The trait's best-effort adapter still degrades this error to
+        // `None`, while exact callers retain the invariant violation.
+        Err(
+            crate::persistent_artrie::core::error::PersistentARTrieError::corrupted(
+                "vocabulary overlay contains an on-disk child",
+            ),
+        )
     }
 }
 
@@ -159,18 +214,23 @@ impl<S: BlockStorage> LockFreeOverlay<CharKey, u64, S> for PersistentVocabARTrie
         self.get_index_lockfree(&term).is_some()
     }
 
-    fn overlay_publish_value(&self, units: &[u32], value: u64) {
+    fn overlay_publish_value(
+        &self,
+        units: &[u32],
+        value: u64,
+    ) -> crate::persistent_artrie::error::Result<()> {
         // F5/no-WAL path-copy value SET (recovered terms are already durable). The
         // overlay is FRESH at reestablish, so the CAS contends with nothing. `units`
         // ARE the chars (CharKey). value = the id.
-        let lockfree_root = match self.lockfree_root.as_ref() {
-            Some(r) => r,
-            None => return,
-        };
+        let lockfree_root = self.lockfree_root.as_ref().ok_or_else(|| {
+            crate::persistent_artrie::error::PersistentARTrieError::internal(
+                "recovery value publish requires an installed vocabulary overlay",
+            )
+        })?;
         let _epoch = self.epoch_manager.enter_read();
         loop {
-            let root = match lockfree_root.load() {
-                Some(r) => r,
+            let root_revision = match lockfree_root.load_revision() {
+                Some(revision) => revision,
                 None => {
                     let _ = lockfree_root.try_init(Arc::new(
                         crate::persistent_artrie::char::nodes::PersistentCharNode::<u64>::new(),
@@ -178,19 +238,30 @@ impl<S: BlockStorage> LockFreeOverlay<CharKey, u64, S> for PersistentVocabARTrie
                     continue;
                 }
             };
+            let root = Arc::clone(root_revision.node());
             match self.try_insert_lockfree_path(&root, units, value) {
-                Ok(new_root) => match lockfree_root.compare_exchange_counted(&root, new_root, 1) {
+                Ok(new_root) => match lockfree_root.compare_exchange_revision_counted(
+                    &root_revision,
+                    new_root,
+                    1,
+                ) {
                     Ok(_) => {
                         if let Some(ref cache) = self.lockfree_cache {
                             cache.insert(CharKey::units_to_term(units), value);
                         }
-                        return;
+                        return Ok(());
                     }
                     Err(_) => continue,
                 },
-                // Already final (recovery re-applying the same term) or OnDisk-blocked
-                // (impossible on a fresh reestablish overlay): the value is already set.
-                Err(_) => return,
+                Err(VocabPathInsertError::AlreadyPresent) => return Ok(()),
+                Err(VocabPathInsertError::Unavailable) => {
+                    return Err(
+                        crate::persistent_artrie::error::PersistentARTrieError::corrupted(
+                            "vocab recovery path-copy reached a non-memory child",
+                        ),
+                    );
+                }
+                Err(VocabPathInsertError::Failure(error)) => return Err(error),
             }
         }
     }
@@ -227,15 +298,21 @@ impl<S: BlockStorage> LockFreeOverlay<CharKey, u64, S> for PersistentVocabARTrie
 // ============================================================================
 
 impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabARTrie<S> {
+    type PublicationEligibility = EvictionIneligibleMutation;
+
     #[inline]
     fn durability_policy(&self) -> DurabilityPolicy {
         self.durability_policy.load()
     }
 
     #[inline]
-    fn append_durable_wal(&self, record: WalRecord) -> Result<Lsn> {
+    fn append_durable_wal(
+        &self,
+        record: WalRecord,
+    ) -> Result<PendingDurableMutation<'_, EvictionIneligibleMutation>> {
         // Order-A step 1: the &self durable append + sync (V1.2).
         self.append_to_wal_returning_lsn(record)
+            .map(PendingDurableMutation::eviction_ineligible)
     }
 
     #[inline]
@@ -266,7 +343,12 @@ impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabAR
         }
     }
 
-    fn increment_publish_inner(&self, key: &str, _delta: u64) -> Result<(u64, u64)> {
+    fn increment_publish_inner(
+        &self,
+        key: &str,
+        _delta: u64,
+        _permit: &SemanticMutationPublicationPermit<'_, EvictionIneligibleMutation>,
+    ) -> Result<(u64, u64)> {
         Err(PersistentARTrieError::InvalidOperation(format!(
             "vocab does not support counter increment (term {key:?}); ids are write-once"
         )))
@@ -300,6 +382,7 @@ impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabAR
         key_bytes: &[u8],
         value: u64,
         mode: ValueWriteMode,
+        _permit: &SemanticMutationPublicationPermit<'_, EvictionIneligibleMutation>,
     ) -> Result<ValuePublishOutcome> {
         // Vocab ids are WRITE-ONCE → only InsertOnce is meaningful.
         match mode {
@@ -321,8 +404,8 @@ impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabAR
             // Order-A generation CLAIM (loop-top, re-claimed per iteration): the
             // winning claim is strictly monotone in the global root-CAS order + durable.
             let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
-            let root = match lockfree_root.load() {
-                Some(r) => r,
+            let root_revision = match lockfree_root.load_revision() {
+                Some(revision) => revision,
                 None => {
                     let _ = lockfree_root.try_init(Arc::new(
                         crate::persistent_artrie::char::nodes::PersistentCharNode::<u64>::new(),
@@ -330,6 +413,7 @@ impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabAR
                     continue;
                 }
             };
+            let root = Arc::clone(root_revision.node());
             // InsertOnce pre-check on the freshly-loaded root: a concurrent insert may
             // have won between the caller's present-hoist and this CAS.
             if self.find_in_lockfree_trie(&root, &chars).is_some() {
@@ -338,7 +422,11 @@ impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabAR
             // Build the valued spine (value = id). `try_insert_lockfree_path` is
             // ALSO insert-once (Err if a racer made it final) — the second guard.
             match self.try_insert_lockfree_path(&root, &chars, value) {
-                Ok(new_root) => match lockfree_root.compare_exchange_counted(&root, new_root, 1) {
+                Ok(new_root) => match lockfree_root.compare_exchange_revision_counted(
+                    &root_revision,
+                    new_root,
+                    1,
+                ) {
                     Ok(_) => {
                         if let Some(ref cache) = self.lockfree_cache {
                             cache.insert(term.to_string(), value);
@@ -352,7 +440,15 @@ impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabAR
                 },
                 // A concurrent insert finalized the term between the pre-check and the
                 // build: insert-once → NotApplied.
-                Err(_existing) => return Ok(ValuePublishOutcome::NotApplied),
+                Err(VocabPathInsertError::AlreadyPresent) => {
+                    return Ok(ValuePublishOutcome::NotApplied);
+                }
+                Err(VocabPathInsertError::Unavailable) => {
+                    return Err(PersistentARTrieError::internal(
+                        "vocabulary overlay path-copy reached a non-memory child",
+                    ));
+                }
+                Err(VocabPathInsertError::Failure(error)) => return Err(error),
             }
         }
     }

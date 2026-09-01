@@ -457,28 +457,60 @@ fn char_child_remove_transfers_box_ownership_once() {
     assert!(root.remove_child('λ').is_none());
 }
 
+static CHAR_REPLACEMENT_FIRST_DROPS: AtomicUsize = AtomicUsize::new(0);
+static CHAR_REPLACEMENT_SECOND_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct CharReplacementDropProbe {
+    generation: u8,
+}
+
+impl Drop for CharReplacementDropProbe {
+    fn drop(&mut self) {
+        match self.generation {
+            1 => {
+                CHAR_REPLACEMENT_FIRST_DROPS.fetch_add(1, Ordering::SeqCst);
+            }
+            2 => {
+                CHAR_REPLACEMENT_SECOND_DROPS.fetch_add(1, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl libdictenstein::DictionaryValue for CharReplacementDropProbe {}
+
 #[test]
 fn char_insert_child_replaces_without_aliasing_old_box() {
-    let mut root = CharTrieNodeInner::<i32>::new();
+    CHAR_REPLACEMENT_FIRST_DROPS.store(0, Ordering::SeqCst);
+    CHAR_REPLACEMENT_SECOND_DROPS.store(0, Ordering::SeqCst);
+    let mut root = CharTrieNodeInner::<CharReplacementDropProbe>::new();
 
     let mut first = CharTrieNodeInner::new();
     first.set_final(true);
-    assert!(root.insert_child('ß', first).is_none());
+    first.value = Some(CharReplacementDropProbe { generation: 1 });
+    assert!(root
+        .insert_child('ß', first)
+        .expect("vacant resident insertion succeeds")
+        .is_none());
 
-    let first_raw =
-        root.get_child('ß').expect("first child exists") as *const CharTrieNodeInner<i32>;
+    let first_raw = root.get_child('ß').expect("first child exists")
+        as *const CharTrieNodeInner<CharReplacementDropProbe>;
 
     let mut second = CharTrieNodeInner::new();
     second.set_final(false);
+    second.value = Some(CharReplacementDropProbe { generation: 2 });
     second.get_or_create_child('ø').set_final(true);
     let replaced = root
         .insert_child('ß', second)
+        .expect("resident replacement succeeds")
         .expect("old child returned on replacement");
 
-    let second_raw =
-        root.get_child('ß').expect("second child exists") as *const CharTrieNodeInner<i32>;
+    let second_raw = root.get_child('ß').expect("second child exists")
+        as *const CharTrieNodeInner<CharReplacementDropProbe>;
     assert_eq!(
-        replaced.as_ref() as *const CharTrieNodeInner<i32>,
+        replaced.as_ref() as *const CharTrieNodeInner<CharReplacementDropProbe>,
         first_raw
     );
     assert_ne!(second_raw, first_raw);
@@ -489,6 +521,15 @@ fn char_insert_child_replaces_without_aliasing_old_box() {
         .and_then(|child| child.get_child('ø'))
         .expect("replacement grandchild")
         .is_final());
+
+    assert_eq!(CHAR_REPLACEMENT_FIRST_DROPS.load(Ordering::SeqCst), 0);
+    assert_eq!(CHAR_REPLACEMENT_SECOND_DROPS.load(Ordering::SeqCst), 0);
+    drop(replaced);
+    assert_eq!(CHAR_REPLACEMENT_FIRST_DROPS.load(Ordering::SeqCst), 1);
+    assert_eq!(CHAR_REPLACEMENT_SECOND_DROPS.load(Ordering::SeqCst), 0);
+    drop(root);
+    assert_eq!(CHAR_REPLACEMENT_FIRST_DROPS.load(Ordering::SeqCst), 1);
+    assert_eq!(CHAR_REPLACEMENT_SECOND_DROPS.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -606,6 +647,43 @@ fn vocab_duplicate_insert_keeps_stable_index_after_reopen() {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn char_owned_child_operations_match_btree_model(
+        operations in prop::collection::vec((any::<char>(), any::<bool>(), any::<u64>()), 1..=192)
+    ) {
+        let mut root = CharTrieNodeInner::<u64>::new();
+        let mut model = BTreeMap::<char, u64>::new();
+
+        for (key, insert, value) in operations {
+            if insert {
+                let mut child = CharTrieNodeInner::new();
+                child.value = Some(value);
+                let actual_old = root
+                    .insert_child(key, child)
+                    .expect("a sealed resident topology accepts insert/replace")
+                    .and_then(|child| child.value);
+                let expected_old = model.insert(key, value);
+                prop_assert_eq!(actual_old, expected_old);
+            } else {
+                let actual_old = root.remove_child(key).and_then(|child| child.value);
+                let expected_old = model.remove(&key);
+                prop_assert_eq!(actual_old, expected_old);
+            }
+
+            prop_assert_eq!(root.num_children(), model.len());
+            let actual: BTreeMap<char, u64> = root
+                .iter_children()
+                .map(|(edge, child)| {
+                    (
+                        edge,
+                        child.value.expect("every modeled child carries a value"),
+                    )
+                })
+                .collect();
+            prop_assert_eq!(actual, model.clone());
+        }
+    }
 
     #[test]
     fn bucket_search_matches_sorted_reference(

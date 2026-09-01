@@ -17,10 +17,21 @@
 //! `U::from_str(pattern).len()` here, removing the duplication.
 
 use rustc_hash::{FxHashMap, FxHashSet};
+use smallvec::SmallVec;
 
 use super::node::{ScdawgNode, NIL};
 use crate::value::DictionaryValue;
 use crate::{CharUnit, SnapshotTraversalCursor};
+
+const INLINE_GRAPH_WORKLIST: usize = 32;
+
+#[derive(Clone, Copy)]
+struct LeftEdgeTraversalFrame {
+    node: usize,
+    next_left_edge: usize,
+}
+
+type LeftEdgeTraversal = SmallVec<[LeftEdgeTraversalFrame; INLINE_GRAPH_WORKLIST]>;
 
 /// Inner mutable state of the SCDAWG, generic over the edge-label type.
 ///
@@ -306,18 +317,16 @@ impl<U: CharUnit, V: DictionaryValue> ScdawgCoreInner<U, V> {
         pattern_len: usize,
         results: &mut Vec<(String, usize)>,
     ) {
-        for &(term_idx, end_pos) in &self.nodes[node].term_ends {
-            if end_pos + 1 >= pattern_len {
-                let start_pos = end_pos + 1 - pattern_len;
-                if term_idx < self.terms.len() {
-                    results.push((self.terms[term_idx].clone(), start_pos));
+        self.visit_left_edge_subtree(node, |current| {
+            for &(term_idx, end_pos) in &self.nodes[current].term_ends {
+                if end_pos + 1 >= pattern_len {
+                    let start_pos = end_pos + 1 - pattern_len;
+                    if term_idx < self.terms.len() {
+                        results.push((self.terms[term_idx].clone(), start_pos));
+                    }
                 }
             }
-        }
-
-        for &(_, target) in &self.nodes[node].left_edges {
-            self.collect_term_positions(target, pattern_len, results);
-        }
+        });
     }
 
     /// Check if the SCDAWG contains a complete term.
@@ -354,10 +363,50 @@ impl<U: CharUnit, V: DictionaryValue> ScdawgCoreInner<U, V> {
 
     /// Count all occurrences reachable from a node via left edges.
     pub fn count_occurrences(&self, node: usize, count: &mut usize) {
-        *count += self.nodes[node].term_ends.len();
+        self.visit_left_edge_subtree(node, |current| {
+            *count += self.nodes[current].term_ends.len();
+        });
+    }
 
-        for &(_, target) in &self.nodes[node].left_edges {
-            self.count_occurrences(target, count);
+    /// Visit a left-edge subtree in the same pre-order as the former
+    /// recursive traversal while keeping traversal state off the native call
+    /// stack.
+    ///
+    /// A continuation frame stores the next child of each active ancestor.
+    /// Consequently, auxiliary space is proportional to graph depth rather
+    /// than to the total node count or the maximum frontier width. Repeated
+    /// paths are deliberately not de-duplicated: each path is visited exactly
+    /// as it was by the recursive implementation.
+    #[inline]
+    fn visit_left_edge_subtree(&self, node: usize, mut visit: impl FnMut(usize)) {
+        let mut traversal = LeftEdgeTraversal::new();
+        traversal.push(LeftEdgeTraversalFrame {
+            node,
+            next_left_edge: 0,
+        });
+
+        while let Some(frame) = traversal.last() {
+            let current = frame.node;
+            let next_left_edge = frame.next_left_edge;
+
+            if next_left_edge == 0 {
+                visit(current);
+            }
+
+            if let Some(&(_, child)) = self.nodes[current].left_edges.get(next_left_edge) {
+                // Advance the parent's continuation before descending so the
+                // child can push without retaining a mutable borrow.
+                traversal
+                    .last_mut()
+                    .expect("the current traversal frame exists")
+                    .next_left_edge += 1;
+                traversal.push(LeftEdgeTraversalFrame {
+                    node: child,
+                    next_left_edge: 0,
+                });
+            } else {
+                traversal.pop();
+            }
         }
     }
 
@@ -497,5 +546,56 @@ mod tests {
         assert!(inner.contains_substring("afé"));
         inner.compute_left_edges();
         assert_eq!(inner.frequency("café"), 1);
+    }
+
+    #[test]
+    fn one_hundred_thousand_deep_left_edge_walks_are_stack_safe() {
+        const DEPTH: usize = 100_000;
+        let mut inner: ScdawgCoreInner<u8, ()> = ScdawgCoreInner::new();
+        for length in 1..=DEPTH {
+            inner.alloc_node(length, length - 1, b'x');
+        }
+        inner.terms.push("x".to_owned());
+        inner.nodes[DEPTH].term_ends.push((0, DEPTH - 1));
+        inner.compute_left_edges();
+
+        let mut positions = Vec::new();
+        inner.collect_term_positions(0, 1, &mut positions);
+        assert_eq!(positions, vec![("x".to_owned(), DEPTH - 1)]);
+
+        let mut count = 0;
+        inner.count_occurrences(0, &mut count);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn iterative_left_edge_walk_preserves_recursive_order_and_path_multiplicity() {
+        let mut inner: ScdawgCoreInner<u8, ()> = ScdawgCoreInner::new();
+        let left = inner.alloc_node(1, 0, b'l');
+        let right = inner.alloc_node(1, 0, b'r');
+        let shared = inner.alloc_node(2, left, b's');
+        inner.terms.push("left".to_owned());
+        inner.terms.push("shared".to_owned());
+        inner.nodes[left].term_ends.push((0, 0));
+        inner.nodes[shared].term_ends.push((1, 1));
+        inner.nodes[0].left_edges.push((b'l', left));
+        inner.nodes[0].left_edges.push((b'r', right));
+        inner.nodes[left].left_edges.push((b's', shared));
+        inner.nodes[right].left_edges.push((b's', shared));
+
+        let mut positions = Vec::new();
+        inner.collect_term_positions(0, 1, &mut positions);
+        assert_eq!(
+            positions,
+            vec![
+                ("left".to_owned(), 0),
+                ("shared".to_owned(), 1),
+                ("shared".to_owned(), 1),
+            ]
+        );
+
+        let mut count = 0;
+        inner.count_occurrences(0, &mut count);
+        assert_eq!(count, 3);
     }
 }

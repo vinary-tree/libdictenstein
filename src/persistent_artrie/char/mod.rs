@@ -208,10 +208,9 @@ pub(crate) mod f5_loader;
 #[cfg(test)]
 mod eviction_registry_tests;
 
-// OE1–OE4 correspondence tests for the reversible overlay-eviction driver
-// (`evict_overlay_node_at_path` / `evict_overlay_nodes`). In-crate because they
-// drive the private driver + `pub(crate)` `OverlayEvictOutcome` and the overlay
-// internals. The Rust witness for `formal-verification/tla+/OverlayEvictionCas.tla`.
+// OE1–OE4 correspondence tests for compact generation-bound overlay eviction.
+// They live in-crate because they inspect overlay internals. The Rust witness
+// complements `formal-verification/tla+/OverlayEvictionCas.tla`.
 #[cfg(test)]
 mod overlay_eviction_driver_correspondence;
 
@@ -225,8 +224,8 @@ mod overlay_dictionary_node_faulting_tests;
 // Re-export shared types (always available)
 pub use types::{
     CharTrieFileHeader, CharTrieNodeInner, EnhancedRecoveryMode, EnhancedRecoveryStats,
-    CHAR_FILE_HEADER_SIZE, CHAR_HEADER_VERSION_V1, CHAR_HEADER_VERSION_V2, CHAR_TRIE_MAGIC,
-    DEFAULT_CHAR_BUFFER_POOL_SIZE,
+    InsertCharChildError, CHAR_FILE_HEADER_SIZE, CHAR_HEADER_VERSION_V1, CHAR_HEADER_VERSION_V2,
+    CHAR_TRIE_MAGIC, DEFAULT_CHAR_BUFFER_POOL_SIZE,
 };
 
 // Re-export disk-backed types (feature-gated)
@@ -469,8 +468,8 @@ pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_ar
     /// counter, or quiescence is vacuous and eviction frees nodes out from under a
     /// live walk.
     pub(crate) epoch_manager: Arc<crate::persistent_artrie::concurrency::EpochManager>,
-    /// Monotonic counter bumped on every durable in-place structural mutation (via
-    /// `invalidate_eviction_registry` at the `append_to_wal` chokepoint). A
+    /// Monotonic counter bumped on every durable structural mutation (via
+    /// `record_durable_structural_mutation` at the WAL-append chokepoint). A
     /// `DictionaryNode` walk snapshots it at `root()`; in debug builds each handle
     /// rechecks it before dereferencing its raw node pointer and panics on a
     /// mismatch — surfacing the contract violation "a handle was used across a
@@ -530,6 +529,9 @@ pub struct PersistentARTrieChar<V: DictionaryValue = (), S: crate::persistent_ar
     /// a worker `.join()` (drop-before-join in `disable_eviction`/`close`/`Drop`).
     pub(crate) eviction_coordinator:
         std::sync::Mutex<Option<Arc<crate::persistent_artrie::eviction::EvictionCoordinator>>>,
+    /// Trie-lifetime registry-publication gate shared across coordinator replacement.
+    pub(crate) registry_publication_gate:
+        Arc<crate::persistent_artrie::core::eviction::RegistryPublicationGate>,
 
     // === Prefetching Support ===
     /// Prefetcher for multi-level I/O optimization.
@@ -633,13 +635,28 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
         // field guard DROPS before `shutdown()`/`Drop` joins the worker thread — the
         // eviction + memory-monitor callbacks re-enter the trie (OR/EC), so joining
         // while holding the field mutex would deadlock. Runs on EVERY teardown.
-        let coordinator = self
-            .eviction_coordinator
-            .lock()
-            .expect("eviction_coordinator mutex poisoned")
-            .take();
+        let (coordinator, retirement_outcome) = {
+            let mut slot = self
+                .eviction_coordinator
+                .lock()
+                .expect("eviction_coordinator mutex poisoned");
+            let retirement_outcome = slot.as_ref().map_or(
+                crate::persistent_artrie::core::eviction::RetirementOutcome::AlreadyUnbound,
+                |coordinator| match self.lockfree_root.as_ref() {
+                    Some(root) => coordinator.retire_from_trie_with_root(root),
+                    None => {
+                        coordinator.retire_from_trie();
+                        crate::persistent_artrie::core::eviction::RetirementOutcome::AlreadyUnbound
+                    }
+                },
+            );
+            (slot.take(), retirement_outcome)
+        };
         if let Some(coordinator) = coordinator {
             coordinator.shutdown();
+        }
+        if retirement_outcome.repaired_invariant() {
+            log::error!("repaired an inconsistent eviction root binding during close");
         }
         let monitor = self
             .memory_monitor
@@ -861,9 +878,9 @@ impl<V: DictionaryValue + Clone, S: crate::persistent_artrie::block_storage::Blo
     fn get_value(&self, term: &str) -> Option<V> {
         // D2/S3″: delegate to the inherent `get_value` (which value-routes to the
         // overlay), NOT `self.get(..).cloned()` — `get` returns `None` under overlay
-        // routing. The inherent method shadows this trait method in `.get_value()` call
-        // syntax.
-        self.get_value(term)
+        // routing. Fully qualified syntax keeps the forwarding edge unambiguous to both
+        // Rust and call-graph analyzers.
+        PersistentARTrieChar::get_value(self, term)
     }
 }
 
@@ -1284,44 +1301,18 @@ impl<V: DictionaryValue> crate::artrie_trait::ARTrie for SharedCharARTrie<V> {
 // REVERSIBLE OVERLAY-EVICTION DRIVER (design g4-overlay-eviction-reclamation)
 // ============================================================================
 //
-// `cfg(any(test, feature = "bench-internals"))` — NOT a production path. This is
-// the reversible driver that makes the eviction-ON benchmark's TREATMENT arm do
-// REAL in-memory reclamation of COLD overlay subtrees (vs the §E structural
-// no-op): it path-copies
-// the `lockfree_root` spine and swaps a COLD in-memory child for an `OnDisk`
-// reference via a loser-safe root CAS. ZERO `unsafe` (reuses the proven Phase-D
-// safe `Arc`/`arc-swap` primitive). The CAS-arbitration safety (loser-safe,
-// cold-only, no-UAF) is TLC-verified in
-// `formal-verification/tla+/OverlayEvictionCas.tla`.
-//
-// Rollback (design §4): delete this whole section + `bench_evict_overlay_cold_nodes`
-// + the §F bench arm + the TLA spec + its 3 verify-script lines. The write path,
-// recovery, production eviction, and `checkpoint()` are untouched.
-
-// Phase 4 (DRY K-generic lift): the per-node evict outcome + the per-attempt evict
-// primitive (`evict_overlay_node_at_path`) + the read-path fault-in walk
-// (`find_leaf_faulting`) now live ONCE, K-generic, in
-// `persistent_artrie::core::overlay::evict` as default methods of the
-// `OverlayEvictable<K, V, S>` subtrait of `OverlayFaulter`. Char re-exports the
-// shared `OverlayEvictOutcome` (so `evict_overlay_nodes` + the OE tests name a
-// single type) and IMPLEMENTS the trait below (the three variant-specific
-// accessors + the `cas_retries` fault-counter hook). The lifted primitives are
-// behavior-identical to the prior char-only inherent methods — OE1–OE8 + every
-// eviction test pass unchanged. Phase 7.4 (GO-LIVE): the `OverlayEvictOutcome`
-// re-export + the `evict_overlay_nodes` batch driver are now UN-GATED to production —
-// the checkpoint-tail resident-budget eviction (Phase 7.5) is their production caller.
-pub(crate) use crate::persistent_artrie::core::overlay::evict::OverlayEvictOutcome;
-
-/// Char impl of the SHARED GENERIC [`OverlayEvictable`] (the per-attempt overlay
-/// evict + read-fault primitives, K-generic over `OverlayNode<CharKey, V>`). Supplies
+// The shared `OverlayEvictable` trait owns the compact batch and exact fault-in
+// machines once, generic over key encoding. The character implementation below
+// supplies only monomorphized storage and coordinator accessors.
+/// Character implementation of [`OverlayEvictable`], generic over
+/// `OverlayNode<CharKey, V>`. Supplies
 /// the three variant-specific accessors (`lockfree_root` / `epoch_manager` /
 /// `eviction_coordinator`) + the `cas_retries` fault-counter hook; the primitives
 /// themselves are the trait defaults. The `OverlayFaulter<CharKey, V>` super-trait
 /// requirement is satisfied by char's existing impl (the `load_overlay_node_from_disk`
 /// loader). NOT `#[cfg]`-gated: the trait default `find_leaf_faulting` is called on
 /// char's UN-GATED production read/remove/valued-insert/increment paths (Flip F0), so
-/// the impl must exist in non-test builds; only the per-node evict primitive's
-/// production caller + the batch `evict_overlay_nodes` driver stay gated.
+/// the implementation must exist in non-test builds.
 impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage>
     crate::persistent_artrie::core::overlay::evict::OverlayEvictable<
         crate::persistent_artrie::core::key_encoding::CharKey,
@@ -1352,9 +1343,69 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     ) -> Option<Arc<crate::persistent_artrie::eviction::EvictionCoordinator>> {
         self.eviction_coordinator
             .lock()
-            .expect("eviction_coordinator mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .map(Arc::clone)
+    }
+
+    #[inline]
+    fn prepare_overlay_eviction_commit(
+        &self,
+        coordinator: &crate::persistent_artrie::eviction::EvictionCoordinator,
+        root_revision: &crate::persistent_artrie::core::overlay::RootRevision<
+            crate::persistent_artrie::core::key_encoding::CharKey,
+            V,
+        >,
+        batch: &crate::persistent_artrie::core::eviction::CompactEvictionBatch<u32>,
+        successful: &mut [usize],
+    ) -> Option<crate::persistent_artrie::core::eviction::PreparedPackedResidency> {
+        coordinator.prepare_char_eviction_commit(root_revision, batch, successful)
+    }
+
+    #[inline]
+    fn commit_overlay_eviction(
+        &self,
+        coordinator: &crate::persistent_artrie::eviction::EvictionCoordinator,
+        root: &crate::persistent_artrie::core::overlay::AtomicNodePtr<
+            crate::persistent_artrie::core::key_encoding::CharKey,
+            V,
+        >,
+        root_transition: crate::persistent_artrie::core::overlay::PreparedBoundRootTransition<
+            crate::persistent_artrie::core::key_encoding::CharKey,
+            V,
+        >,
+    ) -> crate::persistent_artrie::core::eviction::ExactEvictionOutcome {
+        coordinator.commit_char_eviction_transaction(root, root_transition)
+    }
+
+    #[inline]
+    fn prepare_overlay_fault_commit(
+        &self,
+        coordinator: &crate::persistent_artrie::eviction::EvictionCoordinator,
+        root_revision: &crate::persistent_artrie::core::overlay::RootRevision<
+            crate::persistent_artrie::core::key_encoding::CharKey,
+            V,
+        >,
+        path: &[u32],
+        disk_ptr: &crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
+    ) -> Option<crate::persistent_artrie::core::eviction::PreparedPackedResidency> {
+        coordinator.prepare_char_fault_commit(root_revision, path, disk_ptr)
+    }
+
+    #[inline]
+    fn commit_overlay_fault(
+        &self,
+        coordinator: &crate::persistent_artrie::eviction::EvictionCoordinator,
+        root: &crate::persistent_artrie::core::overlay::AtomicNodePtr<
+            crate::persistent_artrie::core::key_encoding::CharKey,
+            V,
+        >,
+        root_transition: crate::persistent_artrie::core::overlay::PreparedBoundRootTransition<
+            crate::persistent_artrie::core::key_encoding::CharKey,
+            V,
+        >,
+    ) -> crate::persistent_artrie::core::eviction::ExactFaultOutcome {
+        coordinator.commit_char_fault_transaction(root, root_transition)
     }
 
     #[inline]
@@ -1382,69 +1433,17 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
 ///
 /// Phase 7.4: UN-GATED to production (the checkpoint-tail resident-budget eviction
 /// calls it). The `bench_*` enablers stay gated; this driver does not.
-pub(crate) fn evict_overlay_nodes<
+pub(crate) fn evict_overlay_compact_batch<
     V: DictionaryValue,
     S: crate::persistent_artrie::block_storage::BlockStorage,
 >(
     trie: &PersistentARTrieChar<V, S>,
-    mut nodes: Vec<(
-        u64,
-        Vec<char>,
-        crate::persistent_artrie::swizzled_ptr::SwizzledPtr,
-    )>,
+    batch: crate::persistent_artrie::core::eviction::CompactEvictionBatch<u32>,
     max_rebase_retries: usize,
 ) -> (usize, usize) {
-    // Phase 4: the per-attempt evict primitive is the K-generic trait default; bring
-    // `OverlayEvictable` (+ its `evict_overlay_node_at_path`) into scope. The batch
-    // driver itself (LEAF-FIRST ordering, `Vec<char>` registry-path conversion, LRU
-    // remove_hash) stays char-specific — only the primitive is shared.
     use crate::persistent_artrie::core::overlay::evict::OverlayEvictable;
 
-    // LEAF-FIRST: sort by DESCENDING path length (depth). Deeper nodes evict
-    // first, so an ancestor's spine is still fully in memory when we reach it.
-    nodes.sort_by_key(|b| std::cmp::Reverse(b.1.len()));
-
-    let mut evicted = 0usize;
-    let mut bytes_freed = 0usize;
-    for (_path_hash, path, disk_ptr) in nodes {
-        // The registry stores the path as `Vec<char>`; the overlay keys on u32
-        // code points. Convert once (preallocated).
-        let mut char_path: Vec<u32> = Vec::with_capacity(path.len());
-        char_path.extend(path.iter().map(|&c| c as u32));
-
-        // Bounded loser-safe retry: rebase on a lost root CAS; stop on the first
-        // terminal outcome (Evicted or NotEvictable) or on retry exhaustion.
-        let mut attempt = 0;
-        loop {
-            match trie.evict_overlay_node_at_path(&char_path, disk_ptr.clone()) {
-                OverlayEvictOutcome::Evicted => {
-                    evicted += 1;
-                    // Nominal byte estimate per evicted overlay node (parity with
-                    // `evict_char_nodes`' ~256 B/node estimate; the RSS pass is the
-                    // physical witness).
-                    bytes_freed += 256;
-                    // Drop the LRU entry so a later (re)insert of this cold path
-                    // starts fresh (parity with `evict_char_nodes`).
-                    if let Some(coordinator) = trie.overlay_eviction_coordinator() {
-                        use crate::persistent_artrie::eviction::lru_tracker::hash_char_path;
-                        coordinator
-                            .lru_registry()
-                            .remove_hash(hash_char_path(&path));
-                    }
-                    break;
-                }
-                OverlayEvictOutcome::RootCasLost => {
-                    attempt += 1;
-                    if attempt > max_rebase_retries {
-                        break; // exhausted → SKIP (liveness-only miss)
-                    }
-                    // else: rebase (re-load the root) on the next iteration.
-                }
-                OverlayEvictOutcome::NotEvictable => break, // skip; never retried
-            }
-        }
-    }
-    (evicted, bytes_freed)
+    trie.evict_overlay_batch(batch, max_rebase_retries)
 }
 
 // ============================================================================
@@ -1480,25 +1479,38 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
         let epoch_manager = Arc::clone(&self.epoch_manager);
 
         // Create the eviction coordinator
-        let coordinator = crate::persistent_artrie::eviction::EvictionCoordinator::new(
-            config.clone(),
-            epoch_manager,
-        );
+        let coordinator =
+            crate::persistent_artrie::eviction::EvictionCoordinator::new_with_publication_gate(
+                config.clone(),
+                epoch_manager,
+                Arc::clone(&self.registry_publication_gate),
+            );
 
         // Create a weak reference to self for the eviction callback
         let self_weak = Arc::downgrade(self);
+        let coordinator_weak = Arc::downgrade(&coordinator);
 
         // Start the eviction coordinator with the eviction callback for char nodes
         coordinator
-            .start_char(move |nodes_to_evict| {
+            .start_root_compact_char(move |max_count| {
                 // Try to upgrade the weak reference
                 let Some(trie) = self_weak.upgrade() else {
                     return (0, 0);
                 };
-                // L0.1/L3.3: always reclaim the overlay (the owned tree is gone).
-                // `evict_overlay_nodes` locks EC for its LRU remove; safe here
-                // (this callback holds no EC).
-                evict_overlay_nodes(&trie, nodes_to_evict, 4)
+                let Some(coordinator) = coordinator_weak.upgrade() else {
+                    return (0, 0);
+                };
+                let Some(root) = trie.lockfree_root.as_ref() else {
+                    return (0, 0);
+                };
+                // Always reclaim the overlay; the compact callback holds no
+                // coordinator lock while the root CAS and residency commit run.
+                coordinator.force_eviction_compact_char_root_with_max_count(
+                    root,
+                    usize::MAX,
+                    max_count,
+                    |batch| evict_overlay_compact_batch(&trie, batch, 4),
+                )
             })
             .map_err(|e| PersistentARTrieError::internal(&e))?;
 
@@ -1523,19 +1535,41 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
     }
 
     fn disable_eviction(&self) -> crate::persistent_artrie::error::Result<()> {
-        // **F4 drop-before-join (V11.3 site 2):** take the coordinator into a
-        // statement-temporary so the EC guard DROPS before `shutdown()` joins the
-        // eviction thread — the callback takes OR (and briefly EC), so joining while
-        // holding EC would deadlock.
-        let coordinator = self
-            .eviction_coordinator
-            .lock()
-            .expect("eviction_coordinator mutex poisoned")
-            .take();
+        // Retire under the coordinator-slot lock before exposing an empty slot.
+        // Retirement serializes with publication/exact residency through the stable
+        // trie-lifetime lifecycle gate, invalidates authority, and irreversibly
+        // prevents an already-cloned stale coordinator from committing after disable.
+        // The slot guard still drops before `shutdown()` joins the worker, preserving
+        // the F4 drop-before-join lock order.
+        let (coordinator, retirement_outcome) = {
+            let mut slot = self
+                .eviction_coordinator
+                .lock()
+                .expect("eviction_coordinator mutex poisoned");
+            let retirement_outcome = slot.as_ref().map_or(
+                crate::persistent_artrie::core::eviction::RetirementOutcome::AlreadyUnbound,
+                |coordinator| match self.lockfree_root.as_ref() {
+                    Some(root) => coordinator.retire_from_trie_with_root(root),
+                    None => {
+                        coordinator.retire_from_trie();
+                        crate::persistent_artrie::core::eviction::RetirementOutcome::AlreadyUnbound
+                    }
+                },
+            );
+            (slot.take(), retirement_outcome)
+        };
         if let Some(coordinator) = coordinator {
             coordinator.shutdown();
         }
-        Ok(())
+        if retirement_outcome.repaired_invariant() {
+            Err(
+                crate::persistent_artrie::error::PersistentARTrieError::internal(
+                    "repaired an inconsistent eviction root binding during disable",
+                ),
+            )
+        } else {
+            Ok(())
+        }
     }
 
     fn eviction_enabled(&self) -> bool {
@@ -1578,10 +1612,16 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
         // registered in `char_locations`. `force_eviction_char` selects from
         // `char_locations` and reclaims inline via the overlay evictor.
         let trie = Arc::clone(self);
-        Ok(coordinator.force_eviction_char(target_bytes, move |nodes| {
-            // L0.1: owned-eviction arm DELETED — always reclaim the overlay.
-            evict_overlay_nodes(&trie, nodes, 4)
-        }))
+        let Some(root) = trie.lockfree_root.as_ref() else {
+            return Ok((0, 0));
+        };
+        let callback_trie = Arc::clone(&trie);
+        Ok(
+            coordinator.force_eviction_compact_char_root(root, target_bytes, move |batch| {
+                // L0.1: owned-eviction arm DELETED — always reclaim the overlay.
+                evict_overlay_compact_batch(&callback_trie, batch, 4)
+            }),
+        )
     }
 
     fn touch_node(&self, path: &[Self::Unit]) {
@@ -1601,9 +1641,7 @@ impl<V: DictionaryValue> crate::artrie_trait::EvictableARTrie for SharedCharARTr
 impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorage>
     PersistentARTrieChar<V, S>
 {
-    /// Invalidate any published eviction [`DiskLocationRegistry`] because the
-    /// in-memory trie is about to diverge from the last checkpoint's on-disk
-    /// image.
+    /// Construct the zero-sized witness required by a semantic root CAS.
     ///
     /// After [`checkpoint`](Self::checkpoint) publishes a registry, it maps each
     /// node's char-path to a *durable, verified* on-disk location. A subsequent
@@ -1612,56 +1650,75 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// checkpoint. If eviction then reclaimed such a node it would unswizzle the
     /// *newer* in-memory box onto the *stale* on-disk pointer and drop the box,
     /// so the next read would reload the old value — a lost update. Marking the
-    /// registry invalid makes the coordinator refuse to select any node for
-    /// eviction (`select_char_for_eviction` / `perform_eviction_char` both gate
-    /// on `is_valid()`) until the next checkpoint rebuilds and republishes a
-    /// fresh, durable registry.
+    /// the semantic root CAS clears exact authority, so the coordinator refuses
+    /// compact selection and commit until the next checkpoint binds a fresh,
+    /// durable registry.
     ///
-    /// This is the formal `Mutate` action of
-    /// `formal-verification/tla+/EvictionRegistryPublication.tla`, which clears
-    /// the registry on any write so the `RegistryEntriesAreDurable` invariant is
-    /// preserved across mutations. It is a no-op when eviction is disabled.
-    ///
-    /// Called from the single mutation chokepoint
-    /// [`append_to_wal`](Self::append_to_wal): every durable public mutation —
-    /// `insert`/`insert_with_value`/`remove`/`upsert`/the `insert_batch*` family/
-    /// `insert_cas`/document transactions, and the `merge_from`/`remove_prefix`
-    /// helpers that delegate to them — logs through it, while `checkpoint` (which
-    /// writes its WAL record directly) and WAL recovery replay do not.
-    pub(crate) fn invalidate_eviction_registry(&self) {
-        // Bump the structural generation on every durable in-place mutation (this is
-        // the `append_to_wal` chokepoint). A concurrent `DictionaryNode` walk's
-        // debug detector compares its `root()` snapshot against this and panics on a
-        // mismatch, surfacing the "handle used across a structural mutation" contract
-        // violation (which would dangle the handle's raw pointer) as a loud failure.
+    /// The root CAS clears exact authority in the same atomic transition that
+    /// publishes the successor. No coordinator lookup, gate, registry write,
+    /// allocation, atomic operation, branch, or fallible admission is required.
+    #[inline(always)]
+    pub(crate) fn begin_semantic_publication(
+        &self,
+    ) ->
+        crate::persistent_artrie::core::overlay::durable_write::SemanticMutationPublicationPermit<
+            'static,
+            crate::persistent_artrie::core::overlay::durable_write::RegistryEligibleMutation,
+        >
+    {
+        crate::persistent_artrie::core::overlay::durable_write::SemanticMutationPublicationPermit::exact_root_cas()
+    }
+
+    /// Preserve the established raw-handle diagnostic for durable structural
+    /// mutations at its original WAL chokepoint. This is deliberately separate
+    /// from eviction publication: non-durable lock-free operations do not pay
+    /// this atomic, and semantic root authority is cleared by the root CAS.
+    #[inline(always)]
+    pub(crate) fn record_durable_structural_mutation(&self) {
         self.structural_generation
             .fetch_add(1, std::sync::atomic::Ordering::Release);
-        if let Some(coordinator) = self
+    }
+
+    /// Exact number of resident char-node occurrences represented by the
+    /// currently published eviction topology.
+    ///
+    /// Returns `None` when eviction is disabled. Returns `Some(0)` before the
+    /// first checkpoint. Exact eviction and fault transactions update this count
+    /// at their publication boundary; nonresident durable topology records do not
+    /// inflate it. A post-checkpoint mutation invalidates eviction selection but
+    /// does not fabricate a residency transition.
+    ///
+    /// This retains the established API name. Use
+    /// [`registered_node_count`](Self::registered_node_count) when observing the
+    /// complete durable topology, including nonresident records retained for
+    /// exact fault-in and subtree grafting.
+    pub fn evictable_node_count(&self) -> Option<usize> {
+        let coordinator = self
             .eviction_coordinator
             .lock()
             .expect("eviction_coordinator mutex poisoned")
             .as_ref()
-        {
-            coordinator.invalidate_registry();
-        }
+            .cloned()?;
+        let resident = self
+            .lockfree_root
+            .as_ref()
+            .and_then(|root| coordinator.root_resident_totals(root))
+            .map_or(0, |totals| totals.0);
+        Some(resident)
     }
 
-    /// Number of char nodes registered as evictable in the disk-location
-    /// registry published at the last [`checkpoint`](Self::checkpoint).
+    /// Number of durable char-node occurrences in the currently published
+    /// eviction topology, whether resident or on disk.
     ///
-    /// Returns `None` when eviction is disabled. Returns `Some(0)` before the
-    /// first checkpoint. After a checkpoint with eviction enabled it reflects how
-    /// many on-disk node locations the coordinator may reclaim in-memory boxes
-    /// for. Note that a post-checkpoint mutation *invalidates* the registry
-    /// (eviction then selects nothing) without immediately changing this count —
-    /// observe invalidation via [`force_eviction`](crate::artrie_trait::EvictableARTrie::force_eviction)
-    /// returning `(0, 0)`; the count is refreshed by the next checkpoint.
-    pub fn evictable_node_count(&self) -> Option<usize> {
+    /// Unlike [`evictable_node_count`](Self::evictable_node_count), exact
+    /// eviction and fault transactions normally leave this structural count
+    /// unchanged so every nonresident subtree remains addressable.
+    pub fn registered_node_count(&self) -> Option<usize> {
         self.eviction_coordinator
             .lock()
             .expect("eviction_coordinator mutex poisoned")
             .as_ref()
-            .map(|c| c.disk_registry_char_len())
+            .map(|coordinator| coordinator.disk_registry_char_len())
     }
 
     /// **REVERSIBLE BENCH ENABLER — EVICTION-ON** (gated entirely behind the
@@ -1688,7 +1745,7 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// test `immutable_eviction_checkpoint_reopens_losing_nothing`). Wiring the
     /// overlay into the owned eviction walk is the owner-gated Phase-E flip, out of
     /// scope. The benchmark measures the CHECKPOINT path (registry build +
-    /// `update_disk_registry` publication — the eviction-ON cost being studied),
+    /// exact registry publication — the eviction-ON cost being studied),
     /// which this enabler activates; the reclaim callback is never on the timed
     /// writer path.
     ///
@@ -1726,17 +1783,19 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
         // Share THIS trie's epoch manager with the coordinator (parity with
         // SharedCharARTrie::enable_eviction).
         let epoch_manager = Arc::clone(&self.epoch_manager);
-        let coordinator = crate::persistent_artrie::eviction::EvictionCoordinator::new(
-            config.clone(),
-            epoch_manager,
-        );
+        let coordinator =
+            crate::persistent_artrie::eviction::EvictionCoordinator::new_with_publication_gate(
+                config.clone(),
+                epoch_manager,
+                Arc::clone(&self.registry_publication_gate),
+            );
 
         // No-op reclaim callback: see the method doc — overlay eviction is a
         // structural no-op (owned self.root is Empty), so the production
         // `evict_char_nodes` callback would reclaim nothing here regardless. The
         // bench only measures the registry-publication CHECKPOINT path.
         coordinator
-            .start_char(|_nodes_to_evict| (0usize, 0usize))
+            .start_compact_char(|_batch| (0usize, 0usize))
             .map_err(|e| PersistentARTrieError::internal(&e))?;
         coordinator
             .start_memory_monitor()
@@ -1756,11 +1815,11 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// This is what makes the eviction-ON benchmark's TREATMENT arm perform REAL
     /// in-memory reclamation (vs the §E structural no-op). It reuses the
     /// coordinator's eviction SELECTION (coldest-first LRU, `min_eviction_depth`,
-    /// `batch_size`, registry-validity gate — `force_eviction_char` refuses an
-    /// invalidated registry, yielding 0 = liveness-not-safety), then filters the
-    /// selected candidates to COLD paths (`cold_filter`, e.g.
-    /// `|p| p.first() == Some(&'c')`) and reclaims them via the driver
-    /// `evict_overlay_nodes`. ONLY COLD nodes are ever evicted (SF5(ii)
+    /// `batch_size`, exact-root authority check — `force_eviction_char` refuses
+    /// an absent or stale root binding, yielding 0 = liveness-not-safety), then filters the
+    /// selected candidates to cold paths (`cold_filter`, e.g.
+    /// `|p| p.first() == Some(&'c')`) and reclaims them through the compact
+    /// batch driver. Only cold nodes are ever evicted (SF5(ii)
     /// `faultin_count == 0`): fault-in is absent, so a re-touchable LIVE node must
     /// never be evicted.
     ///
@@ -1769,17 +1828,13 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// publishes the registry — deterministic, off the writer path. Returns 0 if
     /// eviction was not enabled (`bench_enable_eviction` not called).
     ///
-    /// **Rollback (design §4):** delete this method (one edit); the driver +
-    /// `OverlayEvictOutcome` + the §F bench arm + the TLA spec then revert
-    /// independently. The write path, recovery, production eviction, and
-    /// `checkpoint()` are untouched.
     #[cfg(feature = "bench-internals")]
     pub fn bench_evict_overlay_cold_nodes<F>(&self, budget_bytes: usize, cold_filter: F) -> usize
     where
         F: Fn(&[char]) -> bool,
     {
         // F4 (EC leaf): clone the coordinator Arc out under a brief lock; release
-        // EC before `force_eviction_char` (its callback takes OR — order OR > EC).
+        // EC before compact selection and its root callback.
         let coordinator = match self
             .eviction_coordinator
             .lock()
@@ -1789,15 +1844,13 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
             Some(c) => Arc::clone(c),
             None => return 0,
         };
+        let Some(root) = self.lockfree_root.as_ref() else {
+            return 0;
+        };
         coordinator
-            .force_eviction_char(budget_bytes, |cands| {
-                // COLD-only: drop any selected candidate whose path is not cold, so
-                // the evictor never touches a LIVE (re-touchable) subtree.
-                let filtered: Vec<_> = cands
-                    .into_iter()
-                    .filter(|(_, p, _)| cold_filter(p))
-                    .collect();
-                evict_overlay_nodes(self, filtered, 4)
+            .force_eviction_compact_char_root(root, budget_bytes, |mut batch| {
+                batch.retain_char_paths(|path| cold_filter(path));
+                evict_overlay_compact_batch(self, batch, 4)
             })
             .0
     }
@@ -1806,6 +1859,14 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn persistent_test_scratch(prefix: &str) -> tempfile::TempDir {
+        std::fs::create_dir_all("target/test-tmp").expect("create persistent test scratch root");
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in("target/test-tmp")
+            .expect("persistent test scratch directory")
+    }
 
     /// Regression: after a trie is reopened from disk, the root's children are
     /// swizzled (on-disk) `SwizzledPtr`s. The `DictionaryNode` traversal that
@@ -1916,6 +1977,87 @@ mod tests {
                 .unwrap_or_else(|| panic!("transition '{ch}' lost after eviction"));
         }
         assert!(node.is_final(), "terminal node not final after eviction");
+    }
+
+    #[test]
+    fn disable_retires_old_char_coordinator_before_reenable() {
+        use crate::persistent_artrie::core::eviction::DiskLocationRegistry;
+        use crate::EvictableARTrie;
+
+        let dir = persistent_test_scratch("char-retire-reenable");
+        let path = dir.path().join("char-retire-reenable.artc");
+        let shared: SharedCharARTrie<()> =
+            Arc::new(PersistentARTrieChar::create(&path).expect("create"));
+
+        shared
+            .enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable initial coordinator");
+        let old = shared
+            .eviction_coordinator
+            .lock()
+            .expect("eviction coordinator slot")
+            .as_ref()
+            .map(Arc::clone)
+            .expect("initial coordinator installed");
+
+        shared
+            .disable_eviction()
+            .expect("disable initial coordinator");
+        assert!(
+            old.try_install_detached_compatibility_catalog(DiskLocationRegistry::new())
+                .is_err(),
+            "a stale coordinator Arc must never accept a detached catalog"
+        );
+
+        shared
+            .enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("re-enable with replacement coordinator");
+        let replacement = shared
+            .eviction_coordinator
+            .lock()
+            .expect("replacement coordinator slot")
+            .as_ref()
+            .map(Arc::clone)
+            .expect("replacement coordinator installed");
+        assert!(!Arc::ptr_eq(&old, &replacement));
+        replacement
+            .try_install_detached_compatibility_catalog(DiskLocationRegistry::new())
+            .expect("live replacement accepts a detached catalog");
+        shared.disable_eviction().expect("disable replacement");
+    }
+
+    #[test]
+    fn close_retires_char_coordinator_before_removing_its_slot() {
+        use crate::persistent_artrie::core::eviction::DiskLocationRegistry;
+        use crate::EvictableARTrie;
+
+        let dir = persistent_test_scratch("char-close-retirement");
+        let path = dir.path().join("char-close-retirement.artc");
+        let shared: SharedCharARTrie<()> =
+            Arc::new(PersistentARTrieChar::create(&path).expect("create"));
+        shared
+            .enable_eviction(EvictionConfig::without_memory_monitor())
+            .expect("enable eviction");
+        let stale = shared
+            .eviction_coordinator
+            .lock()
+            .expect("eviction coordinator slot")
+            .as_ref()
+            .map(Arc::clone)
+            .expect("coordinator installed");
+        shared.close();
+
+        assert!(
+            stale
+                .try_install_detached_compatibility_catalog(DiskLocationRegistry::new())
+                .is_err(),
+            "a stale coordinator Arc must not accept a detached catalog after close"
+        );
+        assert!(shared
+            .eviction_coordinator
+            .lock()
+            .expect("eviction coordinator slot")
+            .is_none());
     }
 
     #[test]

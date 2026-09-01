@@ -1,5 +1,19 @@
 # f7 Overlay-Eviction v4 — converged design (Plan agent, post round-3)
 
+> **Erratum — 2026-08-25.** Sections 4 and 5 below preserve the historical v4
+> rule that faulted nodes must remain unstamped. That rule was correct only for
+> the earlier protocol, where a stamp was treated too nearly as authority. The
+> production protocol now revalidates the exact registry generation, bound root
+> revision, path, disk address, residency occurrence, and winning root CAS in one
+> lifecycle transaction. Under that stronger authority boundary, every exact
+> decoder must stamp the top-level node with the precise source pointer before
+> publication; otherwise an uncompressed `evict → fault → evict` cycle cannot
+> make progress. Compressed expansion stamps only its disk-identified head, and
+> all synthetic descendants and structural path copies remain zero. A losing or
+> detached load never changes published residency. The historical prohibition is
+> superseded by this exact-provenance rule; the original text remains below as a
+> design-history record.
+
 > Companion to `f7-overlay-eviction-production.md` (v1→v3 history + round-1/2/3 findings).
 > v4 is the Plan-agent design folding all round-3 must-fixes. Centerpiece = the 1c
 > overwrite-race-safe evict driver via mechanism (A). Awaiting round-4 red-team convergence.

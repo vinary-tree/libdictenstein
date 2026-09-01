@@ -1,0 +1,24 @@
+format = 1
+case_count_per_writer = 12
+
+[baseline]
+commit = "6a1b267a60fe9c445a0c8c7c8136e6dd40aedbf5"
+serialization_source_sha256 = "4b420f8f1810d4af09f9238eca10cd134dfd1bcb0306ac2faf175645aed3ca24"
+corpus_sha256 = "344376ee2753b70cdb4825c09fb5a5980c27a315fdfee77f5127d52585bc6e49"
+bytes_total = 3393
+wire_versions = "12 x V2"
+
+[current]
+serialization_source_sha256 = "6e83ac0b3ebc17b2961d2e0a3af326151f1c0689bb28be604d16754a2903a67b"
+corpus_sha256 = "5bf013663732a2c3eee4c91e16b93642a2fa3446134034f925332f42c361b8c4"
+bytes_total = 3401
+wire_versions = "4 x V2 fixed; 8 x V3 relative/sequential"
+
+[dependencies]
+vinary_tree_interop_commit = "6694ad4fcb5ce498f69b77cb14ce1ea7a2f20033"
+vinary_tree_interop_version = "=4.0.0-rc.2"
+llattice_commit = "2ec21ca70ae3cbb2d8afdd295c9ed09517003324"
+
+[generation]
+command = "scripts/verify-char-node-format-compatibility.sh"
+notes = "The verifier archives every exact commit under target/, regenerates both corpora, performs both reader directions, and removes all archive/build scratch on exit."

@@ -87,6 +87,19 @@ pub enum RelativeEncodingError {
         first_child: ArenaSlot,
         index: usize,
     },
+    /// Accumulating an encoded or decoded byte length overflowed `usize`.
+    LengthOverflow { operation: &'static str },
+    /// A checked codec could not reserve its exact output capacity.
+    AllocationFailed {
+        operation: &'static str,
+        requested: usize,
+    },
+    /// Advancing through an encoded child list overflowed or exceeded the input.
+    DecodedOffsetOutOfRange {
+        offset: usize,
+        encoded_len: usize,
+        input_len: usize,
+    },
 }
 
 impl fmt::Display for RelativeEncodingError {
@@ -131,6 +144,24 @@ impl fmt::Display for RelativeEncodingError {
                 "sequential sibling index {index} overflows first child {:?}",
                 first_child
             ),
+            Self::LengthOverflow { operation } => {
+                write!(f, "relative pointer {operation} length overflow")
+            }
+            Self::AllocationFailed {
+                operation,
+                requested,
+            } => write!(
+                f,
+                "relative pointer {operation} allocation failed for {requested} entries"
+            ),
+            Self::DecodedOffsetOutOfRange {
+                offset,
+                encoded_len,
+                input_len,
+            } => write!(
+                f,
+                "relative pointer child-list offset {offset} plus {encoded_len} exceeds {input_len} input bytes"
+            ),
         }
     }
 }
@@ -139,6 +170,23 @@ impl std::error::Error for RelativeEncodingError {}
 
 /// Result type for checked relative pointer operations.
 pub type RelativeEncodingResult<T> = std::result::Result<T, RelativeEncodingError>;
+
+fn try_reserve_additional<T>(
+    output: &mut Vec<T>,
+    additional: usize,
+    operation: &'static str,
+) -> RelativeEncodingResult<()> {
+    let requested = output
+        .len()
+        .checked_add(additional)
+        .ok_or(RelativeEncodingError::LengthOverflow { operation })?;
+    output
+        .try_reserve_exact(additional)
+        .map_err(|_| RelativeEncodingError::AllocationFailed {
+            operation,
+            requested,
+        })
+}
 
 // =============================================================================
 // Header Flags for Relative Mode
@@ -286,6 +334,16 @@ pub fn encode_child_pointer(parent: ArenaSlot, child: ArenaSlot, out: &mut Vec<u
 /// the parent. The infallible [`encode_child_pointer`] wrapper falls back to
 /// full encoding for that case to preserve legacy call sites.
 pub fn try_encode_child_pointer(
+    parent: ArenaSlot,
+    child: ArenaSlot,
+    out: &mut Vec<u8>,
+) -> RelativeEncodingResult<usize> {
+    let required = try_encoded_size(parent, child)?;
+    try_reserve_additional(out, required, "single-child encoding")?;
+    try_encode_child_pointer_preallocated(parent, child, out)
+}
+
+fn try_encode_child_pointer_preallocated(
     parent: ArenaSlot,
     child: ArenaSlot,
     out: &mut Vec<u8>,
@@ -521,7 +579,7 @@ pub fn encode_children(parent: ArenaSlot, children: &[ArenaSlot], out: &mut Vec<
             .sum(),
     );
 
-    let mut total = 0;
+    let mut total = 0usize;
     for &child in children {
         total += encode_child_pointer(parent, child, out);
     }
@@ -535,13 +593,23 @@ pub fn try_encode_children(
     out: &mut Vec<u8>,
 ) -> RelativeEncodingResult<usize> {
     let reserved = children.iter().try_fold(0usize, |total, &child| {
-        try_encoded_size(parent, child).map(|size| total + size)
+        let size = try_encoded_size(parent, child)?;
+        total
+            .checked_add(size)
+            .ok_or(RelativeEncodingError::LengthOverflow {
+                operation: "child-list encoding",
+            })
     })?;
-    out.reserve(reserved);
+    try_reserve_additional(out, reserved, "child-list encoding")?;
 
-    let mut total = 0;
+    let mut total = 0usize;
     for &child in children {
-        total += try_encode_child_pointer(parent, child, out)?;
+        let written = try_encode_child_pointer_preallocated(parent, child, out)?;
+        total = total
+            .checked_add(written)
+            .ok_or(RelativeEncodingError::LengthOverflow {
+                operation: "child-list bytes written",
+            })?;
     }
     Ok(total)
 }
@@ -565,13 +633,36 @@ pub fn try_decode_children(
     parent: ArenaSlot,
     count: usize,
 ) -> RelativeEncodingResult<(Vec<ArenaSlot>, usize)> {
-    let mut children = Vec::with_capacity(count);
+    let mut children = Vec::new();
+    try_reserve_additional(&mut children, count, "decoded child list")?;
     let mut offset = 0;
 
     for _ in 0..count {
-        let (child, len) = try_decode_child_pointer(&data[offset..], parent)?;
+        let remaining =
+            data.get(offset..)
+                .ok_or(RelativeEncodingError::DecodedOffsetOutOfRange {
+                    offset,
+                    encoded_len: 0,
+                    input_len: data.len(),
+                })?;
+        let (child, len) = try_decode_child_pointer(remaining, parent)?;
+        let next_offset =
+            offset
+                .checked_add(len)
+                .ok_or(RelativeEncodingError::DecodedOffsetOutOfRange {
+                    offset,
+                    encoded_len: len,
+                    input_len: data.len(),
+                })?;
+        if next_offset > data.len() {
+            return Err(RelativeEncodingError::DecodedOffsetOutOfRange {
+                offset,
+                encoded_len: len,
+                input_len: data.len(),
+            });
+        }
         children.push(child);
-        offset += len;
+        offset = next_offset;
     }
 
     Ok((children, offset))
@@ -612,8 +703,9 @@ pub fn try_encode_sequential_siblings(
     first_child: ArenaSlot,
     out: &mut Vec<u8>,
 ) -> RelativeEncodingResult<usize> {
-    out.reserve(try_encoded_size(parent, first_child)?);
-    try_encode_child_pointer(parent, first_child, out)
+    let required = try_encoded_size(parent, first_child)?;
+    try_reserve_additional(out, required, "sequential-sibling encoding")?;
+    try_encode_child_pointer_preallocated(parent, first_child, out)
 }
 
 /// Decode a sequential sibling reference and reconstruct all child slots.
@@ -647,8 +739,23 @@ pub fn try_decode_sequential_siblings(
     // Decode first child slot
     let (first_child, bytes_consumed) = try_decode_child_pointer(data, parent)?;
 
+    let last_index = count
+        .checked_sub(1)
+        .ok_or(RelativeEncodingError::LengthOverflow {
+            operation: "sequential-sibling count",
+        })?;
+    let last_offset = u32::try_from(last_index)
+        .map_err(|_| RelativeEncodingError::SequentialIndexTooLarge { index: last_index })?;
+    first_child.slot_id.checked_add(last_offset).ok_or(
+        RelativeEncodingError::SequentialOverflow {
+            first_child,
+            index: last_index,
+        },
+    )?;
+
     // Reconstruct all child slots (consecutive slot IDs)
-    let mut children = Vec::with_capacity(count);
+    let mut children = Vec::new();
+    try_reserve_additional(&mut children, count, "decoded sequential siblings")?;
     for i in 0..count {
         let offset = u32::try_from(i)
             .map_err(|_| RelativeEncodingError::SequentialIndexTooLarge { index: i })?;
@@ -833,6 +940,42 @@ mod tests {
         assert_eq!(children[0], ArenaSlot::new(1, 0));
         assert_eq!(children[1], ArenaSlot::new(1, 1));
         assert_eq!(children[2], ArenaSlot::new(1, 2));
+    }
+
+    #[test]
+    fn checked_child_list_rejects_hostile_capacity_and_truncation_without_panicking() {
+        let parent = ArenaSlot::new(0, 100);
+        assert!(matches!(
+            try_decode_children(&[0], parent, usize::MAX),
+            Err(RelativeEncodingError::AllocationFailed {
+                operation: "decoded child list",
+                requested: usize::MAX,
+            })
+        ));
+        assert_eq!(
+            try_decode_children(&[0], parent, 2),
+            Err(RelativeEncodingError::EmptyInput)
+        );
+
+        if let Ok(hostile_count) = usize::try_from(u64::from(u32::MAX) + 2) {
+            assert!(matches!(
+                try_decode_sequential_siblings(&[0], parent, hostile_count),
+                Err(RelativeEncodingError::SequentialIndexTooLarge { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn checked_child_list_encoding_validates_before_writing() {
+        let parent = ArenaSlot::new(0, 100);
+        let children = [ArenaSlot::new(0, 99), ArenaSlot::new(0, 101)];
+        let mut output = vec![0xaa, 0x55];
+
+        assert!(matches!(
+            try_encode_children(parent, &children, &mut output),
+            Err(RelativeEncodingError::InvalidRelativeDirection { .. })
+        ));
+        assert_eq!(output, vec![0xaa, 0x55]);
     }
 
     #[test]

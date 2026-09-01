@@ -112,7 +112,9 @@ $`\text{CK} > \text{merge\_lock} > \text{EC}`$. Deep-dive:
 Under memory pressure the eviction subsystem (`core/eviction/`) unswizzles cold overlay
 subtrees to disk; reads fault them back in. The `serial_disk_ptr` stamp is the safety
 lynchpin that makes eviction race-free against concurrent readers. Deep-dive:
-**[eviction.md](eviction.md)**.
+**[eviction.md](eviction.md)**. The character-node V2/V3 compatibility and
+migration contract is specified separately in
+**[char-node-format.md](char-node-format.md)**.
 
 ---
 

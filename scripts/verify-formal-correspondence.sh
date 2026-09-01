@@ -4,14 +4,46 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-FORMAL_RSS_LIMIT_BYTES="${FORMAL_RSS_LIMIT_BYTES:-8589934592}"
+FORMAL_RESOURCE_CONTROL="${FORMAL_RESOURCE_CONTROL:-systemd}"
+FORMAL_MEMORY_HIGH="${FORMAL_MEMORY_HIGH:-6G}"
+FORMAL_MEMORY_MAX="${FORMAL_MEMORY_MAX:-8G}"
+FORMAL_TASKS_MAX="${FORMAL_TASKS_MAX:-384}"
+FORMAL_CPU_QUOTA="${FORMAL_CPU_QUOTA:-400%}"
+FORMAL_COMMAND_TIMEOUT_SECONDS="${FORMAL_COMMAND_TIMEOUT_SECONDS:-7200}"
 
 run_capped() {
-  if [ "${FORMAL_RSS_LIMIT_BYTES}" != "0" ] && command -v prlimit >/dev/null 2>&1; then
-    prlimit --rss="${FORMAL_RSS_LIMIT_BYTES}" -- "$@"
-  else
-    "$@"
+  local -a command=("$@")
+
+  if [ "$FORMAL_COMMAND_TIMEOUT_SECONDS" != "0" ]; then
+    command=(
+      timeout --foreground --signal=TERM --kill-after=30s
+      "$FORMAL_COMMAND_TIMEOUT_SECONDS"
+      "${command[@]}"
+    )
   fi
+
+  case "$FORMAL_RESOURCE_CONTROL" in
+    systemd)
+      if ! command -v systemd-run >/dev/null 2>&1; then
+        echo "ERROR: FORMAL_RESOURCE_CONTROL=systemd requires systemd-run" >&2
+        return 1
+      fi
+      systemd-run --user --scope --quiet --collect \
+        --property="MemoryHigh=$FORMAL_MEMORY_HIGH" \
+        --property="MemoryMax=$FORMAL_MEMORY_MAX" \
+        --property=MemorySwapMax=0 \
+        --property="TasksMax=$FORMAL_TASKS_MAX" \
+        --property="CPUQuota=$FORMAL_CPU_QUOTA" \
+        "${command[@]}"
+      ;;
+    external)
+      "${command[@]}"
+      ;;
+    *)
+      echo "ERROR: FORMAL_RESOURCE_CONTROL must be 'systemd' or 'external'" >&2
+      return 1
+      ;;
+  esac
 }
 
 run_tlc_isolated() {
@@ -24,15 +56,57 @@ run_tlc_isolated() {
   mkdir -p "$state_parent"
   state_directory="$(mktemp -d "$state_parent/${label}.XXXXXX")"
   run_capped tlc -metadir "$state_directory" "$@" || status=$?
-  rm -rf -- "$state_directory"
+  if [ "$status" -eq 0 ]; then
+    rm -rf -- "$state_directory"
+  else
+    echo "TLC state directory retained after nonzero exit: $state_directory" >&2
+  fi
   return "$status"
+}
+
+tlc_invariant_violation_reported() {
+  local assertion_name="$1"
+  local log_file="$2"
+
+  grep -Fxq \
+    -e "Error: Invariant ${assertion_name} is violated." \
+    -e "Error: Invariant ${assertion_name} is violated by the initial state:" \
+    "$log_file"
+}
+
+verify_tlc_invariant_diagnostic_classifier() {
+  local assertion_name="ExpectedInvariant"
+
+  if ! tlc_invariant_violation_reported "$assertion_name" \
+    <(printf '%s\n' "Error: Invariant ${assertion_name} is violated."); then
+    echo "ERROR: TLC diagnostic classifier rejected a transition-state violation" >&2
+    return 1
+  fi
+  if ! tlc_invariant_violation_reported "$assertion_name" \
+    <(printf '%s\n' "Error: Invariant ${assertion_name} is violated by the initial state:"); then
+    echo "ERROR: TLC diagnostic classifier rejected an initial-state violation" >&2
+    return 1
+  fi
+  if tlc_invariant_violation_reported "$assertion_name" \
+    <(printf '%s\n' 'Error: Invariant WrongInvariant is violated.'); then
+    echo "ERROR: TLC diagnostic classifier accepted the wrong invariant name" >&2
+    return 1
+  fi
+  if tlc_invariant_violation_reported "$assertion_name" \
+    <(printf '%s\n' "prefix Error: Invariant ${assertion_name} is violated. suffix"); then
+    echo "ERROR: TLC diagnostic classifier accepted a non-exact diagnostic line" >&2
+    return 1
+  fi
 }
 
 run_tlc_negative_control() {
   local module="$1"
   local assertion_kind="$2"
   local assertion_name="$3"
+  local config_base="${4:-${module}_Unsafe}"
   local log_parent="$repo_root/target/tlc-negative-control-logs"
+  local state_parent="$repo_root/target/tlc-state-spaces"
+  local state_directory
   local log_file
   local expected_status
   local status=0
@@ -50,16 +124,18 @@ run_tlc_negative_control() {
       ;;
   esac
 
-  if ! grep -Fq "$assertion_name" "${module}_Unsafe.cfg"; then
-    echo "ERROR: ${module}_Unsafe.cfg does not declare required ${assertion_kind} ${assertion_name}" >&2
+  if ! grep -Fq "$assertion_name" "${config_base}.cfg"; then
+    echo "ERROR: ${config_base}.cfg does not declare required ${assertion_kind} ${assertion_name}" >&2
     return 1
   fi
 
-  mkdir -p "$log_parent"
+  mkdir -p "$log_parent" "$state_parent"
   log_file="$(mktemp "$log_parent/${module}.XXXXXX.log")"
-  if run_tlc_isolated "${module}_Unsafe" \
+  state_directory="$(mktemp -d "$state_parent/${config_base}.XXXXXX")"
+  if run_capped tlc \
+    -metadir "$state_directory" \
     -workers 1 \
-    -config "${module}_Unsafe.cfg" \
+    -config "${config_base}.cfg" \
     "${module}.tla" 2>&1 | tee "$log_file"; then
     status=0
   else
@@ -67,36 +143,43 @@ run_tlc_negative_control() {
   fi
 
   if [ "$status" -eq 0 ]; then
-    echo "ERROR: ${module}_Unsafe.cfg PASSED but MUST violate ${assertion_name}" >&2
+    echo "ERROR: ${config_base}.cfg PASSED but MUST violate ${assertion_name}" >&2
     echo "TLC output retained at $log_file" >&2
+    echo "TLC state directory retained at $state_directory" >&2
     return 1
   fi
   if [ "$status" -ne "$expected_status" ]; then
-    echo "ERROR: ${module}_Unsafe.cfg exited with TLC status $status instead of required ${assertion_kind}-violation status $expected_status" >&2
+    echo "ERROR: ${config_base}.cfg exited with TLC status $status instead of required ${assertion_kind}-violation status $expected_status" >&2
     echo "TLC output retained at $log_file" >&2
+    echo "TLC state directory retained at $state_directory" >&2
     return 1
   fi
 
   case "$assertion_kind" in
     invariant)
-      if ! grep -Fq "Invariant ${assertion_name} is violated." "$log_file"; then
-        echo "ERROR: ${module}_Unsafe.cfg did not violate required invariant ${assertion_name}" >&2
+      if ! tlc_invariant_violation_reported "$assertion_name" "$log_file"; then
+        echo "ERROR: ${config_base}.cfg did not violate required invariant ${assertion_name}" >&2
         echo "TLC output retained at $log_file" >&2
+        echo "TLC state directory retained at $state_directory" >&2
         return 1
       fi
       ;;
     temporal)
       if ! grep -Fq "Error: Temporal properties were violated." "$log_file"; then
-        echo "ERROR: ${module}_Unsafe.cfg did not violate required temporal property ${assertion_name}" >&2
+        echo "ERROR: ${config_base}.cfg did not violate required temporal property ${assertion_name}" >&2
         echo "TLC output retained at $log_file" >&2
+        echo "TLC state directory retained at $state_directory" >&2
         return 1
       fi
       ;;
   esac
 
+  rm -rf -- "$state_directory"
   rm -f -- "$log_file"
-  echo "OK: ${module}_Unsafe.cfg violated required ${assertion_kind} ${assertion_name}"
+  echo "OK: ${config_base}.cfg violated required ${assertion_kind} ${assertion_name}"
 }
+
+verify_tlc_invariant_diagnostic_classifier
 
 assert_nonzero_cargo_filter() {
   local output
@@ -171,6 +254,9 @@ run_capped cargo test --features persistent-artrie --test persistent_suffix_tree
 run_capped cargo test --features persistent-artrie --test persistent_scdawg_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_artrie_u64_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_char_node_layout_correspondence
+run_capped cargo test --features persistent-artrie --test char_node_format_compatibility
+run_capped cargo test --features persistent-artrie --test char_v3_crash_reopen_correspondence
+run_capped bash scripts/verify-char-node-format-compatibility.sh
 # L3.3: the owned-machinery correspondence tests (persistent_char_ebr / persistent_lazy_mutation /
 # persistent_bulk_mutation / persistent_lockfree_merge / persistent_char_eviction_proptest) were
 # retired with the owned tree — their owned-walk EBR / owned lazy-load / owned-drain / owned-rep
@@ -211,6 +297,7 @@ run_capped env CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}" \
   --test persistent_merge_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_artrie_storage_correspondence
 run_capped cargo test --features persistent-artrie --test persistent_artrie_loom_correspondence
+run_capped cargo test --features persistent-artrie --test persistent_eviction_publication_gate_loom
 run_capped cargo test --features persistent-artrie --test persistent_lockfree_overlay_loom
 run_capped cargo test --features persistent-artrie --test persistent_lockfree_durable_loom
 run_filtered_cargo_test \
@@ -272,6 +359,26 @@ if [ "${RUN_MIRI:-0}" = "1" ]; then
     char_insert_child_replaces_without_aliasing_old_box
   run_miri_filtered \
     --features persistent-artrie \
+    --lib \
+    nonresident_child_insertion_rejects_resident_pointer_without_publication
+  run_miri_filtered \
+    --features persistent-artrie \
+    --lib \
+    nonresident_child_type_rejects_transitional_and_malformed_disk_states
+  run_miri_filtered \
+    --features persistent-artrie \
+    --lib \
+    nonresident_to_resident_replacement_preserves_every_adaptive_variant
+  run_miri_filtered \
+    --features persistent-artrie \
+    --lib \
+    pending_owned_child_reclaims_or_returns_exactly_once
+  run_miri_filtered \
+    --features persistent-artrie \
+    --lib \
+    resident_publication_preserves_provenance_across_growth_boundaries
+  run_miri_filtered \
+    --features persistent-artrie \
     --test persistent_artrie_formal_correspondence \
     char_clone_deep_copies_child_boxes
   run_miri_filtered \
@@ -303,6 +410,28 @@ if [ "${RUN_MIRI:-0}" = "1" ]; then
   run_miri_filtered \
     --lib \
     dynamic_dawg::lockfree::tests::provenance_cursor_is_one_word_opaque_and_revision_retained
+  run_miri_filtered \
+    --lib \
+    dynamic_dawg::lockfree::tests::native_edge_ranges_are_exact_across_inline_and_spilled_storage
+  run_miri_filtered \
+    --lib \
+    dynamic_dawg::lockfree::tests::retained_old_edge_range_survives_new_root_publication
+  run_miri_filtered \
+    --features protobuf \
+    --lib \
+    serialization::protobuf_impl::binary_dat_payload_tests::v2_sink_emits_exact_events_across_spare_capacity_boundaries
+  run_miri_filtered \
+    --features protobuf \
+    --lib \
+    serialization::protobuf_impl::binary_dat_payload_tests::v2_sink_second_growth_failure_preserves_both_logical_lengths
+  run_miri_filtered \
+    --features protobuf \
+    --lib \
+    serialization::protobuf_impl::binary_dat_payload_tests::v2_sink_consults_allocator_only_at_true_exhaustion
+  run_miri_filtered \
+    --features protobuf \
+    --lib \
+    serialization::protobuf_impl::binary_dat_payload_tests::v2_sink_records_exactly_one_atomic_commit_per_successful_event
   run_miri_filtered \
     --features ffi \
     --lib \
@@ -357,7 +486,20 @@ if command -v tla2sany >/dev/null 2>&1; then
       ConcurrentCheckpointPublication \
       LockFreeDurableCheckpoint \
       LockFreeDurableCheckpointEviction \
-      EvictionRegistryPublication \
+      DetachedCallbackSeparation \
+      CachelessOwnedRegistry \
+      EvictionExactRootPublication \
+      HelpedRootResidency \
+      HelpedResidencyScan \
+      HelpedCheckpointStamps \
+      PackedResidencyRollover \
+      ResidencyRevisionOrdinalABA \
+      RootOwnerFence \
+      SparseResidencyWinnerAuthority \
+      ResidentRankingDepth \
+      PackedResidencyFreshCatalog \
+      OverlayTreeWitness \
+      ResidentBudgetEviction \
       SharedPersistentConcurrency \
       PublicDurabilityPolicy \
       PersistentEndToEndTrace \
@@ -366,7 +508,10 @@ if command -v tla2sany >/dev/null 2>&1; then
       PersistentSuffixTree \
       PersistentScdawg \
       PersistentARTrieU64 \
+      PersistentARTrieU64Iteration \
+      PersistentARTrieU64WorkMachines \
       CharNodeV2Layout \
+      CharV3ArenaPublication \
       ConcurrentVocabLinearizability \
       EpochCheckpointRecovery \
       PersistentCharBulkMutationRecovery \
@@ -381,6 +526,7 @@ if command -v tla2sany >/dev/null 2>&1; then
       LockFreeOverlayDurableReplay \
       LockFreeOverlayValueCas \
       ConcurrentCheckpointSerialization \
+      RetainedEdgeRangeTraversal \
       AbiProducerSnapshot \
       DictionaryEntryBatchLease \
       AbiSnapshotQuiescence
@@ -418,7 +564,20 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       ConcurrentCheckpointPublication \
       LockFreeDurableCheckpoint \
       LockFreeDurableCheckpointEviction \
-      EvictionRegistryPublication \
+      DetachedCallbackSeparation \
+      CachelessOwnedRegistry \
+      EvictionExactRootPublication \
+      HelpedRootResidency \
+      HelpedResidencyScan \
+      HelpedCheckpointStamps \
+      PackedResidencyRollover \
+      ResidencyRevisionOrdinalABA \
+      RootOwnerFence \
+      SparseResidencyWinnerAuthority \
+      ResidentRankingDepth \
+      PackedResidencyFreshCatalog \
+      OverlayTreeWitness \
+      ResidentBudgetEviction \
       SharedPersistentConcurrency \
       PublicDurabilityPolicy \
       PersistentEndToEndTrace \
@@ -427,7 +586,10 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       PersistentSuffixTree \
       PersistentScdawg \
       PersistentARTrieU64 \
+      PersistentARTrieU64Iteration \
+      PersistentARTrieU64WorkMachines \
       CharNodeV2Layout \
+      CharV3ArenaPublication \
       ConcurrentVocabLinearizability \
       EpochCheckpointRecovery \
       PersistentCharBulkMutationRecovery \
@@ -442,12 +604,33 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       LockFreeOverlayDurableReplay \
       LockFreeOverlayValueCas \
       ConcurrentCheckpointSerialization \
+      RetainedEdgeRangeTraversal \
       AbiProducerSnapshot \
       DictionaryEntryBatchLease \
       AbiSnapshotQuiescence
     do
-      run_tlc_isolated "$module" -workers 1 -config "${module}.cfg" "${module}.tla"
+      tlc_workers=1
+      run_tlc_isolated "$module" \
+        -workers "$tlc_workers" \
+        -config "${module}.cfg" \
+        "${module}.tla"
     done
+    run_tlc_isolated PersistentARTrieU64WorkMachines_Cycle \
+      -workers 1 \
+      -config PersistentARTrieU64WorkMachines_Cycle.cfg \
+      PersistentARTrieU64WorkMachines.tla
+    run_tlc_isolated PersistentARTrieU64Iteration_Chain \
+      -workers 1 \
+      -config PersistentARTrieU64Iteration_Chain.cfg \
+      PersistentARTrieU64Iteration.tla
+    run_tlc_isolated PersistentARTrieU64Iteration_Prefix \
+      -workers 1 \
+      -config PersistentARTrieU64Iteration_Prefix.cfg \
+      PersistentARTrieU64Iteration.tla
+    run_tlc_isolated PersistentARTrieU64Iteration_OnDisk \
+      -workers 1 \
+      -config PersistentARTrieU64Iteration_OnDisk.cfg \
+      PersistentARTrieU64Iteration.tla
     run_tlc_isolated LockFreeIndexedOverlayCounter \
       -workers 1 \
       -config LockFreeIndexedOverlayCounter.cfg \
@@ -456,15 +639,20 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       -workers 1 \
       -config LockFreeIndexedOverlayVocabulary.cfg \
       LockFreeIndexedOverlay.tla
+    run_tlc_isolated HelpedResidencyScan_Liveness \
+      -workers 1 \
+      -config HelpedResidencyScan_Liveness.cfg \
+      HelpedResidencyScan.tla
 
     # ── Negative controls (each `_Unsafe.cfg` MUST FAIL its model's safety) ──
     # Each `_Unsafe.cfg` deliberately relaxes the one design choice the model
     # exists to justify, and MUST FAIL a safety invariant:
     #   * LockFreeDurableCheckpoint / LockFreeDurableCheckpointEviction set
-    #     USE_WATERMARK = FALSE and MUST violate `NoLostWriteUnderLockFreeCommit`
-    #     (the GAP_LEDGER #41 appended-frontier losing trace) — proving the
-    #     committed-watermark choice is REQUIRED (base retain-WAL reclaim AND with
-    #     eviction-registry publication on).
+    #     USE_WATERMARK = FALSE and MUST violate `NoLostWriteUnderLockFreeCommit`.
+    #     The composite model additionally proves that semantic publication clears
+    #     exact authority, exact publication checks the captured root and catalog
+    #     stamp, exact operations revalidate the current pair, and recovery ignores
+    #     detached advisory state. Each obligation has its own unsafe control.
     #   * OverlayEvictionCas sets USE_FAULT_IN = FALSE (lets the overlay evictor
     #     fire on a LIVE node with NO fault-in recovery) and MUST violate
     #     `ReadNeverMissesCommitted` — proving the read/write fault-in path is
@@ -510,20 +698,84 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
     #     failed-CAS phantom behind compare_and_swap + the C2 merge CAS-retry loop) —
     #     proving the `mark_committed_burned` (UNRANKED, dropped on Overlay reopen)
     #     choice is REQUIRED.
-    while IFS='|' read -r unsafe_module assertion_kind assertion_name; do
-      echo "== Negative control: ${unsafe_module}_Unsafe.cfg (MUST violate ${assertion_name}) =="
-      run_tlc_negative_control "$unsafe_module" "$assertion_kind" "$assertion_name"
+    #   * PersistentARTrieU64WorkMachines selects the LateCycle graph and sets
+    #     RejectBackEdge = FALSE, modeling a
+    #     disk materializer that accepts a gray/Visiting back-edge. It MUST
+    #     violate `NoCyclicSnapshotAccepted`, proving rejection occurs before an
+    #     Arc edge can be spliced into the reconstructed overlay.
+    #   * PersistentARTrieU64Iteration enables global node-identity suppression
+    #     on the Diamond DAG. It MUST violate `CompletionIsExact`, proving trie
+    #     language enumeration remains path-sensitive across shared nodes.
+    while IFS='|' read -r unsafe_module assertion_kind assertion_name unsafe_config; do
+      negative_config="${unsafe_config:-${unsafe_module}_Unsafe}"
+      echo "== Negative control: ${negative_config}.cfg (MUST violate ${assertion_name}) =="
+      run_tlc_negative_control "$unsafe_module" "$assertion_kind" "$assertion_name" "$negative_config"
     done <<'NEGATIVE_CONTROLS'
 LockFreeDurableCheckpoint|invariant|NoLostWriteUnderLockFreeCommit
 LockFreeDurableCheckpointEviction|invariant|NoLostWriteUnderLockFreeCommit
+LockFreeDurableCheckpointEviction|invariant|ExactRootRegistryAgreement|LockFreeDurableCheckpointEviction_SemanticBindingUnsafe
+LockFreeDurableCheckpointEviction|invariant|ExactRootRegistryAgreement|LockFreeDurableCheckpointEviction_StaleRootUnsafe
+LockFreeDurableCheckpointEviction|invariant|PublishedCatalogIsStamped|LockFreeDurableCheckpointEviction_PreStampUnsafe
+LockFreeDurableCheckpointEviction|invariant|NoInexactUse|LockFreeDurableCheckpointEviction_InexactUseUnsafe
+LockFreeDurableCheckpointEviction|invariant|RecoveryIndependentOfDetached|LockFreeDurableCheckpointEviction_RecoveryDetachedUnsafe
+DetachedCallbackSeparation|invariant|DetachedCallbackHasOnlyDetachedCapability|DetachedCallbackSeparation_LegacyReadsExactUnsafe
+DetachedCallbackSeparation|invariant|DetachedNeverAuthorizesExactCommit|DetachedCallbackSeparation_DetachedAuthorizesUnsafe
+DetachedCallbackSeparation|invariant|DetachedCatalogContainsOnlyDetached|DetachedCallbackSeparation_CheckpointPopulatesDetachedUnsafe
+DetachedCallbackSeparation|invariant|SemanticClearsExactAuthority|DetachedCallbackSeparation_SemanticPreservesBindingUnsafe
+DetachedCallbackSeparation|invariant|CatalogNeverAuthorizesExactCommit|DetachedCallbackSeparation_CatalogAuthorizesUnsafe
+CachelessOwnedRegistry|invariant|LastCollisionOccurrenceEquivalent|CachelessOwnedRegistry_FirstCollisionUnsafe
+CachelessOwnedRegistry|invariant|FailedRemovePreservesProjection|CachelessOwnedRegistry_MutateBeforeMaterializeUnsafe
+EvictionExactRootPublication|invariant|ExactRootRegistryAgreement|EvictionExactRootPublication_SemanticBindingUnsafe
+EvictionExactRootPublication|invariant|NoInexactCommit|EvictionExactRootPublication_InexactCommitUnsafe
+EvictionExactRootPublication|invariant|ExactRootRegistryAgreement|EvictionExactRootPublication_PreStampUnsafe
+EvictionExactRootPublication|invariant|ExactRootRegistryAgreement|EvictionExactRootPublication_RetirementUnsafe
+EvictionExactRootPublication|invariant|NoRetainedGenerationABA|EvictionExactRootPublication_GenerationReuseUnsafe
+EvictionExactRootPublication|invariant|FailedPublicationPreservesRegistry|EvictionExactRootPublication_RollbackUnsafe
+HelpedRootResidency|invariant|MaterializedResidencyMatchesPublishedRoot|HelpedRootResidency_EarlyFrontierUnsafe
+HelpedRootResidency|invariant|RootIsSoleLogicalAuthority|HelpedRootResidency_RetirementFenceUnsafe
+HelpedRootResidency|invariant|MaterializedResidencyMatchesPublishedRoot|HelpedRootResidency_UnfencedWordUnsafe
+HelpedRootResidency|invariant|NoUnstampedPublication|HelpedRootResidency_UnstampedUnsafe
+HelpedRootResidency|invariant|CatalogNeverAuthorizes|HelpedRootResidency_CatalogUnsafe
+HelpedResidencyScan|invariant|NoAcceptedTornScan|HelpedResidencyScan_Unsafe
+HelpedCheckpointStamps|invariant|NoEarlyActivation|HelpedCheckpointStamps_EarlyActivationUnsafe
+HelpedCheckpointStamps|invariant|NoStampBeforePublication|HelpedCheckpointStamps_FailedCandidateUnsafe
+PackedResidencyRollover|invariant|CurrentCellMatchesRoot|PackedResidencyRollover_OrdinalReuseUnsafe
+PackedResidencyRollover|invariant|CurrentCellMatchesRoot|PackedResidencyRollover_WrongGenerationUnsafe
+ResidencyRevisionOrdinalABA|invariant|NoDelayedHelperABA|ResidencyRevisionOrdinalABA_Unsafe
+RootOwnerFence|invariant|RootNeverNamesRetiredOwner|RootOwnerFence_StalePublishUnsafe
+SparseResidencyWinnerAuthority|invariant|SettledMaterializationMatchesRoot|SparseResidencyWinnerAuthority_LoserHelpUnsafe
+ResidentRankingDepth|invariant|ConcreteChildStrictDepth|ResidentRankingDepth_Unsafe
+CharV3ArenaPublication|invariant|NoRootToUncommittedV3Arena|CharV3ArenaPublication_UncommittedUnsafe
+CharV3ArenaPublication|invariant|ChecksumPrecedesV3Root|CharV3ArenaPublication_ChecksumUnsafe
+CharV3ArenaPublication|invariant|OldReaderRejectsV3|CharV3ArenaPublication_OldReaderUnsafe
+CharV3ArenaPublication|invariant|CurrentReaderAcceptsSupportedRoots|CharV3ArenaPublication_CurrentReaderV2Unsafe
+CharV3ArenaPublication|invariant|CommittedV3ReopensAfterCrash|CharV3ArenaPublication_CurrentReaderV3ReopenUnsafe
+CharV3ArenaPublication|invariant|PublishedRootHasExactGeneration|CharV3ArenaPublication_StaleRootUnsafe
+CharV3ArenaPublication|invariant|V2MigrationUsesTargetHeaders|CharV3ArenaPublication_LossyMigrationUnsafe
+PackedResidencyFreshCatalog|invariant|FreshAddressDomainIsDistinct|PackedResidencyFreshCatalog_ReuseUnsafe
+PackedResidencyFreshCatalog|invariant|PublishedCellsMatchLogicalRoot|PackedResidencyFreshCatalog_WrongHelperUnsafe
+PackedResidencyFreshCatalog|invariant|PublishedCellsMatchLogicalRoot|PackedResidencyFreshCatalog_PartialUnsafe
+PackedResidencyFreshCatalog|invariant|WinnerOwnsPublishedRoot|PackedResidencyFreshCatalog_NonExactUnsafe
+OverlayTreeWitness|invariant|WitnessImpliesTree|OverlayTreeWitness_ForgeDagUnsafe
+OverlayTreeWitness|invariant|WitnessNamesCurrentRevision|OverlayTreeWitness_StaleWitnessUnsafe
+OverlayTreeWitness|invariant|FastSerializationRequiresCurrentTreeWitness|OverlayTreeWitness_FastWithoutWitnessUnsafe
+OverlayTreeWitness|invariant|CycleIsNeverPublished|OverlayTreeWitness_AdmitCycleUnsafe
+ResidentBudgetEviction|invariant|PlannedReclamationIsReal|ResidentBudgetEviction_LocalDescendantUnsafe
+ResidentBudgetEviction|invariant|AcceptedSnapshotsWereRevalidated|ResidentBudgetEviction_SnapshotUnsafe
 OverlayEvictionCas|invariant|ReadNeverMissesCommitted
 OverlayEvictionStale|invariant|NoStaleEvict
+OverlayEvictionStale|invariant|FaultInstalledCarriesExactStamp|OverlayEvictionStale_FaultStampUnsafe
 LockFreeOverlayRemoveCas|invariant|LastWriterWins
 LockFreeOverlayDurableReplay|invariant|ReplayEqualsCommittedVisible
 LockFreeOverlayValueCas|invariant|NoPhantomConditionalWrite
 ConcurrentCheckpointSerialization|invariant|NoTornDescriptor
+RetainedEdgeRangeTraversal|invariant|RetainedReaderRevisionIsAllocated|RetainedEdgeRangeTraversal_UnsafeReclaim
+RetainedEdgeRangeTraversal|invariant|NoPartialExternalPublication|RetainedEdgeRangeTraversal_UnsafePartialPublish
+RetainedEdgeRangeTraversal|invariant|RangeBounds|RetainedEdgeRangeTraversal_UnsafeAdvance
 AbiProducerSnapshot|invariant|CapturedRevisionImmutable
 AbiSnapshotQuiescence|temporal|SnapshotEventuallyCompletes
+PersistentARTrieU64WorkMachines|invariant|NoCyclicSnapshotAccepted
+PersistentARTrieU64Iteration|invariant|CompletionIsExact
 NEGATIVE_CONTROLS
   )
 else

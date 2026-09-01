@@ -213,32 +213,41 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
         // with the coordinator (was a SEPARATE `Arc::new(EpochManager::new())`). The
         // field is now `Arc<EpochManager>`, and `SharedARTrie = Arc<PersistentARTrie>`
         // derefs to it directly. The overlay read/write paths + the lifted overlay
-        // evictor (`OverlayEvictable::{find_leaf_faulting, evict_overlay_node_at_path}`)
-        // pin THIS same manager via `enter_read`, so the coordinator's quiescence drain
+        // compact eviction and exact fault-in machines pin this same manager via
+        // `enter_read`, so the coordinator's quiescence drain
         // genuinely waits on the live overlay readers (honest reader accounting; not a
         // correctness change — overlay reclamation is by `Arc` refcount, not EBR).
         let epoch_manager = Arc::clone(&self.epoch_manager);
-        let coordinator = EvictionCoordinator::new(config.clone(), epoch_manager);
+        let coordinator = EvictionCoordinator::new_with_publication_gate(
+            config.clone(),
+            epoch_manager,
+            Arc::clone(&self.registry_publication_gate),
+        );
         let self_weak = Arc::downgrade(self);
+        let coordinator_weak = Arc::downgrade(&coordinator);
 
         coordinator
-            .start(move |nodes_to_evict| {
+            .start_root_compact(move |max_count| {
                 let Some(trie) = self_weak.upgrade() else {
                     return (0, 0);
                 };
-                // Phase 7.5: route_overlay-GATED. Under the overlay regime reclaim the
-                // OVERLAY (the inline evict_node_at_path owned loop below is a no-op on the
-                // EMPTY owned tree there); in owned mode keep the proven owned-tree loop
-                // (preserves owned + ineligible-V eviction). evict_overlay_nodes locks EC
-                // for its LRU remove — safe here (the loop holds no EC, same as the owned
-                // loop's EC discipline).
-                // L0.1/L3.3: always reclaim the overlay (the owned tree is gone).
-                // `evict_overlay_nodes` locks EC for its LRU remove; safe here (this
-                // callback holds no EC).
-                crate::persistent_artrie::overlay_fault::evict_overlay_nodes(
-                    &trie,
-                    nodes_to_evict,
-                    4,
+                let Some(coordinator) = coordinator_weak.upgrade() else {
+                    return (0, 0);
+                };
+                let Some(root) = trie.lockfree_root.as_ref() else {
+                    return (0, 0);
+                };
+                // Always reclaim the overlay. The compact callback holds no
+                // coordinator lock across root replacement or residency commit.
+                coordinator.force_eviction_compact_bytes_root_with_max_count(
+                    root,
+                    usize::MAX,
+                    max_count,
+                    |batch| {
+                        crate::persistent_artrie::overlay_fault::evict_overlay_compact_batch(
+                            &trie, batch, 4,
+                        )
+                    },
                 )
             })
             .map_err(|e| PersistentARTrieError::internal(&e))?;
@@ -268,16 +277,34 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
         // `shutdown()` joins the eviction thread — the eviction callback takes OR
         // (and briefly EC), so joining while holding EC would deadlock (the worker
         // waits on EC; disable holds EC + joins).
-        let coordinator = self
-            .eviction_coordinator
-            .lock()
-            .expect("eviction_coordinator mutex poisoned")
-            .take();
+        let (coordinator, retirement_outcome) = {
+            let mut slot = self
+                .eviction_coordinator
+                .lock()
+                .expect("eviction_coordinator mutex poisoned");
+            let retirement_outcome = slot.as_ref().map_or(
+                crate::persistent_artrie::core::eviction::RetirementOutcome::AlreadyUnbound,
+                |coordinator| match self.lockfree_root.as_ref() {
+                    Some(root) => coordinator.retire_from_trie_with_root(root),
+                    None => {
+                        coordinator.retire_from_trie();
+                        crate::persistent_artrie::core::eviction::RetirementOutcome::AlreadyUnbound
+                    }
+                },
+            );
+            (slot.take(), retirement_outcome)
+        };
         // EC guard dropped here.
         if let Some(coordinator) = coordinator {
             coordinator.shutdown();
         }
-        Ok(())
+        if retirement_outcome.repaired_invariant() {
+            Err(PersistentARTrieError::internal(
+                "repaired an inconsistent eviction root binding during disable",
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     fn eviction_enabled(&self) -> bool {
@@ -311,11 +338,19 @@ impl<V: DictionaryValue> EvictableARTrie for SharedARTrie<V> {
             }
         };
         // L0.1: always reclaim the OVERLAY (the owned select-and-count arm was deleted).
-        // `force_eviction_bytes` returns the EVICTED count, not the candidate count.
+        // The compact force path returns the EVICTED count, not the candidate count.
         let trie = Arc::clone(self);
+        let Some(root) = trie.lockfree_root.as_ref() else {
+            return Ok((0, 0));
+        };
+        let callback_trie = Arc::clone(&trie);
         Ok(
-            coordinator.force_eviction_bytes(target_bytes, move |nodes| {
-                crate::persistent_artrie::overlay_fault::evict_overlay_nodes(&trie, nodes, 4)
+            coordinator.force_eviction_compact_bytes_root(root, target_bytes, move |batch| {
+                crate::persistent_artrie::overlay_fault::evict_overlay_compact_batch(
+                    &callback_trie,
+                    batch,
+                    4,
+                )
             }),
         )
     }
@@ -357,10 +392,21 @@ impl<V: DictionaryValue> Dictionary for SharedARTrie<V> {
     type Node = PersistentARTrieNode<V>;
 
     fn root(&self) -> Self::Node {
-        // Delegates to the bare trie's overlay-backed `Dictionary::root`. The
-        // returned node OWNS its overlay-root `Arc`, so it outlives the transient
-        // no-lock `read()` guard (`SharedTrieAccess` hands back `&PersistentARTrie`).
-        self.read().root()
+        // Capture an immutable overlay-root snapshot and attach an owned faulter.
+        // The snapshot is detached: resolving one of its `OnDisk` children loads a
+        // fresh `Arc` for this traversal only and never CAS-publishes it into the
+        // current root. Point reads use `find_leaf_faulting` instead and notify the
+        // exact residency registry only after winning that publication CAS.
+        use crate::persistent_artrie::core::key_encoding::ByteKey;
+        use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
+        use crate::persistent_artrie::core::overlay::{OverlayFaulter, OverlayNode};
+
+        let guard = self.read();
+        let root =
+            <PersistentARTrie<V> as LockFreeOverlay<ByteKey, V, _>>::overlay_root_node(&guard)
+                .unwrap_or_else(|| Arc::new(OverlayNode::<ByteKey, V>::new()));
+        let faulter: Arc<dyn OverlayFaulter<ByteKey, V>> = self.clone();
+        PersistentARTrieNode::from_overlay_root(root, Some(faulter))
     }
 
     fn contains(&self, term: &str) -> bool {

@@ -7,6 +7,8 @@
 //!
 //! ```rust,no_run
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # #[cfg(feature = "serialization")]
+//! # {
 //! use libdictenstein::prelude::*;
 //! use libdictenstein::serialization::{BincodeSerializer, DictionarySerializer};
 //! use std::fs::File;
@@ -21,6 +23,7 @@
 //! // Deserialize from file
 //! let file = File::open("dict.bin")?;
 //! let loaded_dict: DoubleArrayTrie = BincodeSerializer::deserialize(file)?;
+//! # }
 //! # Ok(())
 //! # }
 //! ```
@@ -29,6 +32,7 @@ use crate::{Dictionary, DictionaryNode};
 use std::io::{Read, Write};
 
 // Serializer implementations
+#[cfg(feature = "serialization")]
 mod bincode_impl;
 
 #[cfg(feature = "protobuf")]
@@ -51,6 +55,7 @@ pub(crate) mod serde_helpers;
 pub mod bincode_compat;
 
 // Re-exports
+#[cfg(feature = "serialization")]
 pub use self::bincode_impl::BincodeSerializer;
 
 #[cfg(feature = "protobuf")]
@@ -128,6 +133,7 @@ pub trait DictionaryFromTermsWithValues: Sized {
 #[derive(Debug, thiserror::Error)]
 pub enum SerializationError {
     /// Error during bincode serialization
+    #[cfg(feature = "serialization")]
     #[error("Bincode error")]
     Bincode(#[from] crate::serialization::bincode_compat::BincodeError),
     /// Error during protobuf serialization
@@ -140,6 +146,35 @@ pub enum SerializationError {
     /// Dictionary iteration error
     #[error("Dictionary error: {0}")]
     DictionaryError(String),
+    /// A standard vector could not reserve the storage required to continue.
+    ///
+    /// The static context keeps this error path allocation-free: reporting an
+    /// allocation failure must not itself attempt another heap allocation.
+    #[error("Allocation failed while {context}: {source}")]
+    Allocation {
+        /// The logical serializer buffer whose reservation failed.
+        context: &'static str,
+        /// The original fallible-reservation error.
+        #[source]
+        source: std::collections::TryReserveError,
+    },
+    /// A SmallVec worklist could not reserve its spill storage.
+    ///
+    /// CollectionAllocErr does not implement std::error::Error, so it is
+    /// retained as structured diagnostic data rather than an error source.
+    #[error("Small-vector allocation failed while {context}: {detail}")]
+    SmallVectorAllocation {
+        /// The logical worklist whose reservation failed.
+        context: &'static str,
+        /// The original fallible-reservation error.
+        detail: smallvec::CollectionAllocErr,
+    },
+    /// Checked capacity arithmetic exceeded the machine representation.
+    #[error("Capacity overflow while {context}")]
+    CapacityOverflow {
+        /// The logical serializer buffer whose requested capacity overflowed.
+        context: &'static str,
+    },
 }
 
 /// Helper to extract all terms from a dictionary.
@@ -545,6 +580,7 @@ mod tests {
     use super::*;
     use crate::double_array_trie::DoubleArrayTrie;
 
+    #[cfg(feature = "serialization")]
     #[test]
     fn test_bincode_roundtrip() {
         let dict = DoubleArrayTrie::from_terms(vec!["hello", "world", "test"]);
@@ -613,6 +649,7 @@ mod tests {
         assert_eq!(terms[0], long_term);
     }
 
+    #[cfg(feature = "serialization")]
     #[test]
     fn test_suffix_automaton_serialization() {
         use crate::suffix_automaton::SuffixAutomaton;

@@ -67,14 +67,36 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
         let temp_slot = am.next_slot();
         let temp_ctx = SerializationContext::new(temp_slot);
-        let value_overhead = value_bytes.map_or(0, |vb| 4 + vb.len());
-        let estimated_size =
-            serialization::v2::estimate_serialized_size_v2(node, &temp_ctx) + value_overhead;
+        let value_overhead = match value_bytes {
+            Some(value) => {
+                4usize
+                    .checked_add(value.len())
+                    .ok_or(PersistentARTrieError::ValueTooLarge {
+                        size: value.len(),
+                        max_size: u32::MAX as usize,
+                    })?
+            }
+            None => 0,
+        };
+        let estimated_size = serialization::v2::estimate_serialized_size_v2(node, &temp_ctx)
+            .checked_add(value_overhead)
+            .ok_or_else(|| PersistentARTrieError::ValueTooLarge {
+                size: value_bytes.map_or(0, <[u8]>::len),
+                max_size: u32::MAX as usize,
+            })?;
 
         let parent_slot = if am.can_fit(estimated_size) {
             am.next_slot()
         } else {
-            ArenaSlot::new(am.arena_count() as u32, 0)
+            ArenaSlot::new(
+                u32::try_from(am.arena_count()).map_err(|_| {
+                    PersistentARTrieError::corrupted(format!(
+                        "arena count {} exceeds the persistent slot format",
+                        am.arena_count()
+                    ))
+                })?,
+                0,
+            )
         };
 
         let ctx = if let Some(first_child) =
@@ -85,10 +107,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             SerializationContext::new(parent_slot)
         };
 
-        let node_bytes = serialization::v2::append_node_value(
+        let node_bytes = serialization::v2::try_append_node_value(
             serialization::v2::serialize_node_v2(node, &ctx)?,
             value_bytes,
-        );
+        )?;
         let data_len = node_bytes.len();
 
         let slot = am.allocate(&node_bytes)?;
@@ -106,7 +128,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             Node::N256(_) => NodeType::Node256,
         };
 
-        Ok((SwizzledPtr::from_arena_slot(slot, node_type), data_len))
+        Ok((SwizzledPtr::try_from_arena_slot(slot, node_type)?, data_len))
     }
 
     // L3.3c: removed — `persist_to_disk` (owned-tree disk serializer) +

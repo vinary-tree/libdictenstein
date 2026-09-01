@@ -31,7 +31,6 @@
 #![cfg(feature = "persistent-artrie")]
 
 use std::sync::atomic::Ordering as AtomicOrdering;
-use std::sync::Arc;
 
 use super::block_storage::BlockStorage;
 use super::bucket::StringBucket;
@@ -40,11 +39,19 @@ use super::error::{PersistentARTrieError, Result};
 use super::nodes::{ArtNode, Node, Node4};
 use super::swizzled_ptr::{NodeType, SwizzledPtr};
 use super::wal::WalRecord;
+use crate::persistent_artrie::core::eviction::{
+    scan_durable_registry_subtree, DurableRecordRef, DurableRegistryScanEvent,
+    LocalRegistryGraftStats, PreparedRegistryPublication, RegistryBuilderSubtree,
+    RegistryBuilderSubtreeStart, RegistryGraftOutcome, RegistryPathId, RegistryPublicationOutcome,
+    RegistryStructuralSource,
+};
 use crate::persistent_artrie::core::key_encoding::ByteKey;
 use crate::persistent_artrie::core::overlay::checkpoint::{
-    publish_registry_to_captured_generation, CapturedEvictionRoute, OverlayCheckpoint,
+    CapturedEvictionRoute, OverlayCheckpoint,
 };
-use crate::persistent_artrie::core::overlay::compressed_serialize::OverlayCompressedSerialize;
+use crate::persistent_artrie::core::overlay::compressed_serialize::{
+    try_analysis_registry_transaction, OverlayCompressedSerialize, OverlaySerializationBuild,
+};
 use crate::persistent_artrie::core::overlay::OverlayNode;
 use crate::persistent_artrie::eviction::DiskLocationRegistry;
 use crate::value::DictionaryValue;
@@ -54,7 +61,7 @@ use crate::value::DictionaryValue;
 /// in-memory representation (owned tree OR immutable overlay) into freshly-allocated
 /// arena slots (copy-on-serialize, so the captured `root_ptr` + arena image is
 /// frozen). The durable-publish phase consumes only these owned values.
-pub(crate) struct CheckpointSnapshot {
+pub(crate) struct CheckpointSnapshot<V: DictionaryValue> {
     /// Root descriptor type byte (`ROOT_TYPE_EMPTY` / `ROOT_TYPE_BUCKET` / `ROOT_TYPE_ART_NODE`).
     root_type: u8,
     /// Whether the root node is itself terminal/final.
@@ -82,7 +89,7 @@ pub(crate) struct CheckpointSnapshot {
     /// pre-checkpoint survivor on a later rebuild.
     commit_seq_at_capture: Option<u64>,
     /// **Overlay-arm capture only, eviction-ON (Phase 6 — the byte twin of char's
-    /// `CheckpointSnapshot.eviction_registry`).** The freshly-built per-node disk-location
+    /// `CheckpointSnapshot.registry_publication`).** The freshly-built per-node disk-location
     /// registry, populated during the overlay serialize (`register` per InMem node, with
     /// `set_durable_stamp` stamping each live overlay node — the M-2a eviction-safety
     /// lynchpin). `Some(reg)` ONLY when an eviction coordinator is installed at
@@ -91,17 +98,13 @@ pub(crate) struct CheckpointSnapshot {
     /// regression gate that it stays `None` there). The eviction-on retaining publisher
     /// moves it into the coordinator AFTER `verify_checkpoint_header` (publish-after-verify).
     /// NEVER serialized to disk (a runtime side-table; recovery never reads it).
-    eviction_registry: Option<crate::persistent_artrie::eviction::DiskLocationRegistry>,
-    /// Immutable capture-time eviction generation. `Arc` identity is the route
-    /// token: an older snapshot can never publish into a replacement coordinator.
-    eviction_coordinator_at_capture:
-        Option<Arc<crate::persistent_artrie::eviction::EvictionCoordinator>>,
+    registry_publication: Option<PreparedRegistryPublication<ByteKey, V>>,
 }
 
-impl CapturedEvictionRoute for CheckpointSnapshot {
+impl<V: DictionaryValue> CapturedEvictionRoute for CheckpointSnapshot<V> {
     #[inline]
     fn captured_with_eviction(&self) -> bool {
-        self.eviction_coordinator_at_capture.is_some()
+        self.registry_publication.is_some()
     }
 }
 
@@ -117,7 +120,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// overlay→owned converter), reading the committed watermark + commit_seq
     /// `Acquire` BEFORE the root load (the capture-ordering invariant). The byte
     /// twin of char's `capture_snapshot_immutable`.
-    pub(crate) fn capture_overlay_snapshot(&self) -> Result<CheckpointSnapshot> {
+    pub(crate) fn capture_overlay_snapshot(&self) -> Result<CheckpointSnapshot<V>> {
         if self.buffer_manager.is_none() {
             return Err(PersistentARTrieError::internal(
                 "No buffer manager for disk serialization",
@@ -130,16 +133,22 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         // (and `set_durable_stamp`s the live overlay node — the M-2a lynchpin). It stays
         // `None` on the eviction-OFF arm — the existing byte opt-in durable tests are the
         // M-5a regression gate that an eviction-OFF checkpoint publishes no registry.
-        let eviction_coordinator_at_capture = self
+        let eviction_coordinator = self
             .eviction_coordinator
             .lock()
             .expect("eviction_coordinator mutex poisoned")
             .as_ref()
-            .map(Arc::clone);
-        let mut eviction_registry = eviction_coordinator_at_capture
+            .map(std::sync::Arc::clone);
+        let structural_source = eviction_coordinator
             .as_ref()
-            .map(|_| crate::persistent_artrie::eviction::DiskLocationRegistry::new());
-
+            .map(|coordinator| coordinator.registry_structural_source())
+            .transpose()
+            .map_err(|error| {
+                PersistentARTrieError::internal(format!(
+                    "capture byte eviction-registry structural source: {error}"
+                ))
+            })?
+            .flatten();
         // ═══════════════════════════════════════════════════════════════════
         //  THE SNAPSHOT-LSN CAPTURE ORDERING (the byte twin of char's "single most
         //  dangerous line"). The committed watermark + commit_seq are read `Acquire`
@@ -162,38 +171,53 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         let overlay_revision = self
             .lockfree_root
             .as_ref()
-            .and_then(|root| root.load_with_term_count());
-        let (root_type, root_ptr, is_final, term_count) = match overlay_revision {
-            None => (ROOT_TYPE_EMPTY, 0u64, false, 0u64),
-            Some((root, term_count)) => {
-                // CX-universal: the regular checkpoint capture now serializes via the PATH-COMPRESSED
-                // serializer (was the uncompressed `serialize_overlay_root_iterative`), passing the
-                // eviction registry so an eviction-ON checkpoint compresses AND #6-stamps each chunk
-                // at its true expanded depth — matching char's `capture_snapshot_immutable`. The byte
-                // loader is already prefix-aware (folds `prefix_len>0` chunks back into chains on
-                // reopen), and uncompressed `prefix_len=0` images still load (forward-compatible).
-                //
-                // Root-descriptor rule: IDENTICAL to `compact_publish_compressed_overlay` (the empty/
-                // bucket override) and to the old `serialize_overlay_root_iterative` — a childless
-                // NON-final root is an empty values-bucket (`ROOT_TYPE_BUCKET`, the byte loader's
-                // convention); everything else is `ROOT_TYPE_ART_NODE`. NEVER `ROOT_TYPE_NODE` (that
-                // is char's distinct scheme). DATA-LOSS callout: for a childless-FINAL root the
-                // compressed serializer's `root_ptr` already carries the root value (the terminus
-                // record serialized + registered at `path=[]`), so the `else` arm is correct; the
-                // bucket override fires only for the childless NON-final (0-term) root, whose discarded
-                // compressed record is harmless (empty registry — eviction never acts on it).
-                let root_ptr =
-                    self.serialize_overlay_snapshot_compressed(&root, eviction_registry.as_mut())?;
-                let is_final = root.is_final();
-                let (rt, rp) = if root.num_children() == 0 && !is_final {
-                    let bucket_ptr = self.serialize_bucket_to_disk(&StringBucket::with_values())?;
-                    (ROOT_TYPE_BUCKET, bucket_ptr.to_raw())
-                } else {
-                    (ROOT_TYPE_ART_NODE, root_ptr.to_raw())
-                };
-                (rt, rp, is_final, term_count as u64)
-            }
-        };
+            .and_then(|root| root.load_revision());
+        let (root_type, root_ptr, is_final, term_count, registry_publication) =
+            match overlay_revision {
+                None => (ROOT_TYPE_EMPTY, 0u64, false, 0u64, None),
+                Some(revision) => {
+                    let root = std::sync::Arc::clone(revision.node());
+                    let mut serialization = match eviction_coordinator {
+                        Some(coordinator) => OverlaySerializationBuild::production_with_eviction(
+                            coordinator,
+                            structural_source,
+                        ),
+                        None => OverlaySerializationBuild::production_disabled(),
+                    };
+                    // CX-universal: the regular checkpoint capture now serializes via the PATH-COMPRESSED
+                    // serializer (was the uncompressed `serialize_overlay_root_iterative`), passing the
+                    // eviction registry so an eviction-ON checkpoint compresses AND #6-stamps each chunk
+                    // at its true expanded depth — matching char's `capture_snapshot_immutable`. The byte
+                    // loader is already prefix-aware (folds `prefix_len>0` chunks back into chains on
+                    // reopen), and uncompressed `prefix_len=0` images still load (forward-compatible).
+                    //
+                    // Root-descriptor rule: IDENTICAL to `compact_publish_compressed_overlay` (the empty/
+                    // bucket override) and to the old `serialize_overlay_root_iterative` — a childless
+                    // NON-final root is an empty values-bucket (`ROOT_TYPE_BUCKET`, the byte loader's
+                    // convention); everything else is `ROOT_TYPE_ART_NODE`. NEVER `ROOT_TYPE_NODE` (that
+                    // is char's distinct scheme). DATA-LOSS callout: for a childless-FINAL root the
+                    // compressed serializer's `root_ptr` already carries the root value (the terminus
+                    // record serialized + registered at `path=[]`), so the `else` arm is correct; the
+                    // bucket override fires only for the childless NON-final (0-term) root, whose discarded
+                    // compressed record is harmless (empty registry — eviction never acts on it).
+                    let root_ptr = self.serialize_compressed_loop(&root, &mut serialization)?;
+                    let is_final = root.is_final();
+                    let (rt, rp) = if root.num_children() == 0 && !is_final {
+                        let bucket_ptr =
+                            self.serialize_bucket_to_disk(&StringBucket::with_values())?;
+                        (ROOT_TYPE_BUCKET, bucket_ptr.to_raw())
+                    } else {
+                        (ROOT_TYPE_ART_NODE, root_ptr.to_raw())
+                    };
+                    let term_count = u64::try_from(revision.term_count()).map_err(|_| {
+                        PersistentARTrieError::internal(
+                            "byte checkpoint term count does not fit the durable u64 field",
+                        )
+                    })?;
+                    let registry_publication = serialization.finish(&revision)?;
+                    (rt, rp, is_final, term_count, registry_publication)
+                }
+            };
 
         // Executable refinement of the capture-ordering invariant: the watermark
         // captured BEFORE the root load never exceeds the durably-synced WAL frontier
@@ -222,8 +246,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             // Phase 6: the registry built above (populated by the serialize walk) when a
             // coordinator is installed; `None` otherwise. The eviction-on publisher moves
             // it into the coordinator after `verify_checkpoint_header` (publish-after-verify).
-            eviction_registry,
-            eviction_coordinator_at_capture,
+            registry_publication,
         })
     }
 
@@ -236,11 +259,10 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// NO overlap and NO gap → every acknowledged write survives exactly once.
     pub(crate) fn publish_overlay_snapshot_retaining(
         &self,
-        snapshot: &CheckpointSnapshot,
+        snapshot: &CheckpointSnapshot<V>,
     ) -> Result<()> {
         debug_assert!(
-            snapshot.eviction_registry.is_none()
-                && snapshot.eviction_coordinator_at_capture.is_none(),
+            snapshot.registry_publication.is_none(),
             "eviction-off publication received a snapshot with a captured eviction route"
         );
         let base_watermark = snapshot.committed_watermark_at_capture.ok_or_else(|| {
@@ -322,37 +344,23 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// into the coordinator — ONLY AFTER `verify_checkpoint_header` proves the on-disk
     /// image durable (the publish-after-verify ordering: an evictor must never unswizzle a
     /// node onto a not-yet-durable location). CONSUMES the snapshot (the registry MOVES
-    /// into the coordinator). The registry publication is an in-memory `RwLock::write`
-    /// swap with ZERO fsync (no per-checkpoint fsync-count asymmetry vs the eviction-OFF
-    /// publisher). Requires an immutable-overlay snapshot (`committed_watermark_at_capture
-    /// = Some`); an owned-tree snapshot is rejected.
+    /// into a prepared exact-root transaction). Publication installs the durable
+    /// catalog, stamps its nodes, and binds that exact catalog generation in the
+    /// immutable root revision; it adds ZERO fsync operations (no per-checkpoint
+    /// fsync-count asymmetry versus the eviction-OFF publisher). Requires an
+    /// immutable-overlay snapshot (`committed_watermark_at_capture = Some`); an
+    /// owned-tree snapshot is rejected.
     ///
     /// SAFETY (the #41 + 1c chain): victims come ONLY from this post-verify registry
     /// (nodes durable ≤ the captured committed watermark), and the per-node `durable_stamp`
     /// guard (M-2a) refuses to evict any node overwritten since this checkpoint. A
-    /// post-checkpoint durable write INVALIDATES the registry at the
-    /// `append_mutation_wal_record` chokepoint (Phase 6 byte invalidation) BEFORE its
-    /// visibility, so eviction then reclaims nothing from a dirtied registry (liveness,
-    /// not safety).
+    /// post-checkpoint durable write publishes an unbound semantic successor in
+    /// its visibility CAS, so the former catalog cannot authorize eviction from
+    /// the newer root (liveness, not safety).
     pub(crate) fn publish_overlay_snapshot_retaining_with_eviction(
         &self,
-        mut snapshot: CheckpointSnapshot,
+        snapshot: CheckpointSnapshot<V>,
     ) -> Result<()> {
-        let captured_coordinator = snapshot
-            .eviction_coordinator_at_capture
-            .as_ref()
-            .map(Arc::clone)
-            .ok_or_else(|| {
-                PersistentARTrieError::internal(
-                    "eviction-aware snapshot publication requires the immutable \
-                     coordinator generation retained at capture",
-                )
-            })?;
-        if snapshot.eviction_registry.is_none() {
-            return Err(PersistentARTrieError::internal(
-                "eviction-aware snapshot publication requires the registry built at capture",
-            ));
-        }
         let base_watermark = snapshot.committed_watermark_at_capture.ok_or_else(|| {
             PersistentARTrieError::internal(
                 "publish_overlay_snapshot_retaining_with_eviction requires an immutable-overlay \
@@ -370,21 +378,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         self.publish_snapshot(&snapshot, Some(checkpoint_lsn))?;
         self.verify_checkpoint_header()?;
 
-        // (2) Publish the eviction registry — ONLY AFTER verify proves the image durable
-        //     (publish-after-verify). The registry CONSUMES (moves) here;
-        //     `update_disk_registry` is an in-memory `RwLock::write` swap with ZERO fsync.
-        //     The byte twin of char's `update_disk_registry(registry)` tail. `register`
-        //     (byte map) populated it; `force_eviction`'s `select_for_eviction` reads it.
-        let published_eviction_generation = publish_registry_to_captured_generation(
-            &self.eviction_coordinator,
-            &captured_coordinator,
-            snapshot
-                .eviction_registry
-                .take()
-                .expect("registry presence validated before durable publish"),
-        );
-
-        // (3) Record `checkpoint_lsn = watermark` so recovery skips deltas ≤ it, then
+        // (2) Record `checkpoint_lsn = watermark` so recovery skips deltas ≤ it, then
         //     sync — but RETAIN the WAL (no rotate/truncate). Byte-identical to
         //     `publish_overlay_snapshot_retaining`'s WAL tail.
         if let Some(ref wal_writer) = self.wal_writer {
@@ -429,25 +423,68 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             // Deliberately NO rotate/truncate (retain-WAL → reversible + non-double-counting).
         }
 
+        // (3) Publish the eviction registry only after every fallible durable
+        //     checkpoint tail has succeeded: descriptor publish, image verify,
+        //     Checkpoint WAL append+sync, committed-watermark advance, and
+        //     commit-sequence floor. A failure before this point leaves the prior
+        //     exact authority unchanged. An overlapping semantic writer publishes
+        //     an unbound successor, so a retained cold registry slot cannot
+        //     authorize pointers from an incompletely committed checkpoint.
+        let registry_published = if let Some(publication) = snapshot.registry_publication {
+            let coordinator_slot = self
+                .eviction_coordinator
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match (coordinator_slot.as_ref(), self.lockfree_root.as_ref()) {
+                (Some(installed), Some(root)) => {
+                    publication.publish(installed, root) == RegistryPublicationOutcome::Published
+                }
+                _ => false,
+            }
+        } else {
+            false
+        };
+
         // (4) RESIDENT-BUDGET TAIL (Phase 7.5 — GO-LIVE; byte twin of char's). After
-        //     publish+verify (1), registry-publish (2), and WAL Checkpoint sync (3) — so
+        //     publish+verify (1), WAL Checkpoint commit (2), and registry publication
+        //     (3) — so
         //     every registered disk_ptr is durable — evict the COLDEST registered byte
         //     overlay nodes down to the configured resident budget. Non-blocking
-        //     loser-safe root-CAS; the 1c stamp guard + registry is_valid() gate keep it
-        //     safe under concurrent writers. DEADLOCK-SAFETY: the coordinator is bound in
+        //     loser-safe root-CAS; the durable stamp and exact root-bound catalog
+        //     qualification keep it safe under concurrent writers. DEADLOCK-SAFETY: the coordinator is bound in
         //     a `let` so the eviction_coordinator guard drops at the `;` BEFORE the
-        //     callback (`evict_overlay_nodes`) re-locks it for LRU bookkeeping (see char).
-        if let Some(coordinator) = published_eviction_generation {
-            if let Some(budget) = coordinator.resident_budget_bytes() {
-                let resident = coordinator.byte_resident_estimate_bytes();
-                if resident > budget {
-                    let target = resident - budget;
-                    let max_count = coordinator
-                        .resident_budget_eviction_cap()
-                        .unwrap_or(usize::MAX);
-                    coordinator.force_eviction_bytes_resident(target, max_count, |nodes| {
-                        crate::persistent_artrie::overlay_fault::evict_overlay_nodes(self, nodes, 4)
-                    });
+        //     compact-batch callback re-locks it for exact residency/LRU bookkeeping.
+        let coordinator = self
+            .eviction_coordinator
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(std::sync::Arc::clone);
+        if registry_published {
+            if let Some(coordinator) = coordinator {
+                if let Some(budget) = coordinator.resident_budget_bytes() {
+                    let Some(root) = self.lockfree_root.as_ref() else {
+                        return Ok(());
+                    };
+                    let resident = coordinator
+                        .byte_root_resident_estimate_bytes(root)
+                        .unwrap_or(0);
+                    if resident > budget {
+                        let target = resident - budget;
+                        let max_count = coordinator
+                            .resident_budget_eviction_cap()
+                            .unwrap_or(usize::MAX);
+                        coordinator.force_eviction_compact_bytes_resident_root(
+                            root,
+                            target,
+                            max_count,
+                            |batch| {
+                                crate::persistent_artrie::overlay_fault::evict_overlay_compact_batch(
+                                    self, batch, 4,
+                                )
+                            },
+                        );
+                    }
                 }
             }
         }
@@ -478,7 +515,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     /// descriptor-write tail.
     fn publish_snapshot(
         &self,
-        snapshot: &CheckpointSnapshot,
+        snapshot: &CheckpointSnapshot<V>,
         image_checkpoint_lsn: Option<u64>,
     ) -> Result<()> {
         let buffer_manager = self.buffer_manager.as_ref().ok_or_else(|| {
@@ -550,8 +587,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             root_ptr: root_ptr_raw,
             committed_watermark_at_capture: None,
             commit_seq_at_capture: None,
-            eviction_registry: None,
-            eviction_coordinator_at_capture: None,
+            registry_publication: None,
         };
         self.publish_snapshot(&snapshot, None)
     }
@@ -570,8 +606,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             root_ptr: bucket_ptr.to_raw(),
             committed_watermark_at_capture: None,
             commit_seq_at_capture: None,
-            eviction_registry: None,
-            eviction_coordinator_at_capture: None,
+            registry_publication: None,
         };
         self.publish_snapshot(&snapshot, None)
     }
@@ -1045,6 +1080,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         node_record: &Node,
         value_bytes: Option<&[u8]>,
         path: &[u8],
+        registry_path: Option<RegistryPathId>,
         registry: Option<&mut crate::persistent_artrie::eviction::DiskLocationRegistry>,
     ) -> Result<SwizzledPtr> {
         let (result_ptr, data_len) =
@@ -1056,25 +1092,36 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 Node::N48(_) => NodeType::Node48,
                 Node::N256(_) => NodeType::Node256,
             };
-            reg.register(
-                path.to_vec(),
-                result_ptr.clone(),
-                data_len,
-                path.len(),
-                node_type,
-            );
+            match registry_path {
+                Some(path_id) => reg
+                    .register_byte_path(
+                        path_id,
+                        result_ptr.clone(),
+                        data_len,
+                        path.len(),
+                        node_type,
+                    )
+                    .map_err(PersistentARTrieError::internal)?,
+                None => reg.register(
+                    path.to_vec(),
+                    result_ptr.clone(),
+                    data_len,
+                    path.len(),
+                    node_type,
+                ),
+            }
         }
         Ok(result_ptr)
     }
 
-    /// CX (#43): the BYTE path-compressing overlay→disk serializer — the twin of char's
-    /// [`PersistentARTrieChar::serialize_overlay_snapshot_compressed`]. ITERATIVE post-order: each
-    /// in-mem child is descended via [`peel_chain_byte`], which collapses a maximal single-child
+    /// CX (#43): the BYTE path-compressing overlay→disk serializer — the byte specialization of the
+    /// shared [`OverlayCompressedSerialize::serialize_compressed_loop`] machine. ITERATIVE
+    /// post-order: each in-mem child is descended via [`peel_chain_byte`], which collapses a maximal single-child
     /// non-final no-value chain into `(chain_prefix, live_spine, terminus)`. The terminus serializes
     /// as a plain (prefix-less) node; the peeled `chain_prefix` collapses into a stack of dense chunk
-    /// nodes ABOVE it via the proven [`crate::persistent_artrie::core::overlay::codec::chain_chunks`]
-    /// (width `MAX_PREFIX_LEN + 1` — `<= MAX_PREFIX_LEN` prefix bytes + 1 out-edge per chunk; NEVER
-    /// truncates — chains longer runs across multiple chunk nodes).
+    /// nodes ABOVE it using checked chunk-bound index arithmetic (width `MAX_PREFIX_LEN + 1` —
+    /// `<= MAX_PREFIX_LEN` prefix bytes + 1 out-edge per chunk; it never truncates and chains longer
+    /// runs across multiple chunk nodes).
     ///
     /// `path` is the full root→node byte sequence in the EXPANDED (uncompressed) tree — the path the
     /// evictor + the uncompressed serializer walk. EVICTION-ON (`registry = Some`): each emitted node
@@ -1097,7 +1144,17 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         root: &std::sync::Arc<OverlayNode<ByteKey, V>>,
         registry: Option<&mut crate::persistent_artrie::eviction::DiskLocationRegistry>,
     ) -> Result<SwizzledPtr> {
-        self.serialize_compressed_loop(root, registry)
+        match registry {
+            Some(registry) => {
+                try_analysis_registry_transaction::<ByteKey, V, _, _>(registry, |serialization| {
+                    self.serialize_compressed_loop(root, serialization)
+                })
+            }
+            None => {
+                let mut serialization = OverlaySerializationBuild::production_disabled();
+                self.serialize_compressed_loop(root, &mut serialization)
+            }
+        }
     }
 
     /// Build an owned byte `Node` of the appropriate size class with one child slot
@@ -1213,6 +1270,7 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCompressedSerialize<ByteKey, V>
         projected: &Self::Projected,
         _child_disk_ptrs: &[(u8, SwizzledPtr)],
         path: &[u8],
+        registry_path: RegistryPathId,
         registry: Option<&mut DiskLocationRegistry>,
     ) -> Result<SwizzledPtr> {
         // byte's `node` already carries its children, so `child_disk_ptrs` is unused here.
@@ -1220,59 +1278,146 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCompressedSerialize<ByteKey, V>
             &projected.node,
             projected.value.as_deref(),
             path,
+            Some(registry_path),
             registry,
         )
+    }
+
+    fn reserve_registry_path(
+        registry: &mut DiskLocationRegistry,
+        parent: RegistryPathId,
+        segment: &[u8],
+    ) -> Result<RegistryPathId> {
+        registry
+            .try_reserve_byte_path(parent, segment)
+            .map_err(PersistentARTrieError::internal)
+    }
+
+    fn begin_registry_subtree(
+        registry: &mut DiskLocationRegistry,
+        root: RegistryPathId,
+    ) -> Result<RegistryBuilderSubtreeStart> {
+        registry
+            .try_begin_byte_builder_subtree(root)
+            .map(RegistryBuilderSubtreeStart::Byte)
+            .map_err(|error| {
+                PersistentARTrieError::internal(format!("begin byte builder subtree: {error}"))
+            })
+    }
+
+    fn prepare_registry_subtree_start(registry: &mut DiskLocationRegistry) -> Result<()> {
+        registry
+            .try_prepare_byte_builder_subtree_start()
+            .map_err(|error| {
+                PersistentARTrieError::internal(format!(
+                    "prepare byte builder-subtree start: {error}"
+                ))
+            })
+    }
+
+    fn cancel_registry_subtree(
+        registry: &mut DiskLocationRegistry,
+        start: RegistryBuilderSubtreeStart,
+    ) -> Result<()> {
+        let RegistryBuilderSubtreeStart::Byte(start) = start else {
+            return Err(PersistentARTrieError::internal(
+                "byte serializer received a character builder-subtree start",
+            ));
+        };
+        registry
+            .try_cancel_byte_builder_subtree(start)
+            .map_err(|error| {
+                PersistentARTrieError::internal(format!("cancel byte builder subtree: {error}"))
+            })
+    }
+
+    fn finish_registry_subtree(
+        registry: &mut DiskLocationRegistry,
+        start: RegistryBuilderSubtreeStart,
+    ) -> Result<RegistryBuilderSubtree> {
+        let RegistryBuilderSubtreeStart::Byte(start) = start else {
+            return Err(PersistentARTrieError::internal(
+                "byte serializer received a character builder-subtree start",
+            ));
+        };
+        registry
+            .try_finish_byte_builder_subtree(start)
+            .map(RegistryBuilderSubtree::Byte)
+            .map_err(|error| {
+                PersistentARTrieError::internal(format!("finish byte builder subtree: {error}"))
+            })
+    }
+
+    fn graft_registry_subtree(
+        registry: &mut DiskLocationRegistry,
+        source: &RegistryBuilderSubtree,
+        destination: RegistryPathId,
+        expected_root: &SwizzledPtr,
+        expected_root_resident: bool,
+    ) -> Result<LocalRegistryGraftStats> {
+        let RegistryBuilderSubtree::Byte(source) = source else {
+            return Err(PersistentARTrieError::internal(
+                "byte serializer received a character builder-subtree handle",
+            ));
+        };
+        registry
+            .try_graft_byte_builder_subtree(
+                source,
+                destination,
+                expected_root,
+                expected_root_resident,
+            )
+            .map_err(|error| {
+                PersistentARTrieError::internal(format!("graft byte builder subtree: {error}"))
+            })
     }
 
     fn new_synth_node() -> OverlayNode<ByteKey, V> {
         OverlayNode::<ByteKey, V>::new()
     }
 
-    fn stamp_durable(live: &OverlayNode<ByteKey, V>, raw: u64) {
-        live.set_durable_stamp(raw);
-    }
-
-    fn register_reused(
+    fn try_reuse_durable_subtree(
         &self,
         ptr: &SwizzledPtr,
-        path: &[u8],
+        _path: &[u8],
+        registry_path: RegistryPathId,
         registry: &mut DiskLocationRegistry,
-    ) -> Result<()> {
-        // Byte twin of char's register_reused (dirty-skip): the live node is durable-clean, so its
-        // bytes already sit at `ptr` from a prior checkpoint (append-only arena ⇒ still valid).
-        // Record it with the EXACT on-disk size so the resident census — and hence resident-budget
-        // eviction — stays faithful, WITHOUT re-appending a fresh arena slot.
-        let arena_manager = self
-            .arena_manager
-            .as_ref()
-            .ok_or_else(|| PersistentARTrieError::internal("register_reused: no arena manager"))?;
-        let loc = ptr.disk_location().ok_or_else(|| {
-            PersistentARTrieError::internal(
-                "register_reused: reused ptr is not an on-disk location",
-            )
-        })?;
-        // Canonical arena id (arena N ⇔ block N+1).
-        let arena_id = loc.block_id.checked_sub(1).ok_or_else(|| {
-            PersistentARTrieError::internal("register_reused: reused ptr names block 0 (header)")
-        })?;
-        // `slot_data_range` returns (offset_in_arena, length); the length is the exact byte count
-        // `allocate` stored == what `serialize_one_byte_node_to_disk` originally registered.
-        let size_bytes = {
-            let mgr = arena_manager.read();
-            let arena = mgr.get_arena(arena_id).ok_or_else(|| {
-                PersistentARTrieError::internal("register_reused: reused ptr names a missing arena")
-            })?;
-            let (_offset, len) = arena.slot_data_range(loc.offset)?;
-            len
-        };
-        registry.register(
-            path.to_vec(),
-            ptr.clone(),
-            size_bytes,
-            path.len(),
-            loc.node_type,
-        );
-        Ok(())
+        structural_source: Option<&RegistryStructuralSource>,
+        root_resident: bool,
+    ) -> Result<bool> {
+        if let Some(structural_source) = structural_source {
+            match registry
+                .try_graft_byte_subtree(structural_source, registry_path, ptr, root_resident)
+                .map_err(|error| {
+                    PersistentARTrieError::internal(format!(
+                        "byte durable-registry graft failed: {error}"
+                    ))
+                })? {
+                RegistryGraftOutcome::Grafted { .. } => return Ok(true),
+                RegistryGraftOutcome::FallbackRequired => {}
+            }
+        }
+
+        if root_resident {
+            return Ok(false);
+        }
+
+        let root_ref = DurableRecordRef::from_typed_pointer(ptr)?;
+        scan_durable_registry_subtree(
+            root_ref,
+            registry_path,
+            root_resident,
+            |record_ref| self.read_byte_registry_record(record_ref),
+            |path, event| match event {
+                DurableRegistryScanEvent::ReservePath { prefix, edge } => registry
+                    .try_reserve_byte_path_parts(path, prefix, edge)
+                    .map_err(PersistentARTrieError::internal),
+                DurableRegistryScanEvent::RegisterRecord { resident, record } => {
+                    registry.apply_byte_scan_record(path, None, resident, record)
+                }
+            },
+        )?;
+        Ok(true)
     }
 }
 
@@ -1283,22 +1428,22 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayCompressedSerialize<ByteKey, V>
 impl<V: DictionaryValue, S: BlockStorage> OverlayCheckpoint<ByteKey, V, S>
     for PersistentARTrie<V, S>
 {
-    type CheckpointSnapshot = CheckpointSnapshot;
+    type CheckpointSnapshot = CheckpointSnapshot<V>;
 
     #[inline]
-    fn capture_overlay_snapshot(&self) -> Result<CheckpointSnapshot> {
+    fn capture_overlay_snapshot(&self) -> Result<CheckpointSnapshot<V>> {
         PersistentARTrie::capture_overlay_snapshot(self)
     }
 
     #[inline]
-    fn publish_overlay_snapshot_retaining(&self, snapshot: &CheckpointSnapshot) -> Result<()> {
+    fn publish_overlay_snapshot_retaining(&self, snapshot: &CheckpointSnapshot<V>) -> Result<()> {
         PersistentARTrie::publish_overlay_snapshot_retaining(self, snapshot)
     }
 
     #[inline]
     fn publish_overlay_snapshot_retaining_with_eviction(
         &self,
-        snapshot: CheckpointSnapshot,
+        snapshot: CheckpointSnapshot<V>,
     ) -> Result<()> {
         PersistentARTrie::publish_overlay_snapshot_retaining_with_eviction(self, snapshot)
     }
@@ -1318,9 +1463,10 @@ mod cx_compressed_serialize_byte {
     use crate::persistent_artrie::core::key_encoding::ByteKey;
     use crate::persistent_artrie::core::overlay::checkpoint::OverlayCheckpoint;
     use crate::persistent_artrie::core::overlay::node::Child;
+    use crate::persistent_artrie::core::overlay::test_support::{insert_path, visit_paths};
     use crate::persistent_artrie::core::overlay::OverlayNode;
     use crate::persistent_artrie::eviction::{DiskLocationRegistry, EvictionConfig};
-    use crate::persistent_artrie::overlay_fault::evict_overlay_nodes;
+    use crate::persistent_artrie::overlay_fault::evict_overlay_compact_batch;
     use crate::persistent_artrie::{PersistentARTrie, SharedARTrie};
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -1366,12 +1512,10 @@ mod cx_compressed_serialize_byte {
                 let snapshot = shared
                     .capture_overlay_snapshot()
                     .expect("capture with generation A");
-                let captured = snapshot
-                    .eviction_coordinator_at_capture
-                    .as_ref()
-                    .map(Arc::clone)
-                    .expect("capture retains generation A");
-                assert!(snapshot.eviction_registry.is_some());
+                assert!(
+                    snapshot.registry_publication.is_some(),
+                    "capture retains generation A inside the prepared exact publication"
+                );
                 phase.wait();
                 phase.wait();
                 <Trie as OverlayCheckpoint<ByteKey, (), Store>>::publish_captured_overlay_snapshot(
@@ -1379,7 +1523,6 @@ mod cx_compressed_serialize_byte {
                     snapshot,
                 )
                 .expect("publish generation-A snapshot after replacement");
-                captured
             })
         };
 
@@ -1396,8 +1539,7 @@ mod cx_compressed_serialize_byte {
             .map(Arc::clone)
             .expect("generation B installed");
         phase.wait();
-        let generation_a = checkpoint.join().expect("checkpoint thread");
-        assert!(!Arc::ptr_eq(&generation_a, &generation_b));
+        checkpoint.join().expect("checkpoint thread");
         assert_eq!(
             generation_b.disk_registry_len(),
             0,
@@ -1408,8 +1550,7 @@ mod cx_compressed_serialize_byte {
         let snapshot_off = shared
             .capture_overlay_snapshot()
             .expect("capture with eviction disabled");
-        assert!(snapshot_off.eviction_coordinator_at_capture.is_none());
-        assert!(snapshot_off.eviction_registry.is_none());
+        assert!(snapshot_off.registry_publication.is_none());
         shared
             .enable_eviction(EvictionConfig::without_memory_monitor())
             .expect("enable generation C");
@@ -1438,24 +1579,9 @@ mod cx_compressed_serialize_byte {
     /// Build an UNCOMPRESSED overlay (one node per byte) for the given terms — the shape the overlay
     /// write path builds. Shared prefixes share nodes (immutable path-copy via `with_child`).
     fn build_overlay(terms: &[&str]) -> Arc<OverlayNode<ByteKey, ()>> {
-        fn insert(
-            node: Arc<OverlayNode<ByteKey, ()>>,
-            bytes: &[u8],
-        ) -> Arc<OverlayNode<ByteKey, ()>> {
-            match bytes.split_first() {
-                None => Arc::new((*node).clone().as_final()),
-                Some((&edge, rest)) => {
-                    let child = match node.find_child(edge).and_then(|c| c.as_in_mem()) {
-                        Some(existing) => insert(existing.clone(), rest),
-                        None => insert(Arc::new(OverlayNode::<ByteKey, ()>::new()), rest),
-                    };
-                    Arc::new((*node).clone().with_child(edge, Child::InMem(child)))
-                }
-            }
-        }
         let mut root = Arc::new(OverlayNode::<ByteKey, ()>::new());
         for t in terms {
-            root = insert(root, t.as_bytes());
+            root = insert_path(root, t.as_bytes());
         }
         root
     }
@@ -1464,29 +1590,23 @@ mod cx_compressed_serialize_byte {
     fn collect_terms<S: BlockStorage>(
         trie: &PersistentARTrie<(), S>,
         node: &Arc<OverlayNode<ByteKey, ()>>,
-        pfx: &mut Vec<u8>,
         out: &mut Vec<String>,
     ) {
-        if node.is_final() {
-            out.push(String::from_utf8(pfx.clone()).expect("utf8 term"));
-        }
-        let kids: Vec<(u8, Arc<OverlayNode<ByteKey, ()>>)> = node
-            .iter_children()
-            .map(|(&k, child)| {
-                let n = match child.as_in_mem() {
-                    Some(a) => a.clone(),
-                    None => trie
-                        .load_overlay_node_from_disk(child.as_on_disk().expect("on-disk child"))
-                        .expect("fault child"),
-                };
-                (k, n)
-            })
-            .collect();
-        for (k, child) in kids {
-            pfx.push(k);
-            collect_terms(trie, &child, pfx, out);
-            pfx.pop();
-        }
+        visit_paths(
+            node,
+            &mut Vec::new(),
+            |child| match child.as_in_mem() {
+                Some(node) => node.clone(),
+                None => trie
+                    .load_overlay_node_from_disk(child.as_on_disk().expect("on-disk child"))
+                    .expect("fault child"),
+            },
+            |path, node| {
+                if node.is_final() {
+                    out.push(String::from_utf8(path.to_vec()).expect("utf8 term"));
+                }
+            },
+        );
     }
 
     fn roundtrip(name: &str, terms: &[&str]) {
@@ -1500,7 +1620,7 @@ mod cx_compressed_serialize_byte {
             .load_overlay_node_from_disk(&root_ptr)
             .expect("load compressed root");
         let mut got = Vec::new();
-        collect_terms(&trie, &loaded, &mut Vec::new(), &mut got);
+        collect_terms(&trie, &loaded, &mut got);
         got.sort();
         let mut expect: Vec<String> = terms.iter().map(|s| s.to_string()).collect();
         expect.sort();
@@ -1582,17 +1702,10 @@ mod cx_compressed_serialize_byte {
             .expect("durable increment sibling");
         let trie = Arc::new(trie);
 
-        // Build a COMPRESSED image + eviction registry from the LIVE overlay.
-        let root = trie
-            .lockfree_root
-            .as_ref()
-            .and_then(|r| r.load())
-            .expect("overlay root present");
-        let mut registry = DiskLocationRegistry::new();
-        trie.serialize_overlay_snapshot_compressed(&root, Some(&mut registry))
-            .expect("serialize compressed (eviction-ON)");
-
-        // Publish the compressed registry to the coordinator.
+        // Exercise the real compressed checkpoint transaction: serialization,
+        // exact root binding, registry publication, and deferred stamps.
+        trie.bench_immutable_checkpoint_with_eviction()
+            .expect("compressed checkpoint with eviction");
         let coordinator = trie
             .eviction_coordinator
             .lock()
@@ -1600,15 +1713,17 @@ mod cx_compressed_serialize_byte {
             .as_ref()
             .expect("eviction enabled")
             .clone();
-        coordinator.update_disk_registry(registry);
         assert!(
             trie.evictable_node_count().unwrap_or(0) > 0,
             "the compressed registry must be published"
         );
 
         // Evict everything reachable.
-        let (evicted, _) = coordinator
-            .force_eviction_bytes(usize::MAX, |cands| evict_overlay_nodes(&*trie, cands, 4));
+        let root = trie.lockfree_root.as_ref().expect("published overlay root");
+        let (evicted, _) =
+            coordinator.force_eviction_compact_bytes_root(root, usize::MAX, |batch| {
+                evict_overlay_compact_batch(&trie, batch, 4)
+            });
         assert!(
             evicted > 0,
             "CX #6: a compressed chunk node MUST evict (NotEvictable ⇒ wrong registry depth/stamp = #39 regression)"
@@ -1623,44 +1738,36 @@ mod cx_compressed_serialize_byte {
         assert_eq!(trie.get_lockfree(b"b"), Some(1), "sibling term survives");
     }
 
-    /// **CX #6 (F.3 — the gate no-op) load-side `prefix_len>0` stamp gate (byte).** A faulted node gets
-    /// a `durable_stamp` IFF it was a compressed (`prefix_len>0`) chunk on disk: (a) an UNCOMPRESSED
-    /// image yields ZERO stamps on fault (the pre-#6 production no-op ⇒ #39 unchanged); (b) a COMPRESSED
-    /// chunk's expanded top carries `stamp == its disk_ptr` (the predicate the evictor needs to
-    /// RE-evict a refaulted chunk).
+    /// Byte twin of the exact fault-stamp invariant: every decoded disk record stamps its top-level
+    /// overlay result, whether the durable record was compressed or uncompressed.
     #[test]
-    fn cx_6_load_stamp_gate_uncompressed_noop_compressed_stamps() {
+    fn exact_fault_load_stamps_uncompressed_and_compressed_records() {
         fn walk<S: BlockStorage>(
             trie: &PersistentARTrie<(), S>,
             node: &Arc<OverlayNode<ByteKey, ()>>,
-            stamped: &mut usize,
-            unstamped: &mut usize,
+            fault_count: &mut usize,
         ) {
-            let kids: Vec<Child<ByteKey>> = node.iter_children().map(|(_, c)| c.clone()).collect();
-            for child in kids {
-                if let Some(on_disk) = child.as_on_disk() {
-                    let raw = on_disk.to_raw();
-                    let faulted = trie
-                        .load_overlay_node_from_disk(on_disk)
-                        .expect("fault child");
-                    match faulted.durable_stamp() {
-                        0 => *unstamped += 1,
-                        stamp => {
-                            assert_eq!(
-                                stamp, raw,
-                                "a stamped (compressed-chunk) node's stamp must equal the disk_ptr it faulted from"
-                            );
-                            *stamped += 1;
-                        }
+            let mut pending = vec![node.clone()];
+            while let Some(node) = pending.pop() {
+                let kids: Vec<Child<ByteKey>> =
+                    node.iter_children().map(|(_, c)| c.clone()).collect();
+                for child in kids {
+                    if let Some(on_disk) = child.as_on_disk() {
+                        let raw = on_disk.to_raw();
+                        let loaded = trie
+                            .load_overlay_node_from_disk(on_disk)
+                            .expect("fault child");
+                        assert_eq!(loaded.durable_stamp(), raw);
+                        *fault_count += 1;
+                        pending.push(loaded);
+                    } else if let Some(in_mem) = child.as_in_mem() {
+                        pending.push(in_mem.clone());
                     }
-                    walk(trie, &faulted, stamped, unstamped);
-                } else if let Some(in_mem) = child.as_in_mem() {
-                    walk(trie, in_mem, stamped, unstamped);
                 }
             }
         }
 
-        // (a) UNCOMPRESSED: all-short branching terms → every chunk prefix_len=0 → ZERO stamps.
+        // Uncompressed records are exact decodes and remain re-evictable.
         let dir = scratch("byte-cx6-noop-uncompressed");
         let trie = PersistentARTrie::<()>::create(dir.path().join("t.artb")).expect("create");
         let root = build_overlay(&["a", "b", "ca", "cb"]);
@@ -1670,18 +1777,13 @@ mod cx_compressed_serialize_byte {
         let loaded = trie
             .load_overlay_node_from_disk(&root_ptr)
             .expect("load uncompressed root");
-        assert_eq!(
-            loaded.durable_stamp(),
-            0,
-            "the uncompressed root itself must be unstamped on fault"
+        assert_eq!(loaded.durable_stamp(), root_ptr.to_raw());
+        let mut uncompressed_faults = 0usize;
+        walk(&trie, &loaded, &mut uncompressed_faults);
+        assert!(
+            uncompressed_faults > 0,
+            "sanity: at least one byte node was faulted"
         );
-        let (mut s, mut u) = (0usize, 0usize);
-        walk(&trie, &loaded, &mut s, &mut u);
-        assert_eq!(
-            s, 0,
-            "CX #6: an UNCOMPRESSED (prefix_len=0) image must yield ZERO durable stamps on fault (production no-op)"
-        );
-        assert!(u > 0, "sanity: at least one node was faulted");
 
         // (b) COMPRESSED: a long chain below a branch → ≥1 prefix_len>0 chunk → ≥1 stamp == its disk_ptr.
         let dir2 = scratch("byte-cx6-stamp-compressed");
@@ -1693,13 +1795,13 @@ mod cx_compressed_serialize_byte {
         let loaded2 = trie2
             .load_overlay_node_from_disk(&root2_ptr)
             .expect("load compressed root");
-        let (mut s2, mut u2) = (0usize, 0usize);
-        walk(&trie2, &loaded2, &mut s2, &mut u2);
+        assert_eq!(loaded2.durable_stamp(), root2_ptr.to_raw());
+        let mut compressed_faults = 0usize;
+        walk(&trie2, &loaded2, &mut compressed_faults);
         assert!(
-            s2 > 0,
-            "CX #6: a COMPRESSED (prefix_len>0) chunk must be stamped == its disk_ptr on fault (re-evictable)"
+            compressed_faults > 0,
+            "sanity: compressed byte image has faulted children"
         );
-        let _ = u2;
     }
 }
 
@@ -1782,8 +1884,7 @@ mod format3_legacy_bucket_reopen {
                 root_ptr: bucket_ptr.to_raw(),
                 committed_watermark_at_capture: None,
                 commit_seq_at_capture: None,
-                eviction_registry: None,
-                eviction_coordinator_at_capture: None,
+                registry_publication: None,
             };
             trie.publish_snapshot(&snapshot, None)
                 .expect("publish ROOT_TYPE_BUCKET descriptor");

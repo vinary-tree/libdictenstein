@@ -14,7 +14,7 @@
 //! This design enables lazy loading: start with disk references, swizzle to
 //! memory pointers on first access, and the transition is atomic.
 
-use std::ptr;
+use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 use super::error::SwizzleError;
@@ -219,6 +219,25 @@ impl SwizzledPtr {
         }
     }
 
+    /// Create a checked unswizzled (on-disk) pointer.
+    ///
+    /// Unlike [`Self::on_disk`], this constructor is suitable for values derived
+    /// from persistent bytes: it rejects coordinates that cannot be represented
+    /// by the packed pointer instead of truncating them in release builds.
+    pub fn try_on_disk(
+        block_id: u32,
+        offset: u32,
+        node_type: NodeType,
+    ) -> Result<Self, SwizzleError> {
+        if block_id > MAX_BLOCK_ID {
+            return Err(SwizzleError::BlockIdOverflow { block_id });
+        }
+        if offset > MAX_OFFSET {
+            return Err(SwizzleError::OffsetOverflow { offset });
+        }
+        Ok(Self::on_disk(block_id, offset, node_type))
+    }
+
     /// Create a new swizzled (in-memory) pointer.
     ///
     /// # Panics
@@ -226,9 +245,20 @@ impl SwizzledPtr {
     /// Panics if the pointer is null.
     pub fn in_memory<T>(ptr: *const T) -> Self {
         assert!(!ptr.is_null(), "memory pointer must not be null");
+        Self::in_memory_nonnull(
+            NonNull::new(ptr.cast_mut()).expect("memory pointer was checked as non-null"),
+        )
+    }
+
+    /// Create an in-memory pointer from a provenance-carrying non-null pointer.
+    ///
+    /// Owning containers use this constructor so their stored pointer is
+    /// visibly derived from the allocation's authoritative `Box::into_raw`
+    /// result, without an intervening reference retag.
+    pub(crate) fn in_memory_nonnull<T>(ptr: NonNull<T>) -> Self {
         Self {
             state: AtomicU64::new(MEMORY_STATE),
-            memory_ptr: AtomicPtr::new(ptr.cast_mut().cast::<()>()),
+            memory_ptr: AtomicPtr::new(ptr.cast::<()>().as_ptr()),
         }
     }
 
@@ -474,6 +504,24 @@ impl SwizzledPtr {
         // Arena N is stored in Block N+1
         let block_id = slot.arena_id.saturating_add(1);
         Self::on_disk(block_id, slot.slot_id, node_type)
+    }
+
+    /// Create a checked disk pointer from an arena slot.
+    ///
+    /// Persistent decoders must use this method rather than
+    /// [`Self::from_arena_slot`], because an arena identifier read from disk may
+    /// overflow the `arena_id + 1` mapping or the packed pointer's block field.
+    pub fn try_from_arena_slot(
+        slot: super::arena_slot::ArenaSlot,
+        node_type: NodeType,
+    ) -> Result<Self, SwizzleError> {
+        let block_id = slot
+            .arena_id
+            .checked_add(1)
+            .ok_or(SwizzleError::BlockIdOverflow {
+                block_id: slot.arena_id,
+            })?;
+        Self::try_on_disk(block_id, slot.slot_id, node_type)
     }
 
     // =========================================================================

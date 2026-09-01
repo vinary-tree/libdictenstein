@@ -29,14 +29,17 @@ use crate::value::DictionaryValue;
 use super::PersistentARTrieChar;
 
 /// Direct impl: an owned `&PersistentARTrieChar` can fault an overlay slot via its
-/// existing `load_overlay_node_from_disk`. An I/O / decode error degrades to `None`
-/// (no child) — never UB, never a fabricated term.
+/// existing `load_overlay_node_from_disk`, preserving its exact I/O / decode error
+/// for durable callers.
 impl<V: DictionaryValue, S: BlockStorage> OverlayFaulter<CharKey, V>
     for PersistentARTrieChar<V, S>
 {
     #[inline]
-    fn fault_overlay_slot(&self, slot: &SwizzledPtr) -> Option<Arc<OverlayNode<CharKey, V>>> {
-        self.load_overlay_node_from_disk(slot).ok()
+    fn try_fault_overlay_slot(
+        &self,
+        slot: &SwizzledPtr,
+    ) -> crate::persistent_artrie::core::error::Result<Arc<OverlayNode<CharKey, V>>> {
+        self.load_overlay_node_from_disk(slot)
     }
 }
 
@@ -62,8 +65,11 @@ impl<V: DictionaryValue, S: BlockStorage> OverlayFaulter<CharKey, V>
     for SharedOverlayFaulter<V, S>
 {
     #[inline]
-    fn fault_overlay_slot(&self, slot: &SwizzledPtr) -> Option<Arc<OverlayNode<CharKey, V>>> {
+    fn try_fault_overlay_slot(
+        &self,
+        slot: &SwizzledPtr,
+    ) -> crate::persistent_artrie::core::error::Result<Arc<OverlayNode<CharKey, V>>> {
         // F4: no lock — the handle is a bare `Arc`, faulting is `&self` + lock-free.
-        self.trie.load_overlay_node_from_disk(slot).ok()
+        self.trie.load_overlay_node_from_disk(slot)
     }
 }

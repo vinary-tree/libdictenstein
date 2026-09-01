@@ -71,8 +71,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: cargo build
         run: cargo build ${{ matrix.features }} --verbose
+      - name: verify protobuf feature isolation
+        if: matrix.features-name == 'protobuf'
+        run: |
+          cargo rustc --lib --no-default-features --features protobuf -- --print cfg > target/protobuf-root-cfg.txt
+          grep -Fx 'feature="protobuf"' target/protobuf-root-cfg.txt
+          if grep -Fxq 'feature="serialization"' target/protobuf-root-cfg.txt; then
+            echo 'protobuf must not enable the independent serialization feature' >&2
+            exit 1
+          fi
       - name: cargo test
         run: cargo test ${{ matrix.features }} --verbose --no-fail-fast
+      - name: verify performance-instrumentation API visibility
+        if: matrix.features-name == 'no-default-features'
+        run: bash scripts/verify-api-feature-visibility.sh
 
   # -----------------------------------------------------------------
   # `cargo clippy` with `-D warnings`. Catches all the lint regressions
@@ -219,12 +231,6 @@ jobs:
           # gxhash's portable x86 requirements while adding the sanitizer.
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -Z sanitizer=${{ matrix.sanitizer }}"
           RUSTDOCFLAGS: "-C target-feature=+aes,+sse2 -Z sanitizer=${{ matrix.sanitizer }}"
-          # The correspondence suite deliberately uses mem::forget to model
-          # process crashes while durable files remain open. LeakSanitizer
-          # cannot distinguish those fixtures from product leaks, so the ASan
-          # lane checks bounds/UAF while binding-specific lifecycle suites keep
-          # enforcing leak behavior.
-          ASAN_OPTIONS: "detect_leaks=0"
         shell: bash
         run: |
           common_args=(
@@ -242,22 +248,51 @@ jobs:
           # normal/formal lanes, and sanitize
           # the library, examples, doctests, and every ordinary integration
           # target here.
-          cargo +nightly test "${common_args[@]}" --lib --bins --examples
+          # Crash-recovery tests deliberately forget complete open dictionaries
+          # to model process death. Scope ASan leak suppression to the library
+          # test target and only those integration targets containing such a
+          # fixture; bins, examples, doctests, and ordinary integration tests
+          # retain LeakSanitizer coverage.
+          if [[ "${{ matrix.sanitizer }}" == address ]]; then
+            ASAN_OPTIONS=detect_leaks=0 cargo +nightly test "${common_args[@]}" --lib
+          else
+            cargo +nightly test "${common_args[@]}" --lib
+          fi
+          cargo +nightly test "${common_args[@]}" --bins --examples
 
           integration_args=()
+          asan_no_leak_integration_args=()
           for test_source in tests/*.rs; do
             case "$test_source" in
-              *_loom.rs | *_loom_*.rs)
+              *_loom.rs | *_loom_*.rs | *dynamic_dawg_u64_correspondence.rs)
                 echo "Loom-only target covered outside sanitizers: $test_source"
                 ;;
               *)
+                if [[ "${{ matrix.sanitizer }}" == address ]] && grep -Fq 'mem::forget' "$test_source"; then
+                  test_target="${test_source#tests/}"
+                  asan_no_leak_integration_args+=(--test "${test_target%.rs}")
+                  continue
+                fi
                 test_target="${test_source#tests/}"
                 integration_args+=(--test "${test_target%.rs}")
                 ;;
             esac
           done
           cargo +nightly test "${common_args[@]}" "${integration_args[@]}"
+          if (( ${#asan_no_leak_integration_args[@]} > 0 )); then
+            echo "Running ASan crash fixtures with LeakSanitizer disabled"
+            ASAN_OPTIONS=detect_leaks=0 cargo +nightly test \
+              "${common_args[@]}" "${asan_no_leak_integration_args[@]}"
+          fi
           cargo +nightly test "${common_args[@]}" --doc
+
+          # This mixed target has ordinary correspondence tests plus three
+          # `loom_*` models.  Preserve sanitizer coverage for its ordinary
+          # tests while leaving only the stackful models to the Loom jobs.
+          cargo +nightly test "${common_args[@]}" \
+            --test dynamic_dawg_u64_correspondence \
+            -- \
+            --skip loom_
 
   # -----------------------------------------------------------------
   # Rocq proofs. The sources use Coq's compatibility logical namespace, which
@@ -313,6 +348,7 @@ jobs:
         env:
           CARGO_BUILD_JOBS: "2"
           FORMAL_MEM_LIMIT_BYTES: "8589934592"
+          FORMAL_RESOURCE_CONTROL: external
           TLA_JAVA_HEAP: "3g"
         run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- bash scripts/verify-formal-correspondence.sh
 
@@ -360,6 +396,7 @@ jobs:
         env:
           CARGO_BUILD_JOBS: "2"
           FORMAL_MEM_LIMIT_BYTES: "8589934592"
+          FORMAL_RESOURCE_CONTROL: external
           RUN_MIRI: "1"
           TLA_JAVA_HEAP: "3g"
         run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- bash scripts/verify-formal-correspondence.sh
@@ -401,6 +438,7 @@ jobs:
         env:
           CARGO_BUILD_JOBS: "2"
           FORMAL_MEM_LIMIT_BYTES: "8589934592"
+          FORMAL_RESOURCE_CONTROL: external
           RUN_IO_URING: "1"
           TLA_JAVA_HEAP: "3g"
         run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- bash scripts/verify-formal-correspondence.sh
@@ -554,6 +592,7 @@ jobs:
         env:
           CARGO_BUILD_JOBS: "2"
           FORMAL_MEM_LIMIT_BYTES: "10737418240"
+          FORMAL_RESOURCE_CONTROL: external
           RUN_TLC: "1"
           TLA_JAVA_HEAP: "5g"
         run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- bash scripts/verify-formal-correspondence.sh

@@ -48,15 +48,36 @@
 //! [`MemoryPressureMonitor`]: crate::persistent_artrie::core::memory_monitor::MemoryPressureMonitor
 //! [`EpochManager`]: crate::persistent_artrie::core::concurrency::EpochManager
 
+mod atomic_residency;
 mod config;
 mod coordinator;
 mod disk_registry;
 pub mod lru_tracker;
+mod publication_gate;
+mod registry_build;
 
+pub(crate) use atomic_residency::{
+    AtomicResidencyGeneration, PackedResidencyDelta, PackedResidencyTransition,
+    ResidencyHelpOutcome,
+};
 pub use config::{EvictionConfig, EvictionStats, EvictionUrgency};
 pub use coordinator::EvictionCoordinator;
-pub use disk_registry::DiskLocationRegistry;
+pub(crate) use coordinator::{
+    ExactEvictionOutcome, ExactFaultOutcome, PreparedRegistryPublication,
+    RegistryPublicationOutcome, RegistryTransitionAuthority, RetirementOutcome,
+};
+pub(crate) use disk_registry::{
+    CompactEvictionBatch, CompactEvictionPolicy, LocalRegistryGraftStats, PreparedPackedResidency,
+    PublishedRegistryCatalog, RegistryBuilderSubtree, RegistryBuilderSubtreeStart, RegistryFamily,
+    RegistryGraftOutcome, RegistryPathId, RegistryStructuralSource,
+};
+pub use disk_registry::{DiskLocationRegistry, EvictableCharNode, EvictableNode};
 pub use lru_tracker::{AccessTracker, LruRegistry};
+pub(crate) use publication_gate::RegistryPublicationGate;
+pub(crate) use registry_build::{
+    scan_durable_registry_subtree, DiskRecordAddress, DurableRecordRef, DurableRegistryRecord,
+    DurableRegistryScanEvent,
+};
 
 #[cfg(test)]
 mod tests;

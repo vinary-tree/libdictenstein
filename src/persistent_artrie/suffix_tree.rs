@@ -646,15 +646,26 @@ where
     U: PersistentSuffixTreeUnit,
     V: DictionaryValue,
 {
-    let compact_index = nodes.len();
+    let root_compact_index = nodes.len();
     let raw_node = &raw[raw_index];
     nodes.push(CompactSuffixTreeNode {
         edges: Vec::new(),
         positions: raw_node.positions.clone(),
         value: raw_node.value.clone(),
     });
+    // A task identifies one raw edge whose compressed target has not yet been
+    // materialized. Reverse-pushing ordered children makes `pop` reproduce the
+    // recursive depth-first order without retaining iterator-heavy frames.
+    let mut pending: smallvec::SmallVec<[(usize, U, usize); 16]> = smallvec::SmallVec::new();
+    pending.extend(
+        raw_node
+            .children
+            .iter()
+            .rev()
+            .map(|(&unit, &child)| (root_compact_index, unit, child)),
+    );
 
-    for (&unit, &child) in &raw_node.children {
+    while let Some((parent_compact_index, unit, child)) = pending.pop() {
         let mut label = vec![unit];
         let mut cursor = child;
         while !raw[cursor].is_compression_boundary() {
@@ -666,13 +677,59 @@ where
             label.push(next_unit);
             cursor = next_child;
         }
-        let target = compress_raw_node(raw, cursor, nodes);
-        nodes[compact_index]
+
+        let compact_index = nodes.len();
+        nodes.push(CompactSuffixTreeNode {
+            edges: Vec::new(),
+            positions: raw[cursor].positions.clone(),
+            value: raw[cursor].value.clone(),
+        });
+        nodes[parent_compact_index]
             .edges
-            .push(CompactSuffixTreeEdge { label, target });
+            .push(CompactSuffixTreeEdge {
+                label,
+                target: compact_index,
+            });
+        pending.extend(
+            raw[cursor]
+                .children
+                .iter()
+                .rev()
+                .map(|(&unit, &child)| (compact_index, unit, child)),
+        );
     }
 
-    compact_index
+    root_compact_index
+}
+
+#[cfg(test)]
+mod compression_stack_safety_tests {
+    use super::{compress_raw_node, RawSuffixTreeNode};
+
+    #[test]
+    fn one_hundred_thousand_boundary_nodes_compress_without_native_recursion() {
+        const DEPTH: usize = 100_000;
+        let mut raw = Vec::<RawSuffixTreeNode<u8, ()>>::with_capacity(DEPTH + 1);
+        raw.push(RawSuffixTreeNode::new());
+        for parent in 0..DEPTH {
+            raw.push(RawSuffixTreeNode::new());
+            raw[parent].children.insert(b'x', parent + 1);
+            // A value makes every node a compression boundary, forcing the
+            // explicit frame machine to reach the full graph depth.
+            raw[parent + 1].value = Some(());
+        }
+
+        let mut compact = Vec::new();
+        assert_eq!(compress_raw_node(&raw, 0, &mut compact), 0);
+        assert_eq!(compact.len(), DEPTH + 1);
+        for (index, node) in compact.iter().take(DEPTH).enumerate() {
+            assert_eq!(node.edges.len(), 1);
+            assert_eq!(node.edges[0].label, vec![b'x']);
+            assert_eq!(node.edges[0].target, index + 1);
+        }
+        assert!(compact[DEPTH].edges.is_empty());
+        assert_eq!(compact[DEPTH].value, Some(()));
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

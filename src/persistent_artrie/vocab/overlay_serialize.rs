@@ -3,7 +3,7 @@
 //! A faithful port of char's proven `serialize_overlay_to_disk_iterative`
 //! (`persistent_artrie::char::persist`) — the ITERATIVE post-order (work-stack) arena DFS —
 //! instantiated at the concrete overlay value `u64`. It REUSES vocab's existing per-node
-//! char serialization (`build_disk_char_node_static` + `serialize_char_node_v2`), so the
+//! char serialization (sealed node projection + `serialize_char_node_v2`), so the
 //! on-disk node format is byte-identical to the CHAR arena v2 format. That is deliberate:
 //! reopen (V5) reads it back with char's `enumerate_char_terms_from_disk`, which is the
 //! exact inverse of `serialize_char_node_v2` + the appended `[value_len:u32][value_bytes]`.
@@ -23,11 +23,10 @@ use std::sync::Arc;
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::char::arena_manager::ArenaSlot;
 use crate::persistent_artrie::char::nodes::persistent_node::PersistentCharNode;
-use crate::persistent_artrie::char::nodes::CharNode;
 use crate::persistent_artrie::char::persist::overlay_inner_single_node_with_prefix;
 use crate::persistent_artrie::char::relative_encoding::SerializationContext;
 use crate::persistent_artrie::char::serialization_char::{
-    deserialize_char_node_v2, serialize_char_node_v2, DeserializationContext,
+    deserialize_char_node_v2, serialize_validated_char_node_v2, DeserializationContext,
 };
 use crate::persistent_artrie::char::types::CharTrieNodeInner;
 use crate::persistent_artrie::core::eviction::DiskLocationRegistry;
@@ -52,47 +51,6 @@ type VocabScan = (
 type DecodedVocabNode = (bool, Option<u64>, Vec<u32>, Vec<(u32, SwizzledPtr)>);
 
 impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
-    /// Build a `CharNode` with disk `SwizzledPtr`s for serialization.
-    ///
-    /// Relocated from the deleted owned `disk_io.rs` (V6) — the overlay serializer is now the
-    /// sole reuser. `Self::`-associated (no `self`/`S`); the overlay image must be byte-identical
-    /// to the CHAR arena v2 format.
-    pub(super) fn build_disk_char_node_static(
-        original: &CharNode,
-        disk_children: &[(u32, SwizzledPtr)],
-    ) -> CharNode {
-        let mut new_node = match original {
-            CharNode::N4(_) => CharNode::N4(Box::default()),
-            CharNode::N16(_) => CharNode::N16(Box::default()),
-            CharNode::N48(_) => CharNode::N48(Box::default()),
-            CharNode::Bucket(_) => CharNode::Bucket(Box::default()),
-        };
-
-        {
-            let new_header = new_node.header_mut();
-            let orig_header = original.header();
-            new_header.prefix_len = orig_header.prefix_len;
-            new_header.flags = orig_header.flags;
-        }
-
-        *new_node.prefix_mut() = *original.prefix();
-
-        for &(key, ref ptr) in disk_children {
-            match new_node.add_child_growing(key, ptr.clone()) {
-                Ok(Some(grown)) => new_node = grown,
-                Ok(None) => {}
-                Err(e) => {
-                    eprintln!(
-                        "Warning: failed to add child in build_disk_char_node_static: {:?}",
-                        e
-                    );
-                }
-            }
-        }
-
-        new_node
-    }
-
     /// Serialize the immutable overlay rooted at `root` into the dense char-arena image,
     /// returning the root `SwizzledPtr`. ITERATIVE post-order (work-stack) so depth does not
     /// recurse with branch depth. Each node's children are resolved to disk ptrs BEFORE the
@@ -198,7 +156,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
                     )
                 })
                 .collect();
-            let inner = overlay_inner_single_node(frame.node.as_ref(), &child_disk_ptrs);
+            let inner = overlay_inner_single_node(frame.node.as_ref(), &child_disk_ptrs)?;
             let node_ptr = self.serialize_one_overlay_node(&inner, &child_disk_ptrs)?;
             // NB no `durable_stamp` (vocab overlay is never evicted; see module docs).
 
@@ -221,7 +179,13 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         &self,
         root: &Arc<VocabOverlayNode>,
     ) -> Result<SwizzledPtr> {
-        OverlayCompressedSerialize::<CharKey, u64>::serialize_compressed_loop(self, root, None)
+        let mut serialization =
+            crate::persistent_artrie::core::overlay::compressed_serialize::OverlaySerializationBuild::production_disabled();
+        OverlayCompressedSerialize::<CharKey, u64>::serialize_compressed_loop(
+            self,
+            root,
+            &mut serialization,
+        )
     }
 
     /// Serialize ONE overlay node (children ALREADY resolved to disk ptrs) into the arena, in
@@ -259,7 +223,13 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
             SerializationContext::new(parent_slot)
         };
 
-        let disk_node = Self::build_disk_char_node_static(&node.node, child_disk_ptrs);
+        let disk_node = node
+            .validated_node_for_serialization(child_disk_ptrs)
+            .map_err(|error| {
+                PersistentARTrieError::internal(format!(
+                    "failed to project sealed vocab node for serialization: {error}"
+                ))
+            })?;
 
         let value_bytes: Vec<u8> = if let Some(ref value) = node.value {
             crate::serialization::bincode_compat::serialize(value).map_err(|e| {
@@ -270,7 +240,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         };
 
         let mut node_buffer = Vec::new();
-        serialize_char_node_v2(&disk_node, &mut node_buffer, &ctx)?;
+        serialize_validated_char_node_v2(&disk_node, &mut node_buffer, &ctx)?;
 
         let build_data = |node_buf: &[u8], value_buf: &[u8]| -> Vec<u8> {
             let total_size = node_buf.len() + 4 + value_buf.len();
@@ -289,7 +259,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         let final_slot = if slot != ctx.parent_slot {
             let corrected_ctx = SerializationContext::new(slot);
             let mut corrected_buffer = Vec::new();
-            serialize_char_node_v2(&disk_node, &mut corrected_buffer, &corrected_ctx)?;
+            serialize_validated_char_node_v2(&disk_node, &mut corrected_buffer, &corrected_ctx)?;
             let corrected_data = build_data(&corrected_buffer, &value_bytes);
             if corrected_data.len() == data.len() {
                 arena_manager.write().update(slot, &corrected_data)?;
@@ -537,7 +507,7 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
             max_id = max_id.max(id);
             if self.get_index_lockfree(&term).is_none() {
                 let units: Vec<u32> = term.chars().map(|c| c as u32).collect();
-                self.overlay_publish_value(&units, id);
+                self.overlay_publish_value(&units, id)?;
                 if let Some(ref rev) = self.reverse_term_map {
                     rev.insert(id, term);
                 }
@@ -568,7 +538,7 @@ impl<S: BlockStorage> OverlayCompressedSerialize<CharKey, u64>
         node: &VocabOverlayNode,
         child_disk_ptrs: &[(u32, SwizzledPtr)],
     ) -> Result<Self::Projected> {
-        Ok(overlay_inner_single_node(node, child_disk_ptrs))
+        overlay_inner_single_node(node, child_disk_ptrs)
     }
 
     fn project_chunk(
@@ -576,11 +546,7 @@ impl<S: BlockStorage> OverlayCompressedSerialize<CharKey, u64>
         child_disk_ptrs: &[(u32, SwizzledPtr)],
         prefix: &[u32],
     ) -> Result<Self::Projected> {
-        Ok(overlay_inner_single_node_with_prefix::<u64>(
-            synth,
-            child_disk_ptrs,
-            prefix,
-        ))
+        overlay_inner_single_node_with_prefix::<u64>(synth, child_disk_ptrs, prefix)
     }
 
     fn serialize_projected_node(
@@ -588,6 +554,7 @@ impl<S: BlockStorage> OverlayCompressedSerialize<CharKey, u64>
         projected: &Self::Projected,
         child_disk_ptrs: &[(u32, SwizzledPtr)],
         _path: &[u32],
+        _registry_path: crate::persistent_artrie::core::eviction::RegistryPathId,
         _registry: Option<&mut DiskLocationRegistry>,
     ) -> Result<SwizzledPtr> {
         self.serialize_one_overlay_node(projected, child_disk_ptrs)
@@ -596,32 +563,45 @@ impl<S: BlockStorage> OverlayCompressedSerialize<CharKey, u64>
     fn new_synth_node() -> VocabOverlayNode {
         VocabOverlayNode::new()
     }
-
-    fn stamp_durable(_live: &VocabOverlayNode, _raw: u64) {
-        // No-op: vocab overlays are never evicted (registry is always None on the forwarder).
-    }
 }
 
 /// Build the single-node `CharTrieNodeInner<u64>` (disk children added) for an overlay node —
-/// supplies finality + value; the disk children fix the node TYPE for `build_disk_char_node_static`.
+/// supplies finality + value; validated disk children determine its adaptive node type.
 /// Mirrors char's `overlay_inner_single_node`.
 fn overlay_inner_single_node(
     node: &VocabOverlayNode,
     child_disk_ptrs: &[(u32, SwizzledPtr)],
-) -> CharTrieNodeInner<u64> {
+) -> Result<CharTrieNodeInner<u64>> {
     let mut inner = CharTrieNodeInner::<u64>::default();
-    inner.node.header_mut().set_final(node.is_final());
+    inner.set_final(node.is_final());
     inner.value = node.get_value();
-    for &(key, ref ptr) in child_disk_ptrs {
-        if let Some(grown) = inner
-            .node
-            .add_child_growing(key, ptr.clone())
-            .expect("overlay_inner_single_node: add on-disk child within capacity")
-        {
-            inner.node = grown;
+    for &(key, ref pointer) in child_disk_ptrs {
+        let character = char::from_u32(key).ok_or_else(|| {
+            PersistentARTrieError::internal(format!(
+                "vocab serialization produced non-Unicode child key {key:#x}"
+            ))
+        })?;
+        if pointer.disk_location().is_none() {
+            return Err(PersistentARTrieError::internal(format!(
+                "vocab serialization child {character:?} is not a disk location"
+            )));
         }
+        let child =
+            crate::persistent_artrie::char::types::NonResidentCharChild::try_from(pointer.clone())
+                .map_err(|error| {
+                    PersistentARTrieError::internal(format!(
+                        "vocab serialization child {character:?} is invalid: {error}"
+                    ))
+                })?;
+        inner
+            .try_add_nonresident_child(character, child)
+            .map_err(|error| {
+                PersistentARTrieError::internal(format!(
+                    "vocab serialization child {character:?} could not be projected: {error}"
+                ))
+            })?;
     }
-    inner
+    Ok(inner)
 }
 
 /// Return `Some(first_slot)` iff the children are ≥2, all on disk in the parent's arena, and

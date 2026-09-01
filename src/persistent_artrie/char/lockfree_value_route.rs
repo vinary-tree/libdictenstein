@@ -28,7 +28,7 @@ use std::any::Any;
 // (`insert_with_value`/`upsert`/`get_or_insert`/`compare_and_swap`/`insert_batch`)
 // now route to the SHARED GENERIC `DurableOverlayWrite::*_default` methods, which
 // work for ANY `V` via the `value_publish_inner` seam over the (now generic)
-// `build_value_path_recursive`. The `Any`-downcast-to-u64 they did is the exact
+// `build_value_path_iterative`. The `Any`-downcast-to-u64 they did is the exact
 // NH1 data-loss footgun the design removes: for arbitrary `V` post-flip it returned
 // `None` → the caller fell through to an owned write that is unranked → dropped on
 // Overlay-regime reopen. Only `route_increment` (below) keeps the downcast — the

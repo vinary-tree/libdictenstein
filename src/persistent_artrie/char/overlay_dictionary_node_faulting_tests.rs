@@ -1,6 +1,6 @@
 //! In-crate coverage for the **overlay-backed `DictionaryNode` OnDisk fault-in**
 //! (F7 BLOCKER-1). The OnDisk path can only be reached after overlay **eviction**
-//! (`evict_overlay_nodes`), whose driver is `pub(crate)` — so this lives in-crate,
+//! through compact generation-bound batches, whose driver is `pub(crate)` — so this lives in-crate,
 //! not in `tests/` (which is a separate crate and cannot drive eviction).
 //!
 //! After cold overlay subtrees are evicted to `Child::OnDisk`, an overlay-backed
@@ -24,9 +24,13 @@ use crate::persistent_artrie::char::{
     PersistentARTrieChar, PersistentARTrieCharNode, SharedCharARTrie,
 };
 use crate::persistent_artrie::core::durability::DurabilityPolicy;
+use crate::persistent_artrie::core::eviction::CompactEvictionBatch;
+use crate::persistent_artrie::core::overlay::evict::OverlayEvictable;
 use crate::persistent_artrie::core::overlay::OverlayFaulter;
 use crate::persistent_artrie::core::shared_access::SharedTrieAccess;
-use crate::DictionaryNode;
+use crate::{Dictionary, DictionaryNode};
+
+use super::lockfree_cas::DEFAULT_MAX_FAULTIN_RETRIES;
 
 fn scratch(prefix: &str) -> tempfile::TempDir {
     std::fs::create_dir_all("target/test-tmp").ok();
@@ -36,9 +40,49 @@ fn scratch(prefix: &str) -> tempfile::TempDir {
         .expect("scratch tempdir under target/test-tmp")
 }
 
+fn char_root_resident_totals<V, S>(trie: &PersistentARTrieChar<V, S>) -> (usize, usize)
+where
+    V: crate::value::DictionaryValue,
+    S: crate::persistent_artrie::block_storage::BlockStorage,
+{
+    let coordinator = trie
+        .eviction_coordinator
+        .lock()
+        .expect("eviction_coordinator mutex poisoned")
+        .as_ref()
+        .cloned()
+        .expect("eviction enabled");
+    let root = trie.lockfree_root.as_ref().expect("overlay root");
+    coordinator.root_resident_totals(root).unwrap_or_default()
+}
+
 /// Cold predicate: `c-*` family is cold (the only family ever fed to the evictor).
 fn is_cold(path: &[char]) -> bool {
     path.first() == Some(&'c')
+}
+
+fn retain_char_candidates<F>(batch: &mut CompactEvictionBatch<u32>, predicate: F)
+where
+    F: Fn(&[char]) -> bool,
+{
+    let mut retained = Vec::new();
+    if retained.try_reserve_exact(batch.candidates.len()).is_err() {
+        batch.candidates.clear();
+        return;
+    }
+    for candidate in &batch.candidates {
+        retained.push(
+            batch
+                .materialize_char_path(candidate.path_id)
+                .is_some_and(|path| predicate(&path)),
+        );
+    }
+    let mut retained_index = 0usize;
+    batch.candidates.retain(|_| {
+        let keep = retained[retained_index];
+        retained_index += 1;
+        keep
+    });
 }
 
 /// One round of cold-only overlay eviction (coldest-first, registry-gated), exactly
@@ -57,28 +101,33 @@ where
         Some(c) => std::sync::Arc::clone(c),
         None => return 0,
     };
+    let Some(root) = trie.lockfree_root.as_ref() else {
+        return 0;
+    };
     coordinator
-        .force_eviction_char(budget_bytes, |cands| {
-            let filtered: Vec<_> = cands.into_iter().filter(|(_, p, _)| is_cold(p)).collect();
-            super::evict_overlay_nodes(trie, filtered, 4)
+        .force_eviction_compact_char_root(root, budget_bytes, |mut batch| {
+            retain_char_candidates(&mut batch, is_cold);
+            super::evict_overlay_compact_batch(trie, batch, 4)
         })
         .0
 }
 
 /// DFS of an overlay `DictionaryNode` collecting every final term.
 fn walk_terms(node: &PersistentARTrieCharNode<()>) -> BTreeSet<String> {
-    fn go(node: &PersistentARTrieCharNode<()>, prefix: &mut String, out: &mut BTreeSet<String>) {
+    let mut out = BTreeSet::new();
+    let mut work = vec![(node.clone(), String::new())];
+
+    while let Some((node, prefix)) = work.pop() {
         if node.is_final() {
             out.insert(prefix.clone());
         }
         for (ch, child) in node.edges() {
-            prefix.push(ch);
-            go(&child, prefix, out);
-            prefix.pop();
+            let mut child_prefix = prefix.clone();
+            child_prefix.push(ch);
+            work.push((child, child_prefix));
         }
     }
-    let mut out = BTreeSet::new();
-    go(node, &mut String::new(), &mut out);
+
     out
 }
 
@@ -171,6 +220,7 @@ fn overlay_dictionary_node_faults_evicted_children_in() {
         owned.evictable_node_count().unwrap_or(0) > 0,
         "registry must publish evictable nodes"
     );
+    let (resident_before, serialized_before) = char_root_resident_totals(&owned);
 
     // BEFORE eviction: the overlay is fully resident; a no-faulter walk already sees
     // everything (a baseline that proves the eviction below is what creates OnDisk).
@@ -190,6 +240,9 @@ fn overlay_dictionary_node_faults_evicted_children_in() {
         "overlay eviction reclaimed ZERO cold nodes — cannot exercise the OnDisk \
          fault-in (the driver is a no-op)"
     );
+    let (resident_after_eviction, serialized_after_eviction) = char_root_resident_totals(&owned);
+    assert!(resident_after_eviction < resident_before);
+    assert!(serialized_after_eviction < serialized_before);
 
     // (1) WITH a faulter: the walk faults the evicted cold children back in and
     // recovers EVERY term — cold AND live. This is the no-drop guarantee.
@@ -213,6 +266,11 @@ fn overlay_dictionary_node_faults_evicted_children_in() {
         faulted_walk, all,
         "faulting overlay DictionaryNode walk must recover ALL terms (cold faulted \
          in + live resident) — an OnDisk child was dropped (terms lost)"
+    );
+    assert_eq!(
+        char_root_resident_totals(&trie_arc),
+        (resident_after_eviction, serialized_after_eviction),
+        "detached char loads must not change current-root residency"
     );
 
     // (2) WITHOUT a faulter: the cold OnDisk children degrade to absent (no
@@ -242,11 +300,10 @@ fn overlay_dictionary_node_faults_evicted_children_in() {
     );
 
     // `transition`-driven descent of a cold term also faults its spine in.
-    let guard = trie_arc.read();
     let faulter2: Arc<
         dyn OverlayFaulter<crate::persistent_artrie::core::key_encoding::CharKey, ()>,
     > = Arc::new(SharedOverlayFaulter::new(Arc::clone(&trie_arc)));
-    let root = overlay_root_with_faulter(&guard, Some(faulter2));
+    let root = overlay_root_with_faulter(trie_arc.as_ref(), Some(faulter2));
     let cold0: Vec<char> = cold_terms[0].chars().collect();
     let mut node = root;
     for ch in cold0 {
@@ -257,5 +314,59 @@ fn overlay_dictionary_node_faults_evicted_children_in() {
     assert!(
         node.is_final(),
         "the faulted cold-term terminal must be final"
+    );
+    assert_eq!(
+        char_root_resident_totals(&trie_arc),
+        (resident_after_eviction, serialized_after_eviction)
+    );
+    // `DictionaryNode` snapshots intentionally perform detached, non-publishing
+    // loads, as the residency assertions above establish. Exercise the current
+    // root's fault-and-CAS path explicitly here. The public membership fast path
+    // may answer from its positive cache without traversing the overlay, while
+    // `Dictionary::contains` creates another detached root snapshot; neither is
+    // an authoritative residency-restoration operation.
+    let root_slot = trie_arc
+        .lockfree_root
+        .as_ref()
+        .expect("installed overlay root slot");
+    for term in &all {
+        let units: Vec<u32> = term.chars().map(u32::from).collect();
+        assert!(
+            trie_arc
+                .find_leaf_faulting(root_slot, &units, DEFAULT_MAX_FAULTIN_RETRIES)
+                .expect("current-root fault-in")
+                .is_some(),
+            "current-root read lost {term:?}"
+        );
+    }
+    assert_eq!(
+        char_root_resident_totals(&trie_arc),
+        (resident_before, serialized_before)
+    );
+
+    // The detached node's owned faulter is the address-space lease: it keeps the
+    // trie and its buffer/arena managers alive after the caller drops the last
+    // explicit shared-trie handle, and releases them with the last node snapshot.
+    drop(node);
+    let mut reevicted = 0usize;
+    for _ in 0..8 {
+        reevicted += evict_cold_overlay(&trie_arc, usize::MAX);
+    }
+    assert!(
+        reevicted > 0,
+        "the lifetime witness must retain actual OnDisk char children"
+    );
+    let lifetime_root = Dictionary::root(&trie_arc);
+    let trie_lifetime = Arc::downgrade(&trie_arc);
+    drop(trie_arc);
+    assert!(
+        trie_lifetime.upgrade().is_some(),
+        "the detached char root must lease the backing trie address space"
+    );
+    assert_eq!(walk_terms(&lifetime_root), all);
+    drop(lifetime_root);
+    assert!(
+        trie_lifetime.upgrade().is_none(),
+        "dropping the final detached char root must release its trie lease"
     );
 }
