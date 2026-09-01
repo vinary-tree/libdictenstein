@@ -33,7 +33,7 @@ GUIDES = {
     "python": Guide("Python", "Python 3.10+", "Tier 1", "PyPI `libdictenstein`", "`ctypes` over the stable C ABI", "Use dictionaries as context managers or call `close()` in `finally`; finalizers are fallback containment.", "Native statuses become typed Python exceptions preserving the diagnostic.", "bindings/python/src/libdictenstein", "bindings/python/tests/test_backends.py", "PYTHONPATH=bindings/python/src pytest -q bindings/python/tests"),
     "jvm": Guide("JVM", "Java 22+, Kotlin, and Scala", "Tier 1", "Maven `io.vinarytree:libdictenstein`", "Java FFM over the stable C ABI", "Use try-with-resources, Kotlin `use`, or Scala `Using`; `Cleaner` is not deterministic cleanup.", "Native statuses become typed JVM exceptions with symbolic status and diagnostic.", "bindings/jvm/src/main/java/io/vinarytree/libdictenstein", "bindings/jvm/src/test/java/io/vinarytree/libdictenstein/BackendIntegrationTest.java", "./gradlew -p bindings/jvm test"),
     "clojure": Guide("Clojure", "Clojure 1.12+ on Java 22+", "Tier 1", "Clojars `io.vinarytree/libdictenstein-clojure`", "Idiomatic namespace delegating to the JVM facade", "Use `with-open`; close persistent stores before process teardown so checkpoints and descriptors are deterministic.", "JVM failures become `ExceptionInfo` with structured status data.", "bindings/clojure/src/vinary_tree/libdictenstein.clj", "bindings/clojure/test/vinary_tree/libdictenstein_test.clj", "clojure -M:test -m vinary-tree.libdictenstein-test-runner"),
-    "javascript": Guide("JavaScript family", "JavaScript, TypeScript, and ClojureScript", "Tier 1", "npm `@vinary-tree/libdictenstein`", "Facade on the singleton `@vinary-tree/vinary-tree` runtime", "Use `using` or `close()`/`close!` in `finally`; never rely on GC to flush persistent state.", "Failures become structured `VinaryTreeError` instances.", "bindings/javascript", "bindings/javascript/test/facades.test.mjs", "npm test --prefix bindings/javascript"),
+    "javascript": Guide("JavaScript family", "JavaScript, TypeScript, and ClojureScript", "Tier 1", "npm `@vinary-tree/libdictenstein`", "Facade on the singleton `@vinary-tree/javascript-runtime`", "Use `using` or `close()`/`close!` in `finally`; never rely on GC to flush persistent state.", "Failures become structured `VinaryTreeError` instances.", "bindings/javascript", "bindings/javascript/test/facades.test.mjs", "npm test --prefix bindings/javascript"),
     "dotnet": Guide(".NET", ".NET 8+ / C#", "Tier 2", "NuGet `Libdictenstein`", "P/Invoke and `VinaryTree.Interop` retained resources", "Use `using`; `SafeHandle` covers exceptional paths but not prompt checkpoint/close policy.", "Failures become typed .NET exceptions containing status and diagnostic.", "bindings/dotnet/src/VinaryTree.Libdictenstein", "bindings/dotnet/tests/VinaryTree.Libdictenstein.Tests/Program.cs", "dotnet run --project bindings/dotnet/tests/VinaryTree.Libdictenstein.Tests"),
     "go": Guide("Go", "Go 1.25+ with cgo", "Tier 2", "Go module `github.com/vinary-tree/libdictenstein/bindings/go/v4`", "cgo over `ldict_*`", "Call `Close` with `defer` immediately after construction; finalizers only report abandoned handles.", "Operations return inspectable Go errors with native status and diagnostic.", "bindings/go/libdictenstein.go", "bindings/go/libdictenstein_test.go", "go test ./bindings/go/..."),
     "swift": Guide("Swift", "Swift 6+", "Tier 2", "SwiftPM `Libdictenstein`", "Swift system-library target over the C ABI", "Use lexical `defer` and explicit `close`; `deinit` timing is not a persistence guarantee.", "C statuses become throwing Swift errors preserving diagnostics.", "bindings/swift/libdictenstein/Sources/Libdictenstein", "bindings/swift/libdictenstein/Tests/LibdictensteinTests/ConformanceTests.swift", "swift test --package-path bindings/swift/libdictenstein"),
@@ -42,7 +42,59 @@ GUIDES = {
     "ocaml": Guide("OCaml", "OCaml 5", "Tier 3", "opam `libdictenstein`", "C stubs over the stable ABI", "Use explicit close functions or `Fun.protect`; finalizers only protect abandoned values.", "Statuses become typed OCaml exceptions with copied diagnostics.", "bindings/ocaml/vinary_tree_libdictenstein.mli", "bindings/ocaml/test/conformance.ml", "opam exec -- dune runtest --root bindings/ocaml"),
     "haskell": Guide("Haskell", "GHC/Cabal", "Tier 3", "Hackage `libdictenstein`", "Haskell FFI plus retained interop resources", "Use `bracket`/`withDictionary`; mask asynchronous exceptions across acquire/release.", "Failures become typed Haskell exceptions/status values.", "bindings/haskell/src/VinaryTree/Libdictenstein.hs", "bindings/haskell/test/Conformance.hs", "cabal test --project-file=bindings/haskell/cabal.project all"),
     "lua": Guide("Lua", "Lua 5.4+", "Tier 3", "LuaRocks `libdictenstein`", "C userdata module over the ABI", "Use to-be-closed variables or `:close()`; `__gc` is fallback cleanup.", "Failures become Lua errors carrying the symbolic status and diagnostic.", "bindings/lua/src/libdictenstein_lua.c", "bindings/lua/test/conformance.lua", "lua bindings/lua/test/conformance.lua"),
+    "julia": Guide("Julia", "Julia 1.10+", "Tier 2", "Julia General `Libdictenstein`", "`ccall` over the stable C ABI plus `VinaryTreeInterop` snapshots", "Call `close` in `finally`; finalizers contain abandoned handles but do not define resource lifetime.", "Native statuses become `NativeError` values containing the exact operation and copied diagnostic.", "bindings/julia/Libdictenstein/src/Libdictenstein.jl", "bindings/julia/Libdictenstein/test/runtests.jl", "julia --project=bindings/julia/Libdictenstein -e 'using Pkg; Pkg.test()'"),
+    "raku": Guide("Raku", "Rakudo 2025.01+", "Tier 3", "Zef `Libdictenstein`", "NativeCall over the stable C ABI plus `Vinary-Tree-Interop` snapshots", "Call `close` in `LEAVE`/`CATCH` paths; `DESTROY` is fallback containment, and explicitly close iterators after early termination.", "Native statuses become `X::Libdictenstein` exceptions containing the exact operation and copied diagnostic.", "bindings/raku/lib/Libdictenstein.rakumod", "bindings/raku/t/01-conformance.rakutest", "raku -Ibindings/raku/lib -I../vinary-tree-interop/bindings/raku/lib bindings/raku/t/01-conformance.rakutest"),
 }
+
+
+ALGEBRA_EXAMPLES = {
+    "C": ("c", "LdictDictionary *joined = NULL;\nLdictStatus status = ldict_dictionary_algebra(\n    left, right, LDICT_ALGEBRA_UNION, LDICT_VALUE_LATTICE_JOIN, &joined);\nif (status == LDICT_OK) ldict_dictionary_free(joined);"),
+    "C++": ("cpp", "auto joined = left.set_union(right, value_merge::lattice_join);"),
+    "Python": ("python", "with left.union(right, ValueMerge.LATTICE_JOIN) as joined:\n    print(len(joined))"),
+    "JVM": ("java", "try (var joined = left.union(right, ValueMerge.LATTICE_JOIN)) {\n    System.out.println(joined.size());\n}"),
+    "Clojure": ("clojure", "(with-open [joined (d/union left right {:value-merge :lattice-join})]\n  (println (d/size joined)))"),
+    "JavaScript family": ("javascript", "using joined = left.union(right, \"lattice-join\");\nusing common = left.intersection(right);"),
+    ".NET": ("csharp", "using var joined = left.Union(right, ValueMerge.LatticeJoin);\nusing var common = left & right;"),
+    "Go": ("go", "joined, err := left.UnionWith(right, libdictenstein.LatticeJoinValue)\nif err != nil { return err }\ndefer joined.Close()\ncount, err := joined.Len()\nif err != nil { return err }\nfmt.Println(count)"),
+    "Swift": ("swift", "let joined = try left.union(right, valueMerge: .latticeJoin)\ndefer { joined.close() }"),
+    "Ruby": ("ruby", "joined = left.union(right, value_merge: LD::ValueMerge::LATTICE_JOIN)\nbegin\n  puts joined.length\nensure\n  joined.close\nend"),
+    "Fortran": ("fortran", "call left%set_union(right, joined, value_merge_lattice_join, status)\nif (status /= ldict_ok) error stop \"union failed\"\ncall joined%close()"),
+    "OCaml": ("ocaml", "let joined = union ~value_merge:Lattice_join left right in\nFun.protect ~finally:(fun () -> close joined)\n  (fun () -> Printf.printf \"%d\\n\" (length joined))"),
+    "Haskell": ("haskell", "bracket (algebra Union LatticeJoin left right) close $ \\joined ->\n  dictionaryLength joined >>= print"),
+    "Lua": ("lua", "local joined <close> = left:union(right, \"lattice_join\")\nlocal common <close> = left & right"),
+    "Julia": ("julia", "joined = algebra(left, right, ALGEBRA_UNION, VALUE_MERGE_LATTICE_JOIN)\ntry\n    println(length(joined))\nfinally\n    close(joined)\nend"),
+    "Raku": ("raku", "my $joined = $left.union($right, merge => VALUE-MERGE-LATTICE-JOIN);\nLEAVE $joined.close;"),
+}
+
+
+def algebra_section(g: Guide) -> str:
+    language, example = ALGEBRA_EXAMPLES[g.name]
+    return f"""## Snapshot-consistent dictionary algebra
+
+Every facade exposes native union, intersection, left difference, and
+symmetric difference. The operation captures one immutable revision from each
+input; those two captures are independent, and later mutations cannot alter
+the result. Inputs must use the same byte, Unicode-scalar, or `u64` term
+domain.
+
+The producer merges the two lexicographically ordered entry streams once and
+feeds the sorted, duplicate-free output directly to the DynamicDAWG
+freeze-once builder. For input cardinalities $`|A|`$ and $`|B|`$, this is
+$`\\Theta(|A|+|B|)`$ work plus $`\\Theta(|R|)`$ result storage. It avoids a
+host-language hash table, per-entry foreign calls, and repeated mutable graph
+publication. The returned DynamicDAWG is independently mutable.
+
+Keys present in both inputs use an explicit optional-`u64` value policy:
+left/first, right/last, lattice join (optional maximum), or lattice meet
+(shared optional minimum). Valueless membership remains distinct from absence
+and from the value zero. Union defaults to right/last and intersection defaults
+to lattice meet; difference operations have no overlapping output key, so a
+value policy cannot affect them.
+
+```{language}
+{example}
+```
+"""
 
 def block(g: Guide) -> str:
     benchmark_section = ""
@@ -184,6 +236,20 @@ provides the idiomatic generic-for triple. `dictionary:entry_cursor(limits)`
 exposes explicit `:next()`, metadata, and idempotent `:close()` for bounded
 streaming. Lua 5.4 to-be-closed variables provide lexical cleanup and `__gc`
 only contains abandoned userdata."""
+    elif g.name == "Julia":
+        collection_section = """Every dictionary is an `AbstractDict` whose key type follows its
+byte, Unicode-scalar, or `UInt64`-token domain. Ordinary `iterate`, `keys`,
+`values`, `haskey`, indexing, mutation, `merge`, `intersect`, and `setdiff`
+therefore compose with Julia's standard collection algorithms. Iteration pins
+one immutable retained snapshot and closes it at exhaustion or exception;
+callers close a dictionary explicitly when its native lifetime ends."""
+    elif g.name == "Raku":
+        collection_section = """Every dictionary implements `Associative` and `Iterable`, so
+postcircumfix lookup, `:exists`, assignment, deletion, `elems`, `Seq`, and
+ordinary `for` loops use familiar Raku protocols. Iteration owns one immutable
+retained snapshot and closes it after full drain. For an early stop, obtain
+`iterator`, scope it with `LEAVE`, and call its idempotent `close`; `DESTROY`
+only contains an abandoned iterator."""
     else:
         raise AssertionError(f"collection documentation is missing for {g.name}")
     return f"""{MARKER}
@@ -254,6 +320,8 @@ sentinel and empty terms remain valid when supported.
 
 {collection_section}
 {benchmark_section}
+
+{algebra_section(g)}
 
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk

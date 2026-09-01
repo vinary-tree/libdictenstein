@@ -13,13 +13,16 @@ description: >
 
 inputs:
   ref:
-    description: Git ref (branch, tag, or SHA) to check out for the sibling crates.
+    description: >
+      Baseline development ref. A coordinated branch that exists in a sibling
+      repository is selected automatically unless explicitly overridden;
+      otherwise that sibling falls back to this ref.
     required: false
     default: master
   llattice-ref:
     description: Exact llattice ref; defaults to `ref`.
     required: false
-    default: ""
+    default: "v0.1.0"
   liblevenshtein-rust-ref:
     description: Exact liblevenshtein-rust ref; defaults to `ref`.
     required: false
@@ -34,20 +37,40 @@ runs:
   steps:
     - name: Clone sibling crates into the workspace parent
       shell: bash
+      env:
+        BASELINE_REF: ${{ inputs.ref }}
+        LLATTICE_REF: ${{ inputs.llattice-ref }}
+        LIBLEVENSHTEIN_RUST_REF: ${{ inputs.liblevenshtein-rust-ref }}
+        INTEROP_REF: ${{ inputs.vinary-tree-interop-ref }}
       run: |
         set -euo pipefail
         # The main repo is checked out at $GITHUB_WORKSPACE; its parent is
         # where the path dependencies resolve to.
         parent="$(dirname "$GITHUB_WORKSPACE")"
+        event_ref="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-}}"
+        development_ref="$BASELINE_REF"
+        git check-ref-format --branch "$development_ref" >/dev/null
+        if [ -n "$event_ref" ]; then
+          git check-ref-format --branch "$event_ref" >/dev/null
+        fi
         for repo in llattice liblevenshtein-rust vinary-tree-interop; do
           case "$repo" in
-            llattice) selected_ref="${{ inputs.llattice-ref }}" ;;
-            liblevenshtein-rust) selected_ref="${{ inputs.liblevenshtein-rust-ref }}" ;;
-            vinary-tree-interop) selected_ref="${{ inputs.vinary-tree-interop-ref }}" ;;
+            llattice) selected_ref="$LLATTICE_REF" ;;
+            liblevenshtein-rust) selected_ref="$LIBLEVENSHTEIN_RUST_REF" ;;
+            vinary-tree-interop) selected_ref="$INTEROP_REF" ;;
           esac
           if [ -z "$selected_ref" ]; then
-            selected_ref="${{ inputs.ref }}"
+            remote="https://github.com/vinary-tree/$repo.git"
+            if [ -n "$event_ref" ] && \
+              git ls-remote --exit-code --heads \
+                "$remote" "$event_ref" >/dev/null 2>&1
+            then
+              selected_ref="$event_ref"
+            else
+              selected_ref="$development_ref"
+            fi
           fi
+          git check-ref-format --branch "$selected_ref" >/dev/null
           dest="$parent/$repo"
           if [ -d "$dest/.git" ]; then
             echo "::group::Updating $repo to $selected_ref"

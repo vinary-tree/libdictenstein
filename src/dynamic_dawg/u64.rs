@@ -1783,8 +1783,10 @@ mod tests {
     #[test]
     fn test_stress_iterator_during_writes() {
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
         use std::sync::Arc as StdArc;
         use std::thread;
+        use std::time::Duration;
 
         let dawg: DynamicDawgU64<()> = DynamicDawgU64::new();
         // Pre-populate
@@ -1793,24 +1795,52 @@ mod tests {
         }
         let dawg = StdArc::new(dawg);
         let stop = StdArc::new(AtomicBool::new(false));
+        let write_window_open = StdArc::new(AtomicBool::new(false));
+        let (iteration_observed_tx, iteration_observed_rx) = mpsc::channel();
 
         // Iterator thread - iterates while writes happen
         let iter_dawg = StdArc::clone(&dawg);
         let iter_stop = StdArc::clone(&stop);
+        let iter_write_window = StdArc::clone(&write_window_open);
         let iter_handle = thread::spawn(move || {
             let mut iteration_count = 0;
+            let mut reported_concurrent_iteration = false;
             while !iter_stop.load(Ordering::Relaxed) {
                 // Collect all terms (snapshot at time of iteration start)
                 let terms: Vec<_> = iter_dawg.iter().collect();
                 // Should have at least the initial 100
                 assert!(terms.len() >= 100);
                 iteration_count += 1;
+                if !reported_concurrent_iteration && iter_write_window.load(Ordering::Acquire) {
+                    iteration_observed_tx
+                        .send(())
+                        .expect("coordinating writer remains live");
+                    reported_concurrent_iteration = true;
+                }
             }
             iteration_count
         });
 
-        // Writer threads add more sequences
-        let writer_handles: Vec<_> = (0..10)
+        // One coordinating writer publishes its first sequence, then remains
+        // in the write campaign until the iterator observes that publication.
+        // This removes the scheduler race where every writer could finish and
+        // the main thread could set `stop` before the iterator ran once.
+        let coordinating_dawg = StdArc::clone(&dawg);
+        let coordinating_write_window = StdArc::clone(&write_window_open);
+        let coordinating_writer = thread::spawn(move || {
+            let base = 1000;
+            coordinating_dawg.insert_sequence(&[base]);
+            coordinating_write_window.store(true, Ordering::Release);
+            iteration_observed_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("iterator observes a revision published during the write campaign");
+            for i in 1u64..100 {
+                coordinating_dawg.insert_sequence(&[base + i]);
+            }
+        });
+
+        // The remaining writer threads add disjoint sequences concurrently.
+        let writer_handles: Vec<_> = (1..10)
             .map(|writer_id| {
                 let dawg = StdArc::clone(&dawg);
                 thread::spawn(move || {
@@ -1826,6 +1856,9 @@ mod tests {
         for handle in writer_handles {
             handle.join().expect("Writer thread panicked");
         }
+        coordinating_writer
+            .join()
+            .expect("Coordinating writer thread panicked");
 
         // Signal iterator to stop
         stop.store(true, Ordering::Relaxed);

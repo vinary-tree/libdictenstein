@@ -95,6 +95,8 @@ export class DictionarySnapshot {
 
 /** Wrap an umbrella-runtime namespace with leak-safe ordinary collection protocols. */
 export function collectionNamespace(namespace) {
+  const targets = new WeakMap();
+  const unwrap = (dictionary) => targets.get(dictionary) ?? dictionary;
   const wrap = (dictionary) => {
     const materialize = () => {
       const cursor = dictionary.entries();
@@ -129,6 +131,19 @@ export function collectionNamespace(namespace) {
           case "forEach": return (callback, thisArg) => materialize().forEach(
             (value, key) => callback.call(thisArg, value, key, facade),
           );
+          case "algebra": return (right, operation, valueMerge = "last") => wrap(
+            target.algebra(unwrap(right), operation, valueMerge),
+          );
+          case "union": return (right, valueMerge = "last") => wrap(
+            target.union(unwrap(right), valueMerge),
+          );
+          case "intersection": return (right, valueMerge = "lattice-meet") => wrap(
+            target.intersection(unwrap(right), valueMerge),
+          );
+          case "difference": return (right) => wrap(target.difference(unwrap(right)));
+          case "symmetricDifference": return (right) => wrap(
+            target.symmetricDifference(unwrap(right)),
+          );
           case Symbol.iterator: return () => materialize()[Symbol.iterator]();
           default: {
             const value = Reflect.get(target, property, target);
@@ -137,6 +152,7 @@ export function collectionNamespace(namespace) {
         }
       },
     });
+    targets.set(facade, dictionary);
     return facade;
   };
   const result = {

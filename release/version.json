@@ -2,6 +2,12 @@
   "schemaVersion": 1,
   "component": "libdictenstein",
   "canonical": "4.0.0-rc.6",
+  "coordinates": {
+    "npmPackage": "@vinary-tree/libdictenstein"
+  },
+  "metadata": {
+    "description": "High-performance dictionaries and trie-maps for approximate string matching"
+  },
   "registries": {
     "cargo": "4.0.0-rc.6",
     "clojars": "4.0.0-rc.6",
@@ -23,8 +29,8 @@
     "llattice": "0.1.0",
     "liblevenshtein": "4.0.0-rc.6",
     "vinary-tree-interop": "4.0.0-rc.6",
-    "@vinary-tree/interop": "4.0.0-rc.6",
-    "@vinary-tree/vinary-tree": "4.0.0-rc.6"
+    "@vinary-tree/vinary-tree-interop": "4.0.0-rc.6",
+    "@vinary-tree/javascript-runtime": "4.0.0-rc.6"
   },
   "publication": {
     "distTag": "next",

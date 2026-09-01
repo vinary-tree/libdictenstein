@@ -61,7 +61,7 @@ use crate::persistent_artrie::wal::WalConfig;
 use crate::persistent_artrie::wal_managed::WalManaged;
 use dashmap::DashMap;
 
-#[cfg(debug_assertions)]
+#[cfg(any(test, debug_assertions))]
 type BorrowedVocabOverlayFrames<'root, K, V> = smallvec::SmallVec<
     [(
         &'root Arc<crate::persistent_artrie::core::overlay::node::OverlayNode<K, V>>,
@@ -279,7 +279,7 @@ impl<S: BlockStorage> Drop for PersistentVocabARTrie<S> {
 /// enables overlay eviction, the snapshot `Clone` (share-root + detach-storage) would silently
 /// drop evicted paths; this assertion fails loudly instead of returning a lossy snapshot. The
 /// explicit heap worklist keeps native-stack use independent of trie depth.
-#[cfg(debug_assertions)]
+#[cfg(any(test, debug_assertions))]
 pub(super) fn overlay_subtree_all_in_mem<
     K: crate::persistent_artrie::core::key_encoding::KeyEncoding,
     V: Clone,

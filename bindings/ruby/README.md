@@ -113,6 +113,38 @@ ruby bindings/ruby/bin/libdictenstein-collection-profile --arm stream --entries 
 ruby bindings/ruby/bin/libdictenstein-collection-profile --arm stream-cancel --entries 65536 --batch-size 64 --early-cancel 64
 ```
 
+## Snapshot-consistent dictionary algebra
+
+Every facade exposes native union, intersection, left difference, and
+symmetric difference. The operation captures one immutable revision from each
+input; those two captures are independent, and later mutations cannot alter
+the result. Inputs must use the same byte, Unicode-scalar, or `u64` term
+domain.
+
+The producer merges the two lexicographically ordered entry streams once and
+feeds the sorted, duplicate-free output directly to the DynamicDAWG
+freeze-once builder. For input cardinalities $`|A|`$ and $`|B|`$, this is
+$`\Theta(|A|+|B|)`$ work plus $`\Theta(|R|)`$ result storage. It avoids a
+host-language hash table, per-entry foreign calls, and repeated mutable graph
+publication. The returned DynamicDAWG is independently mutable.
+
+Keys present in both inputs use an explicit optional-`u64` value policy:
+left/first, right/last, lattice join (optional maximum), or lattice meet
+(shared optional minimum). Valueless membership remains distinct from absence
+and from the value zero. Union defaults to right/last and intersection defaults
+to lattice meet; difference operations have no overlapping output key, so a
+value policy cannot affect them.
+
+```ruby
+joined = left.union(right, value_merge: LD::ValueMerge::LATTICE_JOIN)
+begin
+  puts joined.length
+ensure
+  joined.close
+end
+```
+
+
 The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk
 `FromIterator`/`Extend` where infallible, named fallible variants for persistent

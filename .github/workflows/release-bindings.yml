@@ -661,7 +661,7 @@ jobs:
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           for module in \
-            github.com/vinary-tree/vinary-tree-interop/bindings/go@v0.1.0 \
+            github.com/vinary-tree/vinary-tree-interop/bindings/go/v4@v4.0.0-rc.6 \
             github.com/vinary-tree/liblevenshtein-rust/bindings/go@v4.0.0-rc.6; do
             for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
               if GOWORK=off GOPROXY=https://proxy.golang.org go list -m "$module" >/dev/null; then

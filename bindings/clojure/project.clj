@@ -1,5 +1,5 @@
 (defproject io.vinarytree/libdictenstein-clojure "4.0.0-rc.6"
-  :description "Idiomatic Clojure facade for high-performance libdictenstein dictionaries"
+  :description "High-performance dictionaries and trie-maps for approximate string matching"
   :url "https://github.com/vinary-tree/libdictenstein"
   :license {:name "Apache License 2.0"
             :url "https://www.apache.org/licenses/LICENSE-2.0.txt"}

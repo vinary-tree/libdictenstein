@@ -9,7 +9,7 @@ rust-version = "1.95"
 authors = ["Dylon Edwards <dylon.devo@gmail.com>"]
 license = "Apache-2.0"
 repository = "https://github.com/vinary-tree/libdictenstein"
-description = "High-performance dictionary data structures (trie, DAWG, double-array trie, suffix automaton, lock-free durable persistent ART) behind one trait API; pairs with liblevenshtein for fuzzy matching"
+description = "High-performance dictionaries and trie-maps for approximate string matching"
 keywords = ["trie", "dawg", "dictionary", "fuzzy-search", "automata"]
 categories = ["algorithms", "data-structures", "text-processing"]
 readme = "README.md"
@@ -155,6 +155,8 @@ fortran-bindings = ["native-bindings-full"]
 ocaml-bindings = ["native-bindings-full"]
 haskell-bindings = ["native-bindings-full"]
 lua-bindings = ["native-bindings-full"]
+julia-bindings = ["native-bindings-full"]
+raku-bindings = ["native-bindings-full"]
 pathmap-backend = ["pathmap"]
 serialization = ["serde", "bincode"]
 compression = ["flate2"]
@@ -380,3 +382,7 @@ required-features = ["persistent-artrie", "bench-internals"]
 
 [package.metadata.docs.rs]
 all-features = true
+
+# Keep this independently published repository from being captured by a Cargo
+# workspace merely because a source checkout is nested beneath one.
+[workspace]

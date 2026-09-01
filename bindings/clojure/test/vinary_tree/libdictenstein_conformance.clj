@@ -54,7 +54,7 @@
 
 (deftest c1-identity-constants
   (is (= 1 (d/abi-version)))
-  (is (= 5 (d/api-revision))))
+  (is (= 6 (d/api-revision))))
 
 (deftest c1-kind-and-capabilities
   (with-open [dawg (d/dynamic-dawg)]

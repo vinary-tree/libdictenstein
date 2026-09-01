@@ -107,6 +107,14 @@ pluggable merge strategy (last-wins, first-wins, or a lattice join/meet). See th
 semantics; the entry point is `UnionZipper::new(vec![z1, z2])` (and the `Difference` /
 `Intersection` / `SymmetricDifference` siblings).
 
+Use the separate materialized algebra when the result must cross a language
+boundary, survive independently, or accept later mutations. The safe
+`bindings::dictionary_algebra` function and every foreign facade capture one
+revision from each input, merge their already ordered entries in
+$`\Theta(|A|+|B|)`$ time, and freeze-build one mutable DynamicDAWG. This path is
+not a wrapper around the lazy zipper and does not round-trip through a host
+hash table; see the [binding hub](../bindings/README.md#materialized-dictionary-algebra).
+
 ## Save and load
 
 With the `serialization` feature, dictionaries round-trip through compact bincode; `protobuf`

@@ -19,6 +19,20 @@ public struct Lookup: Sendable, Equatable {
     }
 }
 
+public enum AlgebraOperation: UInt32, Sendable {
+    case union = 1
+    case intersection = 2
+    case difference = 3
+    case symmetricDifference = 4
+}
+
+public enum ValueMerge: UInt32, Sendable {
+    case first = 1
+    case last = 2
+    case latticeJoin = 3
+    case latticeMeet = 4
+}
+
 public struct EntryBatchLimits: Sendable, Equatable {
     public var maxEntries: Int
     public var maxUnits: Int
@@ -174,6 +188,44 @@ open class Dictionary: DictionaryResource, @unchecked Sendable {
         }
         try stream.close()
         return EntrySnapshot(info: stream.info, entries: values)
+    }
+
+    /// Materialize an independent mutable DynamicDAWG with one native ordered merge.
+    public func algebra(
+        _ right: Dictionary,
+        operation: AlgebraOperation = .union,
+        valueMerge: ValueMerge = .last
+    ) throws -> DynamicDAWG {
+        var result: OpaquePointer?
+        try checked(ldict_dictionary_algebra(
+            try handle(), try right.handle(), operation.rawValue, valueMerge.rawValue, &result
+        ))
+        guard let result else {
+            throw LibdictensteinError("dictionary algebra returned a null handle")
+        }
+        return DynamicDAWG(adopting: result, unitDomain: unitDomain)
+    }
+
+    /// Return keys in either input, using right-biased values by default.
+    public func union(_ right: Dictionary, valueMerge: ValueMerge = .last) throws -> DynamicDAWG {
+        try algebra(right, operation: .union, valueMerge: valueMerge)
+    }
+
+    /// Return shared keys, using optional-u64 lattice meet by default.
+    public func intersection(
+        _ right: Dictionary, valueMerge: ValueMerge = .latticeMeet
+    ) throws -> DynamicDAWG {
+        try algebra(right, operation: .intersection, valueMerge: valueMerge)
+    }
+
+    /// Return keys present in this dictionary but absent from right.
+    public func subtracting(_ right: Dictionary) throws -> DynamicDAWG {
+        try algebra(right, operation: .difference, valueMerge: .first)
+    }
+
+    /// Return keys present in exactly one input.
+    public func symmetricDifference(_ right: Dictionary) throws -> DynamicDAWG {
+        try algebra(right, operation: .symmetricDifference, valueMerge: .first)
     }
 
     @discardableResult
@@ -528,6 +580,10 @@ public final class DynamicDAWG: Dictionary, @unchecked Sendable {
         var raw: OpaquePointer?
         try checked(ldict_dynamic_dawg_new(domain(unitDomain), &raw))
         super.init(raw: raw!, unitDomain: unitDomain)
+    }
+
+    fileprivate init(adopting raw: OpaquePointer, unitDomain: UnitDomain) {
+        super.init(raw: raw, unitDomain: unitDomain)
     }
 }
 

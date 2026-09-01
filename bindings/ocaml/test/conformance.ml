@@ -53,9 +53,15 @@ let optval json = match json with `Null -> None | v -> Some (Int64.of_int (U.to_
 let fixture_path =
   if Array.length Sys.argv > 1 then Sys.argv.(1)
   else
+    let dune_source =
+      match Sys.getenv_opt "DUNE_SOURCEROOT" with
+      | Some root -> [ Filename.concat root "../canonical_fixture.json" ]
+      | None -> []
+    in
     let candidates =
-      [ "bindings/canonical_fixture.json"; "../canonical_fixture.json";
-        "../../canonical_fixture.json"; "../../../bindings/canonical_fixture.json" ]
+      dune_source
+      @ [ "bindings/canonical_fixture.json"; "../canonical_fixture.json";
+          "../../canonical_fixture.json"; "../../../bindings/canonical_fixture.json" ]
     in
     (try List.find Sys.file_exists candidates
      with Not_found -> "bindings/canonical_fixture.json")
@@ -88,7 +94,7 @@ let assert_fixture_reads dictionary =
 
 let c1 () =
   check (D.abi_version () = 1) "abi version == 1";
-  check (D.api_revision () = 5) "api revision == 5";
+  check (D.api_revision () = 6) "api revision == 6";
   let dawg = D.dynamic_dawg () in
   check (D.kind dawg = 1) "dawg kind";
   let caps = D.capabilities dawg in
@@ -406,6 +412,30 @@ let c10_readers_during_writer () =
   check ((D.get dawg "w2999").value = Some 2999L) "final write present";
   D.close dawg
 
+let native_algebra () =
+  let left = D.dynamic_dawg () in
+  let right = D.dynamic_dawg () in
+  ignore (D.put_many left [| ("a", Some 1L); ("shared", Some 7L); ("valueless", None) |]);
+  ignore (D.put_many right [| ("b", Some 2L); ("shared", Some 11L); ("valueless", Some 5L) |]);
+  let joined = D.union ~value_merge:D.Lattice_join left right in
+  let common = D.intersection left right in
+  let only_left = D.difference left right in
+  let exclusive = D.symmetric_difference left right in
+  check (D.length joined = 4) "algebra union";
+  check ((D.get joined "shared").value = Some 11L) "algebra union joined value";
+  check ((D.get joined "valueless").value = Some 5L) "algebra union valueless join";
+  check (D.length common = 2) "algebra intersection";
+  check ((D.get common "shared").value = Some 7L) "algebra intersection meet";
+  check ((D.get common "valueless").found && (D.get common "valueless").value = None)
+    "algebra intersection valueless meet";
+  check (D.contains only_left "a") "algebra difference";
+  check (D.length exclusive = 2 && D.contains exclusive "a" && D.contains exclusive "b")
+    "algebra symmetric difference";
+  ignore (D.put left "later" (Some 99L));
+  check (not (D.contains joined "later")) "algebra snapshot independence";
+  check (D.put joined "mutable-result" (Some 23L)) "algebra result mutable";
+  List.iter D.close [ left; right; joined; common; only_left; exclusive ]
+
 (* entries-v1: ordered immutable snapshots, exact optional values, all unit
    domains, and deterministic cleanup on early return/exception. *)
 let entries_conformance () =
@@ -490,6 +520,7 @@ let () =
   c9 ();
   c10_independent ();
   c10_readers_during_writer ();
+  native_algebra ();
   entries_conformance ();
   if !failures = 0 then print_endline "ocaml conformance: all checks passed"
   else begin

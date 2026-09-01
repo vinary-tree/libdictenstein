@@ -156,7 +156,7 @@ file:close()
 -- ---------------------------------------------------------------------------
 
 check(m.abi_version() == 1, "abi version == 1")
-check(m.api_revision() == 5, "api revision == 5")
+check(m.api_revision() == 6, "api revision == 6")
 
 do
   local dawg <close> = m.dynamic_dawg("unicode")
@@ -426,6 +426,30 @@ do
     check(scdawg:frequency(pattern) == expected, "pbt frequency " .. pattern)
     check(scdawg:contains_substring(pattern) == (expected > 0), "pbt contains " .. pattern)
   end
+end
+
+do
+  local left <close> = m.dynamic_dawg("unicode")
+  local right <close> = m.dynamic_dawg("unicode")
+  left:put("a", 1); left:put("shared", 7); left:put("valueless")
+  right:put("b", 2); right:put("shared", 11); right:put("valueless", 5)
+  local joined <close> = left:union(right, "lattice_join")
+  local common <close> = left & right
+  local only_left <close> = left - right
+  local exclusive <close> = left ~ right
+  check(joined:len() == 4, "algebra union")
+  check(joined:get("shared").value == 11, "algebra union joined value")
+  check(joined:get("valueless").value == 5, "algebra union valueless join")
+  check(common:len() == 2, "algebra intersection")
+  check(common:get("shared").value == 7, "algebra intersection meet")
+  check(common:get("valueless").found and common:get("valueless").value == nil,
+    "algebra intersection valueless meet")
+  check(only_left:contains("a"), "algebra difference")
+  check(exclusive:len() == 2 and exclusive:contains("a") and exclusive:contains("b"),
+    "algebra symmetric difference")
+  left:put("later", 99)
+  check(not joined:contains("later"), "algebra snapshot independence")
+  check(joined:put("mutable-result", 23), "algebra result mutable")
 end
 
 -- ---------------------------------------------------------------------------

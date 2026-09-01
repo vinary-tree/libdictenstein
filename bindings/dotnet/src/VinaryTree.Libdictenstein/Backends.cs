@@ -7,6 +7,8 @@ public sealed class DynamicDawg : Dictionary
 {
     /// <summary>Create an empty dictionary.</summary>
     public DynamicDawg(UnitDomain domain = UnitDomain.UnicodeScalar) : base(Create(domain)) { }
+    private DynamicDawg(nint handle) : base(handle) { }
+    internal static DynamicDawg Adopt(nint handle) => new(handle);
     private static nint Create(UnitDomain domain) { Native.Check(Native.DynamicNew((uint)domain, out nint result)); return result; }
     /// <summary>Insert or update a text term.</summary>
     public bool Put(string term, ulong? value = null) => InsertText(Handle, term, value);

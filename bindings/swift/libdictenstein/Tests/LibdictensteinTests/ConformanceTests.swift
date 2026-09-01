@@ -107,7 +107,7 @@ final class ConformanceTests: XCTestCase {
 
     func testC1Identity() throws {
         XCTAssertEqual(Dictionary.abiVersion(), 1)
-        XCTAssertEqual(Dictionary.apiRevision(), 5)
+        XCTAssertEqual(Dictionary.apiRevision(), 6)
     }
 
     func testC1KindAndCapabilities() throws {
@@ -422,6 +422,41 @@ final class ConformanceTests: XCTestCase {
             return Int(line.filter { $0.isNumber }) ?? 0
         }
         return 0
+    }
+
+    func testC8NativeDictionaryAlgebra() throws {
+        let left = try DynamicDAWG()
+        defer { left.close() }
+        let right = try DynamicDAWG()
+        defer { right.close() }
+        _ = try left.put("a", value: 1)
+        _ = try left.put("shared", value: 7)
+        _ = try left.put("valueless")
+        _ = try right.put("b", value: 2)
+        _ = try right.put("shared", value: 11)
+        _ = try right.put("valueless", value: 5)
+
+        let joined = try left.union(right, valueMerge: .latticeJoin)
+        defer { joined.close() }
+        let common = try left.intersection(right)
+        defer { common.close() }
+        let onlyLeft = try left.subtracting(right)
+        defer { onlyLeft.close() }
+        let exclusive = try left.symmetricDifference(right)
+        defer { exclusive.close() }
+
+        XCTAssertEqual(try joined.count, 4)
+        XCTAssertEqual(try joined.get("shared"), Lookup(found: true, value: 11))
+        XCTAssertEqual(try joined.get("valueless"), Lookup(found: true, value: 5))
+        XCTAssertEqual(try common.count, 2)
+        XCTAssertEqual(try common.get("shared"), Lookup(found: true, value: 7))
+        XCTAssertEqual(try common.get("valueless"), Lookup(found: true, value: nil))
+        XCTAssertTrue(try onlyLeft.get("a").found)
+        XCTAssertEqual(try exclusive.count, 2)
+        XCTAssertTrue(try exclusive.get("b").found)
+        _ = try left.put("later", value: 99)
+        XCTAssertFalse(try joined.get("later").found)
+        XCTAssertTrue(try joined.put("mutable-result", value: 23))
     }
 
     func testC9CreateUseFreeCyclesDoNotLeak() throws {

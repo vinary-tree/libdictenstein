@@ -282,6 +282,15 @@ CAMLprim value ocaml_ldict_compact(value block) {
     check_status(ldict_dictionary_compact(dictionary_val(block), &output));
     return Val_long(output);
 }
+CAMLprim value ocaml_ldict_algebra(
+    value left, value right, value operation, value value_merge) {
+    CAMLparam4(left, right, operation, value_merge);
+    LdictDictionary* output = NULL;
+    check_status(ldict_dictionary_algebra(
+        dictionary_val(left), dictionary_val(right),
+        (uint32_t)Int_val(operation), (uint32_t)Int_val(value_merge), &output));
+    CAMLreturn(copy_dictionary(output));
+}
 CAMLprim value ocaml_ldict_checkpoint(value block) {
     check_status(ldict_dictionary_checkpoint(dictionary_val(block))); return Val_unit;
 }

@@ -3,7 +3,7 @@
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <PackageId>Libdictenstein</PackageId>
     <Version>4.0.0-rc.6</Version>
-    <Description>High-performance modular dictionary backends for .NET</Description>
+    <Description>High-performance dictionaries and trie-maps for approximate string matching</Description>
     <Authors>Dylon Edwards</Authors>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/vinary-tree/libdictenstein</RepositoryUrl>

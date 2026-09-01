@@ -149,6 +149,17 @@ and binding contract treat the semantic version, Lua packaging revision, and
 source tag as independent release invariants. The opam staging job derives its
 own exact corrective source ref from `GITHUB_REF_NAME`.
 
+RC.5 also restores the JavaScript package graph to the repositories' existing,
+public names. The libdictenstein facade remains
+`@vinary-tree/libdictenstein`; its only runtime dependencies are
+`@vinary-tree/vinary-tree-interop` and `@vinary-tree/javascript-runtime` at
+the same exact candidate. The mistakenly shortened `@vinary-tree/interop` and
+mistaken umbrella `@vinary-tree/vinary-tree` coordinates are historical
+artifacts, not aliases to use in manifests. Publish and verify the canonical
+packages before deprecating the mistaken coordinates. The same release model
+owns the product description used verbatim by the Maven POM, JReleaser, and
+Clojars so their public summaries cannot drift.
+
 ## Artifact evidence
 
 The GitHub prerelease retains portable native archives, Python wheels, the npm
