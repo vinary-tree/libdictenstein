@@ -426,9 +426,10 @@ pub struct PersistentARTrie<V: DictionaryValue = (), S: BlockStorage = MmapDiskM
     pub(crate) merge_lock: std::sync::Arc<parking_lot::Mutex<()>>,
 
     /// **Durable global commit sequence** (the byte twin of the char field). The
-    /// monotone visibility-order rank each Order-A durable write claims at its
-    /// root-CAS loop-top (`fetch_add`); the winning iteration's claim is strictly
-    /// monotone in the global root-CAS order AND durable across restart (seeded on
+    /// monotone visibility-order rank each Order-A durable write claims only after
+    /// loading its root-CAS expected snapshot. A stale snapshot loses the CAS and its
+    /// claim; therefore winning claims are strictly monotone in global root-CAS order
+    /// and durable across restart (seeded on
     /// open from `max(header.commit_seq_floor, scan-max-of-CommitRank-generation)`,
     /// the A.2 cross-restart fix `root.version()` — per-lifetime — could not make).
     /// `CommitRank` records bind a data LSN to the generation here so recovery's

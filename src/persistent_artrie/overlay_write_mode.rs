@@ -354,7 +354,6 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
         })?;
         let _epoch = self.epoch_manager.enter_read();
         loop {
-            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             let root_revision = match lockfree_root.load_revision() {
                 Some(revision) => revision,
                 None => {
@@ -364,6 +363,9 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<ByteKey, V, S>
                 }
             };
             let root = Arc::clone(root_revision.node());
+            // LOAD-BEFORE-CLAIM: bind this ticket to the exact expected root. A
+            // stale snapshot loses its CAS and the retry loads before claiming.
+            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             // Mode pre-check on the FRESHLY-loaded root.
             let was_present = self.find_leaf_iterative(&root, key_bytes, 0).is_some();
             match &mode {

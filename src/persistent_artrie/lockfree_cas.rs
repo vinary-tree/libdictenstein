@@ -203,7 +203,7 @@ enum LockfreeDurableInsertResult {
 enum LockfreeRemoveResult {
     /// The term was present and cleared: a new root with the freshly-cleared
     /// (non-final) leaf was published via the root CAS.
-    Removed,
+    Removed(u64),
     /// The term is absent on this snapshot (reached full depth non-final, or a
     /// missing/null spine edge). No spine was published.
     AlreadyAbsent,
@@ -333,7 +333,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
                 term,
                 MembershipCasContext::RecoveryOnly,
             ) {
-                LockfreeRemoveResult::Removed | LockfreeRemoveResult::AlreadyAbsent => {
+                LockfreeRemoveResult::Removed(_) | LockfreeRemoveResult::AlreadyAbsent => {
                     if let Some(ref cache) = self.lockfree_cache {
                         cache.remove(term);
                     }
@@ -765,11 +765,9 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
         // Step 2 + 3: the visibility CAS loop + the Order-A commit-rank/watermark
         // tail are now the SHARED GENERIC [`OverlayCasWalk::drive_remove_cas`]
-        // (G5.3' P4), byte-identical to char's routing. FIX 1: the driver claims the
-        // generation PER ITERATION via `claim_generation` (the durable global
-        // `commit_seq`, NEVER the walk's `root.version()`; byte's `LockfreeRemoveResult`
-        // never carried a version anyway), invalidates the positive cache FIRST on
-        // every state-changing arm, and binds the caller-claimed generation. The read
+        // (G5.3' P4), byte-identical to char's routing. FIX 1: each attempt loads its
+        // expected root before claiming `commit_seq`, returns the winning generation,
+        // invalidates the positive cache FIRST, and binds that generation. The read
         // epoch (entered above for the absent fast-path) spans the call. byte's
         // Permanent fault failures surface through `IoError`; only an actual
         // root-CAS loss is classified as retryable `Conflict`.
@@ -789,7 +787,7 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         &self,
         root: &super::nodes::AtomicNodePtr<V>,
         term: &[u8],
-        _context: MembershipCasContext<'_, '_>,
+        context: MembershipCasContext<'_, '_>,
     ) -> LockfreeDurableInsertResult {
         use super::nodes::PersistentNode;
 
@@ -804,9 +802,21 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         };
         let current_root = current_revision.node();
 
+        // LOAD-BEFORE-CLAIM: bind the durable generation to this exact expected
+        // root. An overtaking publication forces this CAS to lose; its discarded
+        // claim cannot be replayed after a later visible write.
+        let ranked = matches!(&context, MembershipCasContext::Guarded { .. });
+        let commit_generation = ranked.then(|| {
+            <Self as crate::persistent_artrie::core::overlay::cas_walk::OverlayCasWalk<
+                ByteKey,
+                V,
+                S,
+            >>::claim_generation(self)
+        });
+
         match self.build_final_path_iterative(current_root, term, 0) {
             Ok(new_root) => {
-                let root_generation = new_root.version();
+                let root_generation = commit_generation.unwrap_or_else(|| new_root.version());
                 #[cfg(test)]
                 crate::persistent_artrie::core::overlay::durable_write::semantic_cas_rendezvous();
                 match root.compare_exchange_revision_counted(&current_revision, new_root, 1) {
@@ -925,14 +935,13 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
     }
 
     /// Attempt to clear a term's membership in the overlay via a single path-copy +
-    /// root CAS (the byte twin of char's `try_remove_lockfree_path`). The cleared leaf
-    /// is a FRESH `as_non_final` copy spliced into a NEW spine published ONLY via the
-    /// root CAS (the SOLE visibility arbiter for the 1→0 transition).
+    /// root CAS. The cleared leaf is a FRESH `as_non_final` copy spliced into a NEW
+    /// spine published ONLY via the root CAS (the sole visibility arbiter).
     fn try_remove_lockfree_path(
         &self,
         root: &super::nodes::AtomicNodePtr<V>,
         term: &[u8],
-        _context: MembershipCasContext<'_, '_>,
+        context: MembershipCasContext<'_, '_>,
     ) -> LockfreeRemoveResult {
         let current_revision = match root.load_revision() {
             Some(revision) => revision,
@@ -940,10 +949,23 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
         };
         let current_root = current_revision.node();
 
+        // Same load-before-claim invariant as the durable insert twin.
+        let ranked = matches!(&context, MembershipCasContext::Guarded { .. });
+        let commit_generation = ranked.then(|| {
+            <Self as crate::persistent_artrie::core::overlay::cas_walk::OverlayCasWalk<
+                ByteKey,
+                V,
+                S,
+            >>::claim_generation(self)
+        });
+
         match self.build_remove_path_iterative(current_root, term, 0) {
             Ok(new_root) => {
+                let root_generation = new_root.version();
                 match root.compare_exchange_revision_counted(&current_revision, new_root, -1) {
-                    Ok(_) => LockfreeRemoveResult::Removed,
+                    Ok(_) => {
+                        LockfreeRemoveResult::Removed(commit_generation.unwrap_or(root_generation))
+                    }
                     Err(_actual) => LockfreeRemoveResult::Conflict,
                 }
             }
@@ -1092,14 +1114,15 @@ impl<V: DictionaryValue, S: BlockStorage>
             None => return RemoveAttempt::AlreadyAbsent,
         };
         // byte keys ARE the raw bytes (no decode). ONE single-arbiter path-copy +
-        // root CAS. byte's `LockfreeRemoveResult` carries no version (no FIX-1
-        // dropping needed); permanent fault failures retain their typed error.
+        // root CAS. A successful result carries the durable generation claimed
+        // after loading this attempt's expected root; permanent fault failures
+        // retain their typed error.
         match self.try_remove_lockfree_path(
             lockfree_root,
             key_bytes,
             MembershipCasContext::Guarded { _permit },
         ) {
-            LockfreeRemoveResult::Removed => RemoveAttempt::Removed,
+            LockfreeRemoveResult::Removed(generation) => RemoveAttempt::Removed(generation),
             LockfreeRemoveResult::AlreadyAbsent => RemoveAttempt::AlreadyAbsent,
             LockfreeRemoveResult::Conflict => RemoveAttempt::Conflict,
             LockfreeRemoveResult::IoError(error) => RemoveAttempt::IoError(error),
@@ -1125,16 +1148,17 @@ impl<V: DictionaryValue, S: BlockStorage>
             None => return InsertAttempt::Conflict,
         };
         // DURABLE single-phase: a FRESH FINAL leaf published inside the root CAS (the
-        // SOLE LP — REC 3, no caller-level `try_set_final`). FIX 1: the
-        // `Inserted(_root_generation)` per-attempt version is DROPPED here (the
-        // skeleton ranks the caller-claimed `commit_seq`). Permanent fault failures
-        // retain their typed error at the `InsertAttempt` boundary.
+        // SOLE LP — REC 3, no caller-level `try_set_final`). The successful
+        // attempt's load-bound generation is forwarded through the shared adapter.
+        // Permanent fault failures retain their typed error at the boundary.
         match self.try_insert_lockfree_path_durable(
             lockfree_root,
             key_bytes,
             MembershipCasContext::Guarded { _permit },
         ) {
-            LockfreeDurableInsertResult::Inserted(_root_generation) => InsertAttempt::Inserted,
+            LockfreeDurableInsertResult::Inserted(generation) => {
+                InsertAttempt::Inserted(generation)
+            }
             LockfreeDurableInsertResult::AlreadyExists => InsertAttempt::AlreadyExists,
             LockfreeDurableInsertResult::Conflict => InsertAttempt::Conflict,
             LockfreeDurableInsertResult::IoError(error) => InsertAttempt::IoError(error),
@@ -1237,10 +1261,9 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
     /// increment would otherwise cross-domain mis-sort). The byte twin of char's
     /// `try_increment_cas_inner`.
     ///
-    /// The `commit_seq` claim is taken at the CAS-retry loop-top and RE-CLAIMED each
-    /// iteration so a Conflict-retry discards the lost claim and takes a fresh
-    /// (higher) one; every write serializes at the single root CAS ⇒ the winning
-    /// iteration's claim is strictly monotone in the global root-CAS order AND
+    /// Each iteration loads its exact root-CAS expected snapshot before claiming
+    /// `commit_seq`. A conflict discards the claim; the retry loads before taking a
+    /// fresh, higher one. Thus the winning claim is strictly monotone in root-CAS order and
     /// durable across restart (seeded from `max(floor, scan)` on open). The
     /// generation is returned ONLY from the `Ok` arm (a losing iteration discards
     /// its claim, so no stale generation leaks).
@@ -1274,12 +1297,6 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
         // visibility arbiter — the new leaf's value is published atomically with
         // the new root, so a stale reader never sees a torn count).
         loop {
-            // commit_seq CLAIM (loop-top, re-claimed per iteration) — see char's
-            // `try_increment_cas_inner`. The durable wrapper ranks the winning claim;
-            // the non-durable caller discards it (a harmless gap in the global
-            // counter). Monotone in the global root-CAS order, durable across restart.
-            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
-
             // (1) Load the current published root (initializing it if null — the
             // same null-init dance the membership path uses).
             let root_revision = match lockfree_root.load_revision() {
@@ -1291,6 +1308,10 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
                 }
             };
             let root = Arc::clone(root_revision.node());
+            // LOAD-BEFORE-CLAIM: bind this generation to the exact root snapshot
+            // used as the CAS expected value. A stale snapshot cannot publish an
+            // earlier ticket after a later writer.
+            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             let was_present = self.find_leaf_iterative(&root, key, 0).is_some();
 
             // (2) Read the current count at `key`. COUNTER BOTH-HALVES, READ HALF
@@ -1336,8 +1357,8 @@ impl<S: BlockStorage> PersistentARTrie<u64, S> {
             // (5) CAS-publish. On success the new value is now visible. On
             // failure another writer won; re-read the higher count and retry so
             // this delta is not lost (it is folded onto the winner's value).
-            // GENERATION: the durable global `commit_seq` claimed at this iteration's
-            // loop-top (NOT `new_root.version()`). Returned ONLY from the winning
+            // GENERATION: the durable global `commit_seq` claimed after loading this
+            // iteration's expected root (NOT `new_root.version()`). Returned ONLY from the winning
             // `Ok` arm so a losing iteration never leaks a stale rank; the durable
             // wrapper ranks it.
             let generation = commit_seq;
@@ -1523,7 +1544,7 @@ mod reclaim_tests {
 
         assert!(matches!(
             trie.try_remove_lockfree_path(root, &term, MembershipCasContext::RecoveryOnly),
-            LockfreeRemoveResult::Removed
+            LockfreeRemoveResult::Removed(_)
         ));
         let removed = root.load().expect("published cleared root");
         assert!(!PersistentARTrie::<()>::find_in_lockfree_trie(

@@ -1,6 +1,6 @@
 {
   "name": "@vinary-tree/libdictenstein",
-  "version": "4.0.0-rc.4",
+  "version": "4.0.0-rc.6",
   "description": "Modular JavaScript, TypeScript, and ClojureScript bindings for libdictenstein",
   "author": {
     "name": "Dylon Edwards",
@@ -18,8 +18,8 @@
     "node": ">=22.14"
   },
   "dependencies": {
-    "@vinary-tree/interop": "4.0.0-rc.4",
-    "@vinary-tree/vinary-tree": "4.0.0-rc.4"
+    "@vinary-tree/interop": "4.0.0-rc.6",
+    "@vinary-tree/vinary-tree": "4.0.0-rc.6"
   },
   "types": "./index.d.ts",
   "exports": {

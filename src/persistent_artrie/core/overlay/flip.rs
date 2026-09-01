@@ -711,8 +711,6 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
             )
         })?;
         loop {
-            // Per-iteration claim — the WINNING iteration's generation is returned.
-            let generation = self.claim_commit_seq();
             let old_revision = match root_ptr.load_revision() {
                 Some(revision) => revision,
                 None => {
@@ -724,6 +722,10 @@ pub(crate) trait LockFreeOverlay<K: KeyEncoding, V: DictionaryValue, S>:
             if already_in_state(old) {
                 return Ok(RootPublishOutcome::AlreadyInState);
             }
+            // LOAD-BEFORE-CLAIM: bind the generation to this exact expected root.
+            // A writer that overtakes this snapshot makes the CAS fail; the retry
+            // discards this claim before loading and claiming again.
+            let generation = self.claim_commit_seq();
             let new = transform(old);
             let term_count_delta = match (old.is_final(), new.is_final()) {
                 (false, true) => 1,

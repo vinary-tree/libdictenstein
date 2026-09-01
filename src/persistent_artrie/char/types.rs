@@ -463,7 +463,7 @@ pub struct PrefixTermWithValueAndArena<V> {
 /// - Binary search for CharNode48
 /// - HashMap for CharBucket (>48 children)
 ///
-/// # Safety
+/// # Ownership invariant
 ///
 /// The raw pointers are managed carefully:
 /// - Created via `Box::into_raw()` when inserting children
@@ -1075,7 +1075,8 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
     }
 }
 
-// Drop implementation - must free all child nodes
+// Iterative Drop: reclaim each uniquely owned child box exactly once without
+// recursing down a potentially long serialization spine.
 impl<V: DictionaryValue> Drop for CharTrieNodeInner<V> {
     fn drop(&mut self) {
         if self.node.num_children() == 0 {
@@ -1165,13 +1166,18 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
         self.node.num_children()
     }
 
-    /// Get a child by character
+    /// Get a shared child by character.
+    ///
+    /// The returned reference cannot outlive or overlap mutation of `self`.
+    /// Crate-private fields prevent safe code from duplicating an owning slot,
+    /// so the pointee remains allocated for the complete borrow.
     pub fn get_child(&self, c: char) -> Option<&CharTrieNodeInner<V>> {
         self.node
             .find_child(c as u32)
             .and_then(|ptr| ptr.as_ptr::<CharTrieNodeInner<V>>())
             .map(|ptr| {
-                // Safety: We control all SwizzledPtr creation; ptr is valid
+                // SAFETY: the ownership invariant makes every in-memory slot a
+                // live unique Box allocation owned transitively by `self`.
                 unsafe { &*ptr }
             })
     }
@@ -1457,19 +1463,21 @@ impl<V: DictionaryValue> CharTrieNodeInner<V> {
     pub fn remove_child(&mut self, c: char) -> Option<Box<CharTrieNodeInner<V>>> {
         let key = c as u32;
 
-        // Check if child exists and get its pointer
-        let ptr = self
-            .node
+        // Only in-memory slots own a Box. Leave on-disk references untouched.
+        self.node
             .find_child(key)
-            .and_then(|p| p.as_ptr::<CharTrieNodeInner<V>>())?;
+            .and_then(|slot| slot.as_ptr::<CharTrieNodeInner<V>>())?;
 
-        // Remove from node
-        if let Some((_, Some(new_node))) = self.node.remove_child_shrinking(key) {
+        let (removed, shrunk) = self.node.remove_child_shrinking(key)?;
+        if let Some(new_node) = shrunk {
             self.node = new_node;
         }
+        let ptr = removed
+            .as_ptr::<CharTrieNodeInner<V>>()
+            .expect("detached owned child must remain in memory");
 
-        // Safety: ptr was created via Box::into_raw()
-        Some(unsafe { Box::from_raw(ptr as *mut CharTrieNodeInner<V>) })
+        // SAFETY: removal detached the sole owning slot before reconstruction.
+        Some(unsafe { Box::from_raw(ptr.cast_mut()) })
     }
 
     /// Iterate over children

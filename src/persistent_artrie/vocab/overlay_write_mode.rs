@@ -253,15 +253,8 @@ impl<S: BlockStorage> LockFreeOverlay<CharKey, u64, S> for PersistentVocabARTrie
                     }
                     Err(_) => continue,
                 },
-                Err(VocabPathInsertError::AlreadyPresent) => return Ok(()),
-                Err(VocabPathInsertError::Unavailable) => {
-                    return Err(
-                        crate::persistent_artrie::error::PersistentARTrieError::corrupted(
-                            "vocab recovery path-copy reached a non-memory child",
-                        ),
-                    );
-                }
-                Err(VocabPathInsertError::Failure(error)) => return Err(error),
+                Err(VocabPathInsertError::AlreadyExists(_)) => return Ok(()),
+                Err(error) => return Err(error.into_persistent_error()),
             }
         }
     }
@@ -401,9 +394,6 @@ impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabAR
         let lockfree_root = self.require_lockfree_root()?;
         let _epoch = self.epoch_manager.enter_read();
         loop {
-            // Order-A generation CLAIM (loop-top, re-claimed per iteration): the
-            // winning claim is strictly monotone in the global root-CAS order + durable.
-            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             let root_revision = match lockfree_root.load_revision() {
                 Some(revision) => revision,
                 None => {
@@ -414,6 +404,9 @@ impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabAR
                 }
             };
             let root = Arc::clone(root_revision.node());
+            // LOAD-BEFORE-CLAIM: bind the recovery ticket to this expected root.
+            // A conflicting publication discards the ticket with the failed CAS.
+            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             // InsertOnce pre-check on the freshly-loaded root: a concurrent insert may
             // have won between the caller's present-hoist and this CAS.
             if self.find_in_lockfree_trie(&root, &chars).is_some() {
@@ -440,15 +433,10 @@ impl<S: BlockStorage> DurableOverlayWrite<CharKey, u64, S> for PersistentVocabAR
                 },
                 // A concurrent insert finalized the term between the pre-check and the
                 // build: insert-once → NotApplied.
-                Err(VocabPathInsertError::AlreadyPresent) => {
+                Err(VocabPathInsertError::AlreadyExists(_)) => {
                     return Ok(ValuePublishOutcome::NotApplied);
                 }
-                Err(VocabPathInsertError::Unavailable) => {
-                    return Err(PersistentARTrieError::internal(
-                        "vocabulary overlay path-copy reached a non-memory child",
-                    ));
-                }
-                Err(VocabPathInsertError::Failure(error)) => return Err(error),
+                Err(error) => return Err(error.into_persistent_error()),
             }
         }
     }

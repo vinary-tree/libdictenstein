@@ -48,11 +48,17 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
 
     /// Fallibly upsert a mapped term, preserving the backend error.
     pub fn try_insert_with_value(&self, term: &str, value: V) -> Result<bool> {
-        <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(
-            self,
-            term.as_bytes(),
-            value,
-        )
+        self.try_insert_with_value_bytes(term.as_bytes(), value)
+    }
+
+    /// Fallibly upsert an arbitrary byte key while preserving backend errors.
+    ///
+    /// This is the byte-keyed twin of [`Self::try_insert_with_value`].  It is a
+    /// deliberately narrow persistence/traversal integration boundary: callers
+    /// such as exact quantized indexes need not reinterpret non-UTF-8 keys as
+    /// text or use the fail-soft batch API.
+    pub fn try_insert_with_value_bytes(&self, term: &[u8], value: V) -> Result<bool> {
+        <Self as DurableOverlayWrite<ByteKey, V, S>>::upsert_cas_durable_default(self, term, value)
     }
 
     /// Insert a term with an associated value.

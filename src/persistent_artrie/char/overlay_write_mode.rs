@@ -387,9 +387,6 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
         })?;
         let _epoch = self.epoch_manager.enter_read();
         loop {
-            // S4 commit_seq CLAIM (loop-top, re-claimed per iteration) — the winning
-            // claim is strictly monotone in the global root-CAS order + durable.
-            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             let root_revision = match lockfree_root.load_revision() {
                 Some(revision) => revision,
                 None => {
@@ -399,6 +396,10 @@ impl<V: DictionaryValue, S: BlockStorage> DurableOverlayWrite<CharKey, V, S>
                 }
             };
             let root = Arc::clone(root_revision.node());
+            // LOAD-BEFORE-CLAIM: bind this generation to the exact expected root.
+            // An overtaking publication forces a retry and a fresh claim, so replay
+            // generation order agrees with live visibility order.
+            let commit_seq = self.commit_seq.fetch_add(1, Ordering::AcqRel) + 1;
             // Mode pre-check on the FRESHLY-loaded root (so a concurrent change
             // between the caller's initial read and this CAS is observed).
             let was_present = self.find_leaf_iterative(&root, &chars, 0).is_some();
