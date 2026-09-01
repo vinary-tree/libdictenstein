@@ -200,7 +200,7 @@ jobs:
           path.write_text(source)
           PY
       - name: Build and test platform wheel
-        uses: pypa/cibuildwheel@v4.1.0
+        uses: pypa/cibuildwheel@v4.2.0
         with:
           package-dir: bindings/python
           output-dir: wheelhouse
