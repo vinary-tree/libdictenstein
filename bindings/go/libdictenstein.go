@@ -52,6 +52,26 @@ const (
 	PersistentVocabularyKind
 )
 
+// AlgebraOperation selects the exact key-set operation performed natively.
+type AlgebraOperation uint32
+
+const (
+	UnionOperation AlgebraOperation = iota + 1
+	IntersectionOperation
+	DifferenceOperation
+	SymmetricDifferenceOperation
+)
+
+// ValueMerge selects the optional-u64 conflict policy for shared keys.
+type ValueMerge uint32
+
+const (
+	FirstValue ValueMerge = iota + 1
+	LastValue
+	LatticeJoinValue
+	LatticeMeetValue
+)
+
 // Capability bits returned by Dictionary.Capabilities.
 const (
 	CanRead uint64 = 1 << iota
@@ -180,6 +200,61 @@ func (d *Dictionary) Len() (uint, error) {
 	var result C.size_t
 	err := d.read(func(pointer *C.LdictDictionary) error { return check(C.ldict_dictionary_len(pointer, &result)) })
 	return uint(result), err
+}
+
+// Algebra materializes an independent mutable DynamicDawg from two immutable
+// input revisions. The native implementation performs one ordered linear
+// merge and one freeze rather than crossing cgo for each entry.
+func (d *Dictionary) Algebra(right *Dictionary, operation AlgebraOperation, merge ValueMerge) (*DynamicDawg, error) {
+	if right == nil {
+		return nil, errors.New("right dictionary is nil")
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if right != d {
+		right.mu.RLock()
+		defer right.mu.RUnlock()
+	}
+	if d.pointer == nil || right.pointer == nil {
+		return nil, errors.New("dictionary is closed")
+	}
+	var result *C.LdictDictionary
+	if err := check(C.ldict_dictionary_algebra(
+		d.pointer, right.pointer, C.uint32_t(operation), C.uint32_t(merge), &result,
+	)); err != nil {
+		return nil, err
+	}
+	return &DynamicDawg{wrap(result)}, nil
+}
+
+// Union returns keys in either input with right-biased shared values.
+func (d *Dictionary) Union(right *Dictionary) (*DynamicDawg, error) {
+	return d.UnionWith(right, LastValue)
+}
+
+// UnionWith returns keys in either input using an explicit value policy.
+func (d *Dictionary) UnionWith(right *Dictionary, merge ValueMerge) (*DynamicDawg, error) {
+	return d.Algebra(right, UnionOperation, merge)
+}
+
+// Intersection returns shared keys using the optional-u64 lattice meet.
+func (d *Dictionary) Intersection(right *Dictionary) (*DynamicDawg, error) {
+	return d.IntersectionWith(right, LatticeMeetValue)
+}
+
+// IntersectionWith returns shared keys using an explicit value policy.
+func (d *Dictionary) IntersectionWith(right *Dictionary, merge ValueMerge) (*DynamicDawg, error) {
+	return d.Algebra(right, IntersectionOperation, merge)
+}
+
+// Difference returns keys present in this dictionary but absent from right.
+func (d *Dictionary) Difference(right *Dictionary) (*DynamicDawg, error) {
+	return d.Algebra(right, DifferenceOperation, FirstValue)
+}
+
+// SymmetricDifference returns keys present in exactly one input.
+func (d *Dictionary) SymmetricDifference(right *Dictionary) (*DynamicDawg, error) {
+	return d.Algebra(right, SymmetricDifferenceOperation, FirstValue)
 }
 
 func textPointer(text []byte) *C.uint8_t {

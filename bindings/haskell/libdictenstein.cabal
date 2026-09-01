@@ -1,8 +1,8 @@
 cabal-version: 3.0
 name: libdictenstein
 version: 4.0.0
-x-release-candidate: rc.4
-synopsis: Fast libdictenstein dictionaries for Haskell
+x-release-candidate: rc.6
+synopsis: High-performance dictionaries and trie-maps for approximate string matching
 description: Snapshot-retaining dictionary resources for modular Vinary Tree bindings.
 category: Data
 license: Apache-2.0

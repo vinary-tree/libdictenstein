@@ -833,15 +833,15 @@ pub(crate) trait OverlayEvictable<K: KeyEncoding, V: DictionaryValue, S>:
             root: &Arc<OverlayNode<K, V>>,
             key: &[K::Unit],
         ) -> Option<Arc<OverlayNode<K, V>>> {
-            let mut current = Arc::clone(root);
+            // `root` pins the immutable snapshot. Borrow down the resident path so
+            // an all-in-memory read performs no atomic refcount operation per edge.
+            let mut current = root;
             for &edge in key {
                 let child = current.find_child(edge)?;
-                let child_arc = child.as_in_mem()?;
-                let next = Arc::clone(child_arc);
-                current = next;
+                current = child.as_in_mem()?;
             }
             if current.is_final() {
-                Some(current)
+                Some(Arc::clone(current))
             } else {
                 None
             }

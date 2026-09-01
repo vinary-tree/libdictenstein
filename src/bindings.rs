@@ -23,6 +23,7 @@ use crate::{
     SnapshotTraversalCursor, SnapshotTraversalGraph, SnapshotTraversalProjection,
 };
 use arc_swap::ArcSwapOption;
+use llattice::Lattice;
 use std::ffi::c_void;
 #[cfg(feature = "persistent-artrie")]
 use std::path::Path;
@@ -90,7 +91,7 @@ pub enum BindingUnitDomain {
 ///
 /// The variants preserve arbitrary byte and `u64` keys without coercing them
 /// through UTF-8. Unicode keys are validated scalar strings.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum BindingTerm {
     /// Arbitrary bytes.
     Bytes(Vec<u8>),
@@ -159,6 +160,15 @@ impl BindingEntries {
             term,
             value: entry.value,
         })
+    }
+
+    /// Return the immutable term domain captured by this snapshot traversal.
+    pub fn domain(&self) -> BindingUnitDomain {
+        match self.domain {
+            VtUnitDomain::Byte => BindingUnitDomain::Byte,
+            VtUnitDomain::UnicodeScalar => BindingUnitDomain::UnicodeScalar,
+            VtUnitDomain::U64 => BindingUnitDomain::U64,
+        }
     }
 }
 
@@ -235,6 +245,56 @@ impl std::fmt::Display for BindingError {
 }
 
 impl std::error::Error for BindingError {}
+
+/// Exact-key set operation over two immutable dictionary revisions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum BindingAlgebraOperation {
+    /// Keep keys present in either dictionary.
+    Union = 1,
+    /// Keep keys present in both dictionaries.
+    Intersection = 2,
+    /// Keep keys present in the left dictionary but not the right dictionary.
+    Difference = 3,
+    /// Keep keys present in exactly one dictionary.
+    SymmetricDifference = 4,
+}
+
+/// Conflict policy for a key present in both input dictionaries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum BindingValueMerge {
+    /// Preserve the left value.
+    First = 1,
+    /// Preserve the right value.
+    Last = 2,
+    /// Use the `Option<u64>` lattice join (optional maximum).
+    LatticeJoin = 3,
+    /// Use the `Option<u64>` lattice meet (shared optional minimum).
+    LatticeMeet = 4,
+}
+
+/// Failure while combining two immutable dictionary revisions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BindingAlgebraError {
+    /// The two dictionaries use different term domains.
+    DomainMismatch,
+    /// A dictionary provider rejected snapshot traversal.
+    Provider(VtStatus),
+}
+
+impl std::fmt::Display for BindingAlgebraError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DomainMismatch => formatter.write_str("dictionary unit domain mismatch"),
+            Self::Provider(status) => {
+                write!(formatter, "dictionary snapshot provider failed: {status:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BindingAlgebraError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SnapshotIdentity {
@@ -1486,6 +1546,53 @@ impl DynamicDawgBinding {
         }
     }
 
+    /// Construct a DynamicDAWG directly from an already sorted, duplicate-free
+    /// binding snapshot.
+    ///
+    /// This crate-internal path lets family ABI combinators feed their linear
+    /// merge output directly into the minimal freeze-once builder without a
+    /// second sort, key clone, or sequence of incremental publications.
+    pub(crate) fn from_sorted_binding_entries(
+        domain: BindingUnitDomain,
+        entries: Vec<BindingEntry>,
+    ) -> Self {
+        debug_assert!(entries.windows(2).all(|pair| pair[0].term < pair[1].term));
+
+        let backend = match domain {
+            BindingUnitDomain::Byte => DynamicBackend::Byte(DynamicDawg::from_sorted_byte_entries(
+                entries.into_iter().map(|entry| {
+                    let BindingTerm::Bytes(term) = entry.term else {
+                        unreachable!("byte algebra result contains a non-byte key")
+                    };
+                    (term, entry.value.map(BindingValue::present))
+                }),
+            )),
+            BindingUnitDomain::UnicodeScalar => DynamicBackend::Unicode(
+                DynamicDawgChar::from_sorted_optional_entries(entries.into_iter().map(|entry| {
+                    let BindingTerm::Unicode(term) = entry.term else {
+                        unreachable!("Unicode algebra result contains a non-Unicode key")
+                    };
+                    (term, entry.value.map(BindingValue::present))
+                })),
+            ),
+            BindingUnitDomain::U64 => DynamicBackend::U64(
+                DynamicDawgU64::from_sorted_sequence_entries(entries.into_iter().map(|entry| {
+                    let BindingTerm::U64(term) = entry.term else {
+                        unreachable!("u64 algebra result contains a non-u64 key")
+                    };
+                    (term, entry.value.map(BindingValue::present))
+                })),
+            ),
+        };
+
+        Self {
+            shared: Arc::new(SharedDictionary {
+                backend,
+                snapshots: SnapshotMemo::new(),
+            }),
+        }
+    }
+
     /// Return the dictionary's immutable unit domain.
     pub fn domain(&self) -> BindingUnitDomain {
         self.shared.backend.domain()
@@ -2581,6 +2688,156 @@ impl OwnedDictionaryResource {
     }
 }
 
+#[inline]
+fn merge_binding_values(
+    left: Option<u64>,
+    right: Option<u64>,
+    policy: BindingValueMerge,
+) -> Option<u64> {
+    match policy {
+        BindingValueMerge::First => left,
+        BindingValueMerge::Last => right,
+        BindingValueMerge::LatticeJoin => left.join(&right),
+        BindingValueMerge::LatticeMeet => left.meet(&right),
+    }
+}
+
+/// Materialize an algebraic combination of two immutable dictionary revisions.
+///
+/// Each input is captured once through its snapshot-owning lexicographic entry
+/// iterator. A single linear merge emits sorted, duplicate-free records
+/// directly into the DynamicDAWG freeze-once builder. The returned dictionary
+/// is mutable and independent of later changes to either input.
+///
+/// # Errors
+///
+/// Returns [`BindingAlgebraError::DomainMismatch`] when the captured term
+/// domains differ, or propagates a provider status emitted while traversing
+/// either snapshot.
+pub fn dictionary_algebra(
+    left: &OwnedDictionaryResource,
+    right: &OwnedDictionaryResource,
+    operation: BindingAlgebraOperation,
+    value_merge: BindingValueMerge,
+) -> Result<DynamicDawgBinding, BindingAlgebraError> {
+    let mut left_entries = left.entries();
+    let mut right_entries = right.entries();
+    let domain = left_entries.domain();
+    if domain != right_entries.domain() {
+        return Err(BindingAlgebraError::DomainMismatch);
+    }
+
+    let left_len = left_entries.size_hint().1.unwrap_or(0);
+    let right_len = right_entries.size_hint().1.unwrap_or(0);
+    let capacity = match operation {
+        BindingAlgebraOperation::Union | BindingAlgebraOperation::SymmetricDifference => {
+            left_len.saturating_add(right_len)
+        }
+        BindingAlgebraOperation::Intersection => left_len.min(right_len),
+        BindingAlgebraOperation::Difference => left_len,
+    };
+    let mut result = Vec::with_capacity(capacity);
+    let mut left_entry = left_entries
+        .next()
+        .transpose()
+        .map_err(BindingAlgebraError::Provider)?;
+    let mut right_entry = right_entries
+        .next()
+        .transpose()
+        .map_err(BindingAlgebraError::Provider)?;
+
+    loop {
+        match (left_entry.as_ref(), right_entry.as_ref()) {
+            (Some(left_current), Some(right_current)) => {
+                match left_current.term.cmp(&right_current.term) {
+                    std::cmp::Ordering::Less => {
+                        if matches!(
+                            operation,
+                            BindingAlgebraOperation::Union
+                                | BindingAlgebraOperation::Difference
+                                | BindingAlgebraOperation::SymmetricDifference
+                        ) {
+                            result.push(left_entry.take().expect("left entry is present"));
+                        }
+                        left_entry = left_entries
+                            .next()
+                            .transpose()
+                            .map_err(BindingAlgebraError::Provider)?;
+                    }
+                    std::cmp::Ordering::Greater => {
+                        if matches!(
+                            operation,
+                            BindingAlgebraOperation::Union
+                                | BindingAlgebraOperation::SymmetricDifference
+                        ) {
+                            result.push(right_entry.take().expect("right entry is present"));
+                        }
+                        right_entry = right_entries
+                            .next()
+                            .transpose()
+                            .map_err(BindingAlgebraError::Provider)?;
+                    }
+                    std::cmp::Ordering::Equal => {
+                        if matches!(
+                            operation,
+                            BindingAlgebraOperation::Union | BindingAlgebraOperation::Intersection
+                        ) {
+                            let left_current = left_entry.take().expect("left entry is present");
+                            result.push(BindingEntry {
+                                term: left_current.term,
+                                value: merge_binding_values(
+                                    left_current.value,
+                                    right_current.value,
+                                    value_merge,
+                                ),
+                            });
+                        }
+                        left_entry = left_entries
+                            .next()
+                            .transpose()
+                            .map_err(BindingAlgebraError::Provider)?;
+                        right_entry = right_entries
+                            .next()
+                            .transpose()
+                            .map_err(BindingAlgebraError::Provider)?;
+                    }
+                }
+            }
+            (Some(_), None) => {
+                if matches!(
+                    operation,
+                    BindingAlgebraOperation::Union
+                        | BindingAlgebraOperation::Difference
+                        | BindingAlgebraOperation::SymmetricDifference
+                ) {
+                    result.push(left_entry.take().expect("left entry is present"));
+                }
+                left_entry = left_entries
+                    .next()
+                    .transpose()
+                    .map_err(BindingAlgebraError::Provider)?;
+            }
+            (None, Some(_)) => {
+                if matches!(
+                    operation,
+                    BindingAlgebraOperation::Union | BindingAlgebraOperation::SymmetricDifference
+                ) {
+                    result.push(right_entry.take().expect("right entry is present"));
+                }
+                right_entry = right_entries
+                    .next()
+                    .transpose()
+                    .map_err(BindingAlgebraError::Provider)?;
+            }
+            (None, None) => break,
+        }
+    }
+
+    Ok(DynamicDawgBinding::from_sorted_binding_entries(
+        domain, result,
+    ))
+}
+
 impl Drop for OwnedDictionaryResource {
     fn drop(&mut self) {
         unsafe { resource_release(self.raw.context) };
@@ -3156,6 +3413,97 @@ mod tests {
 
     fn captured_resource(snapshot: Arc<dyn SnapshotOps>) -> OwnedDictionaryResource {
         OwnedDictionaryResource::new(ResourcePayload::Snapshot(snapshot))
+    }
+
+    fn algebra_terms(dictionary: &DynamicDawgBinding) -> Vec<(BindingTerm, Option<u64>)> {
+        dictionary
+            .resource()
+            .entries()
+            .map(|entry| {
+                let entry = entry.expect("binding-owned snapshot traversal must succeed");
+                (entry.term, entry.value)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn dictionary_algebra_is_snapshot_consistent_and_domain_safe() {
+        let left = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
+        left.insert_text(b"cat", Some(3)).unwrap();
+        left.insert_text(b"dog", None).unwrap();
+        let right = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
+        right.insert_text(b"cat", Some(7)).unwrap();
+        right.insert_text(b"eel", Some(11)).unwrap();
+
+        let union = dictionary_algebra(
+            &left.resource(),
+            &right.resource(),
+            BindingAlgebraOperation::Union,
+            BindingValueMerge::LatticeJoin,
+        )
+        .unwrap();
+        assert_eq!(
+            algebra_terms(&union),
+            vec![
+                (BindingTerm::Unicode("cat".into()), Some(7)),
+                (BindingTerm::Unicode("dog".into()), None),
+                (BindingTerm::Unicode("eel".into()), Some(11)),
+            ]
+        );
+        assert_eq!(
+            algebra_terms(
+                &dictionary_algebra(
+                    &left.resource(),
+                    &right.resource(),
+                    BindingAlgebraOperation::Intersection,
+                    BindingValueMerge::First,
+                )
+                .unwrap()
+            ),
+            vec![(BindingTerm::Unicode("cat".into()), Some(3))]
+        );
+        assert_eq!(
+            algebra_terms(
+                &dictionary_algebra(
+                    &left.resource(),
+                    &right.resource(),
+                    BindingAlgebraOperation::Difference,
+                    BindingValueMerge::First,
+                )
+                .unwrap()
+            ),
+            vec![(BindingTerm::Unicode("dog".into()), None)]
+        );
+        assert_eq!(
+            algebra_terms(
+                &dictionary_algebra(
+                    &left.resource(),
+                    &right.resource(),
+                    BindingAlgebraOperation::SymmetricDifference,
+                    BindingValueMerge::First,
+                )
+                .unwrap()
+            ),
+            vec![
+                (BindingTerm::Unicode("dog".into()), None),
+                (BindingTerm::Unicode("eel".into()), Some(11)),
+            ]
+        );
+
+        left.insert_text(b"fox", Some(13)).unwrap();
+        assert_eq!(algebra_terms(&union).len(), 3);
+
+        let bytes = DynamicDawgBinding::new(BindingUnitDomain::Byte);
+        assert_eq!(
+            dictionary_algebra(
+                &left.resource(),
+                &bytes.resource(),
+                BindingAlgebraOperation::Union,
+                BindingValueMerge::First,
+            )
+            .unwrap_err(),
+            BindingAlgebraError::DomainMismatch
+        );
     }
 
     #[test]

@@ -1,0 +1,598 @@
+module Libdictenstein
+
+using Libdl
+import VinaryTreeInterop
+
+const VTI = VinaryTreeInterop
+
+export API_REVISION,
+    ABI_VERSION,
+    abi_version,
+    api_revision,
+    NativeError,
+    Dictionary,
+    DictionaryKind,
+    AlgebraOperation,
+    ValueMerge,
+    DynamicDawg,
+    DoubleArrayTrie,
+    Scdawg,
+    PersistentARTrie,
+    PersistentVocabulary,
+    insert_batch!,
+    compact!,
+    checkpoint!,
+    kind,
+    capabilities,
+    snapshot,
+    algebra,
+    intersection,
+    difference,
+    symmetric_difference,
+    contains_substring,
+    substring_frequency,
+    vocabulary_term,
+    close!,
+    UNIT_BYTE,
+    UNIT_UNICODE_SCALAR,
+    UNIT_U64,
+    ALGEBRA_UNION,
+    ALGEBRA_INTERSECTION,
+    ALGEBRA_DIFFERENCE,
+    ALGEBRA_SYMMETRIC_DIFFERENCE,
+    VALUE_MERGE_FIRST,
+    VALUE_MERGE_LAST,
+    VALUE_MERGE_LATTICE_JOIN,
+    VALUE_MERGE_LATTICE_MEET
+
+const ABI_VERSION = UInt32(1)
+const API_REVISION = UInt32(6)
+const UNIT_BYTE = VTI.UNIT_BYTE
+const UNIT_UNICODE_SCALAR = VTI.UNIT_UNICODE_SCALAR
+const UNIT_U64 = VTI.UNIT_U64
+
+@enum Status::Cint begin
+    STATUS_OK = 0
+    STATUS_END = 1
+    STATUS_INVALID_ARGUMENT = 2
+    STATUS_INVALID_UTF8 = 3
+    STATUS_NULL_POINTER = 4
+    STATUS_PANIC = 5
+    STATUS_UNSUPPORTED = 6
+    STATUS_IO_ERROR = 7
+    STATUS_CLOSED = 8
+    STATUS_DOMAIN_MISMATCH = 9
+    STATUS_LIMIT_EXCEEDED = 10
+    STATUS_PROVIDER_ERROR = 11
+    STATUS_BATCH_IN_USE = 12
+end
+
+@enum DictionaryKind::UInt32 begin
+    KIND_DYNAMIC_DAWG = 1
+    KIND_DOUBLE_ARRAY_TRIE = 2
+    KIND_SCDAWG = 3
+    KIND_PERSISTENT_ARTRIE = 4
+    KIND_PERSISTENT_VOCABULARY = 5
+end
+
+@enum AlgebraOperation::UInt32 begin
+    ALGEBRA_UNION = 1
+    ALGEBRA_INTERSECTION = 2
+    ALGEBRA_DIFFERENCE = 3
+    ALGEBRA_SYMMETRIC_DIFFERENCE = 4
+end
+
+@enum ValueMerge::UInt32 begin
+    VALUE_MERGE_FIRST = 1
+    VALUE_MERGE_LAST = 2
+    VALUE_MERGE_LATTICE_JOIN = 3
+    VALUE_MERGE_LATTICE_MEET = 4
+end
+
+const CAP_READ = UInt64(1) << 0
+const CAP_INSERT = UInt64(1) << 1
+const CAP_REMOVE = UInt64(1) << 2
+const CAP_CLEAR = UInt64(1) << 3
+const CAP_COMPACT = UInt64(1) << 4
+const CAP_SUBSTRING = UInt64(1) << 5
+const CAP_CHECKPOINT = UInt64(1) << 6
+
+"""A copied native error with the exact ABI status and operation."""
+struct NativeError <: Exception
+    status::Status
+    operation::Symbol
+    message::String
+end
+
+function Base.showerror(io::IO, error::NativeError)
+    print(io, error.operation, " failed with ", error.status)
+    isempty(error.message) || print(io, ": ", error.message)
+end
+
+struct OptionalU64
+    value::UInt64
+    has_value::UInt8
+    reserved::NTuple{7,UInt8}
+end
+
+struct TextEntry
+    data::Ptr{UInt8}
+    len::Csize_t
+    value::OptionalU64
+end
+
+struct U64Entry
+    data::Ptr{UInt64}
+    len::Csize_t
+    value::OptionalU64
+end
+
+const LIBRARY_HANDLE = Ref{Ptr{Cvoid}}(C_NULL)
+
+function library_candidates()
+    names = Sys.iswindows() ? ["libdictenstein.dll"] :
+        Sys.isapple() ? ["liblibdictenstein.dylib"] : ["liblibdictenstein.so"]
+    explicit = get(ENV, "LIBDICTENSTEIN_LIBRARY", "")
+    isempty(explicit) ? names : vcat([explicit], names)
+end
+
+function library_handle()
+    LIBRARY_HANDLE[] != C_NULL && return LIBRARY_HANDLE[]
+    failures = String[]
+    for candidate in library_candidates()
+        try
+            LIBRARY_HANDLE[] = Libdl.dlopen(candidate)
+            return LIBRARY_HANDLE[]
+        catch error
+            push!(failures, "$candidate: $(sprint(showerror, error))")
+        end
+    end
+    error("could not load libdictenstein; set LIBDICTENSTEIN_LIBRARY\n" *
+        join(failures, "\n"))
+end
+
+native(name::Symbol) = Libdl.dlsym(library_handle(), name)
+
+abi_version() = UInt32(ccall(native(:ldict_abi_version), UInt32, ()))
+api_revision() = UInt32(ccall(native(:ldict_api_revision), UInt32, ()))
+
+function last_error_message()
+    pointer = ccall(native(:ldict_last_error_message), Cstring, ())
+    pointer == C_NULL ? "" : unsafe_string(pointer)
+end
+
+function checked(raw::Integer, operation::Symbol)
+    status = try
+        Status(Cint(raw))
+    catch
+        throw(ErrorException("$operation returned unknown status $raw"))
+    end
+    status == STATUS_OK || throw(NativeError(status, operation, last_error_message()))
+    nothing
+end
+
+function checked_optional(value)
+    value === nothing && return OptionalU64(0, 0, ntuple(_ -> UInt8(0), 7))
+    value isa Integer || throw(ArgumentError("dictionary values must be nothing or integers"))
+    0 <= value <= typemax(UInt64) || throw(ArgumentError("dictionary value is outside UInt64"))
+    OptionalU64(UInt64(value), 1, ntuple(_ -> UInt8(0), 7))
+end
+
+normalize_domain(domain::VTI.UnitDomain) = domain
+normalize_domain(domain::Integer) = VTI.UnitDomain(UInt32(domain))
+
+function key_type(domain::VTI.UnitDomain)
+    domain == UNIT_BYTE && return Vector{UInt8}
+    domain == UNIT_UNICODE_SCALAR && return String
+    domain == UNIT_U64 && return Vector{UInt64}
+    throw(ArgumentError("unsupported unit domain $domain"))
+end
+
+"""An owned native dictionary that implements Julia's `AbstractDict` protocol."""
+mutable struct Dictionary{K} <: AbstractDict{K,Union{Nothing,UInt64}}
+    handle::Ptr{Cvoid}
+    domain::VTI.UnitDomain
+    closed::Bool
+end
+
+function Dictionary(handle::Ptr{Cvoid}, domain::VTI.UnitDomain)
+    handle == C_NULL && throw(ArgumentError("native dictionary handle is null"))
+    K = key_type(domain)
+    dictionary = Dictionary{K}(handle, domain, false)
+    finalizer(close!, dictionary)
+    dictionary
+end
+
+function require_open(dictionary::Dictionary)
+    dictionary.closed && throw(NativeError(STATUS_CLOSED, :dictionary, "dictionary is closed"))
+    dictionary.handle
+end
+
+function close!(dictionary::Dictionary)
+    dictionary.closed && return nothing
+    handle = dictionary.handle
+    dictionary.handle = C_NULL
+    dictionary.closed = true
+    handle == C_NULL || ccall(native(:ldict_dictionary_free), Cvoid, (Ptr{Cvoid},), handle)
+    nothing
+end
+
+Base.close(dictionary::Dictionary) = close!(dictionary)
+Base.isopen(dictionary::Dictionary) = !dictionary.closed
+
+function construct(symbol::Symbol, domain)
+    normalized = normalize_domain(domain)
+    output = Ref{Ptr{Cvoid}}(C_NULL)
+    checked(ccall(native(symbol), Cint, (UInt32, Ref{Ptr{Cvoid}}),
+        UInt32(normalized), output), symbol)
+    Dictionary(output[], normalized)
+end
+
+"""Construct an empty mutable DynamicDAWG in the requested key domain."""
+DynamicDawg(domain=UNIT_UNICODE_SCALAR) = construct(:ldict_dynamic_dawg_new, domain)
+
+"""Construct an empty mutable suffix-aware compact DAWG."""
+Scdawg(domain=UNIT_UNICODE_SCALAR) = construct(:ldict_scdawg_new, domain)
+
+function text_buffer(key, domain::VTI.UnitDomain)
+    domain == UNIT_BYTE && key isa AbstractVector{UInt8} && return Vector{UInt8}(key)
+    domain == UNIT_BYTE && key isa AbstractString && return Vector{UInt8}(codeunits(key))
+    domain == UNIT_UNICODE_SCALAR && key isa AbstractString &&
+        return Vector{UInt8}(codeunits(key))
+    throw(ArgumentError("key does not match dictionary domain $domain"))
+end
+
+function u64_buffer(key, domain::VTI.UnitDomain)
+    domain == UNIT_U64 && key isa AbstractVector{<:Integer} ||
+        throw(ArgumentError("key does not match u64 dictionary domain"))
+    values = Vector{UInt64}(undef, length(key))
+    for (index, value) in pairs(key)
+        0 <= value <= typemax(UInt64) || throw(ArgumentError("key unit is outside UInt64"))
+        values[index] = UInt64(value)
+    end
+    values
+end
+
+function normalized_pairs(entries)
+    [entry isa Pair ? entry : Pair(entry, nothing) for entry in entries]
+end
+
+"""Build an immutable DoubleArrayTrie from text keys and optional values."""
+function DoubleArrayTrie(entries; domain=UNIT_UNICODE_SCALAR)
+    normalized = normalize_domain(domain)
+    normalized == UNIT_U64 && throw(ArgumentError("DoubleArrayTrie does not support u64 keys"))
+    pairs = normalized_pairs(entries)
+    buffers = [text_buffer(first(entry), normalized) for entry in pairs]
+    descriptors = [TextEntry(isempty(buffer) ? C_NULL : pointer(buffer), length(buffer),
+        checked_optional(last(entry))) for (buffer, entry) in zip(buffers, pairs)]
+    output = Ref{Ptr{Cvoid}}(C_NULL)
+    GC.@preserve buffers descriptors begin
+        checked(ccall(native(:ldict_double_array_trie_new), Cint,
+            (UInt32, Ptr{TextEntry}, Csize_t, Ref{Ptr{Cvoid}}), UInt32(normalized),
+            isempty(descriptors) ? C_NULL : pointer(descriptors), length(descriptors), output),
+            :ldict_double_array_trie_new)
+    end
+    Dictionary(output[], normalized)
+end
+
+function persistent(symbol::Symbol, path::AbstractString, domain)
+    normalized = normalize_domain(domain)
+    bytes = Vector{UInt8}(codeunits(abspath(path)))
+    output = Ref{Ptr{Cvoid}}(C_NULL)
+    GC.@preserve bytes begin
+        checked(ccall(native(symbol), Cint,
+            (UInt32, Ptr{UInt8}, Csize_t, Ref{Ptr{Cvoid}}), UInt32(normalized),
+            isempty(bytes) ? C_NULL : pointer(bytes), length(bytes), output), symbol)
+    end
+    Dictionary(output[], normalized)
+end
+
+"""Create or open a persistent ARTrie."""
+function PersistentARTrie(path::AbstractString; domain=UNIT_UNICODE_SCALAR, create::Bool=true)
+    persistent(create ? :ldict_persistent_artrie_create : :ldict_persistent_artrie_open,
+        path, domain)
+end
+
+"""Create or open a persistent bidirectional Unicode vocabulary."""
+function PersistentVocabulary(path::AbstractString; create::Bool=true)
+    bytes = Vector{UInt8}(codeunits(abspath(path)))
+    output = Ref{Ptr{Cvoid}}(C_NULL)
+    symbol = create ? :ldict_persistent_vocab_create : :ldict_persistent_vocab_open
+    GC.@preserve bytes begin
+        checked(ccall(native(symbol), Cint,
+            (Ptr{UInt8}, Csize_t, Ref{Ptr{Cvoid}}),
+            isempty(bytes) ? C_NULL : pointer(bytes), length(bytes), output), symbol)
+    end
+    Dictionary(output[], UNIT_UNICODE_SCALAR)
+end
+
+function kind(dictionary::Dictionary)
+    output = Ref{UInt32}(0)
+    checked(ccall(native(:ldict_dictionary_kind), Cint,
+        (Ptr{Cvoid}, Ref{UInt32}), require_open(dictionary), output),
+        :ldict_dictionary_kind)
+    DictionaryKind(output[])
+end
+
+function capabilities(dictionary::Dictionary)
+    output = Ref{UInt64}(0)
+    checked(ccall(native(:ldict_dictionary_capabilities), Cint,
+        (Ptr{Cvoid}, Ref{UInt64}), require_open(dictionary), output),
+        :ldict_dictionary_capabilities)
+    output[]
+end
+
+function Base.length(dictionary::Dictionary)
+    output = Ref{Csize_t}(0)
+    checked(ccall(native(:ldict_dictionary_len), Cint,
+        (Ptr{Cvoid}, Ref{Csize_t}), require_open(dictionary), output),
+        :ldict_dictionary_len)
+    Int(output[])
+end
+
+function text_call(dictionary::Dictionary, stem::Symbol, key, output::Ref{UInt8})
+    bytes = text_buffer(key, dictionary.domain)
+    symbol = Symbol("ldict_dictionary_", stem, "_text")
+    GC.@preserve bytes begin
+        checked(ccall(native(symbol), Cint,
+            (Ptr{Cvoid}, Ptr{UInt8}, Csize_t, Ref{UInt8}), require_open(dictionary),
+            isempty(bytes) ? C_NULL : pointer(bytes), length(bytes), output), symbol)
+    end
+end
+
+function u64_call(dictionary::Dictionary, stem::Symbol, key, output::Ref{UInt8})
+    units = u64_buffer(key, dictionary.domain)
+    symbol = Symbol("ldict_dictionary_", stem, "_u64")
+    GC.@preserve units begin
+        checked(ccall(native(symbol), Cint,
+            (Ptr{Cvoid}, Ptr{UInt64}, Csize_t, Ref{UInt8}), require_open(dictionary),
+            isempty(units) ? C_NULL : pointer(units), length(units), output), symbol)
+    end
+end
+
+function Base.haskey(dictionary::Dictionary, key)
+    output = Ref{UInt8}(0)
+    dictionary.domain == UNIT_U64 ? u64_call(dictionary, :contains, key, output) :
+        text_call(dictionary, :contains, key, output)
+    output[] == 1
+end
+
+function lookup(dictionary::Dictionary, key)
+    found = Ref{UInt8}(0)
+    value = Ref(OptionalU64(0, 0, ntuple(_ -> UInt8(0), 7)))
+    if dictionary.domain == UNIT_U64
+        units = u64_buffer(key, dictionary.domain)
+        GC.@preserve units begin
+            checked(ccall(native(:ldict_dictionary_get_u64), Cint,
+                (Ptr{Cvoid}, Ptr{UInt64}, Csize_t, Ref{UInt8}, Ref{OptionalU64}),
+                require_open(dictionary), isempty(units) ? C_NULL : pointer(units),
+                length(units), found, value), :ldict_dictionary_get_u64)
+        end
+    else
+        bytes = text_buffer(key, dictionary.domain)
+        GC.@preserve bytes begin
+            checked(ccall(native(:ldict_dictionary_get_text), Cint,
+                (Ptr{Cvoid}, Ptr{UInt8}, Csize_t, Ref{UInt8}, Ref{OptionalU64}),
+                require_open(dictionary), isempty(bytes) ? C_NULL : pointer(bytes),
+                length(bytes), found, value), :ldict_dictionary_get_text)
+        end
+    end
+    found[] == 0 && return (false, nothing)
+    (true, value[].has_value == 0 ? nothing : value[].value)
+end
+
+function Base.getindex(dictionary::Dictionary, key)
+    found, value = lookup(dictionary, key)
+    found || throw(KeyError(key))
+    value
+end
+
+function Base.get(dictionary::Dictionary, key, default)
+    found, value = lookup(dictionary, key)
+    found ? value : default
+end
+
+function Base.setindex!(dictionary::Dictionary, value, key)
+    inserted = Ref{UInt8}(0)
+    optional = checked_optional(value)
+    if dictionary.domain == UNIT_U64
+        units = u64_buffer(key, dictionary.domain)
+        GC.@preserve units begin
+            checked(ccall(native(:ldict_dictionary_insert_u64), Cint,
+                (Ptr{Cvoid}, Ptr{UInt64}, Csize_t, OptionalU64, Ref{UInt8}),
+                require_open(dictionary), isempty(units) ? C_NULL : pointer(units),
+                length(units), optional, inserted), :ldict_dictionary_insert_u64)
+        end
+    else
+        bytes = text_buffer(key, dictionary.domain)
+        GC.@preserve bytes begin
+            checked(ccall(native(:ldict_dictionary_insert_text), Cint,
+                (Ptr{Cvoid}, Ptr{UInt8}, Csize_t, OptionalU64, Ref{UInt8}),
+                require_open(dictionary), isempty(bytes) ? C_NULL : pointer(bytes),
+                length(bytes), optional, inserted), :ldict_dictionary_insert_text)
+        end
+    end
+    dictionary
+end
+
+function Base.delete!(dictionary::Dictionary, key)
+    removed = Ref{UInt8}(0)
+    dictionary.domain == UNIT_U64 ? u64_call(dictionary, :remove, key, removed) :
+        text_call(dictionary, :remove, key, removed)
+    dictionary
+end
+
+function Base.empty!(dictionary::Dictionary)
+    checked(ccall(native(:ldict_dictionary_clear), Cint, (Ptr{Cvoid},),
+        require_open(dictionary)), :ldict_dictionary_clear)
+    dictionary
+end
+
+function insert_batch!(dictionary::Dictionary, entries)
+    pairs = normalized_pairs(entries)
+    inserted = Ref{Csize_t}(0)
+    if dictionary.domain == UNIT_U64
+        buffers = [u64_buffer(first(entry), dictionary.domain) for entry in pairs]
+        descriptors = [U64Entry(isempty(buffer) ? C_NULL : pointer(buffer), length(buffer),
+            checked_optional(last(entry))) for (buffer, entry) in zip(buffers, pairs)]
+        GC.@preserve buffers descriptors begin
+            checked(ccall(native(:ldict_dictionary_insert_u64_batch), Cint,
+                (Ptr{Cvoid}, Ptr{U64Entry}, Csize_t, Ref{Csize_t}),
+                require_open(dictionary), isempty(descriptors) ? C_NULL : pointer(descriptors),
+                length(descriptors), inserted), :ldict_dictionary_insert_u64_batch)
+        end
+    else
+        buffers = [text_buffer(first(entry), dictionary.domain) for entry in pairs]
+        descriptors = [TextEntry(isempty(buffer) ? C_NULL : pointer(buffer), length(buffer),
+            checked_optional(last(entry))) for (buffer, entry) in zip(buffers, pairs)]
+        GC.@preserve buffers descriptors begin
+            checked(ccall(native(:ldict_dictionary_insert_text_batch), Cint,
+                (Ptr{Cvoid}, Ptr{TextEntry}, Csize_t, Ref{Csize_t}),
+                require_open(dictionary), isempty(descriptors) ? C_NULL : pointer(descriptors),
+                length(descriptors), inserted), :ldict_dictionary_insert_text_batch)
+        end
+    end
+    Int(inserted[])
+end
+
+function compact!(dictionary::Dictionary)
+    reclaimed = Ref{Csize_t}(0)
+    checked(ccall(native(:ldict_dictionary_compact), Cint,
+        (Ptr{Cvoid}, Ref{Csize_t}), require_open(dictionary), reclaimed),
+        :ldict_dictionary_compact)
+    Int(reclaimed[])
+end
+
+function checkpoint!(dictionary::Dictionary)
+    checked(ccall(native(:ldict_dictionary_checkpoint), Cint, (Ptr{Cvoid},),
+        require_open(dictionary)), :ldict_dictionary_checkpoint)
+    dictionary
+end
+
+function snapshot(dictionary::Dictionary)
+    raw = Ref(VTI.VtResourceRaw(C_NULL, Ptr{VTI.VtResourceVTable}(C_NULL)))
+    checked(ccall(native(:ldict_dictionary_resource), Cint,
+        (Ptr{Cvoid}, Ref{VTI.VtResourceRaw}), require_open(dictionary), raw),
+        :ldict_dictionary_resource)
+    owned = VTI.borrow_resource(raw[]; anchors=[dictionary])
+    live = VTI.dictionary(owned; take=true)
+    try
+        VTI.snapshot(live)
+    finally
+        close(live)
+    end
+end
+
+function Base.iterate(dictionary::Dictionary, state=nothing)
+    view, view_state = state === nothing ? (snapshot(dictionary), nothing) : state
+    step = try
+        view_state === nothing ? iterate(view) : iterate(view, view_state)
+    catch
+        close(view)
+        rethrow()
+    end
+    if step === nothing
+        close(view)
+        return nothing
+    end
+    pair, next_state = step
+    (pair, (view, next_state))
+end
+
+function algebra(left::Dictionary, right::Dictionary,
+    operation::AlgebraOperation=ALGEBRA_UNION,
+    value_merge::ValueMerge=VALUE_MERGE_LAST)
+    left.domain == right.domain || throw(ArgumentError("dictionary domains must match"))
+    output = Ref{Ptr{Cvoid}}(C_NULL)
+    checked(ccall(native(:ldict_dictionary_algebra), Cint,
+        (Ptr{Cvoid}, Ptr{Cvoid}, UInt32, UInt32, Ref{Ptr{Cvoid}}),
+        require_open(left), require_open(right), UInt32(operation), UInt32(value_merge), output),
+        :ldict_dictionary_algebra)
+    Dictionary(output[], left.domain)
+end
+
+intersection(left::Dictionary, right::Dictionary;
+    value_merge=VALUE_MERGE_LATTICE_MEET) =
+    algebra(left, right, ALGEBRA_INTERSECTION, value_merge)
+difference(left::Dictionary, right::Dictionary) =
+    algebra(left, right, ALGEBRA_DIFFERENCE, VALUE_MERGE_FIRST)
+symmetric_difference(left::Dictionary, right::Dictionary) =
+    algebra(left, right, ALGEBRA_SYMMETRIC_DIFFERENCE, VALUE_MERGE_FIRST)
+
+Base.merge(left::Dictionary, right::Dictionary) =
+    algebra(left, right, ALGEBRA_UNION, VALUE_MERGE_LAST)
+Base.union(left::Dictionary, right::Dictionary) = merge(left, right)
+Base.intersect(left::Dictionary, right::Dictionary) = intersection(left, right)
+Base.setdiff(left::Dictionary, right::Dictionary) = difference(left, right)
+Base.symdiff(left::Dictionary, right::Dictionary) = symmetric_difference(left, right)
+
+function Base.copy(dictionary::Dictionary)
+    empty_dictionary = DynamicDawg(dictionary.domain)
+    try
+        algebra(dictionary, empty_dictionary, ALGEBRA_UNION, VALUE_MERGE_FIRST)
+    finally
+        close(empty_dictionary)
+    end
+end
+
+function contains_substring(dictionary::Dictionary, pattern::AbstractString)
+    output = Ref{UInt8}(0)
+    bytes = Vector{UInt8}(codeunits(pattern))
+    GC.@preserve bytes begin
+        checked(ccall(native(:ldict_scdawg_contains_substring), Cint,
+            (Ptr{Cvoid}, Ptr{UInt8}, Csize_t, Ref{UInt8}), require_open(dictionary),
+            isempty(bytes) ? C_NULL : pointer(bytes), length(bytes), output),
+            :ldict_scdawg_contains_substring)
+    end
+    output[] == 1
+end
+
+function substring_frequency(dictionary::Dictionary, pattern::AbstractString)
+    output = Ref{Csize_t}(0)
+    bytes = Vector{UInt8}(codeunits(pattern))
+    GC.@preserve bytes begin
+        checked(ccall(native(:ldict_scdawg_substring_frequency), Cint,
+            (Ptr{Cvoid}, Ptr{UInt8}, Csize_t, Ref{Csize_t}), require_open(dictionary),
+            isempty(bytes) ? C_NULL : pointer(bytes), length(bytes), output),
+            :ldict_scdawg_substring_frequency)
+    end
+    Int(output[])
+end
+
+function vocabulary_term(dictionary::Dictionary, index::Integer)
+    index >= 0 || throw(ArgumentError("vocabulary index must be nonnegative"))
+    required = Ref{Csize_t}(0)
+    found = Ref{UInt8}(0)
+    checked(ccall(native(:ldict_vocab_get_term), Cint,
+        (Ptr{Cvoid}, UInt64, Ptr{UInt8}, Csize_t, Ref{Csize_t}, Ref{UInt8}),
+        require_open(dictionary), UInt64(index), C_NULL, 0, required, found),
+        :ldict_vocab_get_term)
+    found[] == 0 && return nothing
+    buffer = Vector{UInt8}(undef, Int(required[]))
+    GC.@preserve buffer begin
+        checked(ccall(native(:ldict_vocab_get_term), Cint,
+            (Ptr{Cvoid}, UInt64, Ptr{UInt8}, Csize_t, Ref{Csize_t}, Ref{UInt8}),
+            require_open(dictionary), UInt64(index), isempty(buffer) ? C_NULL : pointer(buffer),
+            length(buffer), required, found), :ldict_vocab_get_term)
+    end
+    found[] == 0 ? nothing : String(buffer)
+end
+
+@doc "Return the loaded native library's stable ABI major version." abi_version
+@doc "Return the loaded native library's additive API revision." api_revision
+@doc "Release one owned dictionary handle. Repeated calls are harmless." close!
+@doc "Return the concrete native backend kind." kind
+@doc "Return the native capability bitset for this backend." capabilities
+@doc "Insert or update a complete batch with one foreign-function crossing." insert_batch!
+@doc "Rebuild a mutable DynamicDAWG and return the number of reclaimed nodes." compact!
+@doc "Durably checkpoint a persistent ARTrie or vocabulary." checkpoint!
+@doc "Open an immutable retained dictionary revision through VinaryTreeInterop." snapshot
+@doc "Materialize a native union, intersection, difference, or symmetric difference." algebra
+@doc "Materialize keys shared by both inputs, combining duplicate values by policy." intersection
+@doc "Materialize keys present in the left input but absent from the right." difference
+@doc "Materialize keys present in exactly one input." symmetric_difference
+@doc "Test whether a pattern occurs inside any term of an SCDAWG." contains_substring
+@doc "Count a pattern's occurrences across the terms indexed by an SCDAWG." substring_frequency
+@doc "Return a persistent vocabulary term by index, or `nothing` when absent." vocabulary_term
+
+end # module Libdictenstein

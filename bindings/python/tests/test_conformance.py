@@ -49,7 +49,7 @@ def _entries() -> list[tuple[str, int | None]]:
 
 def test_c1_identity_constants() -> None:
     assert libdictenstein.abi_version() == 1
-    assert libdictenstein.api_revision() == 5
+    assert libdictenstein.api_revision() == 6
 
 
 def test_c1_kind_and_capabilities() -> None:

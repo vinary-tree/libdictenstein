@@ -11,11 +11,12 @@ use std::collections::BTreeMap;
 use std::ffi::{c_void, CStr};
 
 use libdictenstein::ffi::{
-    ldict_dictionary_contains_text, ldict_dictionary_contains_u64, ldict_dictionary_free,
-    ldict_dictionary_get_text, ldict_dictionary_get_u64, ldict_dictionary_insert_text,
-    ldict_dictionary_insert_u64, ldict_dictionary_remove_text, ldict_dictionary_remove_u64,
-    ldict_dictionary_resource, ldict_dynamic_dawg_new, ldict_last_error_message, ldict_scdawg_new,
-    LdictDictionary, LdictOptionalU64, LdictStatus, LdictTextEntry, LdictU64Entry,
+    ldict_dictionary_algebra, ldict_dictionary_contains_text, ldict_dictionary_contains_u64,
+    ldict_dictionary_free, ldict_dictionary_get_text, ldict_dictionary_get_u64,
+    ldict_dictionary_insert_text, ldict_dictionary_insert_u64, ldict_dictionary_remove_text,
+    ldict_dictionary_remove_u64, ldict_dictionary_resource, ldict_dynamic_dawg_new,
+    ldict_last_error_message, ldict_scdawg_new, LdictAlgebraOperation, LdictDictionary,
+    LdictOptionalU64, LdictStatus, LdictTextEntry, LdictU64Entry, LdictValueMerge,
 };
 use vinary_tree_interop::{
     VtDictionaryEdge, VtDictionaryVTable, VtResource, VtSnapshotIdentity, VtSnapshotIdentityVTable,
@@ -129,6 +130,28 @@ impl Drop for DictGuard {
     fn drop(&mut self) {
         unsafe { ldict_dictionary_free(self.0) };
     }
+}
+
+/// Materialize a dictionary algebra result, asserting the operation succeeded.
+pub fn algebra(
+    left: *mut LdictDictionary,
+    right: *mut LdictDictionary,
+    operation: LdictAlgebraOperation,
+    value_merge: LdictValueMerge,
+) -> DictGuard {
+    let mut handle = std::ptr::null_mut();
+    let status = unsafe {
+        ldict_dictionary_algebra(
+            left,
+            right,
+            operation as u32,
+            value_merge as u32,
+            &mut handle,
+        )
+    };
+    assert_eq!(status, LdictStatus::Ok, "dictionary algebra failed");
+    assert!(!handle.is_null());
+    DictGuard(handle)
 }
 
 /// Insert one text term; returns `(status, inserted-flag)`.

@@ -5,7 +5,7 @@ Gem::Specification.new do |spec|
   spec.version = VinaryTree::Libdictenstein::VERSION
   spec.authors = ["Dylon Edwards"]
   spec.email = ["dylon.devo@gmail.com"]
-  spec.summary = "High-performance modular dictionary backends"
+  spec.summary = "High-performance dictionaries and trie-maps for approximate string matching"
   spec.description = "DynamicDAWG, DAT, SCDAWG, and persistent ARTrie bindings for Ruby"
   spec.homepage = "https://github.com/vinary-tree/libdictenstein"
   spec.license = "Apache-2.0"

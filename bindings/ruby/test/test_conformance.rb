@@ -56,7 +56,7 @@ class ConformanceTest < Minitest::Test
 
   def test_c1_identity_constants
     assert_equal 1, LD.abi_version
-    assert_equal 5, LD.api_revision
+    assert_equal 6, LD.api_revision
   end
 
   def test_c1_kind_and_capabilities
@@ -420,6 +420,33 @@ class ConformanceTest < Minitest::Test
   end
 
   # --------------------------------------------------------------------------
+  def test_c8_native_dictionary_algebra
+    left = LD::DynamicDawg.new
+    right = LD::DynamicDawg.new
+    left.put_all([["a", 1], ["shared", 7], ["valueless", nil]])
+    right.put_all([["b", 2], ["shared", 11], ["valueless", 5]])
+    joined = left.union(right, value_merge: LD::ValueMerge::LATTICE_JOIN)
+    common = left & right
+    only_left = left - right
+    exclusive = left ^ right
+
+    assert_equal 4, joined.size
+    assert_equal 11, joined.get("shared").value
+    assert_equal 5, joined.get("valueless").value
+    assert_equal 2, common.size
+    assert_equal 7, common.get("shared").value
+    assert_nil common.get("valueless").value
+    assert only_left.include?("a")
+    assert_equal 2, exclusive.size
+    assert exclusive.include?("a")
+    assert exclusive.include?("b")
+    left.put("later", 99)
+    refute joined.include?("later")
+    assert joined.put("mutable-result", 23)
+  ensure
+    [left, right, joined, common, only_left, exclusive].compact.each(&:close)
+  end
+
   # C9 leak discipline
   # --------------------------------------------------------------------------
 

@@ -168,7 +168,7 @@ pub use substring::{
     BidirectionalDictionaryNode, ExtensionResult, SubstringDictionary, SubstringMatch,
 };
 pub use value::DictionaryValue;
-pub use zipper::{DictZipper, ValuedDictZipper};
+pub use zipper::{DictZipper, ValuedDictZipper, ZipperTraversalNode};
 
 // Re-export persistent ARTrie types (only available with feature)
 #[cfg(feature = "persistent-artrie")]

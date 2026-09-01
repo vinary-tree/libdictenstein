@@ -84,6 +84,7 @@ module VinaryTree
       extern "uint32_t ldict_dictionary_insert_text_batch(void*, void*, size_t, void*)"
       extern "uint32_t ldict_dictionary_clear(void*)"
       extern "uint32_t ldict_dictionary_compact(void*, void*)"
+      extern "uint32_t ldict_dictionary_algebra(void*, void*, uint32_t, uint32_t, void*)"
       extern "uint32_t ldict_dictionary_checkpoint(void*)"
       extern "uint32_t ldict_scdawg_contains_substring(void*, const void*, size_t, void*)"
       extern "uint32_t ldict_scdawg_substring_frequency(void*, const void*, size_t, void*)"

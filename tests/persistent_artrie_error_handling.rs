@@ -608,9 +608,11 @@ fn test_moderately_large_term() {
 
     let dict: PersistentARTrie<()> = PersistentARTrie::create(&dict_path).expect("create dict");
 
-    // Try to insert a moderately large term (1KB - safe for stack)
-    // Note: Very large terms (64KB+) can cause stack overflow due to
-    // recursive bucket implementation. This is a known limitation.
+    // Keep this error-handling smoke case modest. Deep byte-key stack safety is no
+    // longer a recursive-bucket limitation: the dedicated
+    // `persistent_artrie_deep_key_stack_safety` gate covers a 100,000-byte key on a
+    // 128-KiB thread stack across value insert/overwrite, lookup, remove, and
+    // membership re-finalization.
     let large_term: String = "x".repeat(1_000);
     let result = dict.insert(&large_term);
 

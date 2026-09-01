@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "libdictenstein"
-version = "4.0.0rc4"
-description = "High-performance Vinary Tree dictionaries with retained cross-project resources"
+version = "4.0.0rc6"
+description = "High-performance dictionaries and trie-maps for approximate string matching"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 readme = "README.md"
 authors = [{ name = "Dylon Edwards", email = "dylon.devo@gmail.com" }]
 dependencies = [
   "typing-extensions>=4.0.0; python_version < '3.11'",
-  "vinary-tree-interop==4.0.0rc4",
+  "vinary-tree-interop==4.0.0rc6",
 ]
 classifiers = [
   "Programming Language :: Python :: 3 :: Only",

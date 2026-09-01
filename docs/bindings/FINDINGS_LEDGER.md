@@ -120,7 +120,7 @@ cursor/reducer functions. Rust suites remain `#![cfg(feature = "ffi")]`.
 **Verification.** `cargo nextest run --workspace --all-features` exercises the
 Rust suites. The C conformance job compiles and runs
 `bindings/c/tests/entries.c` against the built `cdylib`; the binding contract
-gate independently proves the modeled/header/exported 41-symbol set is exact.
+gate independently proves the modeled/header/exported 42-symbol set is exact.
 
 ---
 
@@ -135,17 +135,18 @@ gate independently proves the modeled/header/exported 41-symbol set is exact.
 | severity | low |
 | status | **ACCEPTED** — semantic completeness is gated; duplicate raw calling forms may be omitted |
 
-**Evidence.** Current gate coverage matrix, 2026-08-20 (referenced / 41
+**Evidence.** Current gate coverage matrix, 2026-08-29 (referenced / 42
 modeled `ldict_*` symbols):
 
 | Facade | Coverage | Facade | Coverage |
 |--------|----------|--------|----------|
-| python | 36 / 41 | ocaml | 30 / 41 |
-| jvm | 36 / 41 | ruby | 35 / 41 |
-| cpp | 35 / 41 | fortran | 30 / 41 |
-| dotnet | 35 / 41 | lua | 29 / 41 |
-| go | 35 / 41 | swift | 29 / 41 |
-| haskell | 30 / 41 | C | 41 / 41 |
+| python | 36 / 42 | ocaml | 30 / 42 |
+| jvm | 31 / 42 | ruby | 35 / 42 |
+| cpp | 35 / 42 | fortran | 30 / 42 |
+| dotnet | 30 / 42 | lua | 29 / 42 |
+| go | 35 / 42 | swift | 29 / 42 |
+| haskell | 30 / 42 | C | 42 / 42 |
+| Julia | 22 / 42 | Raku | 34 / 42 |
 | | | clojure | mediated (JVM facade) |
 | | | javascript | mediated (umbrella runtime) |
 

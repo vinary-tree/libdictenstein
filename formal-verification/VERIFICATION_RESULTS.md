@@ -7,7 +7,7 @@ Persistent Adaptive Radix Trie (PART) implementation in libdictenstein.
 
 **Originally written:** 2026-01-20. **Last reconciled:** 2026-08-31.
 
-As of the live tree the corpus is **83** Rocq `.v` files (**1,738**
+As of the live tree the corpus is **85** Rocq `.v` files (**1,760**
 propositions = 1,364 `Theorem` + 356 `Lemma` + 18 `Corollary` + 0 `Proposition`,
 all `Qed.`/`Defined.`-closed, **0** `Admitted` / **0** `Axiom` / **0**
 `Parameter`) and **75** TLA⁺ modules with **142** `.cfg` TLC configurations. The
@@ -438,6 +438,7 @@ implementation surface.
 | Double-array trie spec | `DoubleArrayTrieSpec.v` to byte and Unicode `DoubleArrayTrie` BASE/CHECK traversal, construction normalization, mapped lookup, child iteration, and zipper values | Passed, 8 default-feature tests |
 | Zipper language spec | `ZipperLanguageSpec.v` to public `DictZipper` / `ValuedDictZipper` traversal, iterator, filter, combinator, suffix, SCDAWG, and persistent zipper APIs | Passed, 8 default-feature tests and 9 `persistent-artrie` tests |
 | Valued set-combinator spec | `ValuedSetCombinatorSpec.v` to `UnionZipper` / `IntersectionZipper` duplicate-value merge semantics | Passed, 7 default-feature tests and 9 `lling-llang` tests |
+| FFI dictionary-algebra spec | `AbiDictionaryAlgebraSpec.v` and `ValuedSetCombinatorSpec.v` to `ldict_dictionary_algebra` set/value semantics and independent revision ownership | Passed, 4 `ffi_algebra` tests including generated finite-map correspondence |
 | Persistent merge spec | `PersistentMergeSpec.v` to `PersistentARTrie` cursor pagination, ordinary batched merge, arena-grouped batched merge, and feature-gated parallel merge | Passed, 3 `persistent-artrie` tests and 4 `persistent-artrie parallel-merge` tests |
 | Persistent prefix spec | `PersistentPrefixSpec.v` to `PersistentARTrieChar` prefix iteration, valued/arena projections, ordinary removal, batched removal, durable-prefix deletion, and checked RMW overflow | Passed, 4 prefix tests and 4 bulk-mutation tests |
 | PathMap/factory/snapshot specs | `PathMapFactorySpec.v` and `PathMapSnapshotSpec.v` to optional `PathMapDictionary`, `PathMapDictionaryChar`, `PathMapZipper`, `PathMapSnapshot`, `PathMapRef`, mutation traits, and `DictionaryFactory` dispatch | Passed, 9 `pathmap-backend` tests; caught/fixed missing `MutableDictionary` impls and collapsed Unicode sibling edges; now checks copy-on-write snapshot decoupling, subtrie scoping, and `Send + Sync` adapter contracts |
@@ -617,7 +618,7 @@ absence).
 
 > The per-module table that follows is a dated snapshot covering **66** of the
 > **83** files (it was last LOC-audited 2026-06-11). The 17 uncounted files
-> are later additions; the headline aggregate **1,738** above is the live total.
+> are later additions; the headline aggregate **1,760** above is the live total.
 
 The prior 15-module core compiled with Rocq 9.1.0 (~72 s wall clock under
 `make -j1`). Every theorem is closed by `Qed.` — **0 `Axiom`, 0 `Admitted`, 0
@@ -640,6 +641,7 @@ The prior 15-module core compiled with Rocq 9.1.0 (~72 s wall clock under
 | Spec/DoubleArrayTrieSpec.v | 499 | 22 | 5 | 27 | Complete |
 | Spec/ZipperLanguageSpec.v | 255 | 19 | 0 | 19 | Complete |
 | Spec/ValuedSetCombinatorSpec.v | 454 | 28 | 2 | 30 | Complete |
+| Spec/AbiDictionaryAlgebraSpec.v | 208 | 10 | 0 | 10 | Complete |
 | Spec/BloomFilterSpec.v | 362 | 11 | 6 | 17 (+1 `Defined`) | Complete |
 | Spec/PersistentMergeSpec.v | 246 | 11 | 0 | 11 | Complete |
 | Spec/PersistentPrefixSpec.v | 562 | 26 | 2 | 28 (+1 `Defined`) | Complete |
@@ -686,9 +688,9 @@ The prior 15-module core compiled with Rocq 9.1.0 (~72 s wall clock under
 **Snapshot table total (66 modules listed above):** 26,329 Rocq LOC; 974
 `Theorem` + 301 `Lemma` + 8 `Corollary` = 1,283 propositions.
 
-**Live tree total (all 83 `.v` files, verified 2026-08-30):** **35,844** Rocq
+**Live tree total (all 85 `.v` files, verified 2026-09-01):** **36,316** Rocq
 LOC; **1,364** `Theorem` + **356** `Lemma` + **18** `Corollary` + **0**
-`Proposition` = **1,738** propositions, all closed (`Qed.`/`Defined.`; no escape
+`Proposition` = **1,760** propositions, all closed (`Qed.`/`Defined.`; no escape
 hatches — 0 `Admitted` / 0 `Axiom` / 0 `Parameter`). The 455-proposition delta
 (+390 `Theorem`, +55 `Lemma`, +10 `Corollary`) over the snapshot comprises the persistent suffix
 automaton, persistent u64 ARTrie, persistent SCDAWG, ABI traversal/paging/status,
@@ -735,7 +737,7 @@ obligations were resolved as follows:
 
 ### Proven Theorems (selected highlights)
 
-A non-exhaustive sample of the **1,738** theorem/lemma/corollary propositions.
+A non-exhaustive sample of the **1,760** theorem/lemma/corollary propositions.
 See each per-module file for the complete list, and
 [README.md](README.md) for the module-by-module status table.
 

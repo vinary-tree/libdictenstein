@@ -9,11 +9,11 @@ CRUD/checkpoint/reopen, and persistent vocabulary reverse lookup.
 ## Installation
 
 The Lua rock contains the idiomatic C facade and links to an explicitly
-installed native SDK. Point LuaRocks at the matching `4.0.0-rc.4` headers and
+installed native SDK. Point LuaRocks at the matching `4.0.0-rc.6` headers and
 shared library:
 
 ```sh
-luarocks install libdictenstein 4.0.0rc4-2 \
+luarocks install libdictenstein 4.0.0rc6-1 \
   LIBDICTENSTEIN_INCDIR=/opt/vinary-tree/include \
   LIBDICTENSTEIN_LIBDIR=/opt/vinary-tree/lib
 ```
@@ -31,7 +31,7 @@ shared library `libdictenstein`. Build the native library first:
 
 ```sh
 cargo build --release --no-default-features --features ffi
-luarocks make bindings/lua/libdictenstein-4.0.0rc4-2.rockspec \
+luarocks make bindings/lua/libdictenstein-4.0.0rc6-1.rockspec \
   LIBDICTENSTEIN_INCDIR="$PWD/include" \
   LIBDICTENSTEIN_LIBDIR="$PWD/target/release"
 ```
@@ -193,6 +193,34 @@ provides the idiomatic generic-for triple. `dictionary:entry_cursor(limits)`
 exposes explicit `:next()`, metadata, and idempotent `:close()` for bounded
 streaming. Lua 5.4 to-be-closed variables provide lexical cleanup and `__gc`
 only contains abandoned userdata.
+
+
+## Snapshot-consistent dictionary algebra
+
+Every facade exposes native union, intersection, left difference, and
+symmetric difference. The operation captures one immutable revision from each
+input; those two captures are independent, and later mutations cannot alter
+the result. Inputs must use the same byte, Unicode-scalar, or `u64` term
+domain.
+
+The producer merges the two lexicographically ordered entry streams once and
+feeds the sorted, duplicate-free output directly to the DynamicDAWG
+freeze-once builder. For input cardinalities $`|A|`$ and $`|B|`$, this is
+$`\Theta(|A|+|B|)`$ work plus $`\Theta(|R|)`$ result storage. It avoids a
+host-language hash table, per-entry foreign calls, and repeated mutable graph
+publication. The returned DynamicDAWG is independently mutable.
+
+Keys present in both inputs use an explicit optional-`u64` value policy:
+left/first, right/last, lattice join (optional maximum), or lattice meet
+(shared optional minimum). Valueless membership remains distinct from absence
+and from the value zero. Union defaults to right/last and intersection defaults
+to lattice meet; difference operations have no overlapping output key, so a
+value policy cannot affect them.
+
+```lua
+local joined <close> = left:union(right, "lattice_join")
+local common <close> = left & right
+```
 
 
 The pure Rust producer is the semantic and performance baseline: generic

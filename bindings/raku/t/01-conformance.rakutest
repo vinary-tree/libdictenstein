@@ -1,0 +1,123 @@
+use Test;
+use NativeCall;
+use Libdictenstein;
+
+is abi-version, ABI-VERSION, 'ABI version matches the package contract';
+is api-revision, API-REVISION, 'API revision includes native algebra';
+is nativesizeof(OptionalValue), 16, 'optional u64 layout matches C';
+is nativesizeof(TextEntry), 32, 'text descriptor layout matches C';
+is nativesizeof(U64Entry), 32, 'u64 descriptor layout matches C';
+
+subtest 'Unicode Associative and snapshot Iterable' => {
+    my $dictionary = dynamic-dawg;
+    is $dictionary.elems, 0, 'new dictionary is empty';
+    is $dictionary.ASSIGN-KEY('cat', 7), 7, 'assign returns its value';
+    $dictionary.ASSIGN-KEY('cot', Nil);
+    $dictionary.ASSIGN-KEY('zero', 0);
+    ok $dictionary.EXISTS-KEY('cot'), 'valueless term is present';
+    is $dictionary.AT-KEY('cat'), 7, 'mapped value round-trips';
+    is $dictionary.AT-KEY('zero'), 0, 'zero is not confused with valueless';
+    ok !$dictionary.EXISTS-KEY('missing'), 'absent key is absent';
+    is $dictionary.elems, 3, 'collection length is native';
+    is-deeply $dictionary.list.map(*.key).sort.Array,
+        <cat cot zero>.Array, 'iteration is lexicographic and complete';
+    my $early = $dictionary.iterator;
+    ok $early.pull-one ~~ Pair, 'explicit iterator yields one snapshot entry';
+    lives-ok { $early.close }, 'explicit iterator closes deterministically after early stop';
+
+    my $snapshot = $dictionary.snapshot;
+    $dictionary.DELETE-KEY('cat');
+    ok $snapshot.EXISTS-KEY('cat'), 'captured revision survives live deletion';
+    $snapshot.close;
+
+    is $dictionary.insert-batch([
+        ant => 1,
+        bee => Nil,
+        eel => 3,
+    ]), 3, 'batch insertion crosses once and reports new terms';
+    is $dictionary.kind, DYNAMIC-DAWG, 'backend kind is modeled';
+    ok $dictionary.capabilities +& CAP-INSERT, 'capability bitset exposes mutation';
+    lives-ok { $dictionary.compact }, 'DynamicDAWG compaction is exposed';
+    $dictionary.close;
+    ok !$dictionary.opened, 'close is deterministic';
+    dies-ok { $dictionary.elems }, 'closed handles reject access';
+};
+
+subtest 'byte and u64 domains' => {
+    my $bytes = dynamic-dawg(BYTE);
+    my $tokens = dynamic-dawg(U64);
+    my $raw = Buf.new(0x00, 0xff, 0x41);
+    $bytes.ASSIGN-KEY($raw, 5);
+    is $bytes.AT-KEY($raw), 5, 'arbitrary byte key round-trips';
+    my @sequence = 1, 2, 2**64 - 1;
+    $tokens.ASSIGN-KEY(@sequence, Nil);
+    ok $tokens.EXISTS-KEY(@sequence), 'u64-token key is present';
+    ok !$tokens.AT-KEY(@sequence).defined, 'u64 valueless mapping stays valueless';
+    is $tokens.insert-batch([
+        Pair.new([4, 5, 6], 9),
+        Pair.new([7, 8], Nil),
+    ]), 2, 'u64 descriptor arena inserts multi-token keys in one crossing';
+    is $tokens.AT-KEY([4, 5, 6]), 9,
+        'batched u64 mapped value round-trips';
+    ok $tokens.EXISTS-KEY([7, 8]),
+        'batched u64 valueless member remains present';
+    $bytes.close;
+    $tokens.close;
+};
+
+subtest 'immutable and suffix backends' => {
+    my $dat = double-array-trie([cat => 1, dog => Nil]);
+    is $dat.AT-KEY('cat'), 1, 'DoubleArrayTrie exposes exact lookup';
+    dies-ok { $dat.ASSIGN-KEY('new', 2) }, 'DoubleArrayTrie rejects mutation';
+    my $suffix = scdawg;
+    $suffix.ASSIGN-KEY('banana', 3);
+    $suffix.ASSIGN-KEY('bandana', Nil);
+    ok $suffix.contains-substring('ana'), 'SCDAWG exposes substring membership';
+    ok $suffix.substring-frequency('ana') >= 2,
+        'SCDAWG exposes substring frequency';
+    $dat.close;
+    $suffix.close;
+};
+
+subtest 'native algebra and optional-value lattices' => {
+    my $left = dynamic-dawg;
+    my $right = dynamic-dawg;
+    $left.insert-batch([left => 1, shared => 4, valueless => Nil]);
+    $right.insert-batch([right => 2, shared => 9, valueless => 7]);
+
+    my $joined = $left.union($right, merge => VALUE-MERGE-LATTICE-JOIN);
+    my $met = $left.intersection($right);
+    my $only-left = $left.difference($right);
+    my $exclusive = $left.symmetric-difference($right);
+    is $joined.AT-KEY('shared'), 9, 'lattice join takes numeric maximum';
+    is $joined.AT-KEY('valueless'), 7, 'optional join preserves present value';
+    is $met.AT-KEY('shared'), 4, 'default intersection takes lattice meet';
+    ok !$met.AT-KEY('valueless').defined,
+        'optional meet is valueless unless both values exist';
+    is-deeply $only-left.list.map(*.key).Array, ['left'],
+        'difference retains left-only keys';
+    is-deeply $exclusive.list.map(*.key).sort.Array, <left right>.Array,
+        'symmetric difference retains exclusive keys';
+
+    $left.ASSIGN-KEY('later', 99);
+    ok !$joined.EXISTS-KEY('later'), 'result owns an independent snapshot';
+    $joined.ASSIGN-KEY('result-only', 10);
+    ok !$left.EXISTS-KEY('result-only'), 'result remains independently mutable';
+    .close for $joined, $met, $only-left, $exclusive, $left, $right;
+};
+
+subtest 'persistent checkpoint and reopen' => {
+    my $scratch = IO::Path.new(
+        %*ENV<LIBDICTENSTEIN_TEST_SCRATCH> // $*CWD.add('target/raku-test'));
+    $scratch.mkdir;
+    my $path = $scratch.add("persistent-{$*PID}-{now.Int}");
+    my $created = persistent-artrie($path, :create);
+    $created.ASSIGN-KEY('durable', 41);
+    $created.checkpoint;
+    $created.close;
+    my $reopened = persistent-artrie($path, :!create);
+    is $reopened.AT-KEY('durable'), 41, 'checkpoint survives reopen';
+    $reopened.close;
+};
+
+done-testing;

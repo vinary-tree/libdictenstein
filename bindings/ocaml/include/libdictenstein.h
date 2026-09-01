@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define LDICT_ABI_VERSION 1u
-#define LDICT_API_REVISION 5u
+#define LDICT_API_REVISION 6u
 
 #define LDICT_KIND_DYNAMIC_DAWG 1u
 #define LDICT_KIND_DOUBLE_ARRAY_TRIE 2u
@@ -59,6 +59,22 @@ typedef enum LdictStatus {
     LDICT_STATUS_PROVIDER_ERROR = 11,
     LDICT_STATUS_BATCH_IN_USE = 12
 } LdictStatus;
+
+/* Set operation applied to the exact key sets of two dictionaries. */
+typedef enum LdictAlgebraOperation {
+    LDICT_ALGEBRA_UNION = 1,
+    LDICT_ALGEBRA_INTERSECTION = 2,
+    LDICT_ALGEBRA_DIFFERENCE = 3,
+    LDICT_ALGEBRA_SYMMETRIC_DIFFERENCE = 4
+} LdictAlgebraOperation;
+
+/* Conflict policy for keys present in both input dictionaries. */
+typedef enum LdictValueMerge {
+    LDICT_VALUE_MERGE_FIRST = 1,
+    LDICT_VALUE_MERGE_LAST = 2,
+    LDICT_VALUE_MERGE_LATTICE_JOIN = 3,
+    LDICT_VALUE_MERGE_LATTICE_MEET = 4
+} LdictValueMerge;
 
 typedef struct LdictOptionalU64 {
     uint64_t value;
@@ -143,6 +159,16 @@ LDICT_API LdictStatus ldict_dictionary_capabilities(
 LDICT_API LdictStatus ldict_dictionary_resource(
     const LdictDictionary* dictionary,
     VtResource* out_resource);
+
+/* Materialize an immutable-revision algebra result as an optimized mutable
+ * DynamicDAWG. Inputs must have the same unit domain. The result is owned by
+ * the caller and must be released with ldict_dictionary_free. */
+LDICT_API LdictStatus ldict_dictionary_algebra(
+    const LdictDictionary* left,
+    const LdictDictionary* right,
+    uint32_t operation,
+    uint32_t value_merge,
+    LdictDictionary** out_dictionary);
 
 /* Open one immutable lexicographic revision. The opaque cursor owns that
  * snapshot and may outlive the source dictionary. */

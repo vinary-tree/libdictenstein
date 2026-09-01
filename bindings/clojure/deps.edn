@@ -1,7 +1,7 @@
 {:paths ["src"]
  :deps {org.clojure/clojure {:mvn/version "1.12.5"}
-        io.vinarytree/vinary-tree-interop {:mvn/version "4.0.0-rc.4"}
-        io.vinarytree/libdictenstein {:mvn/version "4.0.0-rc.4"}}
+        io.vinarytree/vinary-tree-interop {:mvn/version "4.0.0-rc.6"}
+        io.vinarytree/libdictenstein {:mvn/version "4.0.0-rc.6"}}
  :aliases
  {:test
   {:extra-paths ["test"]

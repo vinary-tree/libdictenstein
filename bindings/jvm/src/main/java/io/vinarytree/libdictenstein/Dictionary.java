@@ -160,6 +160,54 @@ public abstract class Dictionary implements DictionaryResource, Iterable<Diction
         return snapshot().entries();
     }
 
+    /**
+     * Materialize an independent mutable DynamicDAWG from two immutable input revisions.
+     *
+     * <p>The native implementation performs one linear ordered merge and freezes the result once;
+     * no Java-side entry materialization or per-entry FFM call occurs.
+     */
+    public final DynamicDawg algebra(
+            Dictionary right, AlgebraOperation operation, ValueMerge valueMerge) {
+        Objects.requireNonNull(right, "right");
+        Objects.requireNonNull(operation, "operation");
+        Objects.requireNonNull(valueMerge, "valueMerge");
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment output = arena.allocate(ADDRESS);
+            MemorySegment result = newHandle(Native.algebra(
+                    handle(), right.handle(), operation.nativeValue, valueMerge.nativeValue, output),
+                    output);
+            return DynamicDawg.adopt(domain, result);
+        }
+    }
+
+    /** Return keys in either input; duplicate values default to right-biased selection. */
+    public final DynamicDawg union(Dictionary right) { return union(right, ValueMerge.LAST); }
+
+    /** Return keys in either input with the requested duplicate-value policy. */
+    public final DynamicDawg union(Dictionary right, ValueMerge valueMerge) {
+        return algebra(right, AlgebraOperation.UNION, valueMerge);
+    }
+
+    /** Return shared keys; duplicate values default to the optional-u64 lattice meet. */
+    public final DynamicDawg intersection(Dictionary right) {
+        return intersection(right, ValueMerge.LATTICE_MEET);
+    }
+
+    /** Return shared keys with the requested duplicate-value policy. */
+    public final DynamicDawg intersection(Dictionary right, ValueMerge valueMerge) {
+        return algebra(right, AlgebraOperation.INTERSECTION, valueMerge);
+    }
+
+    /** Return keys present in this dictionary but absent from {@code right}. */
+    public final DynamicDawg difference(Dictionary right) {
+        return algebra(right, AlgebraOperation.DIFFERENCE, ValueMerge.FIRST);
+    }
+
+    /** Return keys present in exactly one input. */
+    public final DynamicDawg symmetricDifference(Dictionary right) {
+        return algebra(right, AlgebraOperation.SYMMETRIC_DIFFERENCE, ValueMerge.FIRST);
+    }
+
     /** Open a single-pass native-backed cursor with a default batch bound of 256 entries. */
     public final DictionaryEntryIterator openEntryStream() { return entryIterator(); }
 

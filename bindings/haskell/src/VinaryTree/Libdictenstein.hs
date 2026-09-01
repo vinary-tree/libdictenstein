@@ -4,6 +4,8 @@ module VinaryTree.Libdictenstein
   ( Dictionary
   , UnitDomain(..)
   , Lookup(..)
+  , AlgebraOperation(..)
+  , ValueMerge(..)
   , EntryKey(..)
   , DictionaryEntry(..)
   , EntriesMetadata(..)
@@ -42,6 +44,11 @@ module VinaryTree.Libdictenstein
   , getU64
   , clear
   , compact
+  , algebra
+  , union
+  , intersection
+  , difference
+  , symmetricDifference
   , checkpoint
   , containsSubstring
   , substringFrequency
@@ -78,6 +85,10 @@ data LdictDictionary
 data LdictEntryCursor
 newtype Dictionary = Dictionary (ForeignPtr LdictDictionary)
 data Lookup = Lookup { found :: !Bool, mappedValue :: !(Maybe Word64) }
+  deriving stock (Eq, Show)
+data AlgebraOperation = Union | Intersection | Difference | SymmetricDifference
+  deriving stock (Eq, Show)
+data ValueMerge = First | Last | LatticeJoin | LatticeMeet
   deriving stock (Eq, Show)
 data EntryKey
   = ByteKey !ByteString
@@ -175,6 +186,9 @@ foreign import ccall unsafe "ldict_dictionary_clear"
   cClear :: Ptr LdictDictionary -> IO Status
 foreign import ccall unsafe "ldict_dictionary_compact"
   cCompact :: Ptr LdictDictionary -> Ptr CSize -> IO Status
+foreign import ccall unsafe "ldict_dictionary_algebra"
+  cAlgebra :: Ptr LdictDictionary -> Ptr LdictDictionary -> Word32 -> Word32
+           -> Ptr (Ptr LdictDictionary) -> IO Status
 foreign import ccall safe "ldict_dictionary_checkpoint"
   cCheckpoint :: Ptr LdictDictionary -> IO Status
 foreign import ccall unsafe "ldict_scdawg_contains_substring"
@@ -361,6 +375,41 @@ clear :: Dictionary -> IO ()
 clear dictionary = withDictionary dictionary (cClear >=> check)
 compact :: Dictionary -> IO Int
 compact dictionary = fromIntegral <$> scalarOutput dictionary 0 cCompact
+
+operationCode :: AlgebraOperation -> Word32
+operationCode Union = 1
+operationCode Intersection = 2
+operationCode Difference = 3
+operationCode SymmetricDifference = 4
+
+valueMergeCode :: ValueMerge -> Word32
+valueMergeCode First = 1
+valueMergeCode Last = 2
+valueMergeCode LatticeJoin = 3
+valueMergeCode LatticeMeet = 4
+
+-- | Materialize an independent mutable DynamicDAWG with one native ordered merge.
+algebra :: AlgebraOperation -> ValueMerge -> Dictionary -> Dictionary -> IO Dictionary
+algebra operation valueMerge left right =
+  withDictionary left $ \leftPointer -> withDictionary right $ \rightPointer ->
+    newDictionary (cAlgebra leftPointer rightPointer
+      (operationCode operation) (valueMergeCode valueMerge))
+
+-- | Keys present in either input, using right-biased shared values.
+union :: Dictionary -> Dictionary -> IO Dictionary
+union = algebra Union Last
+
+-- | Shared keys, using the optional-u64 lattice meet.
+intersection :: Dictionary -> Dictionary -> IO Dictionary
+intersection = algebra Intersection LatticeMeet
+
+-- | Keys present in the left input but absent from the right.
+difference :: Dictionary -> Dictionary -> IO Dictionary
+difference = algebra Difference First
+
+-- | Keys present in exactly one input.
+symmetricDifference :: Dictionary -> Dictionary -> IO Dictionary
+symmetricDifference = algebra SymmetricDifference First
 checkpoint :: Dictionary -> IO ()
 checkpoint dictionary = withDictionary dictionary (cCheckpoint >=> check)
 containsSubstring :: Dictionary -> ByteString -> IO Bool

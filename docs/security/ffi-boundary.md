@@ -8,7 +8,7 @@ This document instantiates the
 for libdictenstein's exported surfaces. The [threat model](threat-model.md)
 analyzes the adversary who supplies *data* to a Rust caller; the `ffi` /
 `bindings-core` features add a new input class — a **foreign ABI caller**: an
-independently compiled binary invoking the 41 `ldict_*` functions
+independently compiled binary invoking the 42 `ldict_*` functions
 ([reference](../bindings/c-abi-reference.md)) or the exported
 `vt.dictionary.v1` vtables
 ([architecture](../bindings/resource-producer.md)). No compiler checks that

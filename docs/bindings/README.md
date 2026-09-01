@@ -3,7 +3,7 @@
 **Navigation**: [← Documentation index](../README.md)
 
 libdictenstein is the **producer** half of the family's dictionary ABI: it
-owns the concrete dictionaries and their CRUD, exports a 41-function `ldict_*`
+owns the concrete dictionaries and their CRUD, exports a 42-function `ldict_*`
 C surface, and hands consumers a two-word, retained `vt.dictionary.v1`
 resource whose snapshots they walk. The **consumer** half (cursor model, lease
 protocol, language-facade query APIs) lives in
@@ -14,7 +14,7 @@ corpus documents everything on the producing side of that boundary.
 
 | Artifact | Path | What it is |
 |---|---|---|
-| **C ABI reference** | [`c-abi-reference.md`](c-abi-reference.md) | The normative reference for all 41 `ldict_*` functions: exact signatures, preconditions, exact status sets, ownership, thread-safety, complexity; the status/kind/capability tables; the per-backend support matrix; persistence caveats; a compile-and-run-verified C example. |
+| **C ABI reference** | [`c-abi-reference.md`](c-abi-reference.md) | The normative reference for all 42 `ldict_*` functions: exact signatures, preconditions, exact status sets, ownership, thread-safety, complexity; the status/kind/capability tables; the per-backend support matrix; persistence caveats; a compile-and-run-verified C example. |
 | **Resource-producer architecture** | [`resource-producer.md`](resource-producer.md) | How the producer side works: the four backend bindings, `OwnedDictionaryResource` and the retain ledger, per-backend $`\mathcal{O}(1)`$ snapshot capture, lazy ABI-local node ids, the flag truth table, and the new-backend checklist. |
 | **Native Rust idioms** | [`rust-api-idioms.md`](rust-api-idioms.md) | Confirmed iterator/construction gaps in the pure Rust producer and the optimized, generic target for `Iterator`, `IntoIterator`, `FromIterator`, `Extend`, fallible bulk construction, folds, snapshots, and every automaton/unit domain. |
 | **FFI boundary analysis** | [`../security/ffi-boundary.md`](../security/ffi-boundary.md) | The producer-side trust analysis: what a misbehaving foreign caller can and cannot cause, and whose duty each defense is. Extends the [threat model](../security/threat-model.md). |
@@ -22,11 +22,11 @@ corpus documents everything on the producing side of that boundary.
 | **Machine-readable model** | [`../../bindings/api.json`](../../bindings/api.json) | The source of truth for the binding surface: symbols, enums, kinds, capabilities, marshalling and snapshot laws, facade layout, registry coordinates. |
 | **Contract gates** | [`../../scripts/check-bindings.py`](../../scripts/check-bindings.py), [`../../scripts/check-binding-docs.py`](../../scripts/check-binding-docs.py) | Enforce the ABI model and reject a declared facade whose guide, executable evidence, required operational topics, or local links are missing or stale. CI job `binding-contract`. |
 | **Diagrams** | [`../diagrams/`](../diagrams/) | `abi-producer-component` (layer map), `snapshot-capture-sequence` (the walk protocol), `owned-resource-lifecycle-state` (the retain ledger); sources under [`../diagrams/src/`](../diagrams/src/). |
-| **Language facades** | [`../../bindings/`](../../bindings/) | Fourteen governed guides over the `ldict_*` surface, including the native C contract and grouped JVM/JavaScript language families. |
+| **Language facades** | [`../../bindings/`](../../bindings/) | Sixteen governed guides over the `ldict_*` surface, including the native C contract and grouped JVM/JavaScript language families. |
 | **Guide generator** | [`../../scripts/generate-binding-guides.py`](../../scripts/generate-binding-guides.py) | Owns the uniform support, loading, ownership, error, concurrency, performance, security, compatibility, and maintainer sections while preserving each facade's handwritten tutorial. |
 
 Collection interfaces are shipped across the packages in the matrix. Six of
-the 41 C functions form the shared bounded-entry cursor and reducer substrate;
+six of the 42 C functions form the shared bounded-entry cursor and reducer substrate;
 the optimized [pure Rust surface](rust-api-idioms.md) bypasses that ABI, and
 each foreign facade maps the same snapshot, ordering, value, and cancellation
 laws to its own familiar protocols. The family
@@ -63,6 +63,25 @@ Membership operations remain direct dictionary lookups, never traversal scans.
 | OCaml | `with_entries_seq` supplies a native-ordered `Seq.t` | `fold_entries` provides synchronous reduction | `Fun.protect` scopes and closes the cursor |
 | Haskell | `materializeEntries` returns a `Foldable DictionarySnapshot` | `withEntryStream`/`nextEntry`; `foldEntries` | Bracketed `with*` APIs mask exceptions across release; `ForeignPtr` finalizer is fallback |
 | Lua 5.4 | `dictionary:entries()` snapshot works with `pairs` | `entries_iter` generic-for form or explicit `entry_cursor` | to-be-closed values or explicit `:close`; `__gc` is fallback containment |
+| Julia | `Dictionary <: AbstractDict`; standard keys, values, iteration, mutation, and set-like algebra | Iteration pins one retained native snapshot | `close` in `finally`; finalizers contain abandoned handles |
+| Raku | `Dictionary does Associative does Iterable`; postcircumfix lookup and ordinary `Seq`/`for` traversal | Explicit closeable iterator over one retained snapshot | `LEAVE $iterator.close` after early termination; `DESTROY` is fallback |
+
+## Materialized dictionary algebra
+
+Every facade in the matrix exposes union, intersection, left difference, and
+symmetric difference through its own familiar spelling. Each call captures one
+immutable revision from each same-domain input, performs one linear merge of
+their lexicographic streams, and freeze-builds an independently mutable
+DynamicDAWG. No facade reconstructs the operation with a host hash table or a
+sequence of per-entry native calls.
+
+Overlapping keys preserve optional `u64` values through first, last,
+lattice-join, or lattice-meet policies. Union defaults to the right value and
+intersection to the optional-value lattice meet. The operation takes
+$`\Theta(|A|+|B|)`$ time and $`\Theta(|R|)`$ result storage. See each language
+guide for executable syntax and the
+[`ldict_dictionary_algebra`](c-abi-reference.md#ldict_dictionary_algebra)
+contract for validation, status, ownership, and concurrency details.
 
 ## Collection benchmark entrypoints
 
@@ -114,6 +133,8 @@ it does not weaken ownership, snapshot, or error semantics.
 | [OCaml](../../bindings/ocaml/README.md) | OCaml | 3 | C stubs |
 | [Haskell](../../bindings/haskell/README.md) | Haskell | 3 | Haskell FFI |
 | [Lua](../../bindings/lua/README.md) | Lua | 3 | C userdata module |
+| [Julia](../../bindings/julia/README.md) | Julia | 2 | `ccall` plus `VinaryTreeInterop` retained snapshots |
+| [Raku](../../bindings/raku/README.md) | Raku | 3 | NativeCall plus `Vinary-Tree-Interop` retained snapshots |
 
 Regenerate the governed sections after changing
 [`bindings/api.json`](../../bindings/api.json), package metadata, or a public

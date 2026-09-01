@@ -54,6 +54,14 @@
 (defn entries [dictionary] (seq (snapshot dictionary)))
 (defn keys [dictionary] (map first (snapshot dictionary)))
 (defn values [dictionary] (map second (snapshot dictionary)))
+(defn union
+  ([left right] (.union left right "first"))
+  ([left right value-merge] (.union left right (name value-merge))))
+(defn intersection
+  ([left right] (.intersection left right "first"))
+  ([left right value-merge] (.intersection left right (name value-merge))))
+(defn difference [left right] (.difference left right))
+(defn symmetric-difference [left right] (.symmetricDifference left right))
 (defn reduce-entries
   "Reduce one native snapshot without materializing it; reduced values stop
   early and the native cursor is closed in all exit paths."

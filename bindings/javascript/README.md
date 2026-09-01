@@ -2,7 +2,7 @@
 
 `@vinary-tree/libdictenstein` owns the JavaScript, TypeScript, and
 ClojureScript dictionary facades. It delegates to the single
-`@vinary-tree/vinary-tree` runtime so a dictionary passes to
+`@vinary-tree/javascript-runtime` so a dictionary passes to
 `@vinary-tree/liblevenshtein` without serialization or copying.
 
 Use the default export for native Node, `/wasm` in browsers, and `/wasi` for
@@ -19,7 +19,7 @@ lazy and never require materializing the complete result set.
 | Languages/runtime | JavaScript, TypeScript, and ClojureScript |
 | Support tier | Tier 1 |
 | Distribution | npm `@vinary-tree/libdictenstein` |
-| Native boundary | Facade on the singleton `@vinary-tree/vinary-tree` runtime |
+| Native boundary | Facade on the singleton `@vinary-tree/javascript-runtime` |
 | Canonical facade source | [`bindings/javascript`](../../bindings/javascript) |
 
 All tiers implement the same ownership, snapshot, status, and compatibility
@@ -82,6 +82,34 @@ operations. Ordinary iteration is backed by one host-owned immutable snapshot;
 `return`, `close`, and `Symbol.dispose` for prompt cleanup after early exit.
 Native Node, browser-WASM, and WASI runtimes preserve the same synchronous
 contract; no fake async iterator or promise hop is introduced.
+
+
+## Snapshot-consistent dictionary algebra
+
+Every facade exposes native union, intersection, left difference, and
+symmetric difference. The operation captures one immutable revision from each
+input; those two captures are independent, and later mutations cannot alter
+the result. Inputs must use the same byte, Unicode-scalar, or `u64` term
+domain.
+
+The producer merges the two lexicographically ordered entry streams once and
+feeds the sorted, duplicate-free output directly to the DynamicDAWG
+freeze-once builder. For input cardinalities $`|A|`$ and $`|B|`$, this is
+$`\Theta(|A|+|B|)`$ work plus $`\Theta(|R|)`$ result storage. It avoids a
+host-language hash table, per-entry foreign calls, and repeated mutable graph
+publication. The returned DynamicDAWG is independently mutable.
+
+Keys present in both inputs use an explicit optional-`u64` value policy:
+left/first, right/last, lattice join (optional maximum), or lattice meet
+(shared optional minimum). Valueless membership remains distinct from absence
+and from the value zero. Union defaults to right/last and intersection defaults
+to lattice meet; difference operations have no overlapping output key, so a
+value policy cannot affect them.
+
+```javascript
+using joined = left.union(right, "lattice-join");
+using common = left.intersection(right);
+```
 
 
 The pure Rust producer is the semantic and performance baseline: generic

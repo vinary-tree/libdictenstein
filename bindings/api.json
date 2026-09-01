@@ -18,10 +18,10 @@
     "cPrefix": "vt_",
     "cHeader": "vinary_tree_interop.h",
     "headerMirror": "include/vinary_tree_interop.h",
-    "npm": "@vinary-tree/interop",
+    "npm": "@vinary-tree/vinary-tree-interop",
     "maven": "io.vinarytree:vinary-tree-interop",
     "javaPackage": "io.vinarytree.interop",
-    "version": "4.0.0-rc.4",
+    "version": "4.0.0-rc.6",
     "resourceLayout": [
       "context",
       "vtable"
@@ -45,6 +45,8 @@
     "opam": "libdictenstein",
     "hackage": "libdictenstein",
     "luarocks": "libdictenstein",
+    "julia": "Libdictenstein",
+    "raku": "Libdictenstein",
     "_source": {
       "pypi": "bindings/python/pyproject.toml [project].name",
       "npm": "bindings/javascript/package.json .name",
@@ -57,7 +59,9 @@
       "fpm": "bindings/fortran/fpm.toml + fpm.publish.toml name",
       "opam": "bindings/ocaml/dune-project (package (name ...))",
       "hackage": "bindings/haskell/libdictenstein.cabal name",
-      "luarocks": "bindings/lua/libdictenstein-4.0.0rc4-2.rockspec package"
+      "luarocks": "bindings/lua/libdictenstein-4.0.0rc6-1.rockspec package",
+      "julia": "bindings/julia/Libdictenstein/Project.toml name",
+      "raku": "bindings/raku/META6.json name"
     }
   },
   "documentation": {
@@ -183,18 +187,32 @@
         ],
         "guide": "bindings/lua/README.md",
         "example": "bindings/lua/test/conformance.lua",
-        "package": "bindings/lua/libdictenstein-4.0.0rc4-2.rockspec package"
+        "package": "bindings/lua/libdictenstein-4.0.0rc6-1.rockspec package"
+      },
+      "julia": {
+        "languages": [
+          "Julia"
+        ],
+        "guide": "bindings/julia/README.md",
+        "example": "bindings/julia/Libdictenstein/test/runtests.jl"
+      },
+      "raku": {
+        "languages": [
+          "Raku"
+        ],
+        "guide": "bindings/raku/README.md",
+        "example": "bindings/raku/t/01-conformance.rakutest"
       }
     }
   },
-  "packageVersion": "4.0.0-rc.4",
+  "packageVersion": "4.0.0-rc.6",
   "siblingPins": {
-    "liblevenshtein": "4.0.0-rc.4",
+    "liblevenshtein": "4.0.0-rc.6",
     "llattice": "0.1.0",
-    "_source": "release pins in .github/workflows/release-bindings.yml; dev facade pins in bindings/go/go.mod, Package.swift, bindings/jvm/build.gradle.kts (test scope), bindings/clojure/project.clj (:test profile), bindings/javascript/package.json (@vinary-tree/vinary-tree umbrella). Recorded verbatim; tag existence is a release concern tracked in docs/bindings/FINDINGS_LEDGER.md (LDICT-B1)."
+    "_source": "release pins in .github/workflows/release-bindings.yml; dev facade pins in bindings/go/go.mod, Package.swift, bindings/jvm/build.gradle.kts (test scope), bindings/clojure/project.clj (:test profile), and bindings/javascript/package.json (@vinary-tree/javascript-runtime). Recorded verbatim; tag existence is a release concern tracked in docs/bindings/FINDINGS_LEDGER.md (LDICT-B1)."
   },
   "abiVersion": 1,
-  "apiRevision": 5,
+  "apiRevision": 6,
   "cPrefix": "ldict_",
   "cHeader": "include/libdictenstein.h",
   "featureGates": {
@@ -216,6 +234,7 @@
     "nodeExpansion": "batched-contiguous-edges",
     "entryTraversal": "bounded-leased-entry-batches",
     "crudBatching": "single-crossing-contiguous-descriptors",
+    "algebra": "snapshot-linear-merge-to-freeze-once-dynamic-dawg",
     "errorChannel": "thread-local-last-error-message",
     "panicPolicy": "catch-unwind-to-status"
   },
@@ -320,6 +339,26 @@
         "LIMIT_EXCEEDED": 10,
         "PROVIDER_ERROR": 11,
         "BATCH_IN_USE": 12
+      }
+    },
+    "algebraOperation": {
+      "cType": "LdictAlgebraOperation",
+      "cPrefix": "LDICT_ALGEBRA_",
+      "values": {
+        "UNION": 1,
+        "INTERSECTION": 2,
+        "DIFFERENCE": 3,
+        "SYMMETRIC_DIFFERENCE": 4
+      }
+    },
+    "valueMerge": {
+      "cType": "LdictValueMerge",
+      "cPrefix": "LDICT_VALUE_MERGE_",
+      "values": {
+        "FIRST": 1,
+        "LAST": 2,
+        "LATTICE_JOIN": 3,
+        "LATTICE_MEET": 4
       }
     }
   },
@@ -505,6 +544,10 @@
       "group": "handle"
     },
     {
+      "name": "ldict_dictionary_algebra",
+      "group": "algebra"
+    },
+    {
       "name": "ldict_dictionary_entries_open",
       "group": "collection"
     },
@@ -653,6 +696,10 @@
         "contains-substring?",
         "frequency",
         "vocabulary-term",
+        "union",
+        "intersection",
+        "difference",
+        "symmetric-difference",
         "close!"
       ]
     },
@@ -708,7 +755,7 @@
         "bindings/javascript/package.json"
       ],
       "package": "npm",
-      "symbolAccess": "mediated (runtime object exported by the @vinary-tree/vinary-tree umbrella)"
+      "symbolAccess": "mediated (runtime object exported by @vinary-tree/javascript-runtime)"
     },
     "jvm": {
       "root": "bindings/jvm",
@@ -717,6 +764,14 @@
         "bindings/jvm/src/main/java/io/vinarytree/libdictenstein/Native.java"
       ],
       "package": "maven"
+    },
+    "julia": {
+      "root": "bindings/julia",
+      "parser": "julia-ccall",
+      "importLayers": [
+        "bindings/julia/Libdictenstein/src/Libdictenstein.jl"
+      ],
+      "package": "julia"
     },
     "lua": {
       "root": "bindings/lua",
@@ -742,6 +797,14 @@
       ],
       "package": "pypi"
     },
+    "raku": {
+      "root": "bindings/raku",
+      "parser": "raku-nativecall",
+      "importLayers": [
+        "bindings/raku/lib/Libdictenstein.rakumod"
+      ],
+      "package": "raku"
+    },
     "ruby": {
       "root": "bindings/ruby",
       "parser": "ruby-fiddle",
@@ -762,10 +825,10 @@
     }
   },
   "wasm": {
-    "umbrellaPackage": "@vinary-tree/vinary-tree",
-    "umbrellaVersion": "4.0.0-rc.4",
+    "umbrellaPackage": "@vinary-tree/javascript-runtime",
+    "umbrellaVersion": "4.0.0-rc.6",
     "projectPackage": "@vinary-tree/libdictenstein",
-    "interopPackage": "@vinary-tree/interop",
+    "interopPackage": "@vinary-tree/vinary-tree-interop",
     "exports": [
       ".",
       "./typescript",
@@ -777,24 +840,27 @@
     "_source": "bindings/javascript/package.json"
   },
   "release": {
-    "canonical": "4.0.0-rc.4",
+    "canonical": "4.0.0-rc.6",
     "registries": {
-      "cargo": "4.0.0-rc.4",
-      "clojars": "4.0.0-rc.4",
-      "cmake": "4.0.0-rc.4",
+      "cargo": "4.0.0-rc.6",
+      "clojars": "4.0.0-rc.6",
+      "cmake": "4.0.0-rc.6",
       "fpm": "4.0.0",
-      "goTag": "v4.0.0-rc.4",
+      "goTag": "v4.0.0-rc.6",
       "hackage": "4.0.0",
-      "luaRocks": "4.0.0rc4-2",
-      "maven": "4.0.0-rc.4",
-      "npm": "4.0.0-rc.4",
-      "nuget": "4.0.0-rc.4",
-      "opam": "4.0.0~rc4",
-      "pkgConfig": "4.0.0-rc.4",
-      "pypi": "4.0.0rc4",
-      "rubygems": "4.0.0.rc.4",
-      "swiftTag": "4.0.0-rc.4"
+      "luaRocks": "4.0.0rc6-1",
+      "juliaGeneral": "4.0.0-rc.6",
+      "maven": "4.0.0-rc.6",
+      "npm": "4.0.0-rc.6",
+      "nuget": "4.0.0-rc.6",
+      "opam": "4.0.0~rc6",
+      "pkgConfig": "4.0.0-rc.6",
+      "pypi": "4.0.0rc6",
+      "rubygems": "4.0.0.rc.6",
+      "zef": "4.0.0-rc.6",
+      "swiftTag": "4.0.0-rc.6"
     },
     "distTag": "next"
-  }
+  },
+  "productDescription": "High-performance dictionaries and trie-maps for approximate string matching"
 }

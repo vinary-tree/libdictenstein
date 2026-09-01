@@ -36,8 +36,8 @@ jobs:
         run: |
           parent=$(dirname "$GITHUB_WORKSPACE")
           git clone --depth 1 --branch v0.1.0 https://github.com/vinary-tree/llattice.git "$parent/llattice"
-          git clone --depth 1 --branch v4.0.0-rc.4 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
-          git clone --depth 1 --branch v4.0.0-rc.4 https://github.com/vinary-tree/vinary-tree-interop.git "$parent/vinary-tree-interop"
+          git clone --depth 1 --branch v4.0.0-rc.6 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
+          git clone --depth 1 --branch v4.0.0-rc.6 https://github.com/vinary-tree/vinary-tree-interop.git "$parent/vinary-tree-interop"
       - uses: dtolnay/rust-toolchain@1.95
         with: { components: clippy }
       - name: Verify tag, ABI, CRUD, and one long-lived snapshot
@@ -107,8 +107,8 @@ jobs:
         run: |
           parent=$(dirname "$GITHUB_WORKSPACE")
           git clone --depth 1 --branch v0.1.0 https://github.com/vinary-tree/llattice.git "$parent/llattice"
-          git clone --depth 1 --branch v4.0.0-rc.4 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
-          git clone --depth 1 --branch v4.0.0-rc.4 https://github.com/vinary-tree/vinary-tree-interop.git "$parent/vinary-tree-interop"
+          git clone --depth 1 --branch v4.0.0-rc.6 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
+          git clone --depth 1 --branch v4.0.0-rc.6 https://github.com/vinary-tree/vinary-tree-interop.git "$parent/vinary-tree-interop"
       - uses: dtolnay/rust-toolchain@1.95
         with: { targets: "${{ matrix.target }}" }
       - run: cargo build --release --target "${{ matrix.target }}" --features ffi
@@ -176,7 +176,7 @@ jobs:
       - name: Checkout the exact Python interop dependency
         shell: bash
         run: >-
-          git clone --depth 1 --branch v4.0.0-rc.4
+          git clone --depth 1 --branch v4.0.0-rc.6
           https://github.com/vinary-tree/vinary-tree-interop.git
           .release-deps/vinary-tree-interop
       - uses: dtolnay/rust-toolchain@1.95
@@ -190,8 +190,8 @@ jobs:
           replacements = {
               'llattice = { path = "../llattice", version = "=0.1.0" }':
                   'llattice = "=0.1.0"',
-              'vinary-tree-interop = { path = "../vinary-tree-interop", version = "=4.0.0-rc.4", optional = true }':
-                  'vinary-tree-interop = { version = "=4.0.0-rc.4", optional = true }',
+              'vinary-tree-interop = { path = "../vinary-tree-interop", version = "=4.0.0-rc.6", optional = true }':
+                  'vinary-tree-interop = { version = "=4.0.0-rc.6", optional = true }',
           }
           for local, published in replacements.items():
               if local not in source:
@@ -235,8 +235,8 @@ jobs:
         run: |
           parent=$(dirname "$GITHUB_WORKSPACE")
           git clone --depth 1 --branch v0.1.0 https://github.com/vinary-tree/llattice.git "$parent/llattice"
-          git clone --depth 1 --branch v4.0.0-rc.4 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
-          git clone --depth 1 --branch v4.0.0-rc.4 https://github.com/vinary-tree/vinary-tree-interop.git "$parent/vinary-tree-interop"
+          git clone --depth 1 --branch v4.0.0-rc.6 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
+          git clone --depth 1 --branch v4.0.0-rc.6 https://github.com/vinary-tree/vinary-tree-interop.git "$parent/vinary-tree-interop"
       - uses: dtolnay/rust-toolchain@1.95
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "25", cache: gradle }
@@ -276,8 +276,8 @@ jobs:
         run: |
           parent=$(dirname "$GITHUB_WORKSPACE")
           git clone --depth 1 --branch v0.1.0 https://github.com/vinary-tree/llattice.git "$parent/llattice"
-          git clone --depth 1 --branch v4.0.0-rc.4 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
-          git clone --depth 1 --branch v4.0.0-rc.4 https://github.com/vinary-tree/vinary-tree-interop.git "$parent/vinary-tree-interop"
+          git clone --depth 1 --branch v4.0.0-rc.6 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
+          git clone --depth 1 --branch v4.0.0-rc.6 https://github.com/vinary-tree/vinary-tree-interop.git "$parent/vinary-tree-interop"
       - uses: dtolnay/rust-toolchain@1.95
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: "25" }
@@ -357,7 +357,7 @@ jobs:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
       - name: Checkout exact shared .NET resource package
-        run: git clone --depth 1 --branch v4.0.0-rc.4 https://github.com/vinary-tree/vinary-tree-interop.git ../vinary-tree-interop
+        run: git clone --depth 1 --branch v4.0.0-rc.6 https://github.com/vinary-tree/vinary-tree-interop.git ../vinary-tree-interop
       - uses: actions/setup-dotnet@v5
         with: { dotnet-version: 10.0.x }
       - uses: actions/download-artifact@v7
@@ -441,7 +441,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
-      - run: git clone --depth 1 --branch v4.0.0-rc.4 https://github.com/vinary-tree/vinary-tree-interop.git ../vinary-tree-interop
+      - run: git clone --depth 1 --branch v4.0.0-rc.6 https://github.com/vinary-tree/vinary-tree-interop.git ../vinary-tree-interop
       - run: git clone --depth 1 --branch v0.1.0 https://github.com/vinary-tree/llattice.git ../llattice
       - uses: dtolnay/rust-toolchain@1.95
       - uses: fortran-lang/setup-fpm@v10
@@ -464,20 +464,20 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
-      - run: git clone --depth 1 --branch v4.0.0-rc.4 https://github.com/vinary-tree/liblevenshtein-rust.git ../liblevenshtein-rust
+      - run: git clone --depth 1 --branch v4.0.0-rc.6 https://github.com/vinary-tree/liblevenshtein-rust.git ../liblevenshtein-rust
       - uses: ocaml/setup-ocaml@v3
         with: { ocaml-compiler: "5.4.0" }
       - name: Stage and lint standalone source
         run: |
           scripts/stage-ocaml-package.sh "$RUNNER_TEMP/opam-package" "$GITHUB_REF_NAME"
           opam lint "$RUNNER_TEMP/opam-package/opam"
-          tar -tjf "$RUNNER_TEMP/opam-package/libdictenstein-4.0.0-rc.4.tbz"
+          tar -tjf "$RUNNER_TEMP/opam-package/libdictenstein-4.0.0-rc.6.tbz"
       - uses: actions/upload-artifact@v7
         with:
           name: opam-package
           path: |
             ${{ runner.temp }}/opam-package/opam
-            ${{ runner.temp }}/opam-package/libdictenstein-4.0.0-rc.4.tbz
+            ${{ runner.temp }}/opam-package/libdictenstein-4.0.0-rc.6.tbz
           if-no-files-found: error
 
   luarocks-package:
@@ -492,15 +492,15 @@ jobs:
         with:
           name: native-x86_64-unknown-linux-gnu
           path: dist
-      - run: luarocks lint bindings/lua/libdictenstein-4.0.0rc4-2.rockspec
+      - run: luarocks lint bindings/lua/libdictenstein-4.0.0rc6-1.rockspec
       - name: Build the rock against the staged native SDK and run its public facade
         shell: bash
         run: |
-          tar -xzf dist/libdictenstein-4.0.0-rc.4-x86_64-unknown-linux-gnu.tar.gz -C dist
-          package_root="$PWD/dist/libdictenstein-4.0.0-rc.4-x86_64-unknown-linux-gnu"
+          tar -xzf dist/libdictenstein-4.0.0-rc.6-x86_64-unknown-linux-gnu.tar.gz -C dist
+          package_root="$PWD/dist/libdictenstein-4.0.0-rc.6-x86_64-unknown-linux-gnu"
           rock_tree="$RUNNER_TEMP/luarocks-tree"
           luarocks --lua-version 5.4 make --tree "$rock_tree" \
-            bindings/lua/libdictenstein-4.0.0rc4-2.rockspec \
+            bindings/lua/libdictenstein-4.0.0rc6-1.rockspec \
             LIBDICTENSTEIN_INCDIR="$package_root/include" \
             LIBDICTENSTEIN_LIBDIR="$package_root/lib"
           LUA_CPATH="$rock_tree/lib/lua/5.4/?.so;;" \
@@ -526,8 +526,8 @@ jobs:
         run: |
           parent=$(dirname "$GITHUB_WORKSPACE")
           git clone --depth 1 --branch v0.1.0 https://github.com/vinary-tree/llattice.git "$parent/llattice"
-          git clone --depth 1 --branch v4.0.0-rc.4 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
-          git clone --depth 1 --branch v4.0.0-rc.4 https://github.com/vinary-tree/vinary-tree-interop.git "$parent/vinary-tree-interop"
+          git clone --depth 1 --branch v4.0.0-rc.6 https://github.com/vinary-tree/liblevenshtein-rust.git "$parent/liblevenshtein-rust"
+          git clone --depth 1 --branch v4.0.0-rc.6 https://github.com/vinary-tree/vinary-tree-interop.git "$parent/vinary-tree-interop"
       - uses: dtolnay/rust-toolchain@1.95
       - name: Authenticate with crates.io
         id: crates-io-auth
@@ -661,8 +661,8 @@ jobs:
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           for module in \
-            github.com/vinary-tree/vinary-tree-interop/bindings/go@v0.1.0 \
-            github.com/vinary-tree/liblevenshtein-rust/bindings/go@v4.0.0-rc.4; do
+            github.com/vinary-tree/vinary-tree-interop/bindings/go/v4@v4.0.0-rc.6 \
+            github.com/vinary-tree/liblevenshtein-rust/bindings/go@v4.0.0-rc.6; do
             for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
               if GOWORK=off GOPROXY=https://proxy.golang.org go list -m "$module" >/dev/null; then
                 break

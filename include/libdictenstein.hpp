@@ -52,6 +52,20 @@ enum class backend_kind : std::uint32_t {
     persistent_vocabulary = LDICT_KIND_PERSISTENT_VOCAB_ARTRIE,
 };
 
+enum class algebra_operation : std::uint32_t {
+    set_union = LDICT_ALGEBRA_UNION,
+    intersection = LDICT_ALGEBRA_INTERSECTION,
+    difference = LDICT_ALGEBRA_DIFFERENCE,
+    symmetric_difference = LDICT_ALGEBRA_SYMMETRIC_DIFFERENCE,
+};
+
+enum class value_merge : std::uint32_t {
+    first = LDICT_VALUE_MERGE_FIRST,
+    last = LDICT_VALUE_MERGE_LAST,
+    lattice_join = LDICT_VALUE_MERGE_LATTICE_JOIN,
+    lattice_meet = LDICT_VALUE_MERGE_LATTICE_MEET,
+};
+
 struct lookup final {
     bool found = false;
     std::optional<std::uint64_t> value;
@@ -64,6 +78,7 @@ struct entry_batch_limits final {
 };
 
 class entries_view;
+class dynamic_dawg;
 
 class dictionary {
 public:
@@ -122,6 +137,16 @@ public:
         return {found != 0, result.has_value ? std::optional(result.value) : std::nullopt};
     }
     [[nodiscard]] entries_view entries(entry_batch_limits limits = {}) const;
+    [[nodiscard]] dynamic_dawg algebra(
+        const dictionary& right,
+        algebra_operation operation = algebra_operation::set_union,
+        value_merge merge = value_merge::last) const;
+    [[nodiscard]] dynamic_dawg set_union(
+        const dictionary& right, value_merge merge = value_merge::last) const;
+    [[nodiscard]] dynamic_dawg intersection(
+        const dictionary& right, value_merge merge = value_merge::lattice_meet) const;
+    [[nodiscard]] dynamic_dawg difference(const dictionary& right) const;
+    [[nodiscard]] dynamic_dawg symmetric_difference(const dictionary& right) const;
 
 protected:
     explicit dictionary(LdictDictionary* value) : value_(value) {
@@ -419,12 +444,40 @@ public:
         return inserted;
     }
 private:
+    friend class dictionary;
+    explicit dynamic_dawg(LdictDictionary* value) : dictionary(value) {}
+
     static LdictDictionary* create(unit_domain domain) {
         LdictDictionary* result = nullptr;
         check(ldict_dynamic_dawg_new(static_cast<std::uint32_t>(domain), &result));
         return result;
     }
 };
+
+inline dynamic_dawg dictionary::algebra(
+    const dictionary& right, algebra_operation operation, value_merge merge) const {
+    LdictDictionary* result = nullptr;
+    check(ldict_dictionary_algebra(
+        native_handle(), right.native_handle(), static_cast<std::uint32_t>(operation),
+        static_cast<std::uint32_t>(merge), &result));
+    return dynamic_dawg(result);
+}
+
+inline dynamic_dawg dictionary::set_union(const dictionary& right, value_merge merge) const {
+    return algebra(right, algebra_operation::set_union, merge);
+}
+
+inline dynamic_dawg dictionary::intersection(const dictionary& right, value_merge merge) const {
+    return algebra(right, algebra_operation::intersection, merge);
+}
+
+inline dynamic_dawg dictionary::difference(const dictionary& right) const {
+    return algebra(right, algebra_operation::difference, value_merge::first);
+}
+
+inline dynamic_dawg dictionary::symmetric_difference(const dictionary& right) const {
+    return algebra(right, algebra_operation::symmetric_difference, value_merge::first);
+}
 
 class double_array_trie final : public dictionary {
 public:

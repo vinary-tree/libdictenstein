@@ -607,7 +607,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libdictenstein"
-version = "4.0.0-rc.4"
+version = "4.0.0-rc.6"
 dependencies = [
  "arc-swap",
  "bincode-next",
@@ -1575,7 +1575,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vinary-tree-interop"
-version = "4.0.0-rc.4"
+version = "4.0.0-rc.6"
 
 [[package]]
 name = "virtue-next"

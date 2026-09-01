@@ -461,6 +461,70 @@ static int capabilities(lua_State* state) {
     return 1;
 }
 
+static uint32_t algebra_operation(lua_State* state, int index) {
+    const char* value = luaL_checkstring(state, index);
+    if (strcmp(value, "union") == 0) return LDICT_ALGEBRA_UNION;
+    if (strcmp(value, "intersection") == 0) return LDICT_ALGEBRA_INTERSECTION;
+    if (strcmp(value, "difference") == 0) return LDICT_ALGEBRA_DIFFERENCE;
+    if (strcmp(value, "symmetric_difference") == 0
+        || strcmp(value, "symmetric-difference") == 0)
+        return LDICT_ALGEBRA_SYMMETRIC_DIFFERENCE;
+    luaL_argerror(state, index,
+        "operation must be union, intersection, difference, or symmetric_difference");
+    return 0;
+}
+
+static uint32_t value_merge(lua_State* state, int index, uint32_t fallback) {
+    if (lua_isnoneornil(state, index)) return fallback;
+    const char* value = luaL_checkstring(state, index);
+    if (strcmp(value, "first") == 0) return LDICT_VALUE_MERGE_FIRST;
+    if (strcmp(value, "last") == 0) return LDICT_VALUE_MERGE_LAST;
+    if (strcmp(value, "lattice_join") == 0 || strcmp(value, "lattice-join") == 0)
+        return LDICT_VALUE_MERGE_LATTICE_JOIN;
+    if (strcmp(value, "lattice_meet") == 0 || strcmp(value, "lattice-meet") == 0)
+        return LDICT_VALUE_MERGE_LATTICE_MEET;
+    luaL_argerror(state, index,
+        "value merge must be first, last, lattice_join, or lattice_meet");
+    return 0;
+}
+
+static int perform_algebra(
+    lua_State* state, uint32_t operation, uint32_t merge) {
+    LuaDictionary* left = dictionary(state, 1);
+    LuaDictionary* right = dictionary(state, 2);
+    LdictDictionary* output = NULL;
+    LdictStatus status = ldict_dictionary_algebra(
+        left->dictionary, right->dictionary, operation, merge, &output);
+    return status == LDICT_STATUS_OK
+        ? push_dictionary(state, output, left->resource.unit_domain)
+        : dictionary_error(state, status);
+}
+
+static int dictionary_algebra(lua_State* state) {
+    return perform_algebra(state, algebra_operation(state, 3),
+        value_merge(state, 4, LDICT_VALUE_MERGE_LAST));
+}
+
+static int dictionary_union(lua_State* state) {
+    return perform_algebra(state, LDICT_ALGEBRA_UNION,
+        value_merge(state, 3, LDICT_VALUE_MERGE_LAST));
+}
+
+static int dictionary_intersection(lua_State* state) {
+    return perform_algebra(state, LDICT_ALGEBRA_INTERSECTION,
+        value_merge(state, 3, LDICT_VALUE_MERGE_LATTICE_MEET));
+}
+
+static int dictionary_difference(lua_State* state) {
+    return perform_algebra(
+        state, LDICT_ALGEBRA_DIFFERENCE, LDICT_VALUE_MERGE_FIRST);
+}
+
+static int dictionary_symmetric_difference(lua_State* state) {
+    return perform_algebra(state, LDICT_ALGEBRA_SYMMETRIC_DIFFERENCE,
+        LDICT_VALUE_MERGE_FIRST);
+}
+
 static int put(lua_State* state) {
     LuaDictionary* value = dictionary(state, 1);
     size_t length = 0;
@@ -630,6 +694,10 @@ static const luaL_Reg dictionary_methods[] = {
     {"contains_u64", contains_u64}, {"term", vocabulary_term},
     {"entries", materialize_entries}, {"entry_cursor", open_entry_cursor},
     {"entries_iter", stream_entries},
+    {"algebra", dictionary_algebra}, {"union", dictionary_union},
+    {"intersection", dictionary_intersection},
+    {"difference", dictionary_difference},
+    {"symmetric_difference", dictionary_symmetric_difference},
     {"clear", clear}, {"compact", compact}, {"checkpoint", checkpoint},
     {"contains_substring", contains_substring}, {"frequency", frequency}, {NULL, NULL}
 };
@@ -651,6 +719,10 @@ int luaopen_vinary_tree_libdictenstein(lua_State* state) {
     luaL_newmetatable(state, VT_LUA_DICTIONARY_METATABLE);
     lua_pushcfunction(state, close_dictionary); lua_setfield(state, -2, "__gc");
     lua_pushcfunction(state, close_dictionary); lua_setfield(state, -2, "__close");
+    lua_pushcfunction(state, dictionary_union); lua_setfield(state, -2, "__bor");
+    lua_pushcfunction(state, dictionary_intersection); lua_setfield(state, -2, "__band");
+    lua_pushcfunction(state, dictionary_difference); lua_setfield(state, -2, "__sub");
+    lua_pushcfunction(state, dictionary_symmetric_difference); lua_setfield(state, -2, "__bxor");
     lua_newtable(state); luaL_setfuncs(state, dictionary_methods, 0); lua_setfield(state, -2, "__index");
     lua_pop(state, 1);
     luaL_Reg functions[] = {

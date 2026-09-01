@@ -2,7 +2,7 @@
 """Dependency-free architectural gate for the libdictenstein language bindings.
 
 Cross-checks the machine-readable binding model (bindings/api.json) against the
-three sources it mirrors and the fourteen language facades that consume it:
+three sources it mirrors and the sixteen language facades that consume it:
 
   A. Symbol parity      - api.json cFunctions == `pub extern "C" fn ldict_*` in
                           src/ffi.rs == declarations in include/libdictenstein.h,
@@ -111,8 +111,8 @@ def parse_header_declarations(source: str) -> set[str]:
     return set(re.findall(r"LDICT_API\s+[^();]*?\b(ldict_[a-z0-9_]+)\s*\(", source))
 
 
-def parse_ffi_status(source: str) -> dict[str, int]:
-    block = re.search(r"pub enum LdictStatus \{(.*?)\n\}", source, re.DOTALL)
+def parse_ffi_enum(source: str, rust_type: str) -> dict[str, int]:
+    block = re.search(rf"pub enum {rust_type} \{{(.*?)\n\}}", source, re.DOTALL)
     if not block:
         return {}
     return {
@@ -121,18 +121,26 @@ def parse_ffi_status(source: str) -> dict[str, int]:
     }
 
 
-def parse_header_status(source: str) -> dict[str, int]:
+def parse_header_enum(source: str, c_type: str, c_prefix: str) -> dict[str, int]:
     block = re.search(
-        r"typedef enum LdictStatus \{(.*?)\} LdictStatus;", source, re.DOTALL
+        rf"typedef enum {c_type} \{{(.*?)\}} {c_type};", source, re.DOTALL
     )
     if not block:
         return {}
     return {
         name: int(value)
         for name, value in re.findall(
-            r"LDICT_STATUS_([A-Z0-9_]+) = (\d+)", block.group(1)
+            rf"{c_prefix}([A-Z0-9_]+) = (\d+)", block.group(1)
         )
     }
+
+
+def parse_ffi_status(source: str) -> dict[str, int]:
+    return parse_ffi_enum(source, "LdictStatus")
+
+
+def parse_header_status(source: str) -> dict[str, int]:
+    return parse_header_enum(source, "LdictStatus", "LDICT_STATUS_")
 
 
 def parse_ffi_u32_const(source: str, name: str) -> int | None:
@@ -266,6 +274,16 @@ def cgo_symbols(source: str) -> set[str]:
 
 def ruby_fiddle_symbols(source: str) -> set[str]:
     return set(SYMBOL.findall(source))
+
+
+def julia_ccall_symbols(source: str) -> set[str]:
+    """Return literal symbols resolved through the Julia facade's native helper."""
+    return set(re.findall(r"native\(\s*:(ldict_[a-z0-9_]+)\s*\)", source))
+
+
+def raku_nativecall_symbols(source: str) -> set[str]:
+    """Return exact NativeCall symbol traits, excluding diagnostic prose."""
+    return set(re.findall(r"symbol\(\s*['\"](ldict_[a-z0-9_]+)['\"]\s*\)", source))
 
 
 def haskell_symbols(
@@ -543,6 +561,25 @@ def check_constant_parity(report: Report, model: dict) -> None:
         parse_header_status(header_source),
         model["cHeader"],
     )
+    for model_key in ("algebraOperation", "valueMerge"):
+        enum_model = model["enums"][model_key]
+        c_type = enum_model["cType"]
+        clean &= compare_maps(
+            report,
+            "constants",
+            c_type,
+            enum_model["values"],
+            parse_ffi_enum(ffi_source, c_type),
+            "src/ffi.rs",
+        )
+        clean &= compare_maps(
+            report,
+            "constants",
+            c_type,
+            enum_model["values"],
+            parse_header_enum(header_source, c_type, enum_model["cPrefix"]),
+            model["cHeader"],
+        )
     kinds = model["kinds"]["values"]
     clean &= compare_maps(
         report,
@@ -668,15 +705,19 @@ def check_facades(report: Report, model: dict) -> None:
                 referenced |= refs
             elif parser == "c-header-declarations":
                 referenced |= set(SYMBOL.findall(source))
+            elif parser == "julia-ccall":
+                referenced |= julia_ccall_symbols(source)
+            elif parser == "raku-nativecall":
+                referenced |= raku_nativecall_symbols(source)
             else:
                 report.fail(
                     "facades", f"{language}: unknown parser {parser!r} in api.json"
                 )
         record(language, referenced)
 
-    if len(facades) != 14:
+    if len(facades) != 16:
         report.fail(
-            "facades", f"expected 14 modeled facades, api.json lists {len(facades)}"
+            "facades", f"expected 16 modeled facades, api.json lists {len(facades)}"
         )
     missing_dirs = [
         language
@@ -862,6 +903,19 @@ def check_packages(report: Report, model: dict) -> None:
             report.fail("packages", message)
             clean = False
 
+    release_source = read_text(report, "packages", ROOT / "release" / "version.json")
+    if release_source is not None:
+        release_model = json.loads(release_source)
+        expect(
+            release_model.get("coordinates", {}).get("npmPackage") == packages["npm"],
+            "release/version.json npm coordinate != binding model",
+        )
+        expect(
+            release_model.get("metadata", {}).get("description")
+            == model["productDescription"],
+            "release/version.json description != binding model",
+        )
+
     cargo_source = read_text(report, "packages", ROOT / "Cargo.toml")
     if cargo_source is not None:
         cargo = tomllib.loads(cargo_source)
@@ -904,14 +958,53 @@ def check_packages(report: Report, model: dict) -> None:
             f"pyproject.toml must pin vinary-tree-interop=={registries.get('pypi', interop_version)}",
         )
 
+    julia_source = read_text(
+        report,
+        "packages",
+        ROOT / "bindings" / "julia" / "Libdictenstein" / "Project.toml",
+    )
+    if julia_source is not None:
+        julia = tomllib.loads(julia_source)
+        expect(julia["name"] == packages["julia"], "Julia package name drifted")
+        expect(
+            julia["version"] == registries.get("juliaGeneral", version),
+            f"Julia package version {julia['version']} != {registries.get('juliaGeneral', version)}",
+        )
+        expect(
+            julia.get("deps", {}).get("VinaryTreeInterop")
+            == "8d6503e5-4d65-4bd8-a8ee-293a0149584e",
+            "Julia package does not depend on the canonical VinaryTreeInterop UUID",
+        )
+
+    raku_source = read_text(
+        report, "packages", ROOT / "bindings" / "raku" / "META6.json"
+    )
+    if raku_source is not None:
+        raku = json.loads(raku_source)
+        expect(raku["name"] == packages["raku"], "Raku package name drifted")
+        expect(
+            raku["version"] == registries.get("zef", version),
+            f"Raku package version {raku['version']} != {registries.get('zef', version)}",
+        )
+        expect(
+            raku.get("description") == model["productDescription"],
+            "Raku package description drifted from the product description",
+        )
+        expect(
+            "Vinary-Tree-Interop:ver<{}>:auth<zef:vinary-tree>".format(
+                interop_version.replace("-rc.", ".rc.")
+            )
+            in raku.get("depends", []),
+            "Raku package does not exact-pin the coordinated "
+            "Vinary-Tree-Interop release candidate",
+        )
+
     gradle = read_text(
         report, "packages", ROOT / "bindings" / "jvm" / "build.gradle.kts"
     )
     if gradle is not None:
         group, artifact = packages["maven"].split(":")
-        jvm_description = (
-            "High-performance dictionaries and trie-maps for approximate string matching"
-        )
+        jvm_description = model["productDescription"]
         expect(f'group = "{group}"' in gradle, f"build.gradle.kts group != {group}")
         expect(
             f'artifactId = "{artifact}"' in gradle,
@@ -949,6 +1042,10 @@ def check_packages(report: Report, model: dict) -> None:
         expect(
             f'[io.vinarytree/vinary-tree-interop "{interop_version}"]' in project_clj,
             f"project.clj must pin io.vinarytree/vinary-tree-interop {interop_version}",
+        )
+        expect(
+            f':description "{model["productDescription"]}"' in project_clj,
+            "Clojars and Maven descriptions have drifted",
         )
     deps_edn = read_text(report, "packages", ROOT / "bindings" / "clojure" / "deps.edn")
     if deps_edn is not None:

@@ -29,6 +29,7 @@ program test_conformance
   call test_substring()
   call test_persistence()
   call test_entries()
+  call test_algebra()
   print *, "fortran conformance: all checks passed"
 
 contains
@@ -45,7 +46,7 @@ contains
   ! C1: identity constants are surfaced through the facade.
   subroutine test_identity()
     call check(abi_version() == 1, "abi_version == 1")
-    call check(api_revision() == 5, "api_revision == 5")
+    call check(api_revision() == 6, "api_revision == 6")
   end subroutine
 
   ! C2: construction reports its kind; close is idempotent (no double free).
@@ -170,7 +171,7 @@ contains
     integer :: clock
     character(len=80) :: path
     call system_clock(clock)
-    write(path, '(A,I0,A)') "/tmp/vt_fortran_conformance_", clock, ".part"
+    write(path, '(A,I0,A)') ".vt_fortran_conformance_", clock, ".part"
     call create_persistent_artrie(d, trim(path), status=st)
     call check(st == ldict_ok, "persistent create ok")
     call check(d%kind() == persistent_artrie_kind, "kind == persistent artrie")
@@ -276,6 +277,43 @@ contains
       "entries u64 max value bits")
     call cursor%close()
     call d%close()
+  end subroutine
+
+  subroutine test_algebra()
+    type(dictionary) :: left, right, joined, common, only_left, exclusive
+    integer(c_int32_t) :: st
+    integer(c_int64_t) :: value
+    logical :: inserted, found, has_value
+    call new_dynamic_dawg(left, status=st)
+    call new_dynamic_dawg(right, status=st)
+    call left%put_text("a", value=1_c_int64_t, inserted=inserted)
+    call left%put_text("shared", value=7_c_int64_t, inserted=inserted)
+    call left%put_text("valueless", inserted=inserted)
+    call right%put_text("b", value=2_c_int64_t, inserted=inserted)
+    call right%put_text("shared", value=11_c_int64_t, inserted=inserted)
+    call right%put_text("valueless", value=5_c_int64_t, inserted=inserted)
+    call left%set_union(right, joined, value_merge_lattice_join, st)
+    call check(st == ldict_ok .and. joined%length() == 4, "algebra union")
+    call joined%get_text("shared", found, value, has_value)
+    call check(found .and. has_value .and. value == 11, "algebra union joined value")
+    call joined%get_text("valueless", found, value, has_value)
+    call check(found .and. has_value .and. value == 5, "algebra union valueless join")
+    call left%intersection(right, common, status=st)
+    call check(st == ldict_ok .and. common%length() == 2, "algebra intersection")
+    call common%get_text("shared", found, value, has_value)
+    call check(found .and. has_value .and. value == 7, "algebra intersection meet")
+    call common%get_text("valueless", found, value, has_value)
+    call check(found .and. (.not. has_value), "algebra intersection valueless meet")
+    call left%difference(right, only_left, st)
+    call check(st == ldict_ok .and. only_left%contains_text("a"), "algebra difference")
+    call left%symmetric_difference(right, exclusive, st)
+    call check(st == ldict_ok .and. exclusive%length() == 2, "algebra symmetric difference")
+    call left%put_text("later", value=99_c_int64_t, inserted=inserted)
+    call check(.not. joined%contains_text("later"), "algebra snapshot independence")
+    call joined%put_text("mutable-result", value=23_c_int64_t, inserted=inserted)
+    call check(inserted, "algebra result mutable")
+    call left%close(); call right%close(); call joined%close(); call common%close()
+    call only_left%close(); call exclusive%close()
   end subroutine
 
   subroutine stop_after_first_entry(batch, stop)

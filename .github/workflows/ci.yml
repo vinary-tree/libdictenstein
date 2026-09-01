@@ -150,6 +150,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      # cargo fmt resolves the workspace metadata, including local path
+      # dependencies, before selecting files to format.
+      - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt

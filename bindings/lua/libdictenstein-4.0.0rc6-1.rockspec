@@ -1,7 +1,7 @@
 package = "libdictenstein"
-version = "4.0.0rc4-2"
-source = { url = "git+https://github.com/vinary-tree/libdictenstein.git", tag = "v4.0.0-rc.4-release.5" }
-description = { summary = "Lua bindings for Vinary Tree dictionaries", license = "Apache-2.0" }
+version = "4.0.0rc6-1"
+source = { url = "git+https://github.com/vinary-tree/libdictenstein.git", tag = "v4.0.0-rc.6-release.1" }
+description = { summary = "High-performance dictionaries and trie-maps for approximate string matching", license = "Apache-2.0" }
 dependencies = { "lua >= 5.4" }
 external_dependencies = {
   LIBDICTENSTEIN = { header = "libdictenstein.h", library = "libdictenstein" }

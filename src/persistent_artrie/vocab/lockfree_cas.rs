@@ -27,15 +27,38 @@ type PersistentCharNode = PersistentCharNodeGeneric<u64>;
 
 /// Failure to construct one immutable vocabulary path-copy candidate.
 ///
-/// `AlreadyPresent` is the only normal insert-once refusal. `Unavailable` means
-/// the supposedly in-memory vocabulary overlay contained a null or durable child;
-/// `Failure` carries a resource error. Keeping these states distinct prevents a
-/// failed build from being accepted as if a concurrent writer had inserted the
-/// term.
+/// A duplicate is the only normal insert-once refusal. Representation failures
+/// remain distinct from duplicates and from allocation failures, preventing a
+/// malformed path from masquerading as the stable vocabulary id `0`.
+#[derive(Debug)]
 pub(super) enum VocabPathInsertError {
-    AlreadyPresent,
-    Unavailable,
+    AlreadyExists(u64),
+    FinalNodeMissingValue { depth: usize },
+    NullChild { depth: usize, unit: u32 },
+    UnexpectedOnDiskChild { depth: usize, unit: u32, raw: u64 },
     Failure(PersistentARTrieError),
+}
+
+impl VocabPathInsertError {
+    pub(super) fn into_persistent_error(self) -> PersistentARTrieError {
+        match self {
+            Self::AlreadyExists(index) => PersistentARTrieError::internal(format!(
+                "duplicate vocab path with index {index} reached an error-only conversion"
+            )),
+            Self::FinalNodeMissingValue { depth } => PersistentARTrieError::internal(format!(
+                "vocab overlay invariant violation: final node at depth {depth} has no value"
+            )),
+            Self::NullChild { depth, unit } => PersistentARTrieError::internal(format!(
+                "vocab overlay invariant violation: null child for unit U+{unit:04X} at depth {depth}"
+            )),
+            Self::UnexpectedOnDiskChild { depth, unit, raw } => {
+                PersistentARTrieError::internal(format!(
+                    "vocab overlay invariant violation: on-disk child {raw:#x} for unit U+{unit:04X} at depth {depth}; vocab overlays must remain resident"
+                ))
+            }
+            Self::Failure(error) => error,
+        }
+    }
 }
 
 impl<S: crate::persistent_artrie::block_storage::BlockStorage>
@@ -83,7 +106,10 @@ impl<S: crate::persistent_artrie::block_storage::BlockStorage>
         if chars.is_empty() {
             // Empty term - mark root as final
             if root.is_final() {
-                return Err(VocabPathInsertError::AlreadyPresent);
+                return Err(match root.get_value() {
+                    Some(existing) => VocabPathInsertError::AlreadyExists(existing),
+                    None => VocabPathInsertError::FinalNodeMissingValue { depth: 0 },
+                });
             }
             let new_root = root.as_final().with_value(index);
             return Ok(Arc::new(new_root));
@@ -96,7 +122,10 @@ impl<S: crate::persistent_artrie::block_storage::BlockStorage>
         loop {
             if cursor == chars.len() {
                 if current.node().is_final() {
-                    return Err(VocabPathInsertError::AlreadyPresent);
+                    return Err(match current.node().get_value() {
+                        Some(existing) => VocabPathInsertError::AlreadyExists(existing),
+                        None => VocabPathInsertError::FinalNodeMissingValue { depth: cursor },
+                    });
                 }
                 let leaf = Arc::new(current.node().as_final().with_value(index));
                 return Ok(unwind_spine(spine, leaf));
@@ -115,7 +144,25 @@ impl<S: crate::persistent_artrie::block_storage::BlockStorage>
                 ChildResolution::Faulted(_) | ChildResolution::FaultFailed(_) => {
                     unreachable!("no-fault vocabulary resolution cannot fault")
                 }
-                ChildResolution::Null => return Err(VocabPathInsertError::Unavailable),
+                ChildResolution::Null => {
+                    let on_disk = current
+                        .node()
+                        .find_child(unit)
+                        .and_then(|child| child.as_on_disk());
+                    return Err(match on_disk {
+                        Some(pointer) if !pointer.is_null() => {
+                            VocabPathInsertError::UnexpectedOnDiskChild {
+                                depth: cursor,
+                                unit,
+                                raw: pointer.to_raw(),
+                            }
+                        }
+                        _ => VocabPathInsertError::NullChild {
+                            depth: cursor,
+                            unit,
+                        },
+                    });
+                }
                 ChildResolution::Absent => {
                     let new_child = self.create_lockfree_path(&chars[cursor + 1..], index);
                     let branch = Arc::new(current.node().with_child(unit, Child::InMem(new_child)));
@@ -223,17 +270,7 @@ mod tests {
 
         let inserted = trie
             .try_insert_lockfree_path(&root, &units, 17)
-            .unwrap_or_else(|failure| match failure {
-                VocabPathInsertError::AlreadyPresent => {
-                    panic!("deep term unexpectedly present")
-                }
-                VocabPathInsertError::Unavailable => {
-                    panic!("deep in-memory vocabulary path unexpectedly unavailable")
-                }
-                VocabPathInsertError::Failure(error) => {
-                    panic!("deep vocabulary path construction failed: {error}")
-                }
-            });
+            .unwrap_or_else(|failure| panic!("deep vocabulary path failed: {failure:?}"));
 
         assert_eq!(trie.find_in_lockfree_trie(&inserted, &units), Some(17));
         assert!(super::super::dict_impl::overlay_subtree_all_in_mem(

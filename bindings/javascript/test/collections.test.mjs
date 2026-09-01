@@ -72,6 +72,43 @@ test("ordinary protocols materialize and close; explicit streams cancel", () => 
   assert.equal(counters.closed, 3);
 });
 
+test("algebra operands are unwrapped and results retain collection protocols", () => {
+  const raw = (entries) => ({
+    size: entries.length,
+    entries() {
+      let index = 0;
+      return {
+        size: entries.length,
+        next: () => index < entries.length
+          ? { done: false, value: entries[index++] }
+          : { done: true, value: undefined },
+        close() {},
+        [Symbol.iterator]() { return this; },
+      };
+    },
+    close() {},
+  });
+  const firstRaw = raw([["cat", 1n]]);
+  const secondRaw = raw([["dog", 2n]]);
+  const unionRaw = raw([["cat", 1n], ["dog", 2n]]);
+  firstRaw.union = (right, policy) => {
+    assert.equal(right, secondRaw);
+    assert.equal(policy, "last");
+    return unionRaw;
+  };
+  const namespace = collectionNamespace({
+    runtimeIdentity: Object.freeze({}),
+    dynamicDawg: () => firstRaw,
+    doubleArrayTrie: () => secondRaw,
+    scdawg: () => raw([]),
+  });
+  const first = namespace.dynamicDawg();
+  const second = namespace.doubleArrayTrie([]);
+  const union = first.union(second);
+  assert.deepEqual([...union], [["cat", 1n], ["dog", 2n]]);
+  assert.equal(union.snapshot().size, 2);
+});
+
 for (const arm of ["materialized", "stream", "stream-cancel"]) {
   test(`benchmark ${arm} emits the common schema`, () => {
     const row = runCollectionTraversalProfile(collectionNamespace(fakeNamespace()), {

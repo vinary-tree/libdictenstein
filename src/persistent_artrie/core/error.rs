@@ -165,6 +165,13 @@ pub enum PersistentARTrieError {
         source: CollectionAllocationError,
     },
 
+    /// A persistent trie requires at least one resident buffer frame.
+    #[error("Invalid buffer-pool size {pool_size}; at least one frame is required")]
+    InvalidBufferPoolSize {
+        /// Requested number of resident frames.
+        pool_size: usize,
+    },
+
     /// Lock was poisoned (panic occurred while holding lock)
     #[error("Lock poisoned for {resource}")]
     LockPoisoned {

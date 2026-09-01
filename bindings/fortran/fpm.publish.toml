@@ -3,7 +3,7 @@ version = "4.0.0"
 license = "Apache-2.0"
 author = "Dylon Edwards"
 maintainer = "Dylon Edwards <dylon.devo@gmail.com>"
-description = "High-performance modular dictionary backends"
+description = "High-performance dictionaries and trie-maps for approximate string matching"
 homepage = "https://github.com/vinary-tree/libdictenstein"
 
 [library]

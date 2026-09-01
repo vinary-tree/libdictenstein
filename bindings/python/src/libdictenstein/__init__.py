@@ -1,6 +1,7 @@
 """High-performance dictionaries that compose with Vinary Tree consumers."""
 
 from ._native import (
+    AlgebraOperation,
     DictionarySnapshot,
     DoubleArrayTrie,
     DynamicDawg,
@@ -10,11 +11,13 @@ from ._native import (
     PersistentVocabulary,
     Scdawg,
     UnitDomain,
+    ValueMerge,
     abi_version,
     api_revision,
 )
 
 __all__ = [
+    "AlgebraOperation",
     "DictionarySnapshot",
     "DoubleArrayTrie",
     "DynamicDawg",
@@ -24,6 +27,7 @@ __all__ = [
     "PersistentVocabulary",
     "Scdawg",
     "UnitDomain",
+    "ValueMerge",
     "abi_version",
     "api_revision",
 ]

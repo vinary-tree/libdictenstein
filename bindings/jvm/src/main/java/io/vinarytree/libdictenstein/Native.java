@@ -46,6 +46,7 @@ final class Native {
     private static final MethodHandle LEN;
     private static final MethodHandle CLEAR;
     private static final MethodHandle COMPACT;
+    private static final MethodHandle ALGEBRA;
     private static final MethodHandle INSERT_TEXT;
     private static final MethodHandle REMOVE_TEXT;
     private static final MethodHandle CONTAINS_TEXT;
@@ -88,6 +89,8 @@ final class Native {
                 FunctionDescriptor.of(JAVA_INT, ADDRESS));
         COMPACT = downcall(symbols, "ldict_dictionary_compact",
                 FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
+        ALGEBRA = downcall(symbols, "ldict_dictionary_algebra",
+                FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, ADDRESS));
         INSERT_TEXT = mutation(symbols, "ldict_dictionary_insert_text", true);
         REMOVE_TEXT = mutation(symbols, "ldict_dictionary_remove_text", false);
         CONTAINS_TEXT = mutation(symbols, "ldict_dictionary_contains_text", false);
@@ -183,6 +186,10 @@ final class Native {
     static int len(MemorySegment handle, MemorySegment out) { return call(LEN, handle, out); }
     static int clear(MemorySegment handle) { return call(CLEAR, handle); }
     static int compact(MemorySegment handle, MemorySegment out) { return call(COMPACT, handle, out); }
+    static int algebra(MemorySegment left, MemorySegment right, int operation, int valueMerge,
+                       MemorySegment out) {
+        return call(ALGEBRA, left, right, operation, valueMerge, out);
+    }
     static int insertText(MemorySegment handle, MemorySegment data, long len,
                           MemorySegment value, MemorySegment out) {
         return call(INSERT_TEXT, handle, data, len, value, out);

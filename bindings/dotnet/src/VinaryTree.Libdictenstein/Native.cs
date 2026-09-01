@@ -89,6 +89,9 @@ internal static unsafe partial class Native
     internal static partial NativeStatus Clear(DictionaryHandle dictionary);
     [LibraryImport(Library, EntryPoint = "ldict_dictionary_compact")]
     internal static partial NativeStatus Compact(DictionaryHandle dictionary, out nuint reclaimed);
+    [LibraryImport(Library, EntryPoint = "ldict_dictionary_algebra")]
+    internal static partial NativeStatus Algebra(DictionaryHandle left, DictionaryHandle right,
+        uint operation, uint valueMerge, out nint dictionary);
     [LibraryImport(Library, EntryPoint = "ldict_dictionary_checkpoint")]
     internal static partial NativeStatus Checkpoint(DictionaryHandle dictionary);
     [LibraryImport(Library, EntryPoint = "ldict_scdawg_contains_substring")]

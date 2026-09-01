@@ -1,5 +1,7 @@
 type t
 type lookup = { found : bool; value : int64 option }
+type algebra_operation = Union | Intersection | Difference | Symmetric_difference
+type value_merge = First | Last | Lattice_join | Lattice_meet
 type entry_key = Bytes of bytes | Unicode of string | U64 of int64 array
 type entry = { key : entry_key; value : int64 option }
 type value_domain = Unit | Optional_u64
@@ -42,6 +44,21 @@ val contains_u64 : t -> int64 array -> bool
 val get_u64 : t -> int64 array -> lookup
 val clear : t -> unit
 val compact : t -> int
+
+(** Materialize an independent mutable DynamicDAWG using one native ordered merge. *)
+val algebra : ?value_merge:value_merge -> algebra_operation -> t -> t -> t
+
+(** Keys present in either input; shared values are right-biased by default. *)
+val union : ?value_merge:value_merge -> t -> t -> t
+
+(** Shared keys; values use the optional-u64 lattice meet by default. *)
+val intersection : ?value_merge:value_merge -> t -> t -> t
+
+(** Keys present in the left input but absent from the right. *)
+val difference : t -> t -> t
+
+(** Keys present in exactly one input. *)
+val symmetric_difference : t -> t -> t
 val checkpoint : t -> unit
 val contains_substring : t -> string -> bool
 val substring_frequency : t -> string -> int

@@ -83,7 +83,7 @@ void AssertFixtureReads(Dictionary dictionary)
 // -- C1 identity/version ---------------------------------------------------
 
 Check(Dictionary.AbiVersion == 1, "abi version == 1");
-Check(Dictionary.ApiRevision == 5, "api revision == 5");
+Check(Dictionary.ApiRevision == 6, "api revision == 6");
 
 const ulong Read = 1UL << 0, Insert = 1UL << 1, Remove = 1UL << 2,
     Clear = 1UL << 3, Compact = 1UL << 4, Substring = 1UL << 5, Checkpoint = 1UL << 6;
@@ -452,6 +452,31 @@ static long RssKib()
     DictionaryEntry[] snapshotEntries = snapshot.ToArray();
     Check(snapshotEntries.Select(entry => entry.Key.ToU64Array()[0]).SequenceEqual(new ulong[] { 0, 1, ulong.MaxValue }), "u64 snapshot order");
     Check(snapshot.Entries.TryGetValue(snapshotEntries[2].Key, out ulong? maximum) && maximum == ulong.MaxValue, "u64 value-semantic map lookup");
+}
+
+// -- native snapshot algebra ---------------------------------------------
+
+{
+    using var left = new DynamicDawg();
+    using var right = new DynamicDawg();
+    left.PutAll(new Dictionary<string, ulong?>
+        { ["a"] = 1, ["shared"] = 7, ["valueless"] = null });
+    right.PutAll(new Dictionary<string, ulong?>
+        { ["b"] = 2, ["shared"] = 11, ["valueless"] = 5 });
+    using var joined = left.Union(right, ValueMerge.LatticeJoin);
+    using var common = left & right;
+    using var onlyLeft = left - right;
+    using var exclusive = left ^ right;
+    Check(joined.Count == 4 && joined.Get("shared").Value == 11, "algebra union join");
+    Check(joined.Get("valueless").Value == 5, "algebra join with valueless member");
+    Check(common.Count == 2 && common.Get("shared").Value == 7, "algebra intersection meet");
+    Check(common.Get("valueless") == new Lookup(true, null), "algebra valueless meet");
+    Check(onlyLeft.Count == 1 && onlyLeft.Contains("a"), "algebra difference");
+    Check(exclusive.Count == 2 && exclusive.Contains("a") && exclusive.Contains("b"),
+        "algebra symmetric difference");
+    left.Put("later", 99);
+    Check(!joined.Contains("later"), "algebra result is snapshot independent");
+    Check(joined.Put("mutable-result", 23), "algebra result remains mutable");
 }
 
 // -- summary ---------------------------------------------------------------

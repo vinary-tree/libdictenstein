@@ -80,7 +80,8 @@ pub(super) enum LockfreeInsertResult<V = ()> {
     /// restart, so ranking with it re-opens the A.2 cross-restart resurrection bug —
     /// hence the durable skeleton DROPS this field (the char `try_insert_path_attempt`
     /// hook discards it at the `InsertAttempt` boundary) and ranks the
-    /// caller-claimed `commit_seq`. The non-durable `insert_cas` ignores it entirely
+    /// expected-root-bound `commit_seq` claimed inside that ranked path attempt.
+    /// The non-durable `insert_cas` ignores it entirely
     /// (it has no replay key). Retained ONLY for the (now caller-DROPPED) signature +
     /// the leaf the non-durable two-phase `try_set_final` arbiter needs.
     Inserted(

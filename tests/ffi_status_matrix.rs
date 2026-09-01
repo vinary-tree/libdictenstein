@@ -1727,7 +1727,7 @@ fn abi_meta_constants_match_the_binding_model() {
     assert_eq!(ldict_abi_version(), LDICT_ABI_VERSION);
     assert_eq!(ldict_abi_version(), 1);
     assert_eq!(ldict_api_revision(), LDICT_API_REVISION);
-    assert_eq!(ldict_api_revision(), 5);
+    assert_eq!(ldict_api_revision(), 6);
 }
 
 // ---------------------------------------------------------------------------
