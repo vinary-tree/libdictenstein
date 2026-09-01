@@ -2010,9 +2010,10 @@ mod tests {
         root: AtomicNodePtr<K, ()>,
         epoch: EpochManager,
         loaded: Arc<OverlayNode<K, ()>>,
-        loader_entered: Barrier,
+        reader_captured: Barrier,
         writer_published: Barrier,
         sibling: K::Unit,
+        load_count: AtomicUsize,
         cas_attempts: AtomicUsize,
     }
 
@@ -2021,8 +2022,7 @@ mod tests {
             &self,
             _slot: &SwizzledPtr,
         ) -> crate::persistent_artrie::core::error::Result<Arc<OverlayNode<K, ()>>> {
-            self.loader_entered.wait();
-            self.writer_published.wait();
+            self.load_count.fetch_add(1, Ordering::Relaxed);
             Ok(Arc::clone(&self.loaded))
         }
     }
@@ -2037,6 +2037,12 @@ mod tests {
         }
 
         fn overlay_eviction_coordinator(&self) -> Option<Arc<EvictionCoordinator>> {
+            // `find_leaf_faulting` calls this immediately after capturing the
+            // root revision on every retry, including retries that reuse the
+            // decoded-node cache. Synchronizing here forces the writer to
+            // advance that exact captured revision before each install CAS.
+            self.reader_captured.wait();
+            self.writer_published.wait();
             None
         }
 
@@ -2099,9 +2105,10 @@ mod tests {
             root: AtomicNodePtr::new(root),
             epoch: EpochManager::new(),
             loaded,
-            loader_entered: Barrier::new(2),
+            reader_captured: Barrier::new(2),
             writer_published: Barrier::new(2),
             sibling,
+            load_count: AtomicUsize::new(0),
             cas_attempts: AtomicUsize::new(0),
         });
         let max_retries = DEFAULT_MAX_FAULTIN_RETRIES;
@@ -2121,10 +2128,11 @@ mod tests {
         let writer = {
             let fixture = Arc::clone(&fixture);
             thread::spawn(move || {
-                // Advance the root once per permitted reader attempt. Reusable
-                // barriers force every install CAS to compare against a stale Arc.
+                // Advance the root once per permitted reader attempt. The
+                // handshake occurs after each root capture rather than inside
+                // the loader because retries reuse the decoded-node cache.
                 for _ in 0..=max_retries {
-                    fixture.loader_entered.wait();
+                    fixture.reader_captured.wait();
                     let old_root = fixture.root.load().expect("published root");
                     let sibling_leaf = Arc::new(OverlayNode::<K, ()>::new().as_final());
                     let advanced =
@@ -2145,6 +2153,11 @@ mod tests {
             fixture.cas_attempts.load(Ordering::Relaxed),
             max_retries + 1,
             "the test must force every bounded install-CAS attempt to lose"
+        );
+        assert_eq!(
+            fixture.load_count.load(Ordering::Relaxed),
+            1,
+            "the contested durable occurrence must be decoded once and reused"
         );
 
         // Prove the intended interleaving occurred: the writer's sibling is live,

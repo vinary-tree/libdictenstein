@@ -530,6 +530,7 @@ if command -v tla2sany >/dev/null 2>&1; then
       ConcurrentCheckpointSerialization \
       RetainedEdgeRangeTraversal \
       AbiProducerSnapshot \
+      AbiSnapshotInitializerTakeover \
       DictionaryEntryBatchLease \
       AbiSnapshotQuiescence
     do
@@ -610,6 +611,7 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       ConcurrentCheckpointSerialization \
       RetainedEdgeRangeTraversal \
       AbiProducerSnapshot \
+      AbiSnapshotInitializerTakeover \
       DictionaryEntryBatchLease \
       AbiSnapshotQuiescence
     do
@@ -688,6 +690,11 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
     #     post-capture publish rewrites what an ABI consumer already captured —
     #     proving the pinned-immutable-revision capture (vt.dictionary.v1, family
     #     FV obligation #10) is REQUIRED.
+    #   * AbiSnapshotInitializerTakeover adds SingleConstruction to the safe
+    #     invariants and MUST violate it: a boundedly stalled cold initializer
+    #     may be superseded by a fresh generation, while both immutable
+    #     same-revision snapshots remain valid. This prevents tests from
+    #     mistaking usual-path pointer identity for a safety requirement.
     #   * AbiSnapshotQuiescence sets USE_ADMISSION_GATE = FALSE (the rejected
     #     fallback that only waits for a transient zero-writer observation) and
     #     MUST violate `SnapshotEventuallyCompletes`: writers can continuously
@@ -786,6 +793,7 @@ RetainedEdgeRangeTraversal|invariant|RetainedReaderRevisionIsAllocated|RetainedE
 RetainedEdgeRangeTraversal|invariant|NoPartialExternalPublication|RetainedEdgeRangeTraversal_UnsafePartialPublish
 RetainedEdgeRangeTraversal|invariant|RangeBounds|RetainedEdgeRangeTraversal_UnsafeAdvance
 AbiProducerSnapshot|invariant|CapturedRevisionImmutable
+AbiSnapshotInitializerTakeover|invariant|SingleConstruction|AbiSnapshotInitializerTakeover_SingleConstructionUnsafe
 AbiSnapshotQuiescence|temporal|SnapshotEventuallyCompletes
 PersistentARTrieU64WorkMachines|invariant|NoCyclicSnapshotAccepted
 PersistentARTrieU64Iteration|invariant|CompletionIsExact
