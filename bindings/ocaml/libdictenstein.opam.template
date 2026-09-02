@@ -1,6 +1,6 @@
 opam-version: "2.0"
 synopsis: "High-performance dictionaries and trie-maps for approximate string matching"
-description: "DynamicDAWG, DoubleArrayTrie, SCDAWG, and persistent ARTrie resources with snapshot-safe cross-project handoff."
+description: "High-performance dictionaries and trie-maps for approximate string matching."
 maintainer: "Dylon Edwards <dylon.devo@gmail.com>"
 authors: ["Dylon Edwards <dylon.devo@gmail.com>"]
 license: "Apache-2.0"

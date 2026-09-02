@@ -43,6 +43,8 @@ jobs:
       - name: Verify tag, ABI, CRUD, and one long-lived snapshot
         shell: bash
         run: |
+          python3 scripts/sync-release-version.py
+          python3 scripts/check-bindings.py
           if [[ "$GITHUB_REF" != refs/tags/* ]]; then
             echo "::error::Manual releases must be dispatched against an immutable tag." >&2
             exit 1

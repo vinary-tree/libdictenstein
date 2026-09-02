@@ -29,6 +29,7 @@ def derived(canonical: str, lua_rocks_revision: int = 1) -> dict[str, str]:
         "fpm": base,
         "goTag": f"v{canonical}",
         "hackage": base,
+        "julia": canonical,
         "luaRocks": f"{base}rc{candidate}-{lua_rocks_revision}",
         "maven": canonical,
         "npm": canonical,
@@ -38,6 +39,7 @@ def derived(canonical: str, lua_rocks_revision: int = 1) -> dict[str, str]:
         "pypi": f"{base}rc{candidate}",
         "rubygems": f"{base}.rc.{candidate}",
         "swiftTag": canonical,
+        "zef": canonical,
     }
 
 
@@ -57,9 +59,7 @@ def replace(path: str, pattern: str, replacement: str, expected: int = 1) -> Non
     target.write_text(updated, encoding="utf-8")
 
 
-def rewrite_candidate_text(
-    source: str, canonical: str, lua_rocks_revision: int
-) -> str:
+def rewrite_candidate_text(source: str, canonical: str, lua_rocks_revision: int) -> str:
     base, candidate = canonical.split("-rc.", 1)
     escaped = re.escape(base)
     replacements = (
@@ -103,18 +103,10 @@ def rewrite_active_release_guide(canonical: str, lua_rocks_revision: int) -> Non
         raise ValueError("docs/releasing.md release-history boundaries have drifted")
     live_prefix, historical_and_evidence = source.split(history_marker, 1)
     historical, live_suffix = historical_and_evidence.split(evidence_marker, 1)
-    live_prefix = rewrite_candidate_text(
-        live_prefix, canonical, lua_rocks_revision
-    )
-    live_suffix = rewrite_candidate_text(
-        live_suffix, canonical, lua_rocks_revision
-    )
+    live_prefix = rewrite_candidate_text(live_prefix, canonical, lua_rocks_revision)
+    live_suffix = rewrite_candidate_text(live_suffix, canonical, lua_rocks_revision)
     target.write_text(
-        live_prefix
-        + history_marker
-        + historical
-        + evidence_marker
-        + live_suffix,
+        live_prefix + history_marker + historical + evidence_marker + live_suffix,
         encoding="utf-8",
     )
 
@@ -136,6 +128,11 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
     assert isinstance(coordinates, dict)
     assert isinstance(metadata, dict)
     replace("Cargo.toml", r'^version = "[^"]+"$', f'version = "{canonical}"')
+    replace(
+        "Cargo.toml",
+        r'^description = "[^"]+"$',
+        f'description = "{metadata["description"]}"',
+    )
     replace(
         "Cargo.lock",
         r'(\[\[package\]\]\nname = "libdictenstein"\nversion = ")[^"]+',
@@ -198,13 +195,12 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
     def npm(value: dict) -> None:
         value["name"] = coordinates["npmPackage"]
         value["version"] = versions["npm"]
+        value["description"] = metadata["description"]
         value["dependencies"] = {
             "@vinary-tree/vinary-tree-interop": deps[
                 "@vinary-tree/vinary-tree-interop"
             ],
-            "@vinary-tree/javascript-runtime": deps[
-                "@vinary-tree/javascript-runtime"
-            ],
+            "@vinary-tree/javascript-runtime": deps["@vinary-tree/javascript-runtime"],
         }
         value.setdefault("publishConfig", {})["tag"] = model["publication"]["distTag"]
 
@@ -223,6 +219,16 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
         "bindings/python/pyproject.toml",
         r'^version = "[^"]+"$',
         f'version = "{versions["pypi"]}"',
+    )
+    replace(
+        "bindings/julia/Libdictenstein/Project.toml",
+        r'^version = "[^"]+"$',
+        f'version = "{versions["julia"]}"',
+    )
+    replace(
+        "bindings/python/pyproject.toml",
+        r'^description = "[^"]+"$',
+        f'description = "{metadata["description"]}"',
     )
     replace(
         "bindings/python/pyproject.toml",
@@ -282,6 +288,11 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
     )
     replace(
         "bindings/dotnet/src/VinaryTree.Libdictenstein/VinaryTree.Libdictenstein.csproj",
+        r"^    <Description>[^<]+</Description>$",
+        f"    <Description>{metadata['description']}</Description>",
+    )
+    replace(
+        "bindings/dotnet/src/VinaryTree.Libdictenstein/VinaryTree.Libdictenstein.csproj",
         r'<PackageReference Include="VinaryTree\.Interop" Version="[^"]+" />',
         f'<PackageReference Include="VinaryTree.Interop" Version="{versions["nuget"]}" />',
     )
@@ -291,10 +302,26 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
         f'    VERSION = "{versions["rubygems"]}"',
     )
     replace(
+        "bindings/ruby/libdictenstein.gemspec",
+        r'^  spec\.summary = "[^"]+"$',
+        f'  spec.summary = "{metadata["summary"]}"',
+    )
+    replace(
+        "bindings/ruby/libdictenstein.gemspec",
+        r'^  spec\.description = "[^"]+"$',
+        f'  spec.description = "{metadata["description"]}"',
+    )
+    replace(
         "bindings/fortran/fpm.toml",
         r'^version = "[^"]+"$',
         f'version = "{versions["fpm"]}"',
     )
+    for path in ("bindings/fortran/fpm.toml", "bindings/fortran/fpm.publish.toml"):
+        replace(
+            path,
+            r'^description = "[^"]+"$',
+            f'description = "{metadata["description"]}"',
+        )
     replace(
         "bindings/fortran/fpm.publish.toml",
         r'^version = "[^"]+"$',
@@ -341,6 +368,12 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
         "bindings/ocaml/libdictenstein.opam",
         "bindings/ocaml/libdictenstein.opam.template",
     ):
+        replace(path, r'^synopsis: "[^"]+"$', f'synopsis: "{metadata["summary"]}"')
+        replace(
+            path,
+            r'^description: "[^"]+"$',
+            f'description: "{metadata["description"]}"',
+        )
         replace(
             path,
             r'"vinary-tree-interop" \{[^}]+\}',
@@ -350,6 +383,16 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
         "bindings/haskell/libdictenstein.cabal",
         r"^version: \S+$",
         f"version: {versions['hackage']}",
+    )
+    replace(
+        "bindings/haskell/libdictenstein.cabal",
+        r"^synopsis: .+$",
+        f"synopsis: {metadata['summary']}",
+    )
+    replace(
+        "bindings/haskell/libdictenstein.cabal",
+        r"^description: .+$",
+        f"description: {metadata['description']}",
     )
     cabal_path = ROOT / "bindings/haskell/libdictenstein.cabal"
     cabal = cabal_path.read_text(encoding="utf-8")
@@ -404,6 +447,11 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
     replace(lua_path, r'^version = "[^"]+"$', f'version = "{versions["luaRocks"]}"')
     replace(
         lua_path,
+        r'^(description = \{ summary = ")[^"]+(".*)$',
+        rf"\g<1>{metadata['summary']}\2",
+    )
+    replace(
+        lua_path,
         r'^(source = \{ url = "[^"]+", tag = ")[^"]+(" \})$',
         rf"\g<1>{model['publication']['sourceTag']}\2",
     )
@@ -417,6 +465,17 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
         r"^Version: \S+$",
         f"Version: {versions['pkgConfig']}",
     )
+    replace(
+        "pkgconfig/libdictenstein.pc",
+        r"^Description: .+$",
+        f"Description: {metadata['summary']}",
+    )
+
+    def raku(value: dict) -> None:
+        value["version"] = versions["zef"]
+        value["description"] = metadata["description"]
+
+    update_json("bindings/raku/META6.json", raku)
     replace(
         "pkgconfig/libdictenstein.pc",
         r"^Requires: vinary-tree-interop = \S+$",
@@ -466,11 +525,16 @@ def validate(model: dict[str, object], versions: dict[str, str]) -> list[str]:
     assert isinstance(deps, dict)
     if coordinates != {"npmPackage": "@vinary-tree/libdictenstein"}:
         failures.append("canonical npm coordinate is not authoritative or has drifted")
-    description = (
-        metadata.get("description") if isinstance(metadata, dict) else None
-    )
-    if description != (
-        "High-performance dictionaries and trie-maps for approximate string matching"
+    description = metadata.get("description") if isinstance(metadata, dict) else None
+    summary = metadata.get("summary") if isinstance(metadata, dict) else None
+    if (
+        summary
+        != "High-performance dictionaries and trie-maps for approximate string matching"
+    ):
+        failures.append("canonical product summary is missing or has drifted")
+    if (
+        description
+        != "High-performance dictionaries and trie-maps for approximate string matching."
     ):
         failures.append("canonical product description is missing or has drifted")
     expected_npm_dependencies = {
@@ -495,6 +559,16 @@ def validate(model: dict[str, object], versions: dict[str, str]) -> list[str]:
             "bindings/python/pyproject.toml",
             r'^version = "([^"]+)"$',
             versions["pypi"],
+        ),
+        "Julia": (
+            "bindings/julia/Libdictenstein/Project.toml",
+            r'^version = "([^"]+)"$',
+            versions["julia"],
+        ),
+        "Raku": (
+            "bindings/raku/META6.json",
+            r'^  "version": "([^"]+)",$',
+            versions["zef"],
         ),
         "JVM": (
             "bindings/jvm/build.gradle.kts",
@@ -561,12 +635,19 @@ def validate(model: dict[str, object], versions: dict[str, str]) -> list[str]:
         package.get("name") != coordinates.get("npmPackage")
         or package.get("version") != versions["npm"]
         or set(package.get("dependencies", {})) != expected_npm_dependencies
-        or package.get(
-        "publishConfig", {}
-        ).get("tag") != publication.get("distTag")
+        or package.get("publishConfig", {}).get("tag") != publication.get("distTag")
     ):
         failures.append("npm release identity is stale")
     description_contracts = {
+        "Cargo": ("Cargo.toml", rf'^description = "{re.escape(str(description))}"$'),
+        "npm": (
+            "bindings/javascript/package.json",
+            rf'^  "description": "{re.escape(str(description))}",$',
+        ),
+        "PyPI": (
+            "bindings/python/pyproject.toml",
+            rf'^description = "{re.escape(str(description))}"$',
+        ),
         "Gradle Maven POM": (
             "bindings/jvm/build.gradle.kts",
             rf'^\s+description = "{re.escape(str(description))}"$',
@@ -578,6 +659,26 @@ def validate(model: dict[str, object], versions: dict[str, str]) -> list[str]:
         "Clojars": (
             "bindings/clojure/project.clj",
             rf'^  :description "{re.escape(str(description))}"$',
+        ),
+        "NuGet": (
+            "bindings/dotnet/src/VinaryTree.Libdictenstein/VinaryTree.Libdictenstein.csproj",
+            rf"^    <Description>{re.escape(str(description))}</Description>$",
+        ),
+        "RubyGems summary": (
+            "bindings/ruby/libdictenstein.gemspec",
+            rf'^  spec\.summary = "{re.escape(str(summary))}"$',
+        ),
+        "RubyGems description": (
+            "bindings/ruby/libdictenstein.gemspec",
+            rf'^  spec\.description = "{re.escape(str(description))}"$',
+        ),
+        "Raku": (
+            "bindings/raku/META6.json",
+            rf'^  "description": "{re.escape(str(description))}",$',
+        ),
+        "pkg-config": (
+            "pkgconfig/libdictenstein.pc",
+            rf"^Description: {re.escape(str(summary))}$",
         ),
     }
     for label, (path, pattern) in description_contracts.items():

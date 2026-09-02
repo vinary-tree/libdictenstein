@@ -848,8 +848,8 @@
       "fpm": "4.0.0",
       "goTag": "v4.0.0-rc.6",
       "hackage": "4.0.0",
+      "julia": "4.0.0-rc.6",
       "luaRocks": "4.0.0rc6-1",
-      "juliaGeneral": "4.0.0-rc.6",
       "maven": "4.0.0-rc.6",
       "npm": "4.0.0-rc.6",
       "nuget": "4.0.0-rc.6",
@@ -857,10 +857,10 @@
       "pkgConfig": "4.0.0-rc.6",
       "pypi": "4.0.0rc6",
       "rubygems": "4.0.0.rc.6",
-      "zef": "4.0.0-rc.6",
-      "swiftTag": "4.0.0-rc.6"
+      "swiftTag": "4.0.0-rc.6",
+      "zef": "4.0.0-rc.6"
     },
     "distTag": "next"
   },
-  "productDescription": "High-performance dictionaries and trie-maps for approximate string matching"
+  "productDescription": "High-performance dictionaries and trie-maps for approximate string matching."
 }

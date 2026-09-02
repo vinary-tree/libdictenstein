@@ -967,8 +967,8 @@ def check_packages(report: Report, model: dict) -> None:
         julia = tomllib.loads(julia_source)
         expect(julia["name"] == packages["julia"], "Julia package name drifted")
         expect(
-            julia["version"] == registries.get("juliaGeneral", version),
-            f"Julia package version {julia['version']} != {registries.get('juliaGeneral', version)}",
+            julia["version"] == registries.get("julia"),
+            f"Julia package version {julia['version']} != {registries.get('julia')}",
         )
         expect(
             julia.get("deps", {}).get("VinaryTreeInterop")

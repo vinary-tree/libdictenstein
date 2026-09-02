@@ -6,7 +6,7 @@ Gem::Specification.new do |spec|
   spec.authors = ["Dylon Edwards"]
   spec.email = ["dylon.devo@gmail.com"]
   spec.summary = "High-performance dictionaries and trie-maps for approximate string matching"
-  spec.description = "DynamicDAWG, DAT, SCDAWG, and persistent ARTrie bindings for Ruby"
+  spec.description = "High-performance dictionaries and trie-maps for approximate string matching."
   spec.homepage = "https://github.com/vinary-tree/libdictenstein"
   spec.license = "Apache-2.0"
   spec.required_ruby_version = ">= 3.3"
