@@ -5,14 +5,16 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 FORMAL_RESOURCE_CONTROL="${FORMAL_RESOURCE_CONTROL:-systemd}"
-FORMAL_MEMORY_HIGH="${FORMAL_MEMORY_HIGH:-6G}"
-FORMAL_MEMORY_MAX="${FORMAL_MEMORY_MAX:-8G}"
-FORMAL_TASKS_MAX="${FORMAL_TASKS_MAX:-384}"
-FORMAL_CPU_QUOTA="${FORMAL_CPU_QUOTA:-400%}"
+FORMAL_MEMORY_HIGH="${FORMAL_MEMORY_HIGH:-1G}"
+FORMAL_MEMORY_MAX="${FORMAL_MEMORY_MAX:-2G}"
+FORMAL_TASKS_MAX="${FORMAL_TASKS_MAX:-64}"
+FORMAL_CPU_QUOTA="${FORMAL_CPU_QUOTA:-200%}"
 FORMAL_COMMAND_TIMEOUT_SECONDS="${FORMAL_COMMAND_TIMEOUT_SECONDS:-7200}"
+TLC_JAVA_TOOL_OPTIONS="${TLC_JAVA_TOOL_OPTIONS:--Xms128m -Xmx1024m -XX:+UseParallelGC}"
 
 run_capped() {
   local -a command=("$@")
+  local unit_name
 
   if [ "$FORMAL_COMMAND_TIMEOUT_SECONDS" != "0" ]; then
     command=(
@@ -28,7 +30,9 @@ run_capped() {
         echo "ERROR: FORMAL_RESOURCE_CONTROL=systemd requires systemd-run" >&2
         return 1
       fi
-      systemd-run --user --scope --quiet --collect \
+      unit_name="libdictenstein-formal-${BASHPID}-${RANDOM}"
+      systemd-run --user --unit="$unit_name" --wait --pipe --quiet --collect \
+        --working-directory="$PWD" \
         --property="MemoryHigh=$FORMAL_MEMORY_HIGH" \
         --property="MemoryMax=$FORMAL_MEMORY_MAX" \
         --property=MemorySwapMax=0 \
@@ -55,7 +59,8 @@ run_tlc_isolated() {
 
   mkdir -p "$state_parent"
   state_directory="$(mktemp -d "$state_parent/${label}.XXXXXX")"
-  run_capped tlc -metadir "$state_directory" "$@" || status=$?
+  run_capped env "JAVA_TOOL_OPTIONS=$TLC_JAVA_TOOL_OPTIONS" \
+    tlc -metadir "$state_directory" "$@" || status=$?
   if [ "$status" -eq 0 ]; then
     rm -rf -- "$state_directory"
   else
@@ -132,7 +137,7 @@ run_tlc_negative_control() {
   mkdir -p "$log_parent" "$state_parent"
   log_file="$(mktemp "$log_parent/${module}.XXXXXX.log")"
   state_directory="$(mktemp -d "$state_parent/${config_base}.XXXXXX")"
-  if run_capped tlc \
+  if run_capped env "JAVA_TOOL_OPTIONS=$TLC_JAVA_TOOL_OPTIONS" tlc \
     -metadir "$state_directory" \
     -workers 1 \
     -config "${config_base}.cfg" \
@@ -512,6 +517,7 @@ if command -v tla2sany >/dev/null 2>&1; then
       PersistentARTrieU64 \
       PersistentARTrieU64Iteration \
       PersistentARTrieU64WorkMachines \
+      VariableWidthCodecBoundary \
       CharNodeV2Layout \
       CharV3ArenaPublication \
       ConcurrentVocabLinearizability \
@@ -535,7 +541,8 @@ if command -v tla2sany >/dev/null 2>&1; then
       DictionaryEntryBatchLease \
       AbiSnapshotQuiescence
     do
-      run_capped tla2sany "${module}.tla"
+      run_capped env "JAVA_TOOL_OPTIONS=$TLC_JAVA_TOOL_OPTIONS" \
+        tla2sany "${module}.tla"
     done
   )
 else
@@ -594,6 +601,7 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       PersistentARTrieU64 \
       PersistentARTrieU64Iteration \
       PersistentARTrieU64WorkMachines \
+      VariableWidthCodecBoundary \
       CharNodeV2Layout \
       CharV3ArenaPublication \
       ConcurrentVocabLinearizability \
@@ -800,6 +808,10 @@ AbiSnapshotInitializerTakeover|invariant|SingleConstruction|AbiSnapshotInitializ
 AbiSnapshotQuiescence|temporal|SnapshotEventuallyCompletes
 PersistentARTrieU64WorkMachines|invariant|NoCyclicSnapshotAccepted
 PersistentARTrieU64Iteration|invariant|CompletionIsExact
+VariableWidthCodecBoundary|invariant|VWENC_26_OVERLONG_ULEB_IS_REJECTED|VariableWidthCodecBoundary_OverlongUnsafe
+VariableWidthCodecBoundary|invariant|VWENC_27_UNTERMINATED_ULEB_IS_REJECTED|VariableWidthCodecBoundary_UnterminatedUnsafe
+VariableWidthCodecBoundary|invariant|VWENC_28_UTF8_CONTINUATION_IS_REJECTED|VariableWidthCodecBoundary_Utf8ContinuationUnsafe
+VariableWidthCodecBoundary|invariant|VWENC_24_CODEC_BYTES_NEVER_BECOME_LOGICAL_TRANSITIONS|VariableWidthCodecBoundary_PhysicalExposureUnsafe
 NEGATIVE_CONTROLS
   )
 else
