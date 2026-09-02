@@ -12,3 +12,9 @@ index e87f0b0..1a92e34 100644
  # Logging facade
  log = "0.4"
  # SmallVec for stack-allocated vectors (performance optimization)
+@@ -372,2 +372,5 @@ required-features = ["persistent-artrie", "bench-internals"]
+ [package.metadata.docs.rs]
+ all-features = true
++
++# Keep this archived baseline independent when extracted beneath target/.
++[workspace]

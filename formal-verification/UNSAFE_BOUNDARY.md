@@ -20,8 +20,8 @@ pinned reader can still observe it (no use-after-free). A **coverage class** is
 the kind of evidence backing a contract (`rocq`, `tla`, `loom`, `miri`,
 `correspondence`, `compile-time`, `unit`, or `trusted-boundary`).
 
-The `unsafe` surface is pinned by **268** grouped inventory patterns
-([`UNSAFE_INVENTORY.tsv`](UNSAFE_INVENTORY.tsv)) and **43** safety contracts
+The `unsafe` surface is pinned by **364** grouped inventory patterns
+([`UNSAFE_INVENTORY.tsv`](UNSAFE_INVENTORY.tsv)) and **45** safety contracts
 ([`UNSAFE_CONTRACTS.tsv`](UNSAFE_CONTRACTS.tsv)), both CI-gated by
 `scripts/verify-unsafe-boundary-inventory.sh` (set-equality: no `unsafe` site
 without a reviewed contract, and no orphan contract tag). The trust zones are

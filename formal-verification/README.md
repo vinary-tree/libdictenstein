@@ -42,10 +42,10 @@ At a glance, the corpus comprises:
 | Artifact class | Tool | Count | Headline guarantee |
 |----------------|------|------:|--------------------|
 | Rocq `.v` proof files | Rocq/Coq theorem proving | **85** | functional correctness + Map-ADT refinement |
-| Rocq propositions (`Theorem`+`Lemma`+`Corollary`+`Proposition`) | Rocq/Coq | **1,760** | all closed by `Qed.`/`Defined.`; **0** `Admitted` / **0** `Axiom` / **0** `Parameter` |
-| TLA⁺ modules (`.tla`) | TLA⁺ / TLC / SANY | **75** | concurrency safety, crash-recovery, linearizability, and starvation freedom (with **142** `.cfg` TLC configs) |
-| `unsafe` inventory patterns | CI set-equality gate | **268** | every grouped `unsafe` pattern mapped to a reviewed contract |
-| `unsafe` safety contracts | CI set-equality gate | **43** | each contract tied to a coverage class + evidence |
+| Rocq propositions (`Theorem`+`Lemma`+`Corollary`+`Proposition`) | Rocq/Coq | **1,773** | all closed by `Qed.`/`Defined.`; **0** `Admitted` / **0** `Axiom` / **0** `Parameter` |
+| TLA⁺ modules (`.tla`) | TLA⁺ / TLC / SANY | **79** | concurrency safety, crash-recovery, linearizability, and starvation freedom (with **156** `.cfg` TLC configs) |
+| `unsafe` inventory patterns | CI set-equality gate | **364** | every grouped `unsafe` pattern mapped to a reviewed contract |
+| `unsafe` safety contracts | CI set-equality gate | **45** | each contract tied to a coverage class + evidence |
 
 > The two-pronged split is illustrated in
 > [Proof-artifact map](#proof-artifact-map) below; the spec↔Rust mapping is
@@ -109,13 +109,17 @@ formal-verification/
 │   ├── LockFreeIndexedOverlay.tla # Char/vocab value/index overlay model
 │   ├── LockFreeCounterMergeAtomicity.tla # Checked counter merge model
 │   ├── EvictionExactRootPublication.tla # Lock-free exact-root authority/lifecycle model
+│   ├── CapturedCheckpointEvictionRoute.tla # Capture-time checkpoint publication routing
+│   ├── DelayedFaultCoordinatorAcquisition.tla # Coordinator-free resident read path
 │   ├── HelpedRootResidency.tla # Root-owned helped packed-residency model
 │   ├── DetachedCallbackSeparation.tla # Detached compatibility capability model
+│   ├── DetachedCompatibilityInstall.tla # Total compatibility installation/rejection model
 │   ├── CharV3ArenaPublication.tla # Character-node V2/V3 publication/migration model
 │   ├── PackedResidencyFreshCatalog.tla # Exact fresh-catalog rollover at ordinal exhaustion
 │   ├── OverlayTreeWitness.tla # Revision-bound arborescence authority for zero-census serialization
 │   ├── ConcurrentCheckpointPublication.tla # Mutation/checkpoint race model
 │   ├── AbiProducerSnapshot.tla # ABI immutable-capture/publication model
+│   ├── AbiSnapshotInitializerTakeover.tla # Helpable cold-snapshot generation model
 │   ├── AbiSnapshotQuiescence.tla # ABI writer-admission/starvation model
 │   ├── SharedPersistentConcurrency.tla # Shared lock-free/checkpoint model
 │   ├── PublicDurabilityPolicy.tla # Public mutation/sync acknowledgement model
@@ -134,9 +138,9 @@ formal-verification/
 │   ├── PART.cfg               # TLC configuration (no crash)
 │   └── PART_crash.cfg         # TLC configuration (with crash)
 │
-└── rocq/                      # Rocq/Coq proofs (85 .v files, 36,316 LOC,
-    │                            1,760 theorem/lemma/corollary propositions
-    │                            = 1,364 Theorem + 356 Lemma + 18 Corollary,
+└── rocq/                      # Rocq/Coq proofs (85 .v files, 36,583 LOC,
+    │                            1,773 theorem/lemma/corollary propositions
+    │                            = 1,393 Theorem + 362 Lemma + 18 Corollary,
     │                            0 Admitted / 0 Axiom / 0 Parameter)
     ├── Makefile               # Build system
     ├── Spec/                  # Specifications
@@ -564,11 +568,11 @@ make check-Model/Key
 
 ### Proof Status
 
-As of 2026-08-30: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
-0 `Parameter` across the **83** `.v` files (verified by anchored source scan and
+As of 2026-09-01: all modules **Complete** — 0 `Admitted` / 0 `Axiom` /
+0 `Parameter` across the **85** `.v` files (verified by anchored source scan and
 full Rocq compilation; see
 [VERIFICATION_RESULTS.md](VERIFICATION_RESULTS.md) for the per-file tally). The
-aggregate is **1,760** propositions = 1,380 `Theorem` + 362 `Lemma` +
+aggregate is **1,773** propositions = 1,393 `Theorem` + 362 `Lemma` +
 18 `Corollary` + 0 `Proposition`. The status table below lists the
 longest-standing modules; the live tree additionally carries the overlay
 codec/reestablish, eviction-registry, char-node-layout, persistent-SCDAWG,
@@ -618,20 +622,20 @@ introduced in the L-campaign and eviction work.
 | SubstringSearchSpec.v | Complete | Exact substring candidate, occurrence-position, and limited-result laws |
 | ScdawgOccurrenceSpec.v | Complete | SCDAWG forward traversal, left-extension closure, `locations`, and `freq` occurrence exactness laws |
 | FuzzyCandidateCoverageSpec.v | Complete | WallBreaker query-piece pigeonhole and fuzzy candidate coverage laws |
-| SerializationRoundtripSpec.v | Complete | Public serializer membership/value roundtrip, legacy value-dropping, gzip/protobuf feature-codec, retained-range DFS refinement, two-vector V2 authorization/commit atomicity, and fail-closed malformed-payload laws |
+| SerializationRoundtripSpec.v | Complete | Public serializer membership/value roundtrip, legacy value-dropping, gzip/protobuf feature-codec, retained-range DFS refinement, optional-cursor selection of the iterative owned worklist, unbounded finite-depth completion, two-vector V2 authorization/commit atomicity, and fail-closed malformed-payload laws |
 | ARTrieSpec.v | Complete (0 Admitted) | ARTrie specification incl. normalized checked construction and insert/delete correctness theorems |
 | ReplicatedMapSpec.v | Complete | Replicated put/remove log replay over the map-entry reference model |
 | DictionaryNodeReopenTraversalSpec.v | Complete (0 Admitted) | Faulting `DictionaryNode` traversal is residency-invariant (equals the snapshot regardless of swizzled children), reopen preserves it, `edges` enumerates all children, and the non-faulting walk is sound but strictly incomplete over swizzled children |
 | PersistentCharEpochReclamationSpec.v | Complete (0 Admitted) | Eviction-vs-walk EBR: no active reader observes a freed node, preserved as a state invariant of the gated unlink → retire → drain → free protocol |
 | EvictionExactRootPublicationSpec.v | Complete (0 Admitted) | Semantic unbinding, exact root/catalog/generation authority, winning and losing exact publication, retirement fencing, generation freshness, failed-publication preservation, and reflexive-transitive closure |
 | HelpedRootResidencySpec.v | Complete (0 Admitted) | The immutable root is the sole logical and accounting authority; helpers materialize only root-stamped packed residency and cannot publish early, cross retirement, or grant catalog authority |
-| DetachedCallbackSeparationSpec.v | Complete (0 Admitted) | Detached `ArcSwap` callback snapshots remain immutable across replacement, cannot observe or authorize exact catalogs, and may overlap semantic publication without blocking it |
+| DetachedCallbackSeparationSpec.v | Complete (0 Admitted) | Detached `ArcSwap` callback snapshots remain immutable across replacement, cannot observe or authorize exact catalogs, and may overlap semantic publication without blocking it; the deprecated unit wrapper is a total projection of typed installation whose rejected transitions preserve the previous catalog |
 | CharV3TypeEncodingSpec.v | Complete (0 Admitted) | Complete writer × reader × mode × node-kind compatibility matrix, exact packed type semantics, minimal fixed-rate payload capacity, deterministic codec choice, migration preservation, and stack-safe streamed emission |
 | ApiFeatureVisibilitySpec.v | Complete (0 Admitted) | Established causal API exports remain unconditional, while persistent serialization instrumentation is public exactly when `perf-instrumentation` is enabled |
 | TlcDiagnosticClassifierSpec.v | Complete (0 Admitted) | Both TLC invariant-violation forms are accepted only for the exact required invariant name; mismatched names are rejected |
 | PackedResidencyRefinementSpec.v | Complete (0 Admitted) | Exact packed-cell decoding, delayed-helper generation isolation, total fresh-generation rollover, sparse-delta and aggregate refinement, sealed prepared-target exactness, streamed interval coverage, geometric transition construction, and observationally exact catalog-metadata erasure |
 | ResidentBudgetEvictionSpec.v | Complete (0 Admitted) | Finite preorder-closure partitioning, unique ownership, positive-gain candidate selection, exact minimum-prefix cap satisfaction, downward-closed plans, stale-snapshot fallback, and one-pass convergence |
-| OverlayFaultProvenanceSpec.v | Complete (0 Admitted) | Exact decode/checkpoint fault stamps, prepared-source binding, CAS winner/loser authorization, root-advance rejection, path-copy stamp clearing, truthful detached registries, re-eviction, and mismatch rejection |
+| OverlayFaultProvenanceSpec.v | Complete (0 Admitted) | Exact decode/checkpoint fault stamps, prepared-source binding, CAS winner/loser authorization, root-advance rejection, path-copy stamp clearing, truthful detached registries, delayed coordinator acquisition only for non-null durable slots, retirement rejection, re-eviction, and mismatch rejection |
 | StructuralInvariants.v | Complete (0 Admitted) | Structural invariants |
 | TransitionInvariants.v | Complete (0 Admitted) | Node transition proofs (corrected `_after_insert` / `_with_lower_bound` variants) |
 | ArenaInvariants.v | Complete | Arena allocation invariants |

@@ -20,16 +20,14 @@ Date format is ISO-8601 (YYYY-MM-DD).
   `docs/bindings/FINDINGS_LEDGER.md` (seeded with LDICT-B1…B3).
 
 - **Tier-1 single-owner file lock (multi-process safety).** Opening a persistent ARTrie (byte,
-  char, or vocab; `mmap` or `io_uring` backend) now takes a nonblocking advisory lock through
-  `std::fs::File::try_lock` on a `"<path>.wlock"` sidecar at the six `DiskManager` open
-  chokepoints (`flock` on Unix and `LockFileEx` on Windows). A second OS process — or a
+  char, or vocab; `mmap` or `io_uring` backend) now takes an advisory `flock(LOCK_EX | LOCK_NB)` on
+  a `"<path>.wlock"` sidecar at the six `DiskManager` open chokepoints. A second OS process — or a
   second concurrent handle to the same path — is rejected with the new
   `PersistentARTrieError::FileLocked` instead of silently corrupting the file, closing the
   previously unguarded open-vs-open cross-process footgun. Same-process reopen (e.g. crash-recovery
   tests that `mem::forget` a handle) is preserved via a process-global refcounted lock registry, and
   the lock-free read/write hot paths are untouched (the lock is taken once per open, never per
-  operation). Uses the safe cross-platform `std::fs::File::try_lock` API (no new
-  `unsafe` or platform-locking dependency). First cross-process test:
+  operation). Uses the safe `rustix::fs::flock` (no new `unsafe`). First cross-process test:
   `tests/persistent_multiprocess_lock.rs`. Documented in `docs/design/os-level-locking.md`.
 - **Tier-2 SWMR (single-writer / multi-reader-process) design.** A complete, red-teamed design for
   read-only reader *processes* that serve lock-free snapshots of the last durable checkpoint

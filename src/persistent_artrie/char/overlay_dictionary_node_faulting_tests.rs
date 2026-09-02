@@ -131,36 +131,6 @@ fn walk_terms(node: &PersistentARTrieCharNode<()>) -> BTreeSet<String> {
     out
 }
 
-/// Cursor equivalent of [`walk_terms`]. Capturing the root cursor must resolve
-/// every durable child once into the revision-scoped arena; all subsequent DFS
-/// work is direct index traversal with no repeated fault or owned-node clone.
-fn walk_terms_cursor(node: &PersistentARTrieCharNode<()>) -> BTreeSet<String> {
-    let root = node.snapshot_root_cursor().expect("overlay cursor root");
-    let mut out = BTreeSet::new();
-    let mut pending = vec![(String::new(), root)];
-    while let Some((prefix, cursor)) = pending.pop() {
-        // SAFETY: every pending cursor descends from `root` on this retained node.
-        if unsafe { node.snapshot_cursor_is_final(cursor) }.expect("cursor finality") {
-            out.insert(prefix.clone());
-        }
-        // SAFETY: same retained-revision cursor provenance.
-        unsafe {
-            node.filter_map_snapshot_cursor_edges_and_finality(
-                cursor,
-                Some,
-                |label, child, projected| {
-                    assert_eq!(label, projected);
-                    let mut child_prefix = prefix.clone();
-                    child_prefix.push(label);
-                    pending.push((child_prefix, child));
-                },
-            )
-        }
-        .expect("cursor edges");
-    }
-    out
-}
-
 /// Build an overlay-backed root node directly from a trie's overlay root, with the
 /// supplied faulter — the same node `SharedCharARTrie::root()` returns under the
 /// flip, but constructed here so the test can choose faulter / no-faulter.
@@ -250,18 +220,11 @@ fn overlay_dictionary_node_faults_evicted_children_in() {
     let faulter: Arc<
         dyn OverlayFaulter<crate::persistent_artrie::core::key_encoding::CharKey, ()>,
     > = Arc::new(SharedOverlayFaulter::new(Arc::clone(&trie_arc)));
-    let (faulted_walk, faulted_cursor_walk) = {
+    let faulted_walk = {
         let guard = trie_arc.read();
         let root = overlay_root_with_faulter(&guard, Some(faulter));
-        // Cursor walk first: this is the operation that must discover and retain
-        // the still-OnDisk descendants while building its immutable arena.
-        let cursor = walk_terms_cursor(&root);
-        (walk_terms(&root), cursor)
+        walk_terms(&root)
     };
-    assert_eq!(
-        faulted_cursor_walk, all,
-        "faulting overlay cursor walk must recover ALL durable terms"
-    );
     assert_eq!(
         faulted_walk, all,
         "faulting overlay DictionaryNode walk must recover ALL terms (cold faulted \

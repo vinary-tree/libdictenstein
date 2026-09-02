@@ -3079,6 +3079,75 @@ mod binary_dat_payload_tests {
         assert_eq!(cursor_v2, owned_v2);
     }
 
+    #[cfg(feature = "persistent-artrie")]
+    #[test]
+    fn persistent_overlay_owned_fallback_matches_cursor_reference_bytes() {
+        use crate::dynamic_dawg::DynamicDawg;
+        use crate::persistent_artrie::PersistentARTrie;
+
+        let terms = vec![
+            "".to_string(),
+            "alpha".to_string(),
+            "alpine".to_string(),
+            "beta".to_string(),
+            "betamax".to_string(),
+            "z".repeat(257),
+        ];
+        let cursor_reference: DynamicDawg<()> = DynamicDawg::from_terms(terms.clone());
+        let persistent = PersistentARTrie::<()>::default();
+        for term in terms {
+            persistent.insert(&term);
+        }
+        assert!(
+            persistent.root().snapshot_root_cursor().is_none(),
+            "persistent overlays deliberately select the stack-safe owned fallback"
+        );
+
+        let mut reference_v1 = Vec::new();
+        let mut persistent_v1 = Vec::new();
+        ProtobufSerializer::serialize(&cursor_reference, &mut reference_v1).unwrap();
+        ProtobufSerializer::serialize(&persistent, &mut persistent_v1).unwrap();
+        assert_eq!(persistent_v1, reference_v1);
+
+        let mut reference_v2 = Vec::new();
+        let mut persistent_v2 = Vec::new();
+        OptimizedProtobufSerializer::serialize(&cursor_reference, &mut reference_v2).unwrap();
+        OptimizedProtobufSerializer::serialize(&persistent, &mut persistent_v2).unwrap();
+        assert_eq!(persistent_v2, reference_v2);
+    }
+
+    #[cfg(feature = "persistent-artrie")]
+    #[test]
+    fn persistent_overlay_owned_fallback_round_trips_a_hundred_thousand_level_trie() {
+        use crate::persistent_artrie::PersistentARTrie;
+
+        const DEPTH: usize = 100_000;
+        let term = "x".repeat(DEPTH);
+        let dictionary = PersistentARTrie::<()>::default();
+        assert!(dictionary.insert(&term));
+        assert!(dictionary.root().snapshot_root_cursor().is_none());
+
+        cursor_path_observation::reset();
+        let mut v1 = Vec::new();
+        ProtobufSerializer::serialize(&dictionary, &mut v1).expect("serialize protobuf v1");
+        assert_eq!(cursor_path_observation::cursor_edge_observations(), 0);
+        assert!(cursor_path_observation::owned_node_visits() >= DEPTH);
+        let decoded_v1: crate::dynamic_dawg::DynamicDawg<()> =
+            ProtobufSerializer::deserialize(v1.as_slice()).expect("deserialize protobuf v1");
+        assert!(decoded_v1.contains(&term));
+
+        cursor_path_observation::reset();
+        let mut v2 = Vec::new();
+        OptimizedProtobufSerializer::serialize(&dictionary, &mut v2)
+            .expect("serialize protobuf v2");
+        assert_eq!(cursor_path_observation::cursor_edge_observations(), 0);
+        assert!(cursor_path_observation::owned_node_visits() >= DEPTH);
+        let decoded_v2: crate::dynamic_dawg::DynamicDawg<()> =
+            OptimizedProtobufSerializer::deserialize(v2.as_slice())
+                .expect("deserialize protobuf v2");
+        assert!(decoded_v2.contains(&term));
+    }
+
     #[test]
     fn cursor_range_start_contract_failure_is_typed_and_preserves_writer() {
         use crate::dynamic_dawg::DynamicDawg;

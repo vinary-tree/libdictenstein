@@ -885,9 +885,6 @@ pub(crate) trait OverlayEvictable<K: KeyEncoding, V: DictionaryValue, S>:
                 None => return Ok(None), // empty overlay
             };
             let old_root = Arc::clone(old_revision.node());
-            // Refresh on every attempt. Disable atomically removes the old
-            // coordinator and root binding; re-enable installs a distinct one.
-            let coordinator = self.overlay_eviction_coordinator();
 
             // Walk top-down, collecting (node, edge) for a possible rebuild, until
             // we either reach the leaf (all InMem ⇒ answer directly), hit a missing
@@ -924,6 +921,17 @@ pub(crate) trait OverlayEvictable<K: KeyEncoding, V: DictionaryValue, S>:
                         idx += 1;
                     }
                     Child::OnDisk(ptr) if !ptr.is_null() => {
+                        // Coordinator authority is needed only for a durable
+                        // occurrence in a bound root. Resident-present,
+                        // resident-absent, and unbound fault paths bypass the
+                        // coordinator slot entirely. Refresh here on every durable
+                        // attempt: disable atomically removes the old coordinator
+                        // and root binding, while re-enable installs a distinct one.
+                        let coordinator = if old_revision.eviction_binding().is_some() {
+                            self.overlay_eviction_coordinator()
+                        } else {
+                            None
+                        };
                         // Resolve the exact registry occurrence before disk I/O.
                         // This preparation owns every generation/path handle it
                         // needs and releases the registry read lock immediately.
@@ -2003,6 +2011,115 @@ mod tests {
     use std::sync::Barrier;
     use std::thread;
 
+    /// Counts coordinator capability requests without enabling eviction.  A
+    /// completely resident point read (including a resident absence) has no
+    /// durable occurrence to publish, so it must never request this capability.
+    struct ResidentCoordinatorProbe<K: KeyEncoding> {
+        root: AtomicNodePtr<K, ()>,
+        epoch: EpochManager,
+        coordinator_acquisitions: AtomicUsize,
+    }
+
+    impl<K: KeyEncoding> OverlayFaulter<K, ()> for ResidentCoordinatorProbe<K> {
+        fn try_fault_overlay_slot(
+            &self,
+            _slot: &SwizzledPtr,
+        ) -> crate::persistent_artrie::core::error::Result<Arc<OverlayNode<K, ()>>> {
+            panic!("a resident point read must not fault storage")
+        }
+    }
+
+    impl<K: KeyEncoding> OverlayEvictable<K, (), ()> for ResidentCoordinatorProbe<K> {
+        fn overlay_root_slot(&self) -> Option<&AtomicNodePtr<K, ()>> {
+            Some(&self.root)
+        }
+
+        fn overlay_epoch_manager(&self) -> &EpochManager {
+            &self.epoch
+        }
+
+        fn overlay_eviction_coordinator(&self) -> Option<Arc<EvictionCoordinator>> {
+            self.coordinator_acquisitions
+                .fetch_add(1, Ordering::Relaxed);
+            None
+        }
+
+        fn prepare_overlay_eviction_commit(
+            &self,
+            _coordinator: &EvictionCoordinator,
+            _root_revision: &RootRevision<K, ()>,
+            _batch: &CompactEvictionBatch<K::Unit>,
+            _successful: &mut [usize],
+        ) -> Option<PreparedPackedResidency> {
+            None
+        }
+
+        fn commit_overlay_eviction(
+            &self,
+            _coordinator: &EvictionCoordinator,
+            _root: &AtomicNodePtr<K, ()>,
+            _root_transition: PreparedBoundRootTransition<K, ()>,
+        ) -> ExactEvictionOutcome {
+            ExactEvictionOutcome::AuthorityLost
+        }
+
+        fn prepare_overlay_fault_commit(
+            &self,
+            _coordinator: &EvictionCoordinator,
+            _root_revision: &RootRevision<K, ()>,
+            _path: &[K::Unit],
+            _disk_ptr: &SwizzledPtr,
+        ) -> Option<PreparedPackedResidency> {
+            None
+        }
+
+        fn commit_overlay_fault(
+            &self,
+            _coordinator: &EvictionCoordinator,
+            _root: &AtomicNodePtr<K, ()>,
+            _root_transition: PreparedBoundRootTransition<K, ()>,
+        ) -> ExactFaultOutcome {
+            ExactFaultOutcome::AuthorityLost
+        }
+    }
+
+    fn assert_resident_reads_do_not_acquire_coordinator<K: RegistryFamily>(
+        present: K::Unit,
+        absent: K::Unit,
+    ) {
+        let leaf = Arc::new(OverlayNode::<K, ()>::new().as_final());
+        let root = Arc::new(OverlayNode::<K, ()>::new().with_child(present, Child::InMem(leaf)));
+        let fixture = ResidentCoordinatorProbe {
+            root: AtomicNodePtr::new(root),
+            epoch: EpochManager::new(),
+            coordinator_acquisitions: AtomicUsize::new(0),
+        };
+
+        let found = fixture
+            .find_leaf_faulting(&fixture.root, &[present], 0)
+            .expect("resident-present read succeeds");
+        assert!(found.is_some_and(|node| node.is_final()));
+        assert!(fixture
+            .find_leaf_faulting(&fixture.root, &[absent], 0)
+            .expect("resident-absent read succeeds")
+            .is_none());
+        assert_eq!(
+            fixture.coordinator_acquisitions.load(Ordering::Relaxed),
+            0,
+            "resident-present and resident-absent reads must bypass coordinator acquisition"
+        );
+    }
+
+    #[test]
+    fn byte_resident_reads_bypass_eviction_coordinator() {
+        assert_resident_reads_do_not_acquire_coordinator::<ByteKey>(b'a', b'z');
+    }
+
+    #[test]
+    fn char_resident_reads_bypass_eviction_coordinator() {
+        assert_resident_reads_do_not_acquire_coordinator::<CharKey>('a' as u32, 'z' as u32);
+    }
+
     /// A deterministic two-thread fixture that advances the published root while
     /// the reader is blocked inside the disk loader. The reader's subsequent
     /// install CAS must lose, exactly modeling a concurrent sibling publication.
@@ -2023,6 +2140,10 @@ mod tests {
             _slot: &SwizzledPtr,
         ) -> crate::persistent_artrie::core::error::Result<Arc<OverlayNode<K, ()>>> {
             self.load_count.fetch_add(1, Ordering::Relaxed);
+            // Synchronize at the durable occurrence itself. Coordinator
+            // acquisition is intentionally absent for this unbound root.
+            self.reader_captured.wait();
+            self.writer_published.wait();
             Ok(Arc::clone(&self.loaded))
         }
     }
@@ -2037,12 +2158,6 @@ mod tests {
         }
 
         fn overlay_eviction_coordinator(&self) -> Option<Arc<EvictionCoordinator>> {
-            // `find_leaf_faulting` calls this immediately after capturing the
-            // root revision on every retry, including retries that reuse the
-            // decoded-node cache. Synchronizing here forces the writer to
-            // advance that exact captured revision before each install CAS.
-            self.reader_captured.wait();
-            self.writer_published.wait();
             None
         }
 
@@ -2111,7 +2226,9 @@ mod tests {
             load_count: AtomicUsize::new(0),
             cas_attempts: AtomicUsize::new(0),
         });
-        let max_retries = DEFAULT_MAX_FAULTIN_RETRIES;
+        // One captured immutable occurrence is enough to prove that a losing
+        // install CAS cannot turn a committed read into false absence.
+        let max_retries = 0;
 
         let reader = {
             let fixture = Arc::clone(&fixture);
@@ -2128,18 +2245,13 @@ mod tests {
         let writer = {
             let fixture = Arc::clone(&fixture);
             thread::spawn(move || {
-                // Advance the root once per permitted reader attempt. The
-                // handshake occurs after each root capture rather than inside
-                // the loader because retries reuse the decoded-node cache.
-                for _ in 0..=max_retries {
-                    fixture.reader_captured.wait();
-                    let old_root = fixture.root.load().expect("published root");
-                    let sibling_leaf = Arc::new(OverlayNode::<K, ()>::new().as_final());
-                    let advanced =
-                        Arc::new(old_root.with_child(fixture.sibling, Child::InMem(sibling_leaf)));
-                    fixture.root.store(advanced);
-                    fixture.writer_published.wait();
-                }
+                fixture.reader_captured.wait();
+                let old_root = fixture.root.load().expect("published root");
+                let sibling_leaf = Arc::new(OverlayNode::<K, ()>::new().as_final());
+                let advanced =
+                    Arc::new(old_root.with_child(fixture.sibling, Child::InMem(sibling_leaf)));
+                fixture.root.store(advanced);
+                fixture.writer_published.wait();
             })
         };
 
@@ -2152,7 +2264,7 @@ mod tests {
         assert_eq!(
             fixture.cas_attempts.load(Ordering::Relaxed),
             max_retries + 1,
-            "the test must force every bounded install-CAS attempt to lose"
+            "the test must force the bounded install-CAS attempt to lose"
         );
         assert_eq!(
             fixture.load_count.load(Ordering::Relaxed),

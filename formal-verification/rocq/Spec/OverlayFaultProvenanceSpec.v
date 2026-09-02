@@ -546,4 +546,118 @@ Proof.
   apply captured_exact_fault_is_ready_when_binding_is_exact; assumption.
 Qed.
 
+(** ** Delayed coordinator acquisition
+
+    A point read can classify an immutable captured slot before consulting the
+    eviction coordinator.  Resident success, resident non-finality, and a null
+    durable slot are complete observations, so coordinator state cannot affect
+    their result.  Only a non-null durable slot requires an authority lookup.
+
+    The late lookup does not weaken publication: after acquisition, the
+    existing exact commit predicate still revalidates the captured root
+    revision, root/registry generation, registry path, disk pointer, authority,
+    residency, decoded payload, and provenance stamp. *)
+
+Inductive ResidentProbeObservation : Type :=
+| ProbeResidentPresent : OverlayNode -> ResidentProbeObservation
+| ProbeResidentAbsent : ResidentProbeObservation
+| ProbeNeedsCoordinator : DiskPtr -> ResidentProbeObservation.
+
+Definition probe_captured_slot
+    (is_final : OverlayNode -> bool)
+    (state : FaultState) : ResidentProbeObservation :=
+  match state_slot state with
+  | SlotInMem node =>
+      if is_final node
+      then ProbeResidentPresent node
+      else ProbeResidentAbsent
+  | SlotOnDisk 0 => ProbeResidentAbsent
+  | SlotOnDisk pointer => ProbeNeedsCoordinator pointer
+  end.
+
+Definition coordinator_acquisitions
+    (observation : ResidentProbeObservation) : nat :=
+  match observation with
+  | ProbeNeedsCoordinator _ => 1
+  | _ => 0
+  end.
+
+Theorem resident_present_probe_never_acquires_coordinator :
+  forall is_final state node,
+    probe_captured_slot is_final state = ProbeResidentPresent node ->
+    coordinator_acquisitions (probe_captured_slot is_final state) = 0.
+Proof.
+  intros is_final state node Hprobe. rewrite Hprobe. reflexivity.
+Qed.
+
+Theorem resident_absent_probe_never_acquires_coordinator :
+  forall is_final state,
+    probe_captured_slot is_final state = ProbeResidentAbsent ->
+    coordinator_acquisitions (probe_captured_slot is_final state) = 0.
+Proof.
+  intros is_final state Hprobe. rewrite Hprobe. reflexivity.
+Qed.
+
+Theorem coordinator_acquisition_implies_non_null_durable_slot :
+  forall is_final state,
+    coordinator_acquisitions (probe_captured_slot is_final state) = 1 ->
+    exists pointer,
+      pointer <> 0 /\
+      state_slot state = SlotOnDisk pointer /\
+      probe_captured_slot is_final state = ProbeNeedsCoordinator pointer.
+Proof.
+  intros is_final state Hacquire.
+  destruct (state_slot state) as [pointer | node] eqn:Hslot.
+  - destruct pointer as [| pointer].
+    + unfold probe_captured_slot in Hacquire.
+      rewrite Hslot in Hacquire. discriminate.
+    + exists (S pointer). split; [lia |].
+      split; [reflexivity |].
+      unfold probe_captured_slot. rewrite Hslot. reflexivity.
+  - unfold probe_captured_slot in Hacquire. rewrite Hslot in Hacquire.
+    destruct (is_final node); discriminate.
+Qed.
+
+Theorem late_acquired_fault_winner_requires_exact_captured_authority :
+  forall image state prepared final,
+    fault_commit image state prepared FaultWon final ->
+    state_authoritative state = true /\
+    prepared_expected_root prepared = state_root_revision state /\
+    prepared_generation prepared = state_registry_generation state /\
+    state_root_generation state = state_registry_generation state /\
+    binding_generation (state_binding state) = state_registry_generation state /\
+    prepared_path prepared = binding_path (state_binding state) /\
+    prepared_disk prepared = binding_disk (state_binding state) /\
+    binding_resident (state_binding state) = false /\
+    state_slot state = SlotOnDisk (prepared_disk prepared).
+Proof.
+  intros image state prepared final Hcommit.
+  inversion Hcommit; subst.
+  unfold exact_fault_precondition in H.
+  tauto.
+Qed.
+
+Definition retire_fault_authority (state : FaultState) : FaultState :=
+  mkFaultState
+    (S (state_root_revision state))
+    (state_root_generation state)
+    (state_registry_generation state)
+    false
+    (state_slot state)
+    (state_binding state).
+
+Theorem retirement_before_late_acquisition_forces_identity_loser :
+  forall image state prepared,
+    fault_commit
+      image
+      (retire_fault_authority state)
+      prepared
+      FaultLost
+      (retire_fault_authority state).
+Proof.
+  intros image state prepared. apply CommitFaultLoser.
+  unfold exact_fault_precondition, retire_fault_authority. simpl.
+  intros H. destruct H as [Hauthority _]. discriminate.
+Qed.
+
 End OverlayFaultProvenanceSpec.

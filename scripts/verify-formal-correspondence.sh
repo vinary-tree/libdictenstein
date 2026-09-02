@@ -524,6 +524,7 @@ if command -v tla2sany >/dev/null 2>&1; then
       EvictionWalkEBR \
       OverlayEvictionCas \
       OverlayEvictionStale \
+      DelayedFaultCoordinatorAcquisition \
       LockFreeOverlayRemoveCas \
       LockFreeOverlayDurableReplay \
       LockFreeOverlayValueCas \
@@ -605,6 +606,7 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       EvictionWalkEBR \
       OverlayEvictionCas \
       OverlayEvictionStale \
+      DelayedFaultCoordinatorAcquisition \
       LockFreeOverlayRemoveCas \
       LockFreeOverlayDurableReplay \
       LockFreeOverlayValueCas \
@@ -785,6 +787,7 @@ ResidentBudgetEviction|invariant|AcceptedSnapshotsWereRevalidated|ResidentBudget
 OverlayEvictionCas|invariant|ReadNeverMissesCommitted
 OverlayEvictionStale|invariant|NoStaleEvict
 OverlayEvictionStale|invariant|FaultInstalledCarriesExactStamp|OverlayEvictionStale_FaultStampUnsafe
+DelayedFaultCoordinatorAcquisition|invariant|ResidentCompletionNeverAcquires|DelayedFaultCoordinatorAcquisition_EagerUnsafe
 LockFreeOverlayRemoveCas|invariant|LastWriterWins
 LockFreeOverlayDurableReplay|invariant|ReplayEqualsCommittedVisible
 LockFreeOverlayValueCas|invariant|NoPhantomConditionalWrite
