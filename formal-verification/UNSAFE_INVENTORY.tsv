@@ -241,9 +241,7 @@ src/persistent_artrie/char/types.rs	unsafe_block	*unsafe { Box::from_raw(pointer
 src/persistent_artrie/char/types.rs	unsafe_block	.map(|pointer| (key, unsafe { &*pointer }))	1	char-child-read-only-traversal
 src/persistent_artrie/char/types.rs	unsafe_block	.map(|pointer| unsafe { Box::from_raw(pointer.cast_mut()) });	1	char-child-box-replacement
 src/persistent_artrie/char/types.rs	unsafe_block	Ok(unsafe { &mut *published.as_ptr() })	2	char-child-unique-mutation
-src/persistent_artrie/char/overlay_dictionary_node_faulting_tests.rs	unsafe_block	if unsafe { node.snapshot_cursor_is_final(cursor) }.expect("cursor finality") {	1	snapshot-dense-cursor-contract
-src/persistent_artrie/char/overlay_dictionary_node_faulting_tests.rs	unsafe_block	unsafe {	1	snapshot-dense-cursor-contract
-src/persistent_artrie/char/types.rs	unsafe_block	Some(unsafe { Box::from_raw(ptr as *mut CharTrieNodeInner<V>) })	1	char-child-box-reclaim
+src/persistent_artrie/char/types.rs	unsafe_block	Some(unsafe { Box::from_raw(ptr.cast_mut()) })	1	char-child-box-reclaim
 src/persistent_artrie/char/types.rs	unsafe_block	pending.push(unsafe { Box::from_raw(pointer.cast_mut()) });	1	char-child-box-reclaim
 src/persistent_artrie/char/types.rs	unsafe_block	unsafe { &*ptr }	1	char-child-read-only-traversal
 src/persistent_artrie/char/types.rs	unsafe_block	unsafe { &mut *(ptr as *mut CharTrieNodeInner<V>) }	1	char-child-unique-mutation
@@ -251,7 +249,7 @@ src/persistent_artrie/char/types.rs	unsafe_block	unsafe { drop(Box::from_raw(poi
 src/persistent_artrie/core/block_storage.rs	unsafe_block	unsafe {	1	block-storage-default-fixed-buffer-registration
 src/persistent_artrie/core/block_storage.rs	unsafe_fn	unsafe fn register_buffer_pool(&self, _buffers: &[(*mut u8, usize)]) -> Result<()> {	1	block-storage-fixed-buffer-registration-contract
 src/persistent_artrie/core/buffer_manager.rs	unsafe_block	let fixed_buffers_registered = unsafe { storage.register_buffer_pool(&buffers).is_ok() }	2	buffer-manager-fixed-buffer-registration
-src/persistent_artrie/core/buffer_manager.rs	unsafe_block	unsafe {	4	buffer-manager-aligned-buffer-ownership
+src/persistent_artrie/core/buffer_manager.rs	unsafe_block	unsafe {	5	buffer-manager-aligned-buffer-ownership
 src/persistent_artrie/core/buffer_manager.rs	unsafe_fn	unsafe fn register_buffer_pool(&self, buffers: &[(*mut u8, usize)]) -> Result<()> {	1	buffer-manager-test-fixed-buffer-registration
 src/persistent_artrie/core/compact_encoding.rs	unsafe_block	unsafe { data.as_ptr().add(1).cast::<u64>().read_unaligned() }	1	compact-encoding-unaligned-read
 src/persistent_artrie/core/concurrency.rs	unsafe_impl	unsafe impl<T: Send + Sync> Sync for OptimisticCell<T> {}	1	optimistic-cell-rwlock-thread-contract
@@ -265,24 +263,6 @@ src/persistent_artrie/core/io_uring_disk_manager.rs	unsafe_fn	unsafe fn register
 src/persistent_artrie/core/io_uring_disk_manager.rs	unsafe_impl	unsafe impl Send for IoUringDiskManager {}	1	io-uring-manager-thread-contract
 src/persistent_artrie/core/io_uring_disk_manager.rs	unsafe_impl	unsafe impl Sync for IoUringDiskManager {}	1	io-uring-manager-thread-contract
 src/persistent_artrie/core/mvcc.rs	unsafe_impl	unsafe impl<T: TrieRoot> Send for ReadTransaction<T> {}	1	read-transaction-root-snapshot-thread-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	assert_eq!(unsafe { owner.snapshot_cursor_value(ant) }, Some(Some(7)));	1	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	cursor = unsafe { owner.snapshot_cursor_transition(cursor, unit)? }?;	1	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	let finality = unsafe {	1	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	let materialized = unsafe { owner.snapshot_cursor_node(cursor) }.expect("cursor node");	1	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	let metadata = unsafe {	1	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	unsafe { fresh_owner.snapshot_cursor_value(zoo) },	1	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	unsafe { owner.snapshot_cursor_is_final(cursor) },	1	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	unsafe { owner.snapshot_cursor_key_units(cursor) },	1	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	unsafe { owner.snapshot_cursor_transition(cursor, label) },	1	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	unsafe { owner.snapshot_cursor_transition(root, b'z') },	1	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_block	unsafe { owner.snapshot_cursor_value(cursor) },	2	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_fn	unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(	1	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_fn	unsafe fn snapshot_cursor_is_final(&self, cursor: Self::SnapshotCursor) -> Option<bool> {	1	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_fn	unsafe fn snapshot_cursor_key_units(	1	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_fn	unsafe fn snapshot_cursor_node(&self, cursor: Self::SnapshotCursor) -> Option<Self> {	1	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_fn	unsafe fn snapshot_cursor_transition(	1	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_fn	unsafe fn snapshot_cursor_value(&self, cursor: Self::SnapshotCursor) -> Option<Option<V>> {	1	snapshot-dense-cursor-contract
-src/persistent_artrie/core/overlay/dict_node.rs	unsafe_fn	unsafe fn visit_snapshot_cursor_edge_page<F>(	1	snapshot-dense-cursor-contract
 src/persistent_artrie/core/swizzled_ptr.rs	unsafe_block	assert_eq!(unsafe { *old_ptr }, 42);	1	swizzled-pointer-unit-test-deref
 src/persistent_artrie/core/swizzled_ptr.rs	unsafe_block	assert_eq!(unsafe { *retrieved }, 12345);	1	swizzled-pointer-unit-test-deref
 src/persistent_artrie/core/swizzled_ptr.rs	unsafe_block	assert_eq!(unsafe { *retrieved }, 42);	1	swizzled-pointer-unit-test-deref

@@ -739,6 +739,97 @@ Proof.
     reflexivity.
 Qed.
 
+(** ** Persistent Overlay Cursor-Fallback Selection
+
+    A persistent overlay node may advertise a dense native cursor, but that
+    capability is optional in [DictionaryNode].  When it is unavailable the
+    protobuf encoder selects the owned-node path above.  The owned path is not
+    recursive in Rust: [pending] is a heap worklist consumed by a loop.  These
+    laws make the capability withdrawal precise before the production overlay
+    handle is returned to its allocation-free baseline representation. *)
+
+Inductive OverlayTraversalMode :=
+  | OverlayDirectCursor
+  | OverlayOwnedWorklist.
+
+Definition select_overlay_traversal (cursor_available : bool)
+    : OverlayTraversalMode :=
+  if cursor_available then OverlayDirectCursor else OverlayOwnedWorklist.
+
+Theorem unavailable_overlay_cursor_selects_owned_worklist :
+  select_overlay_traversal false = OverlayOwnedWorklist.
+Proof.
+  reflexivity.
+Qed.
+
+(** The direct projection and owned worklist consume the same ordered DFS
+    skeleton and therefore expose identical protobuf events. *)
+Definition direct_overlay_events := recursive_path_expansion.
+Definition owned_overlay_events := iterative_path_expansion.
+
+Theorem owned_overlay_fallback_refines_direct_cursor :
+  forall next_id edges,
+    owned_overlay_events next_id edges =
+    direct_overlay_events next_id edges.
+Proof.
+  exact iterative_path_expansion_matches_recursive_oracle.
+Qed.
+
+(** Retaining the captured immutable overlay root fixes the event skeleton.
+    A later publication is deliberately ignored by the owned traversal. *)
+Definition owned_events_after_publication
+    (next_id : nat) (captured later : list PathExpansionSkeletonEdge)
+    : list PathExpansionWireEvent :=
+  let _ := later in owned_overlay_events next_id captured.
+
+Theorem owned_overlay_fallback_is_revision_isolated :
+  forall next_id captured later,
+    owned_events_after_publication next_id captured later =
+    owned_overlay_events next_id captured.
+Proof.
+  reflexivity.
+Qed.
+
+Theorem owned_overlay_fallback_preserves_event_count :
+  forall next_id pending,
+    length (owned_overlay_events next_id pending) = length pending.
+Proof.
+  intros next_id pending.
+  revert next_id.
+  induction pending as [|edge rest IH]; intro next_id; simpl.
+  - reflexivity.
+  - rewrite IH. reflexivity.
+Qed.
+
+(** There is no library constant limiting key or worklist depth: every finite
+    pending sequence has a complete owned traversal with exactly one event per
+    edge.  Consumers may impose policy limits outside this machine. *)
+Definition fallback_witness_byte : MapSpec.Byte :=
+  MapSpec.byte_of_nat 0 (ltac:(lia)).
+
+Theorem owned_overlay_fallback_has_no_fixed_depth_bound :
+  forall depth next_id,
+    exists pending events,
+      length pending = depth /\
+      owned_overlay_events next_id pending = events /\
+      length events = depth.
+Proof.
+  intros depth next_id.
+  set (pending := repeat
+    {| skeleton_source_id := 0;
+       skeleton_label := fallback_witness_byte;
+       skeleton_child_final := false |}
+    depth).
+  exists pending.
+  exists (owned_overlay_events next_id pending).
+  split.
+  - unfold pending. apply repeat_length.
+  - split.
+    + reflexivity.
+    + rewrite owned_overlay_fallback_preserves_event_count.
+      unfold pending. apply repeat_length.
+Qed.
+
 Definition skeleton_observation (edge : PathExpansionSkeletonEdge)
     : nat * MapSpec.Byte * bool :=
   (skeleton_source_id edge, skeleton_label edge,

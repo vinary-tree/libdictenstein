@@ -486,7 +486,9 @@ if command -v tla2sany >/dev/null 2>&1; then
       ConcurrentCheckpointPublication \
       LockFreeDurableCheckpoint \
       LockFreeDurableCheckpointEviction \
+      CapturedCheckpointEvictionRoute \
       DetachedCallbackSeparation \
+      DetachedCompatibilityInstall \
       CachelessOwnedRegistry \
       EvictionExactRootPublication \
       HelpedRootResidency \
@@ -522,12 +524,14 @@ if command -v tla2sany >/dev/null 2>&1; then
       EvictionWalkEBR \
       OverlayEvictionCas \
       OverlayEvictionStale \
+      DelayedFaultCoordinatorAcquisition \
       LockFreeOverlayRemoveCas \
       LockFreeOverlayDurableReplay \
       LockFreeOverlayValueCas \
       ConcurrentCheckpointSerialization \
       RetainedEdgeRangeTraversal \
       AbiProducerSnapshot \
+      AbiSnapshotInitializerTakeover \
       DictionaryEntryBatchLease \
       AbiSnapshotQuiescence
     do
@@ -564,7 +568,9 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       ConcurrentCheckpointPublication \
       LockFreeDurableCheckpoint \
       LockFreeDurableCheckpointEviction \
+      CapturedCheckpointEvictionRoute \
       DetachedCallbackSeparation \
+      DetachedCompatibilityInstall \
       CachelessOwnedRegistry \
       EvictionExactRootPublication \
       HelpedRootResidency \
@@ -600,12 +606,14 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       EvictionWalkEBR \
       OverlayEvictionCas \
       OverlayEvictionStale \
+      DelayedFaultCoordinatorAcquisition \
       LockFreeOverlayRemoveCas \
       LockFreeOverlayDurableReplay \
       LockFreeOverlayValueCas \
       ConcurrentCheckpointSerialization \
       RetainedEdgeRangeTraversal \
       AbiProducerSnapshot \
+      AbiSnapshotInitializerTakeover \
       DictionaryEntryBatchLease \
       AbiSnapshotQuiescence
     do
@@ -653,6 +661,12 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
     #     exact authority, exact publication checks the captured root and catalog
     #     stamp, exact operations revalidate the current pair, and recovery ignores
     #     detached advisory state. Each obligation has its own unsafe control.
+    #   * CapturedCheckpointEvictionRoute re-probes the live coordinator slot at
+    #     publish time and MUST violate `PublicationUsesCapturedRoute`, proving
+    #     capture-off cannot reroute on and generation A cannot be replaced by B.
+    #   * DetachedCompatibilityInstall mutates either total-wrapper behavior or
+    #     rejection atomicity. The controls MUST respectively violate
+    #     `LegacyWrapperNeverPanics` and `RejectedInstallPreservesCatalog`.
     #   * OverlayEvictionCas sets USE_FAULT_IN = FALSE (lets the overlay evictor
     #     fire on a LIVE node with NO fault-in recovery) and MUST violate
     #     `ReadNeverMissesCommitted` — proving the read/write fault-in path is
@@ -678,6 +692,11 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
     #     post-capture publish rewrites what an ABI consumer already captured —
     #     proving the pinned-immutable-revision capture (vt.dictionary.v1, family
     #     FV obligation #10) is REQUIRED.
+    #   * AbiSnapshotInitializerTakeover adds SingleConstruction to the safe
+    #     invariants and MUST violate it: a boundedly stalled cold initializer
+    #     may be superseded by a fresh generation, while both immutable
+    #     same-revision snapshots remain valid. This prevents tests from
+    #     mistaking usual-path pointer identity for a safety requirement.
     #   * AbiSnapshotQuiescence sets USE_ADMISSION_GATE = FALSE (the rejected
     #     fallback that only waits for a transient zero-writer observation) and
     #     MUST violate `SnapshotEventuallyCompletes`: writers can continuously
@@ -718,11 +737,14 @@ LockFreeDurableCheckpointEviction|invariant|ExactRootRegistryAgreement|LockFreeD
 LockFreeDurableCheckpointEviction|invariant|PublishedCatalogIsStamped|LockFreeDurableCheckpointEviction_PreStampUnsafe
 LockFreeDurableCheckpointEviction|invariant|NoInexactUse|LockFreeDurableCheckpointEviction_InexactUseUnsafe
 LockFreeDurableCheckpointEviction|invariant|RecoveryIndependentOfDetached|LockFreeDurableCheckpointEviction_RecoveryDetachedUnsafe
+CapturedCheckpointEvictionRoute|invariant|PublicationUsesCapturedRoute|CapturedCheckpointEvictionRoute_LiveReprobeUnsafe
 DetachedCallbackSeparation|invariant|DetachedCallbackHasOnlyDetachedCapability|DetachedCallbackSeparation_LegacyReadsExactUnsafe
 DetachedCallbackSeparation|invariant|DetachedNeverAuthorizesExactCommit|DetachedCallbackSeparation_DetachedAuthorizesUnsafe
 DetachedCallbackSeparation|invariant|DetachedCatalogContainsOnlyDetached|DetachedCallbackSeparation_CheckpointPopulatesDetachedUnsafe
 DetachedCallbackSeparation|invariant|SemanticClearsExactAuthority|DetachedCallbackSeparation_SemanticPreservesBindingUnsafe
 DetachedCallbackSeparation|invariant|CatalogNeverAuthorizesExactCommit|DetachedCallbackSeparation_CatalogAuthorizesUnsafe
+DetachedCompatibilityInstall|invariant|LegacyWrapperNeverPanics|DetachedCompatibilityInstall_PanicUnsafe
+DetachedCompatibilityInstall|invariant|RejectedInstallPreservesCatalog|DetachedCompatibilityInstall_OverwriteUnsafe
 CachelessOwnedRegistry|invariant|LastCollisionOccurrenceEquivalent|CachelessOwnedRegistry_FirstCollisionUnsafe
 CachelessOwnedRegistry|invariant|FailedRemovePreservesProjection|CachelessOwnedRegistry_MutateBeforeMaterializeUnsafe
 EvictionExactRootPublication|invariant|ExactRootRegistryAgreement|EvictionExactRootPublication_SemanticBindingUnsafe
@@ -765,6 +787,7 @@ ResidentBudgetEviction|invariant|AcceptedSnapshotsWereRevalidated|ResidentBudget
 OverlayEvictionCas|invariant|ReadNeverMissesCommitted
 OverlayEvictionStale|invariant|NoStaleEvict
 OverlayEvictionStale|invariant|FaultInstalledCarriesExactStamp|OverlayEvictionStale_FaultStampUnsafe
+DelayedFaultCoordinatorAcquisition|invariant|ResidentCompletionNeverAcquires|DelayedFaultCoordinatorAcquisition_EagerUnsafe
 LockFreeOverlayRemoveCas|invariant|LastWriterWins
 LockFreeOverlayDurableReplay|invariant|ReplayEqualsCommittedVisible
 LockFreeOverlayValueCas|invariant|NoPhantomConditionalWrite
@@ -773,6 +796,7 @@ RetainedEdgeRangeTraversal|invariant|RetainedReaderRevisionIsAllocated|RetainedE
 RetainedEdgeRangeTraversal|invariant|NoPartialExternalPublication|RetainedEdgeRangeTraversal_UnsafePartialPublish
 RetainedEdgeRangeTraversal|invariant|RangeBounds|RetainedEdgeRangeTraversal_UnsafeAdvance
 AbiProducerSnapshot|invariant|CapturedRevisionImmutable
+AbiSnapshotInitializerTakeover|invariant|SingleConstruction|AbiSnapshotInitializerTakeover_SingleConstructionUnsafe
 AbiSnapshotQuiescence|temporal|SnapshotEventuallyCompletes
 PersistentARTrieU64WorkMachines|invariant|NoCyclicSnapshotAccepted
 PersistentARTrieU64Iteration|invariant|CompletionIsExact

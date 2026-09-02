@@ -7,7 +7,7 @@
     so storage that may be abandoned is never exposed through a node stamp.
 *)
 
-From Stdlib Require Import Arith Bool List Logic.FunctionalExtensionality.
+From Coq Require Import Arith Bool List Logic.FunctionalExtensionality.
 Import ListNotations.
 
 Module HelpedCheckpointStampSpec.

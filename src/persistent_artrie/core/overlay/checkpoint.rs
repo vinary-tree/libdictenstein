@@ -45,11 +45,9 @@
 //! `&self` `checkpoint()` skeleton as a default.
 
 use crate::persistent_artrie::core::error::Result;
-use crate::persistent_artrie::core::eviction::{DiskLocationRegistry, EvictionCoordinator};
 use crate::persistent_artrie::core::key_encoding::KeyEncoding;
 use crate::persistent_artrie::core::overlay::flip::LockFreeOverlay;
 use crate::value::DictionaryValue;
-use std::sync::{Arc, Mutex};
 
 /// Immutable routing fact captured in the same phase as an overlay checkpoint.
 ///
@@ -62,29 +60,6 @@ use std::sync::{Arc, Mutex};
 pub(crate) trait CapturedEvictionRoute {
     /// `true` when capture observed and retained an eviction-coordinator generation.
     fn captured_with_eviction(&self) -> bool;
-}
-
-/// Publish a captured registry only to the exact coordinator generation that caused
-/// it to be built.
-///
-/// `Arc` identity is the generation token: disable removes that `Arc`, and every
-/// subsequent enable installs a freshly allocated coordinator. Holding the EC leaf
-/// mutex across the identity check and registry swap makes the publication linearize
-/// wholly before or wholly after a lifecycle transition. A disabled/replaced
-/// generation simply drops its now-unroutable registry; the durable checkpoint image
-/// and retaining-WAL publication remain valid independently of eviction.
-pub(crate) fn publish_registry_to_captured_generation(
-    slot: &Mutex<Option<Arc<EvictionCoordinator>>>,
-    captured: &Arc<EvictionCoordinator>,
-    registry: DiskLocationRegistry,
-) -> Option<Arc<EvictionCoordinator>> {
-    let current = slot.lock().expect("eviction_coordinator mutex poisoned");
-    let current = current.as_ref()?;
-    if !Arc::ptr_eq(current, captured) {
-        return None;
-    }
-    captured.update_disk_registry(registry);
-    Some(Arc::clone(captured))
 }
 
 /// The SHARED GENERIC checkpoint route-split surface (design trait 3).

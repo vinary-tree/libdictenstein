@@ -706,12 +706,15 @@ construct an exact root transition. Thus callbacks may overlap semantic writes
 without blocking them and without becoming eviction authority.
 
 The source-compatible `update_disk_registry` wrapper remains infallible in its
-signature and therefore panics when structural finalization fails or the
-coordinator has retired. Code that needs explicit failure handling should call
-`try_update_disk_registry`; a rejected attempt does not modify the installed
-detached catalog. Concurrent semantic writes and compatibility callbacks are
-not rejection conditions because the detached `ArcSwap` catalog is independent
-of exact root authority.
+signature and is total: structural-finalization failure or coordinator
+retirement rejects the candidate without publishing it. A concurrent successful
+install may independently replace the discovery slot. The wrapper deliberately
+invokes no user-supplied logging callback, because such a callback could unwind
+and violate the wrapper's totality guarantee. Code that needs explicit failure
+handling should call `try_install_detached_compatibility_catalog`.
+Concurrent semantic writes and compatibility callbacks are not rejection
+conditions because the detached `ArcSwap` catalog is independent of exact root
+authority.
 
 This ordering closes the durable WAL-before-CAS race and the checkpoint/write
 race at the root itself. A checkpoint may serialize while a writer is active;

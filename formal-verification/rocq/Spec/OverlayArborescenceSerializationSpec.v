@@ -23,7 +23,7 @@
     image has no shared resident node.
 *)
 
-From Stdlib Require Import Arith Bool Lia List ListDec PeanoNat.
+From Coq Require Import Arith Bool Lia List ListDec PeanoNat.
 Import ListNotations.
 
 Module OverlayArborescenceSerializationSpec.

@@ -3601,7 +3601,7 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_cold_snapshotters_normally_build_one_provider_snapshot() {
+    fn concurrent_cold_snapshotters_return_one_revision_with_bounded_takeover() {
         const SNAPSHOTTERS: usize = 16;
         let memo = Arc::new(SnapshotMemo::new());
         let backend = Arc::new(DynamicBackend::new(BindingUnitDomain::U64));
@@ -3629,10 +3629,36 @@ mod tests {
                 .collect::<Vec<_>>()
         });
 
-        assert_eq!(constructions.load(Ordering::Relaxed), 1);
-        assert!(snapshots
-            .iter()
-            .all(|snapshot| Arc::ptr_eq(snapshot, &snapshots[0])));
+        let construction_count = constructions.load(Ordering::Relaxed);
+        assert!(
+            (1..=SNAPSHOTTERS).contains(&construction_count),
+            "each contender constructs at most one same-revision generation"
+        );
+
+        let expected_identity = snapshots[0].identity();
+        let expected_root = snapshots[0].root();
+        let expected_len = snapshots[0].len();
+        let expected_edges = snapshot_edges(snapshots[0].as_ref(), expected_root)
+            .expect("reference snapshot root remains traversable");
+        for snapshot in &snapshots {
+            assert_eq!(snapshot.identity(), expected_identity);
+            assert_eq!(snapshot.root(), expected_root);
+            assert_eq!(snapshot.len(), expected_len);
+            assert_eq!(
+                snapshot_edges(snapshot.as_ref(), snapshot.root())
+                    .expect("same-revision snapshot root remains traversable"),
+                expected_edges
+            );
+        }
+
+        let warmed = memo.get_or_create(|identity| backend.snapshot(identity));
+        assert_eq!(warmed.identity(), expected_identity);
+        assert!(
+            snapshots
+                .iter()
+                .any(|snapshot| Arc::ptr_eq(snapshot, &warmed)),
+            "the warmed generation is one of the successfully returned generations"
+        );
     }
 
     #[test]
