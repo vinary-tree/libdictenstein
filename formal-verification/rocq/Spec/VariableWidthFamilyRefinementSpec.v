@@ -26,7 +26,7 @@
     conformance ledger and property-test suite after this formal gate closes.
 *)
 
-From Stdlib Require Import Arith Bool Lia List PeanoNat ProofIrrelevance.
+From Coq Require Import Arith Bool Lia List PeanoNat ProofIrrelevance.
 Require Import ARTrie.Spec.VariableWidthCodecSpec.
 Require Import ARTrie.Spec.VariableWidthInterningSpec.
 Import ListNotations.

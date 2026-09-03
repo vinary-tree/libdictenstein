@@ -17,7 +17,7 @@
     conformance ledger and property tests consume these exact identifiers.
 *)
 
-From Stdlib Require Import Arith Bool Lia List PeanoNat.
+From Coq Require Import Arith Bool Lia List PeanoNat.
 Require Import ARTrie.Spec.DynamicDawgMutationSpec.
 Require Import ARTrie.Spec.DynamicDawgU64Spec.
 Import ListNotations.

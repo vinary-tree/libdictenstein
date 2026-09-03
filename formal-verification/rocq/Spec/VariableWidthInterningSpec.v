@@ -32,13 +32,13 @@
     invariant identifiers consumed by the conformance ledger.
  *)
 
-From Stdlib Require Import Lists.List.
-From Stdlib Require Import Arith.Arith.
-From Stdlib Require Import Bool.Bool.
-From Stdlib Require Import micromega.Lia.
-From Stdlib Require Import Logic.ProofIrrelevance.
-From Stdlib Require Import Strings.String.
-From Stdlib Require Import Sorting.Permutation.
+From Coq Require Import Lists.List.
+From Coq Require Import Arith.Arith.
+From Coq Require Import Bool.Bool.
+From Coq Require Import micromega.Lia.
+From Coq Require Import Logic.ProofIrrelevance.
+From Coq Require Import Strings.String.
+From Coq Require Import Sorting.Permutation.
 Require Import ARTrie.Spec.VariableWidthCodecSpec.
 Import ListNotations.
 Import VariableWidthCodecSpec.
