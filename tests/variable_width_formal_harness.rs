@@ -106,6 +106,24 @@ proptest! {
             prop_assert_eq!(rebuilt.as_bytes(), bytes.as_slice());
         }
     }
+
+    #[test]
+    fn vwenc_199_full_enumeration_order_is_deterministic(atoms in prop::collection::vec(arb_digits(), 0..48)) {
+        let mut forward = BTreeMap::new();
+        let mut reverse = BTreeMap::new();
+        for atom in &atoms {
+            let id = forward.len() as u32;
+            forward.entry(atom.clone()).or_insert(id);
+        }
+        for atom in atoms.iter().rev() {
+            let id = reverse.len() as u32;
+            reverse.entry(atom.clone()).or_insert(id);
+        }
+        prop_assert_eq!(
+            forward.keys().collect::<Vec<_>>(),
+            reverse.keys().collect::<Vec<_>>()
+        );
+    }
 }
 
 #[test]
