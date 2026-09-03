@@ -14,8 +14,9 @@ import json
 import re
 from pathlib import Path
 
-ROCQ_RE = re.compile(r"^(?:Theorem|Lemma|Corollary)\s+(VWENC_[A-Za-z0-9_]+)")
+ROCQ_RE = re.compile(r"^(Theorem|Lemma|Corollary)\s+(VWENC_[A-Za-z0-9_]+)")
 TLA_RE = re.compile(r"^(VWENC_[A-Za-z0-9_]+)\s*==")
+CFG_RE = re.compile(r"^\s*(VWENC_[A-Za-z0-9_]+)\s*$")
 ID_RE = re.compile(r"^VWENC_(\d+)_")
 
 
@@ -36,9 +37,15 @@ def declarations(root: Path) -> list[dict[str, object]]:
             match = pattern.match(line)
             if not match:
                 continue
-            identifier = match.group(1)
+            identifier = match.group(2) if language == "rocq" else match.group(1)
             location = f"{source.relative_to(root)}:{line_number}"
-            row = {"id": identifier, "language": language, "source": location}
+            row = {
+                "id": identifier,
+                "kind": match.group(1) if language == "rocq" else "TLA_assertion",
+                "language": language,
+                "source": location,
+                "negative_controls": [],
+            }
             if identifier in found:
                 duplicates.setdefault(identifier, [str(found[identifier]["source"])])
                 duplicates[identifier].append(location)
@@ -50,6 +57,15 @@ def declarations(root: Path) -> list[dict[str, object]]:
             for identifier, locations in sorted(duplicates.items())
         )
         raise SystemExit(f"duplicate VWENC declarations: {details}")
+    controls: dict[str, list[str]] = {}
+    for config in sorted((root / "formal-verification/tla+").glob("VariableWidth*Unsafe.cfg")):
+        for line in config.read_text(encoding="utf-8").splitlines():
+            match = CFG_RE.match(line)
+            if match:
+                controls.setdefault(match.group(1), []).append(str(config.relative_to(root)))
+    for identifier, row in found.items():
+        row["negative_controls"] = sorted(controls.get(identifier, []))
+
     rows = []
     for identifier, row in sorted(found.items(), key=lambda item: (int(ID_RE.match(item[0]).group(1)), item[0])):
         rows.append(row)
