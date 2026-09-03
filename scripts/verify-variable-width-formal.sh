@@ -106,7 +106,10 @@ run_capped_capture() {
           ;;
       esac
       if (cd "$working_directory" &&
-          prlimit --as="$memory_limit_bytes" --rss="$memory_limit_bytes" \
+          # OCaml/Rocq reserves a large virtual heap up front.  Capping
+          # address space rejects that reservation before execution begins;
+          # RSS is the relevant resident-memory safety bound here.
+          prlimit --rss="$memory_limit_bytes" \
             "${command[@]}" >"$last_log" 2>&1); then
         status=0
       else

@@ -401,7 +401,6 @@ jobs:
       - name: Run capped variable-width formal gate
         env:
           VARIABLE_WIDTH_FORMAL_RESOURCE_CONTROL: external
-          VARIABLE_WIDTH_FORMAL_ROCQ_MEMORY_MAX: 8G
           VARIABLE_WIDTH_FORMAL_TIMEOUT_SECONDS: "7200"
           VARIABLE_WIDTH_TLC_JAVA_OPTIONS: "-Xms64m -Xmx512m -XX:+UseParallelGC"
         run: bash scripts/verify-variable-width-formal.sh
