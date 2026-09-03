@@ -322,6 +322,30 @@ PY
   rm -f -- "$inventory_file"
 }
 
+verify_formal_test_inventory() {
+  local inventory_file="$artifact_root/formal-test-inventory.json"
+  python3 "$repo_root/scripts/extract-variable-width-test-inventory.py" \
+    --root "$repo_root" --output "$inventory_file"
+  python3 - "$inventory_file" "$repo_root" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[2])
+rows = json.loads(path.read_text(encoding="utf-8"))
+if not rows:
+    raise SystemExit("executable VWENC test inventory is empty")
+if len({row["registration"] for row in rows}) != len(rows):
+    raise SystemExit("executable VWENC test inventory contains duplicate registrations")
+for row in rows:
+    if not row["numeric_ids"] or not (root / row["source_path"]).is_file():
+        raise SystemExit(f"invalid executable VWENC test inventory row: {row}")
+print(f"Executable VWENC test inventory validated {len(rows)} registrations.")
+PY
+  rm -f -- "$inventory_file"
+}
+
 run_tlc_safe() {
   local label="$1"
   local module="$2"
@@ -486,8 +510,9 @@ fi
 verify_stable_identifier_inventory
 verify_family_refinement_identifier_manifest
 verify_formal_inventory_extractor
+verify_formal_test_inventory
 run_required formal-inventory-regression-tests 256M 512M "$repo_root" \
-  python3 -m unittest tests/test_variable_width_formal_inventory.py
+  python3 -m unittest discover -s tests -p 'test_variable_width_*inventory.py'
 
 verify_cfg_inventory VariableWidthCodecBoundary VariableWidthCodecBoundary
 verify_cfg_inventory VariableWidthVocabularyInterning \
