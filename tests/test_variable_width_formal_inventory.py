@@ -29,6 +29,9 @@ class FormalInventoryTest(unittest.TestCase):
         self.assertEqual(len({row["numeric_id"] for row in rows}), 246)
         self.assertEqual(sum(bool(row["negative_controls"]) for row in rows), 16)
         self.assertTrue(all(row["kind"] in {"Theorem", "TLA_assertion"} for row in rows))
+        for row in rows:
+            for control in row["negative_controls"]:
+                self.assertTrue((ROOT / control).is_file(), control)
 
     def test_inventory_order_and_serialization_are_deterministic(self) -> None:
         first = self.extract()

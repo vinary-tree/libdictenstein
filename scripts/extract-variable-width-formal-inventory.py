@@ -81,6 +81,12 @@ def declarations(root: Path) -> list[dict[str, object]]:
             match = CFG_RE.match(line)
             if match:
                 controls.setdefault(match.group(1), []).append(str(config.relative_to(root)))
+    orphan_controls = sorted(set(controls) - set(found))
+    if orphan_controls:
+        raise SystemExit(
+            "negative controls reference undeclared VWENC identifiers: "
+            + ", ".join(orphan_controls)
+        )
     for identifier, row in found.items():
         row["negative_controls"] = sorted(controls.get(identifier, []))
 
