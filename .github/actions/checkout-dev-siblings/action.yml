@@ -79,7 +79,7 @@ runs:
               )"
               tagged_ref="v$required_version"
               if [ -n "$required_version" ] && \
-                git ls-remote --exit-code --heads --tags \
+                git ls-remote --exit-code \
                   "$remote" "refs/tags/$tagged_ref" >/dev/null 2>&1
               then
                 selected_ref="$tagged_ref"
