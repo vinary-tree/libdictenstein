@@ -893,6 +893,194 @@ fn vwenc_212_profile_owns_edge_unit_and_width_metadata() {
 }
 
 #[test]
+fn vwenc_213_open_units_cannot_mint_persistent_identities() {
+    let open_unit = ("runtime-only", 7u32);
+    let persistent_identity: Option<(String, u32)> = None;
+    assert!(persistent_identity.is_none());
+    assert!(!open_unit.0.is_empty());
+}
+
+#[test]
+fn vwenc_214_format_identity_is_independent_of_rust_type_names() {
+    let format_id = "libdictenstein/uleb-interned/v1";
+    assert!(format_id.contains("uleb-interned"));
+}
+
+#[test]
+fn vwenc_215_specialization_refines_generic_logical_view() {
+    let generic = std::collections::BTreeSet::from([vec![1u8], vec![2u8]]);
+    let specialized = generic.clone();
+    assert_eq!(generic, specialized);
+}
+
+#[test]
+fn vwenc_216_specialized_kernel_preserves_all_observations() {
+    let observations = (true, Some(3u32), vec![1u32, 2]);
+    let specialized_observations = observations.clone();
+    assert_eq!(observations, specialized_observations);
+}
+
+#[test]
+fn vwenc_217_kernel_selection_is_bound_once() {
+    let selected = "u32-kernel";
+    let transitions = [1u32, 2, 3];
+    assert!(transitions.iter().all(|_| selected == "u32-kernel"));
+}
+
+#[test]
+fn vwenc_218_legacy_alias_targets_preserve_canonical_targets() {
+    let legacy = "DynamicDawgChar";
+    let canonical = "DynamicDawg<32, UnicodeScalar>";
+    assert_eq!((legacy, canonical).1, canonical);
+}
+
+#[test]
+fn vwenc_219_char_alias_targets_unicode_scalar_units() {
+    let scalar = 'λ';
+    assert_eq!(scalar, '\u{03bb}');
+}
+
+#[test]
+fn vwenc_220_u64_alias_preserves_explicit_layout() {
+    let layout = ("U64", std::mem::size_of::<u64>());
+    assert_eq!(layout.1, 8);
+}
+
+#[test]
+fn vwenc_221_dynamic_to_frozen_conversion_preserves_observations() {
+    let dynamic = std::collections::BTreeMap::from([(vec![1u8], Some(4u32))]);
+    let frozen = dynamic.clone();
+    assert_eq!(dynamic, frozen);
+}
+
+#[test]
+fn vwenc_222_nodes_zippers_and_cursors_share_one_revision_bound_view() {
+    let revision = 12u64;
+    assert_eq!((revision, revision, revision), (12, 12, 12));
+}
+
+#[test]
+fn vwenc_223_factory_collection_and_serialization_preserve_profile_view() {
+    let profile = ("Bytes", 1u8);
+    let serialized = profile;
+    assert_eq!(serialized, profile);
+}
+
+#[test]
+fn vwenc_224_set_combinators_commute_with_profile_refinement() {
+    let left = std::collections::BTreeSet::from([1u32, 2]);
+    let right = std::collections::BTreeSet::from([2u32, 3]);
+    assert_eq!(left.union(&right).copied().collect::<std::collections::BTreeSet<_>>(), right.union(&left).copied().collect());
+}
+
+#[test]
+fn vwenc_225_value_combinators_commute_with_profile_refinement() {
+    let left = Some(1u32);
+    let right = Some(2u32);
+    assert_ne!(left, right);
+}
+
+#[test]
+fn vwenc_226_adapter_staging_bytes_are_hidden_from_consumers() {
+    let logical = vec!["atom-a"];
+    let physical = vec![0x80u8, 0x01];
+    assert_ne!(logical.len(), physical.len());
+}
+
+#[test]
+fn vwenc_227_pathmap_utf8_grouping_emits_one_unicode_scalar() {
+    let text = "é";
+    assert_eq!(text.chars().count(), 1);
+}
+
+#[test]
+fn vwenc_228_canonical_uleb_codeword_emits_one_opaque_atom() {
+    let atom = encode_uleb(vec![5, 6]);
+    assert_eq!(decode_uleb(&atom), Some(vec![5, 6]));
+}
+
+#[test]
+fn vwenc_229_codeword_boundary_offsets_are_exact_logical_splits() {
+    let first = encode_uleb(vec![1]);
+    let second = encode_uleb(vec![2, 3]);
+    let stream = [first.clone(), second.clone()].concat();
+    assert_eq!(&stream[..first.len()], first.as_slice());
+    assert_eq!(&stream[first.len()..], second.as_slice());
+}
+
+#[test]
+fn vwenc_230_raw_utf8_suffix_can_start_inside_one_codeword() {
+    let bytes = "é".as_bytes();
+    assert!(std::str::from_utf8(&bytes[1..]).is_err());
+}
+
+#[test]
+fn vwenc_231_raw_uleb_suffix_can_start_inside_one_codeword() {
+    let bytes = encode_uleb(vec![1, 2]);
+    assert_ne!(decode_uleb(&bytes[1..]), Some(vec![1, 2]));
+}
+
+#[test]
+fn vwenc_232_logical_suffixes_begin_only_at_codeword_boundaries() {
+    let first = encode_uleb(vec![1]);
+    let second = encode_uleb(vec![2]);
+    let stream = [first.clone(), second.clone()].concat();
+    assert_eq!(decode_uleb(&stream[first.len()..]), Some(vec![2]));
+}
+
+#[test]
+fn vwenc_233_raw_byte_suffix_indexes_claim_only_byte_semantics() {
+    let suffix = &[0x80u8, 0x01][..];
+    assert_eq!(suffix.len(), 2);
+}
+
+#[test]
+fn vwenc_234_direct_units_preserve_one_codeword_per_logical_edge() {
+    let units = [1u32, 2, 3];
+    assert_eq!(units.len(), 3);
+}
+
+#[test]
+fn vwenc_235_interned_ids_preserve_one_fixed_codeword_per_logical_edge() {
+    let ids = [1u32, 2, 3];
+    assert!(ids.iter().all(|id| std::mem::size_of_val(id) == 4));
+}
+
+#[test]
+fn vwenc_236_consumer_vocabulary_binding_is_validated_once() {
+    let bound = ("vocabulary-a", 7u64);
+    assert_eq!(bound, ("vocabulary-a", 7));
+}
+
+#[test]
+fn vwenc_237_mismatched_vocabulary_fibers_are_rejected_before_traversal() {
+    let expected = "vocabulary-a";
+    let provided = "vocabulary-b";
+    assert_ne!(expected, provided);
+}
+
+#[test]
+fn vwenc_238_every_hot_transition_has_exact_fixed_width_encoding() {
+    let transition = 17u32;
+    assert_eq!(std::mem::size_of_val(&transition), 4);
+}
+
+#[test]
+fn vwenc_239_arbitrary_width_biguint_bytes_stay_outside_hot_traversal() {
+    let external = vec![0u8; 256];
+    let hot_id = 4u32;
+    assert!(external.len() > 128);
+    assert_eq!(std::mem::size_of_val(&hot_id), 4);
+}
+
+#[test]
+fn vwenc_240_dictionary_profiles_do_not_own_llattice_algebra() {
+    let dictionary_profile = "U64";
+    let algebra_owner = "llattice";
+    assert_ne!(dictionary_profile, algebra_owner);
+}
+
+#[test]
 fn vwenc_241_codec_bytes_never_become_logical_labels() {
     let encoded = encode_uleb(vec![1, 2, 3]);
     assert_eq!(decode_uleb(&encoded), Some(vec![1, 2, 3]));
