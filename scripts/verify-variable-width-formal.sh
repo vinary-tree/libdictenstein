@@ -486,6 +486,8 @@ fi
 verify_stable_identifier_inventory
 verify_family_refinement_identifier_manifest
 verify_formal_inventory_extractor
+run_required formal-inventory-regression-tests 256M 512M "$repo_root" \
+  python3 -m unittest tests/test_variable_width_formal_inventory.py
 
 verify_cfg_inventory VariableWidthCodecBoundary VariableWidthCodecBoundary
 verify_cfg_inventory VariableWidthVocabularyInterning \
