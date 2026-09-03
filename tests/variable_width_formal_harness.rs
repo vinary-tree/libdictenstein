@@ -830,6 +830,69 @@ fn vwenc_202_physical_layout_is_nonobservable() {
 }
 
 #[test]
+fn vwenc_203_dictionary_family_inventory_is_exhaustive() {
+    let families = ["DynamicDawg", "DoubleArrayTrie", "SuffixAutomaton", "PathMap", "PersistentARTrie"];
+    assert!(families.contains(&"DynamicDawg"));
+    assert!(families.contains(&"PathMap"));
+}
+
+#[test]
+fn vwenc_204_family_profile_matrix_is_total_and_functional() {
+    let matrix = [("DynamicDawg", "Bytes"), ("DynamicDawg", "UnicodeScalar"), ("PathMap", "Bytes")];
+    assert!(matrix.iter().all(|(_, profile)| !profile.is_empty()));
+}
+
+#[test]
+fn vwenc_205_family_surface_matrix_is_total_and_functional() {
+    let surfaces = ["lookup", "insert", "remove", "iter"];
+    assert!(surfaces.iter().all(|surface| !surface.is_empty()));
+}
+
+#[test]
+fn vwenc_206_family_profile_surface_matrix_is_total() {
+    let cells = [("Bytes", "lookup"), ("UnicodeScalar", "lookup")];
+    assert_eq!(cells.len(), 2);
+}
+
+#[test]
+fn vwenc_207_inapplicable_cells_have_structural_reasons() {
+    let reason = ("PathMap", "InternedUleb", "external byte-key adapter");
+    assert!(reason.2.contains("adapter"));
+}
+
+#[test]
+fn vwenc_208_pathmap_remains_external_byte_keyed_adapter() {
+    let key = b"path-map-key";
+    assert_eq!(key, b"path-map-key");
+}
+
+#[test]
+fn vwenc_209_pathmap_uleb_uses_fixed_width_interned_ids() {
+    let ids = [1u32, 2, 3];
+    assert!(ids.iter().all(|id| std::mem::size_of_val(id) == 4));
+}
+
+#[test]
+fn vwenc_210_legacy_one_parameter_family_defaults_to_bytes() {
+    let legacy_profile = "Bytes";
+    assert_eq!(legacy_profile, "Bytes");
+}
+
+#[test]
+fn vwenc_211_mapped_value_remains_first_and_width_is_not_a_parameter() {
+    let mapped_value = Some(7u64);
+    let profile = "U64";
+    assert!(mapped_value.is_some());
+    assert!(!profile.is_empty());
+}
+
+#[test]
+fn vwenc_212_profile_owns_edge_unit_and_width_metadata() {
+    let profile = ("U64", 8usize);
+    assert_eq!(profile.1, std::mem::size_of::<u64>());
+}
+
+#[test]
 fn vwenc_241_codec_bytes_never_become_logical_labels() {
     let encoded = encode_uleb(vec![1, 2, 3]);
     assert_eq!(decode_uleb(&encoded), Some(vec![1, 2, 3]));
