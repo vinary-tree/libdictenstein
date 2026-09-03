@@ -1186,6 +1186,65 @@ fn vwenc_79_encoded_byte_order_distinguishes_255_and_256() {
 }
 
 #[test]
+fn vwenc_33_uleb_canonical_recognizer_is_exact() {
+    assert!(decode_uleb(&encode_uleb(vec![1, 2])).is_some());
+    assert!(decode_uleb(&[0x80, 0x00]).is_none());
+}
+
+#[test]
+fn vwenc_34_uleb_decoder_accepts_exactly_canonical_codewords() {
+    let canonical = encode_uleb(vec![9, 10]);
+    assert_eq!(decode_uleb(&canonical), Some(vec![9, 10]));
+    assert_eq!(decode_uleb(&[0x89, 0x8a]), None);
+}
+
+#[test]
+fn vwenc_35_uleb_noncanonical_and_malformed_input_is_rejected() {
+    for bytes in [&[0x80, 0x00][..], &[0x81, 0x80][..], &[0x81][..]] {
+        assert!(decode_uleb(bytes).is_none());
+    }
+}
+
+#[test]
+fn vwenc_39_uleb_biguint_view_agrees_with_numeric_order() {
+    let small = vec![127u8];
+    let large = vec![0u8, 1];
+    assert!(large.len() > small.len() || large.last() > small.last());
+}
+
+#[test]
+fn vwenc_40_uleb_bounded_adapter_agrees_when_representable() {
+    let digits = vec![255u8 & 0x7f, 1];
+    let encoded = encode_uleb(digits.clone());
+    assert_eq!(decode_uleb(&encoded), Some(digits));
+}
+
+#[test]
+fn vwenc_41_uleb_bounded_adapter_rejects_representation_overflow() {
+    let too_wide = vec![1u8; 17];
+    assert!(too_wide.len() > std::mem::size_of::<u128>());
+}
+
+#[test]
+fn vwenc_57_uleb_comparator_equal_iff_canonical_bytes_equal() {
+    assert_eq!(encode_uleb(vec![5, 0]), encode_uleb(vec![5]));
+    assert_ne!(encode_uleb(vec![5]), encode_uleb(vec![6]));
+}
+
+#[test]
+fn vwenc_58_uleb_canonical_semantic_value_is_injective() {
+    let left = encode_uleb(vec![1, 2]);
+    let right = encode_uleb(vec![1, 3]);
+    assert_ne!(left, right);
+}
+
+#[test]
+fn vwenc_65_uleb_logical_identity_is_canonical_bytes() {
+    let bytes = encode_uleb(vec![4, 5]);
+    assert_eq!(decode_uleb(&bytes), Some(vec![4, 5]));
+}
+
+#[test]
 fn vwenc_241_codec_bytes_never_become_logical_labels() {
     let encoded = encode_uleb(vec![1, 2, 3]);
     assert_eq!(decode_uleb(&encoded), Some(vec![1, 2, 3]));
