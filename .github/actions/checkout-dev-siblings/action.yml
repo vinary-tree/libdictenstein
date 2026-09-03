@@ -66,7 +66,26 @@ runs:
                 "$remote" "$event_ref" >/dev/null 2>&1
             then
               selected_ref="$event_ref"
-            else
+            elif [ "$repo" = "vinary-tree-interop" ]; then
+              # Prefer the exact public version declared by this checkout's
+              # path dependency when no coordinated development branch exists.
+              # This keeps development branches flexible while preventing a
+              # stale sibling default (for example RC4) from satisfying an
+              # exact RC6 requirement.
+              required_version="$(
+                sed -nE \
+                  's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"=([^" ]+)".*/\1/p' \
+                  "$GITHUB_WORKSPACE/Cargo.toml" | head -n 1
+              )"
+              tagged_ref="v$required_version"
+              if [ -n "$required_version" ] && \
+                git ls-remote --exit-code --heads --tags \
+                  "$remote" "refs/tags/$tagged_ref" >/dev/null 2>&1
+              then
+                selected_ref="$tagged_ref"
+              fi
+            fi
+            if [ -z "$selected_ref" ]; then
               selected_ref="$development_ref"
             fi
           fi
