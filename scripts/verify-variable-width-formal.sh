@@ -300,6 +300,28 @@ verify_family_refinement_identifier_manifest() {
   fi
 }
 
+verify_formal_inventory_extractor() {
+  local inventory_file="$artifact_root/formal-inventory.json"
+  python3 "$repo_root/scripts/extract-variable-width-formal-inventory.py" \
+    --root "$repo_root" --output "$inventory_file"
+  python3 - "$inventory_file" "$expected_identifier_count" <<'PY'
+import json
+import sys
+
+path, expected = sys.argv[1], int(sys.argv[2])
+rows = json.load(open(path, encoding="utf-8"))
+if len(rows) != expected:
+    raise SystemExit(f"extracted {len(rows)} declarations; expected {expected}")
+if len({row["id"] for row in rows}) != len(rows):
+    raise SystemExit("formal inventory contains duplicate IDs")
+controls = sum(bool(row["negative_controls"]) for row in rows)
+if controls != 16:
+    raise SystemExit(f"extracted {controls} negative-control bindings; expected 16")
+print(f"Formal inventory extractor validated {len(rows)} declarations and {controls} controls.")
+PY
+  rm -f -- "$inventory_file"
+}
+
 run_tlc_safe() {
   local label="$1"
   local module="$2"
@@ -463,6 +485,7 @@ fi
 "$repo_root/scripts/verify-variable-width-correspondence.sh"
 verify_stable_identifier_inventory
 verify_family_refinement_identifier_manifest
+verify_formal_inventory_extractor
 
 verify_cfg_inventory VariableWidthCodecBoundary VariableWidthCodecBoundary
 verify_cfg_inventory VariableWidthVocabularyInterning \
