@@ -99,6 +99,7 @@ run_capped_capture() {
         512M) memory_limit_bytes=536870912 ;;
         1G) memory_limit_bytes=1073741824 ;;
         2G) memory_limit_bytes=2147483648 ;;
+        8G) memory_limit_bytes=8589934592 ;;
         *)
           echo "ERROR: unsupported external memory limit: $memory_max" >&2
           return 1
@@ -497,13 +498,14 @@ if ! grep -Fxq 'INIT TermFiberWitnessInit' \
 fi
 
 echo '== Rocq proofs =='
-run_required rocq-codec 1G 2G "$rocq_root" \
+rocq_memory_max="${VARIABLE_WIDTH_FORMAL_ROCQ_MEMORY_MAX:-2G}"
+run_required rocq-codec 1G "$rocq_memory_max" "$rocq_root" \
   "$coqc_bin" -Q . ARTrie Spec/VariableWidthCodecSpec.v
-run_required rocq-interning 1G 2G "$rocq_root" \
+run_required rocq-interning 1G "$rocq_memory_max" "$rocq_root" \
   "$coqc_bin" -Q . ARTrie Spec/VariableWidthInterningSpec.v
-run_required rocq-family-refinement 1G 2G "$rocq_root" \
+run_required rocq-family-refinement 1G "$rocq_memory_max" "$rocq_root" \
   "$coqc_bin" -Q . ARTrie Spec/VariableWidthFamilyRefinementSpec.v
-run_required rocq-kernel-check 1G 2G "$rocq_root" \
+run_required rocq-kernel-check 1G "$rocq_memory_max" "$rocq_root" \
   "$coqchk_bin" -Q . ARTrie \
   ARTrie.Spec.VariableWidthCodecSpec \
   ARTrie.Spec.VariableWidthInterningSpec \
