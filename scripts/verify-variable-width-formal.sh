@@ -502,6 +502,14 @@ fi
 
 echo '== Rocq proofs =='
 rocq_memory_max="${VARIABLE_WIDTH_FORMAL_ROCQ_MEMORY_MAX:-2G}"
+run_required rocq-map-spec 1G "$rocq_memory_max" "$rocq_root" \
+  "$coqc_bin" -Q . ARTrie Spec/MapSpec.v
+run_required rocq-dictionary-law-spec 1G "$rocq_memory_max" "$rocq_root" \
+  "$coqc_bin" -Q . ARTrie Spec/DictionaryLawSpec.v
+run_required rocq-dawg-mutation-spec 1G "$rocq_memory_max" "$rocq_root" \
+  "$coqc_bin" -Q . ARTrie Spec/DynamicDawgMutationSpec.v
+run_required rocq-dawg-u64-spec 1G "$rocq_memory_max" "$rocq_root" \
+  "$coqc_bin" -Q . ARTrie Spec/DynamicDawgU64Spec.v
 run_required rocq-codec 1G "$rocq_memory_max" "$rocq_root" \
   "$coqc_bin" -Q . ARTrie Spec/VariableWidthCodecSpec.v
 run_required rocq-interning 1G "$rocq_memory_max" "$rocq_root" \
