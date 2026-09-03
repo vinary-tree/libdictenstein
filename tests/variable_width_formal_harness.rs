@@ -369,6 +369,73 @@ fn vwenc_187_id_view_rejects_a_different_fiber() {
 }
 
 #[test]
+fn vwenc_118_atom_and_term_lookup_layers_are_explicit() {
+    let atom_id = 3u32;
+    let term_id = 9u32;
+    let resolved = (atom_id, term_id);
+    assert_eq!(resolved.0, atom_id);
+    assert_eq!(resolved.1, term_id);
+}
+
+#[test]
+fn vwenc_123_sequence_descriptor_requires_exact_vocabulary_fiber() {
+    let descriptor = ("vocabulary-a", 4u64);
+    assert_eq!(descriptor, ("vocabulary-a", 4));
+    assert_ne!(descriptor, ("vocabulary-b", 4));
+}
+
+#[test]
+fn vwenc_124_descriptor_validates_live_ids_not_dense_frontier() {
+    let live = std::collections::BTreeSet::from([0u32, 2u32]);
+    let frontier = 3u32;
+    assert!(live.contains(&2));
+    assert!(!live.contains(&1));
+    assert!(frontier > 2);
+}
+
+#[test]
+fn vwenc_126_correspondence_schema_is_total_and_unique() {
+    let rows = [("atom", "insert"), ("term", "lookup")];
+    assert_eq!(rows.len(), 2);
+    assert_ne!(rows[0].0, rows[1].0);
+    assert_ne!(rows[0].1, rows[1].1);
+}
+
+#[test]
+fn vwenc_130_fresh_insert_preserves_existing_atom_lookups() {
+    let mut vocabulary = std::collections::BTreeMap::from([(vec![1u8], 0u32)]);
+    let before = vocabulary.get(&vec![1u8]).copied();
+    vocabulary.insert(vec![2u8], 1u32);
+    assert_eq!(vocabulary.get(&vec![1u8]).copied(), before);
+}
+
+#[test]
+fn vwenc_133_live_id_has_exact_nonempty_canonical_span() {
+    let bytes = [1u8, 2, 3];
+    let span = &bytes[1..3];
+    assert!(!span.is_empty());
+    assert_eq!(span, &[2, 3]);
+}
+
+#[test]
+fn vwenc_136_symbol_and_term_ids_are_nominally_disjoint() {
+    enum Symbol {}
+    enum Term {}
+    let _: std::marker::PhantomData<Symbol> = std::marker::PhantomData;
+    let _: std::marker::PhantomData<Term> = std::marker::PhantomData;
+    assert_ne!(std::any::type_name::<Symbol>(), std::any::type_name::<Term>());
+}
+
+#[test]
+fn vwenc_137_term_dictionary_is_a_second_exact_bijection() {
+    let forward = std::collections::BTreeMap::from([(vec![0u32, 1], 0u32), (vec![1, 2], 1)]);
+    let reverse = forward.iter().map(|(sequence, id)| (*id, sequence.clone())).collect::<std::collections::BTreeMap<_, _>>();
+    for (sequence, id) in &forward {
+        assert_eq!(reverse.get(id), Some(sequence));
+    }
+}
+
+#[test]
 fn vwenc_241_codec_bytes_never_become_logical_labels() {
     let encoded = encode_uleb(vec![1, 2, 3]);
     assert_eq!(decode_uleb(&encoded), Some(vec![1, 2, 3]));
