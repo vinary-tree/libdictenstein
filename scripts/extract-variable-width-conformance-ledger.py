@@ -70,6 +70,8 @@ def build(root: Path) -> list[dict[str, object]]:
                 "kind": declaration["kind"],
                 "language": declaration["language"],
                 "formal_source": declaration["source"],
+                "formal_artifact": declaration["source_path"],
+                "proof_kind": "Rocq_proposition" if declaration["language"] == "rocq" else "TLA_assertion",
                 "declaration": declaration["declaration"],
                 "positive_tests": positive,
                 "negative_controls": controls,
