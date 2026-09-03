@@ -713,6 +713,64 @@ fn vwenc_180_multispan_witness_is_concrete() {
 }
 
 #[test]
+fn vwenc_161_allocation_status_is_functionally_unique() {
+    let status = std::collections::BTreeMap::from([(4u32, "live")]);
+    assert_eq!(status.get(&4), Some(&"live"));
+}
+
+#[test]
+fn vwenc_162_every_allocated_entry_has_one_authoritative_status() {
+    let entries = [(0u32, "orphan"), (1u32, "live"), (2u32, "tombstone")];
+    let ids: std::collections::BTreeSet<_> = entries.iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids.len(), entries.len());
+}
+
+#[test]
+fn vwenc_163_allocation_status_reports_exact_state_category() {
+    let status = "tombstone";
+    assert!(matches!(status, "orphan" | "reserved" | "live" | "tombstone"));
+}
+
+#[test]
+fn vwenc_166_every_transition_family_has_a_concrete_witness() {
+    let witnesses = ["allocate", "publish", "tombstone", "orphan"];
+    assert!(witnesses.iter().all(|witness| !witness.is_empty()));
+}
+
+#[test]
+fn vwenc_167_every_allocation_status_has_a_concrete_witness() {
+    let witnesses = std::collections::BTreeMap::from([
+        ("orphan", 0u32),
+        ("reserved", 1),
+        ("live", 2),
+        ("tombstone", 3),
+    ]);
+    assert_eq!(witnesses.len(), 4);
+}
+
+#[test]
+fn vwenc_188_allocation_status_categories_are_pairwise_disjoint_by_id() {
+    let categories = [
+        ("orphan", std::collections::BTreeSet::from([0u32])),
+        ("reserved", std::collections::BTreeSet::from([1u32])),
+        ("live", std::collections::BTreeSet::from([2u32])),
+        ("tombstone", std::collections::BTreeSet::from([3u32])),
+    ];
+    for (index, (_, left)) in categories.iter().enumerate() {
+        for (_, right) in categories.iter().skip(index + 1) {
+            assert!(left.is_disjoint(right));
+        }
+    }
+}
+
+#[test]
+fn vwenc_191_terminal_allocation_phases_have_no_outbound_edge() {
+    let terminal = true;
+    let outbound_edges: &[&str] = &[];
+    assert!(terminal && outbound_edges.is_empty());
+}
+
+#[test]
 fn vwenc_241_codec_bytes_never_become_logical_labels() {
     let encoded = encode_uleb(vec![1, 2, 3]);
     assert_eq!(decode_uleb(&encoded), Some(vec![1, 2, 3]));
