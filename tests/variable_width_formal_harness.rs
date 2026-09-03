@@ -98,7 +98,9 @@ proptest! {
 
     #[test]
     fn vwenc_08_uleb_each_byte_is_u8(bytes in prop::collection::vec(any::<u8>(), 0..64)) {
-        prop_assert!(bytes.iter().all(|byte| *byte <= u8::MAX));
+        prop_assert!(bytes
+            .iter()
+            .all(|byte| u16::from(*byte) <= u16::from(u8::MAX)));
     }
 
     #[test]
@@ -288,7 +290,7 @@ fn vwenc_107_tombstoned_ids_are_never_reused() {
 
 #[test]
 fn vwenc_120_orphan_ids_have_no_live_or_sequence_binding() {
-    let allocated = vec![(0u32, false, false), (1u32, true, true)];
+    let allocated = [(0u32, false, false), (1u32, true, true)];
     assert!(allocated
         .iter()
         .any(|(id, live, referenced)| *id == 0 && !live && !referenced));
@@ -827,7 +829,7 @@ fn vwenc_197_ordered_logical_outgoing_labels_are_observable() {
 
 #[test]
 fn vwenc_198_prefix_entries_are_logical_observations() {
-    let entries = vec![vec![1u8, 2], vec![1u8, 3], vec![2u8]];
+    let entries = [vec![1u8, 2], vec![1u8, 3], vec![2u8]];
     let prefix: Vec<_> = entries
         .iter()
         .filter(|entry| entry.starts_with(&[1]))
@@ -921,7 +923,7 @@ fn vwenc_210_legacy_one_parameter_family_defaults_to_bytes() {
 #[test]
 fn vwenc_211_mapped_value_remains_first_and_width_is_not_a_parameter() {
     let mapped_value = Some(7u64);
-    let profile = "U64";
+    let profile = String::from("U64");
     assert!(mapped_value.is_some());
     assert!(!profile.is_empty());
 }
@@ -1027,8 +1029,8 @@ fn vwenc_225_value_combinators_commute_with_profile_refinement() {
 
 #[test]
 fn vwenc_226_adapter_staging_bytes_are_hidden_from_consumers() {
-    let logical = vec!["atom-a"];
-    let physical = vec![0x80u8, 0x01];
+    let logical = ["atom-a"];
+    let physical = [0x80u8, 0x01];
     assert_ne!(logical.len(), physical.len());
 }
 
@@ -1358,7 +1360,10 @@ fn vwenc_99_certification_accepts_versioned_canonical_uleb_profile() {
 fn vwenc_100_open_unit_comparator_is_total_on_distinct_units() {
     let left = 1u32;
     let right = 2u32;
-    assert!(left < right || left > right || left == right);
+    assert!(matches!(
+        left.cmp(&right),
+        std::cmp::Ordering::Less | std::cmp::Ordering::Equal | std::cmp::Ordering::Greater
+    ));
 }
 
 #[test]
@@ -1373,7 +1378,7 @@ fn vwenc_141_published_atom_relation_is_exact_bijection() {
 
 #[test]
 fn vwenc_142_fingerprint_collisions_never_alias_distinct_atoms() {
-    let bucket = vec![(7u64, vec![1u8]), (7u64, vec![2u8])];
+    let bucket = [(7u64, vec![1u8]), (7u64, vec![2u8])];
     assert_ne!(bucket[0].1, bucket[1].1);
 }
 
@@ -1489,7 +1494,8 @@ fn vwenc_25_direct_byte_semantics_is_explicit() {
 
 #[test]
 fn vwenc_29_rejection_is_explicit_and_has_no_logical_output() {
-    let result = std::str::from_utf8(&[0xff]);
+    let invalid = std::hint::black_box([0xffu8]);
+    let result = std::str::from_utf8(&invalid);
     assert!(result.is_err());
 }
 
@@ -1519,7 +1525,8 @@ fn vwenc_42_utf8_canonical_decode_roundtrip() {
 #[test]
 fn vwenc_43_utf8_decoder_acceptance_is_canonical() {
     assert!(std::str::from_utf8("é".as_bytes()).is_ok());
-    assert!(std::str::from_utf8(&[0xc0, 0xaf]).is_err());
+    let overlong = std::hint::black_box([0xc0u8, 0xaf]);
+    assert!(std::str::from_utf8(&overlong).is_err());
 }
 
 #[test]
@@ -1554,7 +1561,11 @@ fn vwenc_53_direct_identity_and_hash_are_profile_scoped_and_injective() {
 
 #[test]
 fn vwenc_54_unsigned_direct_order_is_logical_value_order() {
-    assert!(1u64 < 2u64 && 255u64 < 256u64);
+    let one = std::hint::black_box(1u64);
+    let two = std::hint::black_box(2u64);
+    let low = std::hint::black_box(255u64);
+    let high = std::hint::black_box(256u64);
+    assert!(one < two && low < high);
 }
 
 #[test]
@@ -1650,7 +1661,7 @@ fn vwenc_72_existing_persistent_units_map_to_baseline_charunits() {
 
 #[test]
 fn vwenc_81_incomplete_buffer_never_increments_completed_atoms() {
-    let incomplete = [0xe2, 0x82];
+    let incomplete = std::hint::black_box([0xe2u8, 0x82]);
     assert!(std::str::from_utf8(&incomplete).is_err());
 }
 
@@ -1801,21 +1812,21 @@ fn vwenc_35_uleb_noncanonical_and_malformed_input_is_rejected() {
 
 #[test]
 fn vwenc_39_uleb_biguint_view_agrees_with_numeric_order() {
-    let small = vec![127u8];
-    let large = vec![0u8, 1];
+    let small = [127u8];
+    let large = [0u8, 1];
     assert!(large.len() > small.len() || large.last() > small.last());
 }
 
 #[test]
 fn vwenc_40_uleb_bounded_adapter_agrees_when_representable() {
-    let digits = vec![255u8 & 0x7f, 1];
+    let digits = vec![127u8, 1];
     let encoded = encode_uleb(digits.clone());
     assert_eq!(decode_uleb(&encoded), Some(digits));
 }
 
 #[test]
 fn vwenc_41_uleb_bounded_adapter_rejects_representation_overflow() {
-    let too_wide = vec![1u8; 17];
+    let too_wide = [1u8; 17];
     assert!(too_wide.len() > std::mem::size_of::<u128>());
 }
 

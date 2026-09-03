@@ -199,9 +199,9 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Run coverage
         run: |
-          cargo llvm-cov --all-features --branch \
+          cargo +nightly llvm-cov --all-features --branch \
             --lcov --output-path lcov.info
-          cargo llvm-cov report --branch \
+          cargo +nightly llvm-cov report --branch \
             --cobertura --output-path cobertura.xml
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -447,12 +447,13 @@ jobs:
         env:
           CARGO_BUILD_JOBS: "2"
           FORMAL_MEM_LIMIT_BYTES: "8589934592"
-        run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- cargo miri setup
+        run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- cargo +nightly miri setup
       - name: Run Miri-gated correspondence harness
         env:
           CARGO_BUILD_JOBS: "2"
           FORMAL_MEM_LIMIT_BYTES: "8589934592"
           FORMAL_RESOURCE_CONTROL: external
+          FORMAL_MIRI_TOOLCHAIN: nightly
           RUN_MIRI: "1"
           TLA_JAVA_HEAP: "3g"
         run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- bash scripts/verify-formal-correspondence.sh
