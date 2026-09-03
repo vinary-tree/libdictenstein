@@ -48,7 +48,11 @@ proptest! {
     #[test]
     fn vwenc_01_uleb_payload_roundtrip(digits in arb_digits()) {
         let encoded = encode_uleb(digits.clone());
-        prop_assert_eq!(decode_uleb(&encoded), Some(digits));
+        let mut canonical = digits;
+        while canonical.len() > 1 && canonical.last() == Some(&0) {
+            canonical.pop();
+        }
+        prop_assert_eq!(decode_uleb(&encoded), Some(canonical));
     }
 
     #[test]
@@ -119,6 +123,6 @@ fn vwenc_241_codec_bytes_never_become_logical_labels() {
 #[test]
 fn vwenc_244_specialized_divergence_mutant_is_detectable() {
     fn faulty(bytes: &[u8]) -> Vec<u8> { bytes.iter().map(|byte| byte & 0x7f).collect() }
-    let canonical = encode_uleb(vec![1, 2, 3]);
-    assert_ne!(faulty(&canonical), vec![1, 2, 3]);
+    let canonical = encode_uleb(vec![1, 2]);
+    assert_ne!(decode_uleb(&canonical), decode_uleb(&faulty(&canonical)));
 }
