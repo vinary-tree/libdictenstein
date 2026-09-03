@@ -74,7 +74,7 @@ runs:
               # exact RC6 requirement.
               required_version="$(
                 sed -nE \
-                  's/.*version[[:space:]]*=[[:space:]]*"=([^" ]+)".*/\1/p' \
+                  '/^[[:space:]]*vinary-tree-interop[[:space:]]*=/{s/.*version[[:space:]]*=[[:space:]]*"=([^" ]+)".*/\1/p;}' \
                   "$GITHUB_WORKSPACE/Cargo.toml" | head -n 1
               )"
               tagged_ref="v$required_version"
@@ -104,6 +104,28 @@ runs:
             git clone --depth 1 --branch "$selected_ref" \
               "https://github.com/vinary-tree/$repo.git" "$dest"
             echo "::endgroup::"
+          fi
+          if [ "$repo" = "vinary-tree-interop" ]; then
+            required_version="$(
+              sed -nE \
+                '/^[[:space:]]*vinary-tree-interop[[:space:]]*=/{s/.*version[[:space:]]*=[[:space:]]*"=([^" ]+)".*/\1/p;}' \
+                "$GITHUB_WORKSPACE/Cargo.toml" | head -n 1
+            )"
+            if [ -n "$required_version" ]; then
+              actual_version="$(
+                awk '
+                  /^\[package\]$/ { in_package=1; next }
+                  /^\[/ { in_package=0 }
+                  in_package && /^[[:space:]]*version[[:space:]]*=/ {
+                    gsub(/[[:space:]]*"/, "", $3); print $3; exit
+                  }
+                ' "$dest/Cargo.toml"
+              )"
+              if [ "$actual_version" != "$required_version" ]; then
+                echo "ERROR: $repo ref $selected_ref declares $actual_version, but Cargo.toml requires $required_version" >&2
+                exit 1
+              fi
+            fi
           fi
         done
         echo "Sibling crates available under $parent:"
