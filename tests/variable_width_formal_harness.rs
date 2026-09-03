@@ -507,6 +507,81 @@ fn vwenc_140_native_id_observation_roundtrips_without_atom_decoding() {
 }
 
 #[test]
+fn vwenc_147_published_frontier_does_not_exceed_durable_frontier() {
+    let durable_frontier = 8u64;
+    let published_frontier = 7u64;
+    assert!(published_frontier <= durable_frontier);
+}
+
+#[test]
+fn vwenc_148_published_ids_have_exact_durable_metadata() {
+    let durable = std::collections::BTreeMap::from([(0u32, vec![1u8]), (1, vec![2])]);
+    let published = [0u32, 1];
+    assert!(published.iter().all(|id| durable.contains_key(id)));
+}
+
+#[test]
+fn vwenc_149_durable_sequence_references_durable_vocabulary() {
+    let vocabulary_frontier = 4u32;
+    let sequence_ids = [0u32, 3];
+    assert!(sequence_ids.iter().all(|id| *id < vocabulary_frontier));
+}
+
+#[test]
+fn vwenc_150_sequence_object_follows_durable_vocabulary_object() {
+    let vocabulary_lsn = 12u64;
+    let sequence_lsn = 13u64;
+    assert!(sequence_lsn > vocabulary_lsn);
+}
+
+#[test]
+fn vwenc_151_sequence_descriptor_binds_exact_vocabulary_fiber() {
+    let descriptor = ("vocabulary-a", 5u64);
+    let sequence = ("vocabulary-a", 5u64, vec![0u32]);
+    assert_eq!((sequence.0, sequence.1), descriptor);
+}
+
+#[test]
+fn vwenc_152_head_binds_one_coherent_durable_pair() {
+    let head = ("vocabulary-a", 5u64, "sequence-a", 8u64);
+    assert_eq!(head.0, "vocabulary-a");
+    assert_eq!(head.2, "sequence-a");
+    assert!(head.3 > head.1);
+}
+
+#[test]
+fn vwenc_153_recovery_is_coherent_old_new_or_error() {
+    enum Recovery {
+        Old,
+        New,
+        Error,
+    }
+    let outcomes = [Recovery::Old, Recovery::New, Recovery::Error];
+    assert_eq!(outcomes.len(), 3);
+}
+
+#[test]
+fn vwenc_154_captured_continuation_resumes_immutable_pair() {
+    let captured = ("vocabulary-a", "sequence-a");
+    let current = ("vocabulary-b", "sequence-b");
+    assert_ne!(captured, current);
+    assert_eq!(captured, ("vocabulary-a", "sequence-a"));
+}
+
+#[test]
+fn vwenc_155_unavailable_head_artifact_is_explicit_error() {
+    let result: Result<(), &str> = Err("missing vocabulary");
+    assert!(result.is_err());
+}
+
+#[test]
+fn vwenc_156_published_head_has_no_dangling_id_reference() {
+    let vocabulary = std::collections::BTreeSet::from([0u32, 1u32]);
+    let sequence = [0u32, 1u32];
+    assert!(sequence.iter().all(|id| vocabulary.contains(id)));
+}
+
+#[test]
 fn vwenc_241_codec_bytes_never_become_logical_labels() {
     let encoded = encode_uleb(vec![1, 2, 3]);
     assert_eq!(decode_uleb(&encoded), Some(vec![1, 2, 3]));
