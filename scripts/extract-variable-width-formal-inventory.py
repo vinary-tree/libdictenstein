@@ -30,6 +30,7 @@ def declarations(root: Path) -> list[dict[str, object]]:
     ]
     found: dict[str, dict[str, object]] = {}
     duplicates: dict[str, list[str]] = {}
+    duplicate_numbers: dict[int, list[str]] = {}
     for source in sources:
         language = "rocq" if source.suffix == ".v" else "tla"
         pattern = ROCQ_RE if language == "rocq" else TLA_RE
@@ -38,9 +39,14 @@ def declarations(root: Path) -> list[dict[str, object]]:
             if not match:
                 continue
             identifier = match.group(2) if language == "rocq" else match.group(1)
+            numeric_match = ID_RE.match(identifier)
+            if numeric_match is None:
+                raise SystemExit(f"malformed VWENC identifier: {identifier}")
+            numeric_id = int(numeric_match.group(1))
             location = f"{source.relative_to(root)}:{line_number}"
             row = {
                 "id": identifier,
+                "numeric_id": numeric_id,
                 "kind": match.group(1) if language == "rocq" else "TLA_assertion",
                 "language": language,
                 "source": location,
@@ -51,12 +57,24 @@ def declarations(root: Path) -> list[dict[str, object]]:
                 duplicates[identifier].append(location)
             else:
                 found[identifier] = row
+            duplicate_numbers.setdefault(numeric_id, []).append(identifier)
     if duplicates:
         details = "; ".join(
             f"{identifier}: {', '.join(locations)}"
             for identifier, locations in sorted(duplicates.items())
         )
         raise SystemExit(f"duplicate VWENC declarations: {details}")
+    colliding_numbers = {
+        number: sorted(set(identifiers))
+        for number, identifiers in duplicate_numbers.items()
+        if len(set(identifiers)) > 1
+    }
+    if colliding_numbers:
+        details = "; ".join(
+            f"{number}: {', '.join(identifiers)}"
+            for number, identifiers in sorted(colliding_numbers.items())
+        )
+        raise SystemExit(f"duplicate VWENC numeric identifiers: {details}")
     controls: dict[str, list[str]] = {}
     for config in sorted((root / "formal-verification/tla+").glob("VariableWidth*Unsafe.cfg")):
         for line in config.read_text(encoding="utf-8").splitlines():
