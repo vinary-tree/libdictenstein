@@ -26,6 +26,13 @@ class VariableWidthConformanceLedgerTest(unittest.TestCase):
         self.assertEqual(len(rows), 246)
         self.assertEqual(len({row["id"] for row in rows}), len(rows))
         self.assertTrue(all(row["formal_source"] and row["declaration"] for row in rows))
+        self.assertTrue(all(row["owner_repository"] == "libdictenstein" for row in rows))
+        self.assertTrue(
+            all(
+                row["owner_layer"] == row["semantic_area"] and row["applicability"]
+                for row in rows
+            )
+        )
         self.assertTrue(
             all(
                 row["coverage"]

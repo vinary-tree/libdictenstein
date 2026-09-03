@@ -14,6 +14,13 @@ import json
 from pathlib import Path
 
 
+APPLICABILITY = {
+    "codec": "all logical-unit codecs and boundary adapters",
+    "interning": "interned vocabulary and coordinated ID-sequence profiles",
+    "family_refinement": "all dictionary families and applicable profile specializations",
+}
+
+
 def load_module(path: Path, name: str):
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
@@ -57,6 +64,9 @@ def build(root: Path) -> list[dict[str, object]]:
                 "id": declaration["id"],
                 "numeric_id": declaration["numeric_id"],
                 "semantic_area": declaration["semantic_area"],
+                "owner_repository": "libdictenstein",
+                "owner_layer": declaration["semantic_area"],
+                "applicability": APPLICABILITY[declaration["semantic_area"]],
                 "kind": declaration["kind"],
                 "language": declaration["language"],
                 "formal_source": declaration["source"],
