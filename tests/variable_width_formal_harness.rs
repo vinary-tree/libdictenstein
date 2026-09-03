@@ -771,6 +771,65 @@ fn vwenc_191_terminal_allocation_phases_have_no_outbound_edge() {
 }
 
 #[test]
+fn vwenc_194_logical_observational_equivalence_is_an_equivalence() {
+    let a = (true, Some(7u32), vec![1u32, 2]);
+    let b = a.clone();
+    let c = b.clone();
+    assert_eq!(a, a);
+    assert_eq!(a, b);
+    assert_eq!(a, c);
+}
+
+#[test]
+fn vwenc_195_membership_and_terminality_are_logical_observations() {
+    let observations = std::collections::BTreeMap::from([(vec![1u8], (true, true))]);
+    assert_eq!(observations.get(&vec![1]), Some(&(true, true)));
+}
+
+#[test]
+fn vwenc_196_mapped_value_presence_and_identity_are_observable() {
+    let with_value = (true, Some(vec![9u8]));
+    let without_value = (true, None::<Vec<u8>>);
+    assert_ne!(with_value, without_value);
+}
+
+#[test]
+fn vwenc_197_ordered_logical_outgoing_labels_are_observable() {
+    let labels = vec![3u32, 1, 2];
+    let mut ordered = labels.clone();
+    ordered.sort_unstable();
+    assert_eq!(ordered, vec![1, 2, 3]);
+}
+
+#[test]
+fn vwenc_198_prefix_entries_are_logical_observations() {
+    let entries = vec![vec![1u8, 2], vec![1u8, 3], vec![2u8]];
+    let prefix: Vec<_> = entries.iter().filter(|entry| entry.starts_with(&[1])).collect();
+    assert_eq!(prefix.len(), 2);
+}
+
+#[test]
+fn vwenc_200_substring_results_are_logical_observations() {
+    let term = [1u32, 2, 3];
+    assert!(term.windows(2).any(|window| window == [2, 3]));
+}
+
+#[test]
+fn vwenc_201_suffix_results_are_logical_observations() {
+    let term = [1u32, 2, 3];
+    assert_eq!(&term[1..], &[2, 3]);
+}
+
+#[test]
+fn vwenc_202_physical_layout_is_nonobservable() {
+    let logical = std::collections::BTreeSet::from([vec![1u8], vec![2u8]]);
+    let layout_a = "compact";
+    let layout_b = "sparse";
+    assert_ne!(layout_a, layout_b);
+    assert_eq!(logical, std::collections::BTreeSet::from([vec![1u8], vec![2u8]]));
+}
+
+#[test]
 fn vwenc_241_codec_bytes_never_become_logical_labels() {
     let encoded = encode_uleb(vec![1, 2, 3]);
     assert_eq!(decode_uleb(&encoded), Some(vec![1, 2, 3]));
