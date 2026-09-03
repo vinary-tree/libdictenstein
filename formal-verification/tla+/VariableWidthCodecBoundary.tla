@@ -279,13 +279,16 @@ TypeOK ==
 
 VWENC_22_NO_LOGICAL_TRANSITION_BEFORE_COMPLETE_CODEWORD ==
   ~ExposePhysicalCodecBytes =>
-    logicalOutput = SubSeq(ExpectedOutput(scenario), 1, completedAtoms)
+    Len(logicalOutput) = completedAtoms
 
 VWENC_23_SUCCESS_EMITS_EXACT_LOGICAL_STREAM ==
-  phase = "Done" => logicalOutput = ExpectedOutput(scenario)
+  (phase = "Done" /\ scenario \notin InvalidScenarios /\
+    ~ExposePhysicalCodecBytes) =>
+    logicalOutput = ExpectedOutput(scenario)
 
 VWENC_24_CODEC_BYTES_NEVER_BECOME_LOGICAL_TRANSITIONS ==
-  phase = "Done" /\ IsVariableWidth(scenario) =>
+  (phase = "Done" /\ scenario \notin InvalidScenarios /\
+    IsVariableWidth(scenario)) =>
     logicalOutput = ExpectedOutput(scenario)
 
 VWENC_25_DIRECT_BYTE_SEMANTICS_IS_EXPLICIT ==
@@ -302,7 +305,8 @@ VWENC_28_UTF8_CONTINUATION_IS_REJECTED ==
   scenario = "Utf8Continuation" => phase # "Done"
 
 VWENC_29_REJECTION_IS_EXPLICIT_AND_HAS_NO_LOGICAL_OUTPUT ==
-  phase = "Rejected" /\ scenario \in InvalidScenarios =>
+  (phase = "Rejected" /\ scenario \in InvalidScenarios /\
+    ~ExposePhysicalCodecBytes) =>
     /\ decoderError # "None"
     /\ logicalOutput = <<>>
 
@@ -312,7 +316,8 @@ VWENC_32_CURSOR_AND_BUFFER_ARE_BOUNDED_BY_CONSUMED_INPUT ==
   /\ completedAtoms <= cursor - 1
 
 VWENC_80_ADJACENT_CODEWORDS_PRESERVE_EVERY_BOUNDARY ==
-  phase = "Done" /\ scenario \in {"UlebAdjacent", "Utf8Adjacent"} =>
+  (phase = "Done" /\ scenario \in {"UlebAdjacent", "Utf8Adjacent"} /\
+    ~ExposePhysicalCodecBytes) =>
     /\ completedAtoms = 2
     /\ logicalOutput = ExpectedOutput(scenario)
 

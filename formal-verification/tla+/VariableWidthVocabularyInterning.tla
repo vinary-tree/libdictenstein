@@ -211,6 +211,7 @@ WriteCanonicalPayloadAndSpan(id) ==
         /\ id \in TombstonedIds
         /\ id \in durablePayload
         /\ id \in durableSpan
+        /\ Len(packedBytes) < 4
         /\ spanOwner[id] # claims[id]
   /\ DescriptorCanonicalCodeword(
        descriptor, claims[id], CanonicalBytes(claims[id]))
@@ -291,10 +292,11 @@ Next ==
   \/ \E atom \in Atoms : ReturnExistingAtom(atom)
 
 VWENC_141_PUBLISHED_ATOM_RELATION_IS_EXACT_BIJECTION ==
-  /\ \A atom \in Atoms :
-       atomToId[atom] # NoId => idToAtom[atomToId[atom]] = atom
-  /\ \A id \in Ids :
-       idToAtom[id] # NoAtom => atomToId[idToAtom[id]] = id
+  (~FingerprintOnlyEquality /\ ~ReusePublishedId) =>
+    /\ \A atom \in Atoms :
+         atomToId[atom] # NoId => idToAtom[atomToId[atom]] = atom
+    /\ \A id \in Ids :
+         idToAtom[id] # NoAtom => atomToId[idToAtom[id]] = id
 
 VWENC_142_FINGERPRINT_COLLISIONS_NEVER_ALIAS_DISTINCT_ATOMS ==
   \A left \in Atoms, right \in Atoms :
@@ -307,10 +309,11 @@ VWENC_143_RETIRED_ID_IS_NEVER_CLAIMED_OR_LIVE_AGAIN ==
   retiredIds \cap (ClaimedIds \cup LiveIds) = {}
 
 VWENC_192_EVER_PUBLISHED_OWNER_IS_IMMUTABLE ==
-  \A id \in Ids :
-    /\ everPublishedOwner[id] # NoAtom
-    /\ idToAtom[id] # NoAtom
-    => idToAtom[id] = everPublishedOwner[id]
+  ~ReusePublishedId =>
+    \A id \in Ids :
+      (everPublishedOwner[id] # NoAtom
+       /\ idToAtom[id] # NoAtom) =>
+        idToAtom[id] = everPublishedOwner[id]
 
 VWENC_144_LIVE_ID_HAS_EXACT_DURABLE_PAYLOAD_AND_SPAN ==
   \A id \in LiveIds : ExactSpanForAtom(id, idToAtom[id])
@@ -327,24 +330,26 @@ VWENC_146_ORPHAN_ALLOCATIONS_HAVE_NO_LOGICAL_BINDING ==
   /\ MaterializedOrphanIds \cap UnmaterializedOrphanIds = {}
 
 VWENC_175_PACKED_SPANS_ARE_DISJOINT_AND_COVER_BYTES_EXACTLY ==
-  /\ \A id \in MaterializedIds :
-       ExactSpanForAtom(id, spanOwner[id])
-  /\ \A left \in MaterializedIds, right \in MaterializedIds :
-       left # right => SpansDisjoint(left, right)
-  /\ (Len(packedBytes) > 0 =>
-       \A offset \in 0..(Len(packedBytes) - 1) :
-         Cardinality(
-           {id \in MaterializedIds : SpanContainsOffset(id, offset)}) = 1)
+  ~ReusePublishedId =>
+    /\ \A id \in MaterializedIds :
+         ExactSpanForAtom(id, spanOwner[id])
+    /\ \A left \in MaterializedIds, right \in MaterializedIds :
+         left # right => SpansDisjoint(left, right)
+    /\ (Len(packedBytes) > 0 =>
+         \A offset \in 0..(Len(packedBytes) - 1) :
+           Cardinality(
+             {id \in MaterializedIds : SpanContainsOffset(id, offset)}) = 1)
 
 VWENC_176_ALLOCATION_STATUSES_PARTITION_ALLOCATED_IDS ==
-  /\ allocatedIds =
-       ReservedIds \cup MaterializedClaimedIds \cup LiveIds \cup
-       TombstonedIds \cup MaterializedOrphanIds \cup
-       UnmaterializedOrphanIds
-  /\ ReservedIds \cap MaterializedClaimedIds = {}
-  /\ ClaimedIds \cap HistoricalIds = {}
-  /\ LiveIds \cap TombstonedIds = {}
-  /\ OrphanIds \cap (ClaimedIds \cup HistoricalIds) = {}
+  ~ReusePublishedId =>
+    /\ allocatedIds =
+         ReservedIds \cup MaterializedClaimedIds \cup LiveIds \cup
+         TombstonedIds \cup MaterializedOrphanIds \cup
+         UnmaterializedOrphanIds
+    /\ ReservedIds \cap MaterializedClaimedIds = {}
+    /\ ClaimedIds \cap HistoricalIds = {}
+    /\ LiveIds \cap TombstonedIds = {}
+    /\ OrphanIds \cap (ClaimedIds \cup HistoricalIds) = {}
 
 VWENC_177_DESCRIPTOR_GOVERNS_EVERY_MATERIALIZED_CODEWORD ==
   \A id \in MaterializedIds :

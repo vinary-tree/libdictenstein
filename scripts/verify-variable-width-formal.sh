@@ -12,7 +12,7 @@ command_timeout_seconds="${VARIABLE_WIDTH_FORMAL_TIMEOUT_SECONDS:-7200}"
 tlc_java_options="${VARIABLE_WIDTH_TLC_JAVA_OPTIONS:--Xms64m -Xmx512m -XX:+UseParallelGC}"
 coqc_bin="${COQC_BIN:-$(command -v coqc || true)}"
 coqchk_bin="${COQCHK_BIN:-$(command -v coqchk || true)}"
-expected_identifier_count=190
+expected_identifier_count=246
 run_number=0
 last_log=""
 
@@ -62,13 +62,11 @@ run_capped_capture() {
   local working_directory="$4"
   shift 4
 
-  local unit_name
   local status=0
   local -a command=("$@")
 
   assert_no_competing_variable_width_job
   run_number=$((run_number + 1))
-  unit_name="libdictenstein-vwenc-formal-${BASHPID}-${run_number}"
   last_log="$(mktemp "$log_root/${label}.XXXXXX.log")"
 
   if [[ "$command_timeout_seconds" != "0" ]]; then
@@ -79,13 +77,13 @@ run_capped_capture() {
     )
   fi
 
-  if systemd-run --user --unit="$unit_name" --wait --pipe --quiet --collect \
+  if systemd-run --user --wait --pipe --quiet --collect \
       --working-directory="$working_directory" \
       --property="MemoryHigh=$memory_high" \
       --property="MemoryMax=$memory_max" \
       --property=MemorySwapMax=0 \
       --property=CPUQuota=100% \
-      --property=TasksMax=32 \
+      --property=TasksMax=128 \
       "${command[@]}" >"$last_log" 2>&1; then
     status=0
   else
@@ -152,11 +150,13 @@ verify_stable_identifier_inventory() {
       sed -n -E \
         's/^(Theorem|Lemma|Corollary) (VWENC_[A-Za-z0-9_]+).*/\2/p' \
         "$rocq_root/Spec/VariableWidthCodecSpec.v" \
-        "$rocq_root/Spec/VariableWidthInterningSpec.v"
+        "$rocq_root/Spec/VariableWidthInterningSpec.v" \
+        "$rocq_root/Spec/VariableWidthFamilyRefinementSpec.v"
       sed -n 's/^\(VWENC_[A-Za-z0-9_]*\) ==.*/\1/p' \
         "$tla_root/VariableWidthCodecBoundary.tla" \
         "$tla_root/VariableWidthVocabularyInterning.tla" \
-        "$tla_root/VariableWidthVocabularyPublication.tla"
+        "$tla_root/VariableWidthVocabularyPublication.tla" \
+        "$tla_root/VariableWidthFamilyRefinement.tla"
     } | LC_ALL=C sort
   )
 
@@ -180,18 +180,112 @@ verify_stable_identifier_inventory() {
   fi
 }
 
+verify_family_refinement_identifier_manifest() {
+  local -a expected_rocq=(
+    VWENC_194_LOGICAL_OBSERVATIONAL_EQUIVALENCE_IS_AN_EQUIVALENCE
+    VWENC_195_MEMBERSHIP_AND_TERMINALITY_ARE_LOGICAL_OBSERVATIONS
+    VWENC_196_MAPPED_VALUE_PRESENCE_AND_IDENTITY_ARE_OBSERVABLE
+    VWENC_197_ORDERED_LOGICAL_OUTGOING_LABELS_ARE_OBSERVABLE
+    VWENC_198_PREFIX_ENTRIES_ARE_LOGICAL_OBSERVATIONS
+    VWENC_199_FULL_ENUMERATION_ORDER_IS_DETERMINISTIC_AND_OBSERVABLE
+    VWENC_200_APPLICABLE_SUBSTRING_RESULTS_ARE_LOGICAL_OBSERVATIONS
+    VWENC_201_APPLICABLE_SUFFIX_RESULTS_ARE_LOGICAL_OBSERVATIONS
+    VWENC_202_PHYSICAL_LAYOUT_AND_CODEC_STAGING_STATE_ARE_NONOBSERVABLE
+    VWENC_203_DICTIONARY_FAMILY_INVENTORY_IS_EXHAUSTIVE
+    VWENC_204_FAMILY_PROFILE_MATRIX_IS_TOTAL_AND_FUNCTIONAL
+    VWENC_205_FAMILY_SURFACE_MATRIX_IS_TOTAL_AND_FUNCTIONAL
+    VWENC_206_FAMILY_PROFILE_SURFACE_MATRIX_IS_TOTAL
+    VWENC_207_EVERY_INAPPLICABLE_CELL_HAS_AN_EXPLICIT_STRUCTURAL_REASON
+    VWENC_208_PATHMAP_REMAINS_AN_EXTERNAL_BYTE_KEYED_ADAPTER
+    VWENC_209_PATHMAP_CANONICAL_ULEB_USES_ONLY_FIXED_WIDTH_INTERNED_IDS
+    VWENC_210_LEGACY_ONE_PARAMETER_FAMILY_SPELLING_DEFAULTS_TO_BYTES
+    VWENC_211_MAPPED_VALUE_REMAINS_FIRST_AND_WIDTH_IS_NOT_A_PARAMETER
+    VWENC_212_PROFILE_ALONE_OWNS_EDGE_UNIT_AND_WIDTH_METADATA
+    VWENC_213_OPEN_IN_MEMORY_UNITS_CANNOT_MINT_PERSISTENT_IDENTITIES
+    VWENC_214_FORMAT_IDENTITY_IS_INDEPENDENT_OF_RUST_TYPE_NAMES
+    VWENC_215_SPECIALIZATION_REFINES_THE_GENERIC_LOGICAL_VIEW
+    VWENC_216_EVERY_RETAINED_SPECIALIZED_KERNEL_PRESERVES_ALL_OBSERVATIONS
+    VWENC_217_KERNEL_SELECTION_IS_BOUND_ONCE_NOT_BRANCHING_PER_EDGE
+    VWENC_218_LEGACY_ALIAS_INVENTORIES_PRESERVE_CANONICAL_TARGETS
+    VWENC_219_EVERY_CHAR_ALIAS_TARGETS_UNICODE_SCALAR_UNITS
+    VWENC_220_EVERY_U64_ALIAS_PRESERVES_PROFILE_AND_EXPLICIT_LAYOUT
+    VWENC_221_DYNAMIC_TO_FROZEN_CONVERSION_PRESERVES_LOGICAL_OBSERVATIONS
+    VWENC_222_NODE_ZIPPER_AND_CURSOR_SHARE_ONE_REVISION_BOUND_VIEW
+    VWENC_223_FACTORY_COLLECTION_AND_SERIALIZATION_PRESERVE_PROFILE_VIEW
+    VWENC_224_SET_COMBINATORS_COMMUTE_WITH_PROFILE_REFINEMENT
+    VWENC_225_VALUE_COMBINATORS_COMMUTE_WITH_PROFILE_REFINEMENT
+    VWENC_226_ENCODED_ADAPTER_STAGING_BYTES_ARE_HIDDEN_FROM_CONSUMERS
+    VWENC_227_PATHMAP_UTF8_GROUPING_EMITS_ONE_UNICODE_SCALAR
+    VWENC_228_CANONICAL_ULEB_CODEWORD_EMITS_ONE_OPAQUE_LOGICAL_ATOM
+    VWENC_229_CODEWORD_BOUNDARY_OFFSETS_ARE_EXACTLY_LOGICAL_SPLITS
+    VWENC_230_RAW_UTF8_SUFFIX_CAN_START_INSIDE_ONE_SCALAR_CODEWORD
+    VWENC_231_RAW_ULEB_SUFFIX_CAN_START_INSIDE_ONE_CODEWORD
+    VWENC_232_LOGICAL_SUFFIXES_BEGIN_ONLY_AT_CODEWORD_BOUNDARIES
+    VWENC_233_RAW_BYTE_SUFFIX_INDEXES_CLAIM_ONLY_BYTE_SEMANTICS
+    VWENC_234_DIRECT_UNITS_PRESERVE_ONE_CODEWORD_PER_LOGICAL_EDGE
+    VWENC_235_INTERNED_IDS_PRESERVE_ONE_FIXED_CODEWORD_PER_LOGICAL_EDGE
+    VWENC_236_CONSUMER_VOCABULARY_BINDING_IS_VALIDATED_ONCE
+    VWENC_237_MISMATCHED_VOCABULARY_FIBERS_ARE_REJECTED_BEFORE_TRAVERSAL
+    VWENC_238_EVERY_HOT_TRANSITION_HAS_AN_EXACT_FIXED_WIDTH_ENCODING
+    VWENC_239_ARBITRARY_WIDTH_BIGUINT_BYTES_STAY_OUTSIDE_HOT_TRAVERSAL
+    VWENC_240_DICTIONARY_PROFILES_DO_NOT_OWN_LLATTICE_ALGEBRA
+    VWENC_247_HOT_TRAVERSAL_VIEW_EXISTS_IFF_FIBER_BINDING_SUCCEEDS
+    VWENC_248_MISMATCHED_FIBER_CANNOT_CONSTRUCT_A_HOT_TRAVERSAL_VIEW
+    VWENC_249_BOUND_HOT_VIEWS_CONTAIN_ONLY_EXACT_FIXED_WIDTH_UNITS
+  )
+  local -a expected_tla=(
+    VWENC_241_CODEC_BYTES_NEVER_APPEAR_AS_LOGICAL_LABELS
+    VWENC_242_UTF8_SCALAR_IS_NEVER_SPLIT_ACROSS_LOGICAL_TRANSITIONS
+    VWENC_243_SUFFIX_MATCHES_NEVER_BEGIN_INSIDE_A_LOGICAL_CODEWORD
+    VWENC_244_SPECIALIZED_KERNEL_PRESERVES_THE_COMPLETE_OBSERVATION
+    VWENC_245_FORMAT_IDENTITY_COMES_ONLY_FROM_EXPLICIT_PROFILE_METADATA
+    VWENC_246_MISMATCHED_VOCABULARY_FIBER_IS_REJECTED_BEFORE_TRAVERSAL
+  )
+  local -a actual_rocq=()
+  local -a actual_tla=()
+
+  mapfile -t actual_rocq < <(
+    sed -n -E \
+      's/^(Theorem|Lemma|Corollary) (VWENC_[A-Za-z0-9_]+).*/\2/p' \
+      "$rocq_root/Spec/VariableWidthFamilyRefinementSpec.v"
+  )
+  mapfile -t actual_tla < <(
+    sed -n 's/^\(VWENC_[A-Za-z0-9_]*\) ==.*/\1/p' \
+      "$tla_root/VariableWidthFamilyRefinement.tla"
+  )
+
+  if ! diff -u \
+      <(printf '%s\n' "${expected_rocq[@]}" | LC_ALL=C sort) \
+      <(printf '%s\n' "${actual_rocq[@]}" | LC_ALL=C sort); then
+    echo 'ERROR: the exact Rocq family-refinement identifier manifest changed' >&2
+    return 1
+  fi
+  if ! diff -u \
+      <(printf '%s\n' "${expected_tla[@]}" | LC_ALL=C sort) \
+      <(printf '%s\n' "${actual_tla[@]}" | LC_ALL=C sort); then
+    echo 'ERROR: the exact TLA+ family-refinement identifier manifest changed' >&2
+    return 1
+  fi
+}
+
 run_tlc_safe() {
   local label="$1"
   local module="$2"
   local config="$3"
   local state_directory
+  local config_path
   local status=0
 
   state_directory="$(mktemp -d "$state_root/${label}.XXXXXX")"
+  if [[ "$config" = /* ]]; then
+    config_path="${config}.cfg"
+  else
+    config_path="$tla_root/${config}.cfg"
+  fi
   if run_capped_capture "$label" 512M 1G "$tla_root" \
       env "JAVA_TOOL_OPTIONS=$tlc_java_options" \
       tlc -workers 1 -metadir "$state_directory" \
-      -config "${config}.cfg" "${module}.tla"; then
+      -config "$config_path" "${module}.tla"; then
     status=0
   else
     status=$?
@@ -219,14 +313,67 @@ run_tlc_negative_control() {
   local module="$2"
   local config="$3"
   local expected_invariant="$4"
+  local expected_mutant_constant="$5"
   local state_directory
+  local config_path="$tla_root/${config}.cfg"
   local status=0
+  local -a selected_invariants=()
+  local -a true_mutant_constants=()
+  local -a module_invariants=()
+
+  mapfile -t selected_invariants < <(
+    sed -n 's/^[[:space:]]*\(VWENC_[A-Za-z0-9_]*\)[[:space:]]*$/\1/p' \
+      "$tla_root/${config}.cfg"
+  )
+  if [[ "${#selected_invariants[@]}" -ne 1 ||
+        "${selected_invariants[0]}" != "$expected_invariant" ]]; then
+    echo "ERROR: $config must select only $expected_invariant" >&2
+    return 1
+  fi
+
+  mapfile -t true_mutant_constants < <(
+    sed -n 's/^[[:space:]]*\([A-Za-z][A-Za-z0-9_]*\)[[:space:]]*=[[:space:]]*TRUE[[:space:]]*$/\1/p' \
+      "$tla_root/${config}.cfg"
+  )
+  if [[ "${#true_mutant_constants[@]}" -ne 1 ||
+        "${true_mutant_constants[0]}" != "$expected_mutant_constant" ]]; then
+    echo "ERROR: $config must enable only $expected_mutant_constant" >&2
+    return 1
+  fi
+
+  mapfile -t module_invariants < <(
+    awk '
+      /^[[:space:]]*INVARIANT[[:space:]]*$/ { in_invariants=1; next }
+      /^[[:space:]]*PROPERTY[[:space:]]*$/ { in_invariants=0 }
+      in_invariants && /^[[:space:]]*VWENC_[A-Za-z0-9_]+[[:space:]]*$/ { print $1 }
+    ' "$tla_root/${module}.cfg"
+  )
+  local non_target
+  for non_target in "${module_invariants[@]}"; do
+    if [[ "$non_target" == "$expected_invariant" ]]; then
+      continue
+    fi
+    local temporary_config
+    temporary_config="$(mktemp "$artifact_root/${label}.non-target.XXXXXX.cfg")"
+    {
+      sed -n '1,/^[[:space:]]*INVARIANT[[:space:]]*$/p' "$config_path"
+      printf '  %s\n' "$non_target"
+    } >"$temporary_config"
+    if ! run_tlc_safe \
+        "${label}-preserves-${non_target}" "$module" \
+        "${temporary_config%.cfg}"; then
+      echo "ERROR: $config also violates non-target invariant $non_target" >&2
+      rm -f -- "$temporary_config"
+      return 1
+    fi
+    rm -f -- "$temporary_config"
+  done
 
   state_directory="$(mktemp -d "$state_root/${label}.XXXXXX")"
   if run_capped_capture "$label" 512M 1G "$tla_root" \
       env "JAVA_TOOL_OPTIONS=$tlc_java_options" \
       tlc -workers 1 -metadir "$state_directory" \
-      -config "${config}.cfg" "${module}.tla"; then
+      -config "$config_path" "${module}.tla"; then
     status=0
   else
     status=$?
@@ -238,10 +385,16 @@ run_tlc_negative_control() {
     echo "State space retained at $state_directory" >&2
     return 1
   fi
-  if ! grep -Fxq \
-      -e "Error: Invariant ${expected_invariant} is violated." \
-      -e "Error: Invariant ${expected_invariant} is violated by the initial state:" \
+  if grep -Fq \
+      "Error: Invariant ${expected_invariant} is violated by the initial state:" \
       "$last_log"; then
+    echo "ERROR: $config failed in the initial state instead of after its mutant action" >&2
+    echo "Output retained at $last_log" >&2
+    echo "State space retained at $state_directory" >&2
+    return 1
+  fi
+  if ! grep -Fxq \
+      "Error: Invariant ${expected_invariant} is violated." "$last_log"; then
     echo "ERROR: $config did not violate exactly $expected_invariant" >&2
     echo "Output retained at $last_log" >&2
     echo "State space retained at $state_directory" >&2
@@ -257,7 +410,8 @@ echo '== Variable-width formal source integrity =='
 if rg -n \
     '(^|[^[:alnum:]_])(Admitted|admit|Axiom|Axioms|Parameter|Parameters|Conjecture|Abort)([^[:alnum:]_]|$)' \
     "$rocq_root/Spec/VariableWidthCodecSpec.v" \
-    "$rocq_root/Spec/VariableWidthInterningSpec.v"; then
+    "$rocq_root/Spec/VariableWidthInterningSpec.v" \
+    "$rocq_root/Spec/VariableWidthFamilyRefinementSpec.v"; then
   echo 'ERROR: variable-width Rocq sources contain a proof escape' >&2
   exit 1
 fi
@@ -265,15 +419,18 @@ fi
 if rg -n 'TODO|FIXME|HACK|XXX' \
     "$rocq_root/Spec/VariableWidthCodecSpec.v" \
     "$rocq_root/Spec/VariableWidthInterningSpec.v" \
+    "$rocq_root/Spec/VariableWidthFamilyRefinementSpec.v" \
     "$tla_root/VariableWidthCodecBoundary.tla" \
     "$tla_root/VariableWidthVocabularyInterning.tla" \
-    "$tla_root/VariableWidthVocabularyPublication.tla"; then
+    "$tla_root/VariableWidthVocabularyPublication.tla" \
+    "$tla_root/VariableWidthFamilyRefinement.tla"; then
   echo 'ERROR: variable-width formal sources contain an incompletion marker' >&2
   exit 1
 fi
 
 "$repo_root/scripts/verify-variable-width-correspondence.sh"
 verify_stable_identifier_inventory
+verify_family_refinement_identifier_manifest
 
 verify_cfg_inventory VariableWidthCodecBoundary VariableWidthCodecBoundary
 verify_cfg_inventory VariableWidthVocabularyInterning \
@@ -282,6 +439,14 @@ verify_cfg_inventory VariableWidthVocabularyInterning \
 verify_cfg_inventory VariableWidthVocabularyPublication \
   VariableWidthVocabularyPublication \
   VariableWidthVocabularyPublication_TermFiberWitness
+verify_cfg_inventory VariableWidthFamilyRefinement \
+  VariableWidthFamilyRefinement \
+  VariableWidthFamilyRefinement_PhysicalExposureUnsafe \
+  VariableWidthFamilyRefinement_Utf8SplitUnsafe \
+  VariableWidthFamilyRefinement_InteriorSuffixUnsafe \
+  VariableWidthFamilyRefinement_SpecializedDivergenceUnsafe \
+  VariableWidthFamilyRefinement_TypeNameFormatUnsafe \
+  VariableWidthFamilyRefinement_FiberMismatchUnsafe
 
 if ! grep -Fxq 'INIT MultiSpanInit' \
     "$tla_root/VariableWidthVocabularyInterning_MultiSpan.cfg" ||
@@ -308,16 +473,20 @@ run_required rocq-codec 1G 2G "$rocq_root" \
   "$coqc_bin" -Q . ARTrie Spec/VariableWidthCodecSpec.v
 run_required rocq-interning 1G 2G "$rocq_root" \
   "$coqc_bin" -Q . ARTrie Spec/VariableWidthInterningSpec.v
+run_required rocq-family-refinement 1G 2G "$rocq_root" \
+  "$coqc_bin" -Q . ARTrie Spec/VariableWidthFamilyRefinementSpec.v
 run_required rocq-kernel-check 1G 2G "$rocq_root" \
   "$coqchk_bin" -Q . ARTrie \
   ARTrie.Spec.VariableWidthCodecSpec \
-  ARTrie.Spec.VariableWidthInterningSpec
+  ARTrie.Spec.VariableWidthInterningSpec \
+  ARTrie.Spec.VariableWidthFamilyRefinementSpec
 
 echo '== TLA+ syntax and semantic analysis =='
 for module in \
   VariableWidthCodecBoundary \
   VariableWidthVocabularyInterning \
-  VariableWidthVocabularyPublication
+  VariableWidthVocabularyPublication \
+  VariableWidthFamilyRefinement
 do
   run_required "sany-${module}" 512M 1G "$tla_root" \
     env "JAVA_TOOL_OPTIONS=$tlc_java_options" tla2sany "${module}.tla"
@@ -335,21 +504,30 @@ run_tlc_safe publication-safe \
 run_tlc_safe publication-term-fiber \
   VariableWidthVocabularyPublication \
   VariableWidthVocabularyPublication_TermFiberWitness
+run_tlc_safe family-refinement-safe \
+  VariableWidthFamilyRefinement VariableWidthFamilyRefinement
 
 echo '== Deliberately unsafe controls =='
-while IFS='|' read -r label module config invariant; do
-  run_tlc_negative_control "$label" "$module" "$config" "$invariant"
+while IFS='|' read -r label module config invariant mutant_constant; do
+  run_tlc_negative_control \
+    "$label" "$module" "$config" "$invariant" "$mutant_constant"
 done <<'NEGATIVE_CONTROLS'
-codec-overlong|VariableWidthCodecBoundary|VariableWidthCodecBoundary_OverlongUnsafe|VWENC_26_OVERLONG_ULEB_IS_REJECTED
-codec-unterminated|VariableWidthCodecBoundary|VariableWidthCodecBoundary_UnterminatedUnsafe|VWENC_27_UNTERMINATED_ULEB_IS_REJECTED
-codec-utf8-continuation|VariableWidthCodecBoundary|VariableWidthCodecBoundary_Utf8ContinuationUnsafe|VWENC_28_UTF8_CONTINUATION_IS_REJECTED
-codec-physical-exposure|VariableWidthCodecBoundary|VariableWidthCodecBoundary_PhysicalExposureUnsafe|VWENC_24_CODEC_BYTES_NEVER_BECOME_LOGICAL_TRANSITIONS
-interning-fingerprint-only|VariableWidthVocabularyInterning|VariableWidthVocabularyInterning_FingerprintOnlyUnsafe|VWENC_142_FINGERPRINT_COLLISIONS_NEVER_ALIAS_DISTINCT_ATOMS
-interning-id-reuse|VariableWidthVocabularyInterning|VariableWidthVocabularyInterning_IdReuseUnsafe|VWENC_143_RETIRED_ID_IS_NEVER_CLAIMED_OR_LIVE_AGAIN
-publication-sequence-before-vocabulary|VariableWidthVocabularyPublication|VariableWidthVocabularyPublication_SequenceBeforeVocabularyUnsafe|VWENC_149_DURABLE_SEQUENCE_REFERENCES_DURABLE_BOUND_VOCABULARY
-publication-frontier-overclaim|VariableWidthVocabularyPublication|VariableWidthVocabularyPublication_FrontierOverclaimUnsafe|VWENC_147_PUBLISHED_FRONTIER_DOES_NOT_EXCEED_DURABLE_FRONTIER
-publication-cross-generation-resume|VariableWidthVocabularyPublication|VariableWidthVocabularyPublication_CrossGenerationResumeUnsafe|VWENC_154_CAPTURED_CONTINUATION_RESUMES_IMMUTABLE_PAIR
-publication-missing-as-empty|VariableWidthVocabularyPublication|VariableWidthVocabularyPublication_MissingVocabularyAsEmptyUnsafe|VWENC_178_RECOVERY_NEVER_SYNTHESIZES_EMPTY_SUCCESS
+codec-overlong|VariableWidthCodecBoundary|VariableWidthCodecBoundary_OverlongUnsafe|VWENC_26_OVERLONG_ULEB_IS_REJECTED|AcceptOverlongUleb
+codec-unterminated|VariableWidthCodecBoundary|VariableWidthCodecBoundary_UnterminatedUnsafe|VWENC_27_UNTERMINATED_ULEB_IS_REJECTED|AcceptUnterminatedUleb
+codec-utf8-continuation|VariableWidthCodecBoundary|VariableWidthCodecBoundary_Utf8ContinuationUnsafe|VWENC_28_UTF8_CONTINUATION_IS_REJECTED|AcceptUtf8Continuation
+codec-physical-exposure|VariableWidthCodecBoundary|VariableWidthCodecBoundary_PhysicalExposureUnsafe|VWENC_24_CODEC_BYTES_NEVER_BECOME_LOGICAL_TRANSITIONS|ExposePhysicalCodecBytes
+interning-fingerprint-only|VariableWidthVocabularyInterning|VariableWidthVocabularyInterning_FingerprintOnlyUnsafe|VWENC_142_FINGERPRINT_COLLISIONS_NEVER_ALIAS_DISTINCT_ATOMS|FingerprintOnlyEquality
+interning-id-reuse|VariableWidthVocabularyInterning|VariableWidthVocabularyInterning_IdReuseUnsafe|VWENC_143_RETIRED_ID_IS_NEVER_CLAIMED_OR_LIVE_AGAIN|ReusePublishedId
+publication-sequence-before-vocabulary|VariableWidthVocabularyPublication|VariableWidthVocabularyPublication_SequenceBeforeVocabularyUnsafe|VWENC_149_DURABLE_SEQUENCE_REFERENCES_DURABLE_BOUND_VOCABULARY|PublishSequenceBeforeVocabulary
+publication-frontier-overclaim|VariableWidthVocabularyPublication|VariableWidthVocabularyPublication_FrontierOverclaimUnsafe|VWENC_147_PUBLISHED_FRONTIER_DOES_NOT_EXCEED_DURABLE_FRONTIER|OverclaimVocabularyFrontier
+publication-cross-generation-resume|VariableWidthVocabularyPublication|VariableWidthVocabularyPublication_CrossGenerationResumeUnsafe|VWENC_154_CAPTURED_CONTINUATION_RESUMES_IMMUTABLE_PAIR|AllowCrossGenerationResume
+publication-missing-as-empty|VariableWidthVocabularyPublication|VariableWidthVocabularyPublication_MissingVocabularyAsEmptyUnsafe|VWENC_178_RECOVERY_NEVER_SYNTHESIZES_EMPTY_SUCCESS|MissingVocabularyAsEmpty
+family-physical-exposure|VariableWidthFamilyRefinement|VariableWidthFamilyRefinement_PhysicalExposureUnsafe|VWENC_241_CODEC_BYTES_NEVER_APPEAR_AS_LOGICAL_LABELS|ExposeCodecBytes
+family-utf8-split|VariableWidthFamilyRefinement|VariableWidthFamilyRefinement_Utf8SplitUnsafe|VWENC_242_UTF8_SCALAR_IS_NEVER_SPLIT_ACROSS_LOGICAL_TRANSITIONS|SplitUtf8Scalar
+family-interior-suffix|VariableWidthFamilyRefinement|VariableWidthFamilyRefinement_InteriorSuffixUnsafe|VWENC_243_SUFFIX_MATCHES_NEVER_BEGIN_INSIDE_A_LOGICAL_CODEWORD|AllowInteriorSuffixStart
+family-specialized-divergence|VariableWidthFamilyRefinement|VariableWidthFamilyRefinement_SpecializedDivergenceUnsafe|VWENC_244_SPECIALIZED_KERNEL_PRESERVES_THE_COMPLETE_OBSERVATION|DivergeSpecializedKernel
+family-type-name-format|VariableWidthFamilyRefinement|VariableWidthFamilyRefinement_TypeNameFormatUnsafe|VWENC_245_FORMAT_IDENTITY_COMES_ONLY_FROM_EXPLICIT_PROFILE_METADATA|InferFormatIdentityFromTypeName
+family-fiber-mismatch|VariableWidthFamilyRefinement|VariableWidthFamilyRefinement_FiberMismatchUnsafe|VWENC_246_MISMATCHED_VOCABULARY_FIBER_IS_REJECTED_BEFORE_TRAVERSAL|AcceptMismatchedVocabularyFiber
 NEGATIVE_CONTROLS
 
 echo 'Variable-width formal gate passed.'

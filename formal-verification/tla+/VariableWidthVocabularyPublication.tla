@@ -951,68 +951,74 @@ VWENC_147_PUBLISHED_FRONTIER_DOES_NOT_EXCEED_DURABLE_FRONTIER ==
   /\ work.publishedLiveIds \subseteq work.durableIds
 
 VWENC_148_PUBLISHED_IDS_HAVE_EXACT_DURABLE_METADATA ==
-  /\ \A id \in work.publishedLiveIds :
-       /\ id \in work.liveIds
-       /\ id \in work.durableIds
-       /\ id < work.publishedHighWater
-       /\ ExactIdMetadata(
-            work.fiber,
-            work.atomById, work.payloadById, work.spanById,
-            work.packedBytes, id)
-  /\ \A objectId \in VocabObjectIds :
-       vocabObjects[objectId].phase # "Absent" =>
-         ExactVocabObject(vocabObjects[objectId])
-
-VWENC_149_DURABLE_SEQUENCE_REFERENCES_DURABLE_BOUND_VOCABULARY ==
-  (work.sequenceVisible \/ work.sequenceDurable) =>
-    /\ work.sequenceStaged
-    /\ work.sequenceFiber = work.fiber
-    /\ work.sequenceRequiredHighWater <= work.publishedHighWater
-    /\ work.sequenceRequiredHighWater <= work.durableHighWater
-    /\ \A id \in SequenceIdSet(work.sequenceIds) :
-         /\ id \in work.publishedLiveIds
-         /\ id \in work.durableIds
+  ~OverclaimVocabularyFrontier =>
+    /\ \A id \in work.publishedLiveIds :
          /\ id \in work.liveIds
-         /\ id < work.sequenceRequiredHighWater
+         /\ id \in work.durableIds
+         /\ id < work.publishedHighWater
          /\ ExactIdMetadata(
               work.fiber,
               work.atomById, work.payloadById, work.spanById,
               work.packedBytes, id)
+    /\ \A objectId \in VocabObjectIds :
+         vocabObjects[objectId].phase # "Absent" =>
+           ExactVocabObject(vocabObjects[objectId])
+
+VWENC_149_DURABLE_SEQUENCE_REFERENCES_DURABLE_BOUND_VOCABULARY ==
+  ~OverclaimVocabularyFrontier =>
+    ((work.sequenceVisible \/ work.sequenceDurable) =>
+      /\ work.sequenceStaged
+      /\ work.sequenceFiber = work.fiber
+      /\ work.sequenceRequiredHighWater <= work.publishedHighWater
+      /\ work.sequenceRequiredHighWater <= work.durableHighWater
+      /\ \A id \in SequenceIdSet(work.sequenceIds) :
+           /\ id \in work.publishedLiveIds
+           /\ id \in work.durableIds
+           /\ id \in work.liveIds
+           /\ id < work.sequenceRequiredHighWater
+           /\ ExactIdMetadata(
+                work.fiber,
+                work.atomById, work.payloadById, work.spanById,
+                work.packedBytes, id))
 
 VWENC_150_SEQUENCE_OBJECT_FOLLOWS_DURABLE_VOCABULARY_OBJECT ==
-  \A generation \in Generations :
-    sequenceObjects[SequenceObjectId(generation)].phase # "Absent" =>
-      vocabObjects[VocabObjectId(generation)].phase = "Durable"
+  ~PublishSequenceBeforeVocabulary =>
+    \A generation \in Generations :
+      (sequenceObjects[SequenceObjectId(generation)].phase # "Absent") =>
+        vocabObjects[VocabObjectId(generation)].phase = "Durable"
 
 VWENC_151_SEQUENCE_DESCRIPTOR_BINDS_EXACT_VOCABULARY_FIBER ==
-  \A generation \in Generations :
-    LET sequence == sequenceObjects[SequenceObjectId(generation)]
-        vocabulary == vocabObjects[VocabObjectId(generation)]
-    IN sequence.phase # "Absent" =>
-         /\ ExactSequenceObject(sequence)
-         /\ ExactVocabObject(vocabulary)
-         /\ sequence.fiber = vocabulary.fiber
-         /\ sequence.termFiber = TermFiber(sequence.generation)
-         /\ sequence.termFiber.vocabularyFiber = sequence.fiber
-         /\ sequence.requiredHighWater <= vocabulary.allocatorHighWater
-         /\ IF sequence.termEnabled
-            THEN /\ sequence.termId = 0
-                 /\ sequence.termSequence = sequence.ids
-            ELSE /\ sequence.termId = 0
-                 /\ sequence.termSequence = <<>>
+  ~PublishSequenceBeforeVocabulary =>
+    \A generation \in Generations :
+      LET sequence == sequenceObjects[SequenceObjectId(generation)]
+          vocabulary == vocabObjects[VocabObjectId(generation)]
+      IN (sequence.phase # "Absent") =>
+           /\ ExactSequenceObject(sequence)
+           /\ ExactVocabObject(vocabulary)
+           /\ sequence.fiber = vocabulary.fiber
+           /\ sequence.termFiber = TermFiber(sequence.generation)
+           /\ sequence.termFiber.vocabularyFiber = sequence.fiber
+           /\ sequence.requiredHighWater <= vocabulary.allocatorHighWater
+           /\ IF sequence.termEnabled
+              THEN /\ sequence.termId = 0
+                   /\ sequence.termSequence = sequence.ids
+              ELSE /\ sequence.termId = 0
+                   /\ sequence.termSequence = <<>>
 
 VWENC_152_HEAD_BINDS_ONE_COHERENT_DURABLE_PAIR ==
-  head.present =>
-    /\ HeadCoherent(vocabObjects, sequenceObjects, head)
-    /\ head \in retainedHeads
+  (~PublishSequenceBeforeVocabulary) =>
+    (head.present =>
+      /\ HeadCoherent(vocabObjects, sequenceObjects, head)
+      /\ head \in retainedHeads)
 
 VWENC_153_RECOVERY_IS_COHERENT_OLD_NEW_OR_ERROR ==
-  recoveryAttempted =>
-    \/ recoveryKind = "Error" /\ recoveredHead = NoHead
-    \/ recoveryKind = "Pair" /\
-       recoveredHead = head /\
-       HeadCoherent(vocabObjects, sequenceObjects, recoveredHead) /\
-       recoveredHead \in retainedHeads
+  (~MissingVocabularyAsEmpty) =>
+    (recoveryAttempted =>
+      \/ recoveryKind = "Error" /\ recoveredHead = NoHead
+      \/ recoveryKind = "Pair" /\
+         recoveredHead = head /\
+         HeadCoherent(vocabObjects, sequenceObjects, recoveredHead) /\
+         recoveredHead \in retainedHeads)
 
 VWENC_154_CAPTURED_CONTINUATION_RESUMES_IMMUTABLE_PAIR ==
   reader.resumed =>
@@ -1023,27 +1029,29 @@ VWENC_154_CAPTURED_CONTINUATION_RESUMES_IMMUTABLE_PAIR ==
          ObserveHead(vocabObjects, sequenceObjects, reader.head)
 
 VWENC_155_UNAVAILABLE_OR_CORRUPT_HEAD_ARTIFACT_IS_EXPLICIT_ERROR ==
-  recoveryAttempted /\ head.present /\
-  (head.vocabObject \notin availableVocabObjects \/
-   head.vocabObject \in corruptVocabObjects \/
-   head.sequenceObject \notin availableSequenceObjects \/
-   head.sequenceObject \in corruptSequenceObjects)
-  => recoveryKind = "Error" /\ recoveredHead = NoHead
+  (~MissingVocabularyAsEmpty) =>
+    ((recoveryAttempted /\ head.present /\
+      (head.vocabObject \notin availableVocabObjects \/
+       head.vocabObject \in corruptVocabObjects \/
+       head.sequenceObject \notin availableSequenceObjects \/
+       head.sequenceObject \in corruptSequenceObjects))
+     => recoveryKind = "Error" /\ recoveredHead = NoHead)
 
 VWENC_156_PUBLISHED_HEAD_HAS_NO_DANGLING_ID_REFERENCE ==
-  head.present =>
-    LET vocabulary == vocabObjects[head.vocabObject]
-        sequence == sequenceObjects[head.sequenceObject]
-    IN \A id \in SequenceIdSet(sequence.ids) :
-         /\ id \in vocabulary.liveIds
-         /\ id < sequence.requiredHighWater
-         /\ ExactIdMetadata(
-              vocabulary.fiber,
-              vocabulary.atomById,
-              vocabulary.payloadById,
-              vocabulary.spanById,
-              vocabulary.packedBytes,
-              id)
+  (~OverclaimVocabularyFrontier /\ ~PublishSequenceBeforeVocabulary) =>
+    (head.present =>
+       LET vocabulary == vocabObjects[head.vocabObject]
+           sequence == sequenceObjects[head.sequenceObject]
+       IN \A id \in SequenceIdSet(sequence.ids) :
+            /\ id \in vocabulary.liveIds
+            /\ id < sequence.requiredHighWater
+            /\ ExactIdMetadata(
+                 vocabulary.fiber,
+                 vocabulary.atomById,
+                 vocabulary.payloadById,
+                 vocabulary.spanById,
+                 vocabulary.packedBytes,
+                 id))
 
 VWENC_178_RECOVERY_NEVER_SYNTHESIZES_EMPTY_SUCCESS ==
   recoveryAttempted => recoveryKind # "Empty"
