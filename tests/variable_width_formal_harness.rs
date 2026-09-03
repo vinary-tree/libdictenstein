@@ -147,6 +147,17 @@ proptest! {
     }
 
     #[test]
+    fn vwenc_45_utf8_canonical_encoding_is_injective(left in any::<char>(), right in any::<char>()) {
+        if left != right {
+            let mut left_bytes = [0u8; 4];
+            let mut right_bytes = [0u8; 4];
+            let left_width = left.encode_utf8(&mut left_bytes).len();
+            let right_width = right.encode_utf8(&mut right_bytes).len();
+            prop_assert_ne!(&left_bytes[..left_width], &right_bytes[..right_width]);
+        }
+    }
+
+    #[test]
     fn vwenc_199_full_enumeration_order_is_deterministic(atoms in prop::collection::vec(arb_digits(), 0..48)) {
         let mut forward = BTreeMap::new();
         let mut reverse = BTreeMap::new();
@@ -189,6 +200,33 @@ fn vwenc_10_uleb_order_is_logical_numeric_order() {
             assert!(left <= right);
             assert!(decode_uleb(&encode_uleb(vec![left])) <= decode_uleb(&encode_uleb(vec![right])));
         }
+    }
+}
+
+#[test]
+fn vwenc_15_direct_profile_is_one_unit_per_transition() {
+    let stream = [encode_uleb(vec![1]), encode_uleb(vec![2, 3])].concat();
+    let first_len = encode_uleb(vec![1]).len();
+    assert_eq!(decode_uleb(&stream[..first_len]), Some(vec![1]));
+    assert_eq!(decode_uleb(&stream[first_len..]), Some(vec![2, 3]));
+}
+
+#[test]
+fn vwenc_37_uleb_equality_is_canonical_byte_equality() {
+    assert_eq!(encode_uleb(vec![7, 0, 0]), encode_uleb(vec![7]));
+    assert_ne!(encode_uleb(vec![7]), encode_uleb(vec![8]));
+}
+
+#[test]
+fn vwenc_46_utf8_malformed_or_noncanonical_input_is_rejected() {
+    for bytes in [
+        &[0xc0, 0x80][..],
+        &[0xe0, 0x80, 0x80][..],
+        &[0xf4, 0x90, 0x80, 0x80][..],
+        &[0xed, 0xa0, 0x80][..],
+        &[0xf0, 0x9f, 0x92][..],
+    ] {
+        assert!(std::str::from_utf8(bytes).is_err());
     }
 }
 
