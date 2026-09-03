@@ -16,7 +16,11 @@ fn encode_uleb(mut value: Vec<u8>) -> Vec<u8> {
     let mut out = Vec::with_capacity(value_len);
     for (index, digit) in value.into_iter().enumerate() {
         assert!(digit < 128);
-        out.push(if index + 1 == value_len { digit } else { digit | 0x80 });
+        out.push(if index + 1 == value_len {
+            digit
+        } else {
+            digit | 0x80
+        });
     }
     out
 }
@@ -188,7 +192,11 @@ fn vwenc_07_uleb_early_terminator_is_rejected() {
 
 #[test]
 fn vwenc_14_utf8_rejects_nonscalars() {
-    for bytes in [&[0xed, 0xa0, 0x80][..], &[0xf0, 0x80, 0x80, 0x80][..], &[0x80][..]] {
+    for bytes in [
+        &[0xed, 0xa0, 0x80][..],
+        &[0xf0, 0x80, 0x80, 0x80][..],
+        &[0x80][..],
+    ] {
         assert!(std::str::from_utf8(bytes).is_err());
     }
 }
@@ -198,7 +206,9 @@ fn vwenc_10_uleb_order_is_logical_numeric_order() {
     for left in 0u8..127 {
         for right in left..127 {
             assert!(left <= right);
-            assert!(decode_uleb(&encode_uleb(vec![left])) <= decode_uleb(&encode_uleb(vec![right])));
+            assert!(
+                decode_uleb(&encode_uleb(vec![left])) <= decode_uleb(&encode_uleb(vec![right]))
+            );
         }
     }
 }
@@ -279,7 +289,9 @@ fn vwenc_107_tombstoned_ids_are_never_reused() {
 #[test]
 fn vwenc_120_orphan_ids_have_no_live_or_sequence_binding() {
     let allocated = vec![(0u32, false, false), (1u32, true, true)];
-    assert!(allocated.iter().any(|(id, live, referenced)| *id == 0 && !live && !referenced));
+    assert!(allocated
+        .iter()
+        .any(|(id, live, referenced)| *id == 0 && !live && !referenced));
 }
 
 #[test]
@@ -423,13 +435,19 @@ fn vwenc_136_symbol_and_term_ids_are_nominally_disjoint() {
     enum Term {}
     let _: std::marker::PhantomData<Symbol> = std::marker::PhantomData;
     let _: std::marker::PhantomData<Term> = std::marker::PhantomData;
-    assert_ne!(std::any::type_name::<Symbol>(), std::any::type_name::<Term>());
+    assert_ne!(
+        std::any::type_name::<Symbol>(),
+        std::any::type_name::<Term>()
+    );
 }
 
 #[test]
 fn vwenc_137_term_dictionary_is_a_second_exact_bijection() {
     let forward = std::collections::BTreeMap::from([(vec![0u32, 1], 0u32), (vec![1, 2], 1)]);
-    let reverse = forward.iter().map(|(sequence, id)| (*id, sequence.clone())).collect::<std::collections::BTreeMap<_, _>>();
+    let reverse = forward
+        .iter()
+        .map(|(sequence, id)| (*id, sequence.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
     for (sequence, id) in &forward {
         assert_eq!(reverse.get(id), Some(sequence));
     }
@@ -446,7 +464,10 @@ fn vwenc_101_atom_identity_is_profile_and_canonical_bytes() {
 #[test]
 fn vwenc_103_published_vocabulary_is_an_exact_bijection() {
     let forward = std::collections::BTreeMap::from([(vec![1u8], 0u32), (vec![2u8], 1u32)]);
-    let reverse = forward.iter().map(|(atom, id)| (*id, atom.clone())).collect::<std::collections::BTreeMap<_, _>>();
+    let reverse = forward
+        .iter()
+        .map(|(atom, id)| (*id, atom.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(forward.len(), reverse.len());
     for (atom, id) in &forward {
         assert_eq!(reverse.get(id), Some(atom));
@@ -728,7 +749,10 @@ fn vwenc_162_every_allocated_entry_has_one_authoritative_status() {
 #[test]
 fn vwenc_163_allocation_status_reports_exact_state_category() {
     let status = "tombstone";
-    assert!(matches!(status, "orphan" | "reserved" | "live" | "tombstone"));
+    assert!(matches!(
+        status,
+        "orphan" | "reserved" | "live" | "tombstone"
+    ));
 }
 
 #[test]
@@ -804,7 +828,10 @@ fn vwenc_197_ordered_logical_outgoing_labels_are_observable() {
 #[test]
 fn vwenc_198_prefix_entries_are_logical_observations() {
     let entries = vec![vec![1u8, 2], vec![1u8, 3], vec![2u8]];
-    let prefix: Vec<_> = entries.iter().filter(|entry| entry.starts_with(&[1])).collect();
+    let prefix: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.starts_with(&[1]))
+        .collect();
     assert_eq!(prefix.len(), 2);
 }
 
@@ -826,19 +853,32 @@ fn vwenc_202_physical_layout_is_nonobservable() {
     let layout_a = "compact";
     let layout_b = "sparse";
     assert_ne!(layout_a, layout_b);
-    assert_eq!(logical, std::collections::BTreeSet::from([vec![1u8], vec![2u8]]));
+    assert_eq!(
+        logical,
+        std::collections::BTreeSet::from([vec![1u8], vec![2u8]])
+    );
 }
 
 #[test]
 fn vwenc_203_dictionary_family_inventory_is_exhaustive() {
-    let families = ["DynamicDawg", "DoubleArrayTrie", "SuffixAutomaton", "PathMap", "PersistentARTrie"];
+    let families = [
+        "DynamicDawg",
+        "DoubleArrayTrie",
+        "SuffixAutomaton",
+        "PathMap",
+        "PersistentARTrie",
+    ];
     assert!(families.contains(&"DynamicDawg"));
     assert!(families.contains(&"PathMap"));
 }
 
 #[test]
 fn vwenc_204_family_profile_matrix_is_total_and_functional() {
-    let matrix = [("DynamicDawg", "Bytes"), ("DynamicDawg", "UnicodeScalar"), ("PathMap", "Bytes")];
+    let matrix = [
+        ("DynamicDawg", "Bytes"),
+        ("DynamicDawg", "UnicodeScalar"),
+        ("PathMap", "Bytes"),
+    ];
     assert!(matrix.iter().all(|(_, profile)| !profile.is_empty()));
 }
 
@@ -970,7 +1010,12 @@ fn vwenc_223_factory_collection_and_serialization_preserve_profile_view() {
 fn vwenc_224_set_combinators_commute_with_profile_refinement() {
     let left = std::collections::BTreeSet::from([1u32, 2]);
     let right = std::collections::BTreeSet::from([2u32, 3]);
-    assert_eq!(left.union(&right).copied().collect::<std::collections::BTreeSet<_>>(), right.union(&left).copied().collect());
+    assert_eq!(
+        left.union(&right)
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        right.union(&left).copied().collect()
+    );
 }
 
 #[test]
@@ -1097,7 +1142,9 @@ fn vwenc_19_f64bits_signed_zeroes_are_distinct() {
 fn vwenc_20_f64bits_total_order_is_rank_order() {
     let mut values = [1.0f64, -1.0, 0.0, -0.0];
     values.sort_by(f64::total_cmp);
-    assert!(values.windows(2).all(|pair| pair[0].total_cmp(&pair[1]).is_le()));
+    assert!(values
+        .windows(2)
+        .all(|pair| pair[0].total_cmp(&pair[1]).is_le()));
 }
 
 #[test]
@@ -1129,7 +1176,14 @@ fn vwenc_50_direct_serialization_roundtrips_valid_units() {
 #[test]
 fn vwenc_52_f64bits_all_distinct_patterns_remain_distinct() {
     let patterns = [0.0f64.to_bits(), (-0.0f64).to_bits(), 1.0f64.to_bits()];
-    assert_eq!(patterns.iter().copied().collect::<std::collections::BTreeSet<_>>().len(), 3);
+    assert_eq!(
+        patterns
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        3
+    );
 }
 
 #[test]
@@ -1169,7 +1223,9 @@ fn vwenc_76_f64bits_comparator_lt_is_transitive() {
 #[test]
 fn vwenc_77_f64bits_rank_matches_signed_key_transform() {
     let values = [-2.0f64, -0.0, 0.0, 2.0];
-    assert!(values.windows(2).all(|pair| pair[0].total_cmp(&pair[1]).is_le()));
+    assert!(values
+        .windows(2)
+        .all(|pair| pair[0].total_cmp(&pair[1]).is_le()));
 }
 
 #[test]
@@ -1189,7 +1245,13 @@ fn vwenc_79_encoded_byte_order_distinguishes_255_and_256() {
 fn vwenc_83_dynamic_dawg_char_and_utf8_adapter_observe_same_scalar() {
     let scalar = 'λ';
     let bytes = scalar.to_string().into_bytes();
-    assert_eq!(std::str::from_utf8(&bytes).unwrap().chars().collect::<Vec<_>>(), vec![scalar]);
+    assert_eq!(
+        std::str::from_utf8(&bytes)
+            .unwrap()
+            .chars()
+            .collect::<Vec<_>>(),
+        vec![scalar]
+    );
 }
 
 #[test]
@@ -1302,7 +1364,10 @@ fn vwenc_100_open_unit_comparator_is_total_on_distinct_units() {
 #[test]
 fn vwenc_141_published_atom_relation_is_exact_bijection() {
     let forward = std::collections::BTreeMap::from([(vec![1u8], 0u32), (vec![2], 1)]);
-    let reverse = forward.iter().map(|(atom, id)| (*id, atom.clone())).collect::<std::collections::BTreeMap<_, _>>();
+    let reverse = forward
+        .iter()
+        .map(|(atom, id)| (*id, atom.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(forward.len(), reverse.len());
 }
 
@@ -1354,7 +1419,13 @@ fn vwenc_176_allocation_statuses_partition_allocated_ids() {
         (2u32, "live"),
         (3u32, "tombstone"),
     ];
-    assert_eq!(ids.iter().map(|(id, _)| id).collect::<std::collections::BTreeSet<_>>().len(), 4);
+    assert_eq!(
+        ids.iter()
+            .map(|(id, _)| id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        4
+    );
 }
 
 #[test]
@@ -1426,7 +1497,10 @@ fn vwenc_29_rejection_is_explicit_and_has_no_logical_output() {
 fn vwenc_32_cursor_and_buffer_are_bounded_by_consumed_input() {
     let input = "a€".as_bytes();
     let mut cursor = 0usize;
-    for c in input.chunks(1) { cursor += c.len(); assert!(cursor <= input.len()); }
+    for c in input.chunks(1) {
+        cursor += c.len();
+        assert!(cursor <= input.len());
+    }
 }
 
 #[test]
@@ -1450,13 +1524,17 @@ fn vwenc_43_utf8_decoder_acceptance_is_canonical() {
 
 #[test]
 fn vwenc_44_utf8_decoder_accepts_canonical_codewords() {
-    for c in ['A', 'é', '🦀'] { assert!(std::str::from_utf8(c.to_string().as_bytes()).is_ok()); }
+    for c in ['A', 'é', '🦀'] {
+        assert!(std::str::from_utf8(c.to_string().as_bytes()).is_ok());
+    }
 }
 
 #[test]
 fn vwenc_47_utf8_rejects_continuation_overlong_truncated_and_surrogate() {
     let cases: &[&[u8]] = &[&[0x80], &[0xc0, 0x80], &[0xe2, 0x82], &[0xed, 0xa0, 0x80]];
-    for bytes in cases { assert!(std::str::from_utf8(bytes).is_err()); }
+    for bytes in cases {
+        assert!(std::str::from_utf8(bytes).is_err());
+    }
 }
 
 #[test]
@@ -1468,7 +1546,9 @@ fn vwenc_51_unicode_scalar_direct_storage_is_not_utf8_storage() {
 #[test]
 fn vwenc_53_direct_identity_and_hash_are_profile_scoped_and_injective() {
     use std::collections::HashSet;
-    let mut set = HashSet::new(); set.insert(("u32", 1u32)); set.insert(("u64", 1u32));
+    let mut set = HashSet::new();
+    set.insert(("u32", 1u32));
+    set.insert(("u64", 1u32));
     assert_eq!(set.len(), 2);
 }
 
@@ -1485,12 +1565,14 @@ fn vwenc_55_f64bits_direct_order_is_total_cmp_order() {
 
 #[test]
 fn vwenc_56_direct_profile_widths_are_explicit() {
-    assert_eq!(std::mem::size_of::<u32>(), 4); assert_eq!(std::mem::size_of::<u64>(), 8);
+    assert_eq!(std::mem::size_of::<u32>(), 4);
+    assert_eq!(std::mem::size_of::<u64>(), 8);
 }
 
 #[test]
 fn vwenc_59_checked_direct_decoder_accepts_canonical_record() {
-    let record = 7u32.to_le_bytes(); assert_eq!(u32::from_le_bytes(record), 7);
+    let record = 7u32.to_le_bytes();
+    assert_eq!(u32::from_le_bytes(record), 7);
 }
 
 #[test]
@@ -1505,12 +1587,14 @@ fn vwenc_61_checked_direct_decoder_rejects_wrong_width() {
 
 #[test]
 fn vwenc_62_checked_direct_decoder_rejects_nonbyte_payload() {
-    let payload: Vec<u8> = vec![0, 1]; assert_eq!(payload.len(), 2);
+    let payload: Vec<u8> = vec![0, 1];
+    assert_eq!(payload.len(), 2);
 }
 
 #[test]
 fn vwenc_63_checked_direct_decoder_success_is_exact() {
-    let x = 0x0102_0304u32; assert_eq!(u32::from_le_bytes(x.to_le_bytes()), x);
+    let x = 0x0102_0304u32;
+    assert_eq!(u32::from_le_bytes(x.to_le_bytes()), x);
 }
 
 #[test]
@@ -1534,9 +1618,11 @@ fn vwenc_67_opaque_and_byte_path_adapters_have_same_logical_view() {
 #[test]
 fn vwenc_68_dictionary_node_zipper_cursor_share_common_target_definition() {
     let edges = std::collections::BTreeMap::from([(0u32, 3u32), (3, 7)]);
-    let node = edges.get(&0).copied(); let zipper = edges.get(&0).copied();
+    let node = edges.get(&0).copied();
+    let zipper = edges.get(&0).copied();
     let cursor = edges.get(&0).copied();
-    assert_eq!(node, zipper); assert_eq!(zipper, cursor);
+    assert_eq!(node, zipper);
+    assert_eq!(zipper, cursor);
 }
 
 #[test]
@@ -1551,22 +1637,30 @@ fn vwenc_70_baseline_charunit_edge_is_one_logical_atom() {
 
 #[test]
 fn vwenc_71_indexed_and_lockfree_share_required_target_definition() {
-    let indexed = vec![1u32, 2]; let lockfree = indexed.clone(); assert_eq!(indexed, lockfree);
+    let indexed = vec![1u32, 2];
+    let lockfree = indexed.clone();
+    assert_eq!(indexed, lockfree);
 }
 
 #[test]
 fn vwenc_72_existing_persistent_units_map_to_baseline_charunits() {
-    let units: Vec<char> = "legacy".chars().collect(); assert_eq!(units.len(), 6);
+    let units: Vec<char> = "legacy".chars().collect();
+    assert_eq!(units.len(), 6);
 }
 
 #[test]
 fn vwenc_81_incomplete_buffer_never_increments_completed_atoms() {
-    let incomplete = [0xe2, 0x82]; assert!(std::str::from_utf8(&incomplete).is_err());
+    let incomplete = [0xe2, 0x82];
+    assert!(std::str::from_utf8(&incomplete).is_err());
 }
 
 #[test]
 fn vwenc_82_decoder_eventually_terminates() {
-    let mut n = 0; for _ in "finite".chars() { n += 1; } assert_eq!(n, 6);
+    let mut n = 0;
+    for _ in "finite".chars() {
+        n += 1;
+    }
+    assert_eq!(n, 6);
 }
 
 #[test]
@@ -1583,71 +1677,94 @@ fn vwenc_102_uleb_internalization_requires_canonical_arbitrary_bytes() {
 fn vwenc_108_sparse_frontier_has_a_gap_and_both_orphan_classes() {
     let ids = [0u32, 2, 4];
     let allocated: std::collections::BTreeSet<_> = ids.into_iter().collect();
-    let orphan_before = 1u32; let orphan_after = 5u32;
-    assert!(!allocated.contains(&orphan_before)); assert!(!allocated.contains(&orphan_after));
+    let orphan_before = 1u32;
+    let orphan_after = 5u32;
+    assert!(!allocated.contains(&orphan_before));
+    assert!(!allocated.contains(&orphan_after));
     assert!(orphan_before < ids[1] && orphan_after > ids[2]);
 }
 
 #[test]
 fn vwenc_111_id_carrier_interface_remains_open_to_any_positive_width() {
-    fn carrier<T: Copy>(x: T) -> T { x }
-    assert_eq!(carrier(1u8), 1); assert_eq!(carrier(1u128), 1);
+    fn carrier<T: Copy>(x: T) -> T {
+        x
+    }
+    assert_eq!(carrier(1u8), 1);
+    assert_eq!(carrier(1u128), 1);
 }
 
 #[test]
 fn vwenc_113_same_fiber_id_interpretation_is_exact() {
-    let a = ("fiber", 9u32); assert_eq!(a, ("fiber", 9));
+    let a = ("fiber", 9u32);
+    assert_eq!(a, ("fiber", 9));
 }
 
 #[test]
 fn vwenc_114_safe_packed_append_reads_exact_canonical_bytes() {
-    let mut packed = vec![1u8, 2]; packed.extend([3, 4]); assert_eq!(packed, [1, 2, 3, 4]);
+    let mut packed = vec![1u8, 2];
+    packed.extend([3, 4]);
+    assert_eq!(packed, [1, 2, 3, 4]);
 }
 
 #[test]
 fn vwenc_115_safe_packed_append_preserves_existing_spans() {
-    let old = vec![1u8, 2]; let mut packed = old.clone(); packed.extend([3]); assert_eq!(&packed[..2], &old);
+    let old = vec![1u8, 2];
+    let mut packed = old.clone();
+    packed.extend([3]);
+    assert_eq!(&packed[..2], &old);
 }
 
 #[test]
 fn vwenc_119_optional_term_dictionary_sequences_use_live_vocabulary_ids() {
-    let live = std::collections::BTreeSet::from([2u32, 4]); let sequence = [2u32, 4];
+    let live = std::collections::BTreeSet::from([2u32, 4]);
+    let sequence = [2u32, 4];
     assert!(sequence.iter().all(|id| live.contains(id)));
 }
 
 #[test]
 fn vwenc_132_every_interning_transition_preserves_combined_state_well_formedness() {
-    let mut map = std::collections::BTreeMap::new(); map.insert(vec![1u8], 0u32);
-    assert_eq!(map.len(), 1); assert_eq!(map.get(&vec![1]), Some(&0));
+    let mut map = std::collections::BTreeMap::new();
+    map.insert(vec![1u8], 0u32);
+    assert_eq!(map.len(), 1);
+    assert_eq!(map.get(&vec![1]), Some(&0));
 }
 
 #[test]
 fn vwenc_159_every_reachable_interning_state_is_well_formed() {
     let states = [(0u32, "orphan"), (1, "live")];
     let ids: std::collections::BTreeSet<_> = states.iter().map(|(id, _)| *id).collect();
-    assert_eq!(ids.len(), states.len()); assert!(states.iter().all(|(_, s)| matches!(*s, "orphan" | "reserved" | "live" | "tombstone")));
+    assert_eq!(ids.len(), states.len());
+    assert!(states
+        .iter()
+        .all(|(_, s)| matches!(*s, "orphan" | "reserved" | "live" | "tombstone")));
 }
 
 #[test]
 fn vwenc_160_every_positive_width_has_an_exact_carrier_instance() {
-    assert_eq!(std::mem::size_of::<u8>(), 1); assert_eq!(std::mem::size_of::<u128>(), 16);
+    assert_eq!(std::mem::size_of::<u8>(), 1);
+    assert_eq!(std::mem::size_of::<u128>(), 16);
 }
 
 #[test]
 fn vwenc_189_every_interning_transition_has_one_exact_legal_allocation_delta() {
-    let before = 2usize; let after = before + 1; assert_eq!(after - before, 1);
+    let before = 2usize;
+    let after = before + 1;
+    assert_eq!(after - before, 1);
 }
 
 #[test]
 fn vwenc_190_interning_transitions_preserve_every_unaffected_id_status() {
     let before = std::collections::BTreeMap::from([(1u32, "live"), (2, "orphan")]);
-    let mut after = before.clone(); after.insert(3, "reserved"); assert_eq!(before.get(&1), after.get(&1));
+    let mut after = before.clone();
+    after.insert(3, "reserved");
+    assert_eq!(before.get(&1), after.get(&1));
 }
 
 #[test]
 fn vwenc_247_hot_traversal_view_exists_iff_fiber_binding_succeeds() {
     let bind = |expected: &str, actual: &str| (expected == actual).then_some(1u32);
-    assert!(bind("fiber", "fiber").is_some()); assert!(bind("fiber-a", "fiber-b").is_none());
+    assert!(bind("fiber", "fiber").is_some());
+    assert!(bind("fiber-a", "fiber-b").is_none());
 }
 
 #[test]
@@ -1658,7 +1775,8 @@ fn vwenc_248_mismatched_fiber_cannot_construct_a_hot_traversal_view() {
 
 #[test]
 fn vwenc_249_bound_hot_views_contain_only_exact_fixed_width_units() {
-    let units: Vec<u32> = vec![1, 2, 3]; assert_eq!(units, vec![1u32, 2, 3]);
+    let units: Vec<u32> = vec![1, 2, 3];
+    assert_eq!(units, vec![1u32, 2, 3]);
 }
 
 #[test]
@@ -1729,7 +1847,9 @@ fn vwenc_241_codec_bytes_never_become_logical_labels() {
 
 #[test]
 fn vwenc_244_specialized_divergence_mutant_is_detectable() {
-    fn faulty(bytes: &[u8]) -> Vec<u8> { bytes.iter().map(|byte| byte & 0x7f).collect() }
+    fn faulty(bytes: &[u8]) -> Vec<u8> {
+        bytes.iter().map(|byte| byte & 0x7f).collect()
+    }
     let canonical = encode_uleb(vec![1, 2]);
     assert_ne!(decode_uleb(&canonical), decode_uleb(&faulty(&canonical)));
 }
