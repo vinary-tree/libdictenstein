@@ -367,6 +367,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2"
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -374,7 +377,10 @@ jobs:
       - name: Install Rocq and TLA+ tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y coq curl ripgrep util-linux
+          sudo apt-get install -y curl ripgrep util-linux
+          opam install --yes rocq-prover.9.1.1
+          eval "$(opam env)"
+          echo "$(opam var bin)" >> "$GITHUB_PATH"
           curl -L \
             https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar \
             -o tla2tools.jar
