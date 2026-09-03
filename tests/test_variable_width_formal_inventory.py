@@ -51,7 +51,7 @@ class FormalInventoryTest(unittest.TestCase):
             capture_output=True,
             text=True,
         ).stdout
-        with tempfile.TemporaryDirectory(dir="/run/user/1000/pgmcp/fstrace") as directory:
+        with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "inventory.json"
             subprocess.run(
                 [
