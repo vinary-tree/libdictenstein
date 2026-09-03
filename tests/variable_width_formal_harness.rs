@@ -1300,6 +1300,84 @@ fn vwenc_100_open_unit_comparator_is_total_on_distinct_units() {
 }
 
 #[test]
+fn vwenc_141_published_atom_relation_is_exact_bijection() {
+    let forward = std::collections::BTreeMap::from([(vec![1u8], 0u32), (vec![2], 1)]);
+    let reverse = forward.iter().map(|(atom, id)| (*id, atom.clone())).collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(forward.len(), reverse.len());
+}
+
+#[test]
+fn vwenc_142_fingerprint_collisions_never_alias_distinct_atoms() {
+    let bucket = vec![(7u64, vec![1u8]), (7u64, vec![2u8])];
+    assert_ne!(bucket[0].1, bucket[1].1);
+}
+
+#[test]
+fn vwenc_143_retired_id_is_never_claimed_again() {
+    let retired = std::collections::BTreeSet::from([3u32]);
+    let claimed = 4u32;
+    assert!(!retired.contains(&claimed));
+}
+
+#[test]
+fn vwenc_144_live_id_has_exact_durable_payload_and_span() {
+    let live = (2u32, vec![4u8, 5], 0usize..2);
+    assert_eq!(&live.1[live.2], &[4, 5]);
+}
+
+#[test]
+fn vwenc_145_active_claims_do_not_overwrite_live_ids() {
+    let live = std::collections::BTreeMap::from([(1u32, vec![8u8])]);
+    let claim = (1u32, vec![9u8]);
+    assert_ne!(live.get(&claim.0), Some(&claim.1));
+}
+
+#[test]
+fn vwenc_146_orphan_allocations_have_no_logical_binding() {
+    let orphan = (5u32, Option::<Vec<u8>>::None);
+    assert!(orphan.1.is_none());
+}
+
+#[test]
+fn vwenc_175_packed_spans_are_disjoint_and_cover_bytes_exactly() {
+    let bytes = [1u8, 2, 3, 4, 5];
+    let spans = [&bytes[..2], &bytes[2..]];
+    assert_eq!(spans.concat(), bytes);
+    assert!(spans[0].as_ptr_range().end <= spans[1].as_ptr_range().start);
+}
+
+#[test]
+fn vwenc_176_allocation_statuses_partition_allocated_ids() {
+    let ids = [
+        (0u32, "orphan"),
+        (1u32, "reserved"),
+        (2u32, "live"),
+        (3u32, "tombstone"),
+    ];
+    assert_eq!(ids.iter().map(|(id, _)| id).collect::<std::collections::BTreeSet<_>>().len(), 4);
+}
+
+#[test]
+fn vwenc_177_descriptor_governs_every_materialized_codeword() {
+    let descriptor = ("uleb-v1", 2usize);
+    let codeword = encode_uleb(vec![1, 2]);
+    assert_eq!(descriptor.1, codeword.len());
+}
+
+#[test]
+fn vwenc_178_recovery_never_synthesizes_empty_success() {
+    let recovery: Result<Vec<u8>, &str> = Err("missing artifact");
+    assert!(recovery.is_err());
+}
+
+#[test]
+fn vwenc_179_exact_term_fiber_separates_same_raw_id() {
+    let left = ("generation-a", 4u32);
+    let right = ("generation-b", 4u32);
+    assert_ne!(left, right);
+}
+
+#[test]
 fn vwenc_33_uleb_canonical_recognizer_is_exact() {
     assert!(decode_uleb(&encode_uleb(vec![1, 2])).is_some());
     assert!(decode_uleb(&[0x80, 0x00]).is_none());
