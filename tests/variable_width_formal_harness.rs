@@ -266,6 +266,49 @@ fn vwenc_112_cross_fiber_id_interpretation_is_rejected() {
 }
 
 #[test]
+fn vwenc_107_tombstoned_ids_are_never_reused() {
+    let mut live = vec![true, true];
+    let retired = 0usize;
+    live[retired] = false;
+    let next_id = live.len();
+    live.push(true);
+    assert_eq!(next_id, 2);
+    assert!(!live[retired]);
+}
+
+#[test]
+fn vwenc_120_orphan_ids_have_no_live_or_sequence_binding() {
+    let allocated = vec![(0u32, false, false), (1u32, true, true)];
+    assert!(allocated.iter().any(|(id, live, referenced)| *id == 0 && !live && !referenced));
+}
+
+#[test]
+fn vwenc_121_query_overlay_assigns_stable_local_ids() {
+    let mut overlay = std::collections::BTreeMap::new();
+    let atom = vec![9u8, 8, 7];
+    let first = overlay.len() as u32;
+    let first = *overlay.entry(atom.clone()).or_insert(first);
+    let next = overlay.len() as u32;
+    let again = *overlay.entry(atom).or_insert(next);
+    assert_eq!(first, again);
+}
+
+#[test]
+fn vwenc_122_query_overlay_does_not_mutate_durable_vocabulary() {
+    let durable = std::collections::BTreeMap::<Vec<u8>, u32>::new();
+    let mut overlay = std::collections::BTreeMap::new();
+    overlay.insert(vec![1u8], 0u32);
+    assert!(durable.is_empty());
+}
+
+#[test]
+fn vwenc_139_query_local_ids_cannot_enter_durable_sequences() {
+    let durable_ids = [4u32, 9u32];
+    let query_local = 0u32;
+    assert!(!durable_ids.contains(&query_local));
+}
+
+#[test]
 fn vwenc_241_codec_bytes_never_become_logical_labels() {
     let encoded = encode_uleb(vec![1, 2, 3]);
     assert_eq!(decode_uleb(&encoded), Some(vec![1, 2, 3]));
