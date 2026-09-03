@@ -1,6 +1,7 @@
 """Regression tests for the source-derived VWENC inventory extractor."""
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,7 @@ class FormalInventoryTest(unittest.TestCase):
         self.assertEqual(len({row["numeric_id"] for row in rows}), 246)
         self.assertEqual(sum(bool(row["negative_controls"]) for row in rows), 16)
         self.assertTrue(all(row["kind"] in {"Theorem", "TLA_assertion"} for row in rows))
+        self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}", row["source_sha256"]) for row in rows))
         for row in rows:
             for control in row["negative_controls"]:
                 self.assertTrue((ROOT / control).is_file(), control)

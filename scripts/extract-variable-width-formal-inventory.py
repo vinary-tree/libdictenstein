@@ -10,6 +10,7 @@ JSON output and must supply the remaining test/oracle/control columns.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -34,6 +35,7 @@ def declarations(root: Path) -> list[dict[str, object]]:
     for source in sources:
         language = "rocq" if source.suffix == ".v" else "tla"
         pattern = ROCQ_RE if language == "rocq" else TLA_RE
+        source_digest = hashlib.sha256(source.read_bytes()).hexdigest()
         for line_number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
             match = pattern.match(line)
             if not match:
@@ -50,6 +52,7 @@ def declarations(root: Path) -> list[dict[str, object]]:
                 "kind": match.group(1) if language == "rocq" else "TLA_assertion",
                 "language": language,
                 "source": location,
+                "source_sha256": source_digest,
                 "negative_controls": [],
             }
             if identifier in found:
