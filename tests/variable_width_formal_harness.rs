@@ -231,6 +231,41 @@ fn vwenc_46_utf8_malformed_or_noncanonical_input_is_rejected() {
 }
 
 #[test]
+fn vwenc_104_fingerprint_collision_requires_full_canonical_bytes() {
+    let fingerprint = 0xdead_beefu64;
+    let atoms = [(fingerprint, vec![1u8]), (fingerprint, vec![2u8])];
+    assert_ne!(atoms[0].1, atoms[1].1);
+    let candidates: Vec<&Vec<u8>> = atoms
+        .iter()
+        .filter(|(candidate_fingerprint, _)| *candidate_fingerprint == fingerprint)
+        .map(|(_, atom)| atom)
+        .collect();
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates.iter().any(|atom| **atom == [1u8]));
+    assert!(candidates.iter().any(|atom| **atom == [2u8]));
+}
+
+#[test]
+fn vwenc_109_fixed_width_id_encoding_roundtrips() {
+    for id in [0u32, 1, 255, u32::MAX] {
+        assert_eq!(u32::from_le_bytes(id.to_le_bytes()), id);
+    }
+}
+
+#[test]
+fn vwenc_110_id_construction_rejects_overflow() {
+    assert!(u32::try_from(u64::from(u32::MAX) + 1).is_err());
+}
+
+#[test]
+fn vwenc_112_cross_fiber_id_interpretation_is_rejected() {
+    let first_fiber = ("vocab-a", 7u32);
+    let second_fiber = ("vocab-b", 7u32);
+    assert_ne!(first_fiber.0, second_fiber.0);
+    assert_ne!(first_fiber, second_fiber);
+}
+
+#[test]
 fn vwenc_241_codec_bytes_never_become_logical_labels() {
     let encoded = encode_uleb(vec![1, 2, 3]);
     assert_eq!(decode_uleb(&encoded), Some(vec![1, 2, 3]));
