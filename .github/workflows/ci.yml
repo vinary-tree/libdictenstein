@@ -378,7 +378,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y curl ripgrep util-linux
-          opam install --yes rocq-prover.9.1.1
+          # Rocq 9.1.1 is distributed in opam through the compatibility
+          # package name [coq]; pinning the version still selects the Rocq
+          # toolchain and avoids Ubuntu's older apt package.
+          opam install --yes coq.9.1.1
           eval "$(opam env)"
           echo "$(opam var bin)" >> "$GITHUB_PATH"
           curl -L \
