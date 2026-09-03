@@ -51,6 +51,11 @@ def declarations(root: Path) -> list[dict[str, object]]:
                 "numeric_id": numeric_id,
                 "kind": match.group(1) if language == "rocq" else "TLA_assertion",
                 "language": language,
+                "semantic_area": (
+                    "codec" if "Codec" in source.name else
+                    "interning" if "Interning" in source.name else
+                    "family_refinement"
+                ),
                 "source": location,
                 "source_path": str(source.relative_to(root)),
                 "source_line": line_number,
