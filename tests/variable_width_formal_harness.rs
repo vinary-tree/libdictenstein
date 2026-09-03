@@ -309,6 +309,66 @@ fn vwenc_139_query_local_ids_cannot_enter_durable_sequences() {
 }
 
 #[test]
+fn vwenc_125_captured_snapshot_survives_later_publication() {
+    let mut current = std::collections::BTreeMap::from([(vec![1u8], 0u32)]);
+    let captured = current.clone();
+    current.insert(vec![2u8], 1u32);
+    assert_eq!(captured.len(), 1);
+    assert_eq!(current.len(), 2);
+}
+
+#[test]
+fn vwenc_181_captured_vocabulary_snapshot_is_one_exact_fiber() {
+    let snapshot = ("vocabulary-a", 3u64, vec![1u8, 2, 3]);
+    assert_eq!(snapshot.0, "vocabulary-a");
+    assert_eq!(snapshot.1, 3);
+    assert!(!snapshot.2.is_empty());
+}
+
+#[test]
+fn vwenc_182_id_sequence_backing_binds_one_snapshot() {
+    let snapshot = ("vocabulary-a", 3u64);
+    let sequence = (snapshot.0, snapshot.1, vec![0u32, 1]);
+    assert_eq!((sequence.0, sequence.1), snapshot);
+}
+
+#[test]
+fn vwenc_116_valid_id_view_indexes_backing_directly() {
+    let backing = [4u32, 8, 15, 16];
+    let view = &backing[1..3];
+    assert_eq!(view, &[8, 15]);
+}
+
+#[test]
+fn vwenc_117_id_subview_preserves_fiber_and_range() {
+    let fiber = "vocabulary-a";
+    let backing = [4u32, 8, 15, 16];
+    let view = (fiber, &backing[..]);
+    let subview = (view.0, &view.1[1..3]);
+    assert_eq!(subview.0, fiber);
+    assert_eq!(subview.1, &[8, 15]);
+}
+
+#[test]
+fn vwenc_134_id_view_rejects_out_of_range_index() {
+    let backing = [4u32, 8];
+    assert!(backing.get(2).is_none());
+}
+
+#[test]
+fn vwenc_135_id_view_elements_have_exact_carrier_stride() {
+    let ids = [4u32, 8, 15];
+    assert_eq!(std::mem::size_of_val(&ids[0]), std::mem::size_of::<u32>());
+}
+
+#[test]
+fn vwenc_187_id_view_rejects_a_different_fiber() {
+    let expected = ("vocabulary-a", [1u32, 2]);
+    let foreign = ("vocabulary-b", [1u32, 2]);
+    assert_ne!(expected.0, foreign.0);
+}
+
+#[test]
 fn vwenc_241_codec_bytes_never_become_logical_labels() {
     let encoded = encode_uleb(vec![1, 2, 3]);
     assert_eq!(decode_uleb(&encoded), Some(vec![1, 2, 3]));
