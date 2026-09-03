@@ -126,3 +126,22 @@ fn vwenc_244_specialized_divergence_mutant_is_detectable() {
     let canonical = encode_uleb(vec![1, 2]);
     assert_ne!(decode_uleb(&canonical), decode_uleb(&faulty(&canonical)));
 }
+
+#[test]
+fn vwenc_36_arbitrary_width_payload_is_not_limited_to_u128() {
+    let digits: Vec<u8> = (0..40).map(|i| (i * 7 % 128) as u8).collect();
+    let encoded = encode_uleb(digits.clone());
+    assert_eq!(decode_uleb(&encoded), Some(digits));
+}
+
+#[test]
+fn vwenc_80_adjacent_codewords_preserve_boundaries() {
+    let first = encode_uleb(vec![1, 2]);
+    let second = encode_uleb(vec![3]);
+    let mut stream = first.clone();
+    stream.extend_from_slice(&second);
+    assert_eq!(&stream[..first.len()], first.as_slice());
+    assert_eq!(&stream[first.len()..], second.as_slice());
+    assert_eq!(decode_uleb(&stream[..first.len()]), Some(vec![1, 2]));
+    assert_eq!(decode_uleb(&stream[first.len()..]), Some(vec![3]));
+}
