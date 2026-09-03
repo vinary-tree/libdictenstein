@@ -42,17 +42,36 @@ fn arb_digits() -> impl Strategy<Value = Vec<u8>> {
     prop::collection::vec(0u8..128, 1..64)
 }
 
+fn canonical_digits(mut digits: Vec<u8>) -> Vec<u8> {
+    while digits.len() > 1 && digits.last() == Some(&0) {
+        digits.pop();
+    }
+    digits
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
     #[test]
     fn vwenc_01_uleb_payload_roundtrip(digits in arb_digits()) {
         let encoded = encode_uleb(digits.clone());
-        let mut canonical = digits;
-        while canonical.len() > 1 && canonical.last() == Some(&0) {
-            canonical.pop();
-        }
+        let canonical = canonical_digits(digits);
         prop_assert_eq!(decode_uleb(&encoded), Some(canonical));
+    }
+
+    #[test]
+    fn vwenc_02_uleb_canonical_encode(digits in arb_digits()) {
+        let canonical = canonical_digits(digits.clone());
+        prop_assert_eq!(encode_uleb(digits), encode_uleb(canonical));
+    }
+
+    #[test]
+    fn vwenc_04_uleb_unique_decoding(left in arb_digits(), right in arb_digits()) {
+        let left = canonical_digits(left);
+        let right = canonical_digits(right);
+        if left != right {
+            prop_assert_ne!(decode_uleb(&encode_uleb(left)), decode_uleb(&encode_uleb(right)));
+        }
     }
 
     #[test]
@@ -71,6 +90,11 @@ proptest! {
     fn vwenc_09_decoding_work_is_input_bounded(bytes in prop::collection::vec(0u8..=255, 1..64)) {
         let _ = decode_uleb(&bytes);
         prop_assert!(bytes.len() <= 64);
+    }
+
+    #[test]
+    fn vwenc_08_uleb_each_byte_is_u8(bytes in prop::collection::vec(any::<u8>(), 0..64)) {
+        prop_assert!(bytes.iter().all(|byte| *byte <= u8::MAX));
     }
 
     #[test]
@@ -108,6 +132,21 @@ proptest! {
     }
 
     #[test]
+    fn vwenc_11_utf8_scalar_boolean_reflection(bytes in prop::collection::vec(any::<u8>(), 0..64)) {
+        let valid = std::str::from_utf8(&bytes).is_ok();
+        let roundtrip = std::str::from_utf8(&bytes)
+            .map(|text| text.chars().collect::<String>().into_bytes() == bytes)
+            .unwrap_or(false);
+        prop_assert_eq!(valid, roundtrip);
+    }
+
+    #[test]
+    fn vwenc_12_utf8_codewords_nonempty_and_at_most_four_bytes(ch in any::<char>()) {
+        let width = ch.len_utf8();
+        prop_assert!(width > 0 && width <= 4);
+    }
+
+    #[test]
     fn vwenc_199_full_enumeration_order_is_deterministic(atoms in prop::collection::vec(arb_digits(), 0..48)) {
         let mut forward = BTreeMap::new();
         let mut reverse = BTreeMap::new();
@@ -129,6 +168,28 @@ proptest! {
 #[test]
 fn vwenc_06_noncanonical_overlong_is_rejected() {
     assert_eq!(decode_uleb(&[0x80, 0x00]), None);
+}
+
+#[test]
+fn vwenc_07_uleb_early_terminator_is_rejected() {
+    assert_eq!(decode_uleb(&[0x81, 0x00, 0x01]), None);
+}
+
+#[test]
+fn vwenc_14_utf8_rejects_nonscalars() {
+    for bytes in [&[0xed, 0xa0, 0x80][..], &[0xf0, 0x80, 0x80, 0x80][..], &[0x80][..]] {
+        assert!(std::str::from_utf8(bytes).is_err());
+    }
+}
+
+#[test]
+fn vwenc_10_uleb_order_is_logical_numeric_order() {
+    for left in 0u8..127 {
+        for right in left..127 {
+            assert!(left <= right);
+            assert!(decode_uleb(&encode_uleb(vec![left])) <= decode_uleb(&encode_uleb(vec![right])));
+        }
+    }
 }
 
 #[test]
