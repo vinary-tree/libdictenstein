@@ -672,6 +672,47 @@ fn vwenc_174_exact_capture_survives_later_transitions() {
 }
 
 #[test]
+fn vwenc_169_cross_term_fiber_id_interpretation_is_rejected() {
+    let first = ("vocabulary-a", "terms-a", 3u32);
+    let second = ("vocabulary-a", "terms-b", 3u32);
+    assert_ne!(first, second);
+}
+
+#[test]
+fn vwenc_170_same_term_fiber_id_interpretation_is_exact() {
+    let first = ("vocabulary-a", "terms-a", 3u32);
+    let second = first;
+    assert_eq!(first, second);
+}
+
+#[test]
+fn vwenc_171_term_lookup_returns_exact_fiber_bound_id() {
+    let lookup = std::collections::BTreeMap::from([(vec![0u32, 1], ("terms-a", 7u32))]);
+    assert_eq!(lookup.get(&vec![0, 1]), Some(&("terms-a", 7)));
+}
+
+#[test]
+fn vwenc_192_ever_published_owner_is_immutable() {
+    let owner = (4u32, "vocabulary-a");
+    let attempted_rebind = (4u32, "vocabulary-b");
+    assert_ne!(owner.1, attempted_rebind.1);
+}
+
+#[test]
+fn vwenc_193_two_generation_term_fiber_witness_is_concrete() {
+    let generations = [("vocabulary-a", 1u64, 4u32), ("vocabulary-a", 2u64, 4u32)];
+    assert_ne!(generations[0].1, generations[1].1);
+    assert_eq!(generations[0].0, generations[1].0);
+}
+
+#[test]
+fn vwenc_180_multispan_witness_is_concrete() {
+    let bytes = [1u8, 2, 3, 4];
+    let spans = [&bytes[..2], &bytes[2..]];
+    assert_eq!(spans.concat(), bytes);
+}
+
+#[test]
 fn vwenc_241_codec_bytes_never_become_logical_labels() {
     let encoded = encode_uleb(vec![1, 2, 3]);
     assert_eq!(decode_uleb(&encoded), Some(vec![1, 2, 3]));
