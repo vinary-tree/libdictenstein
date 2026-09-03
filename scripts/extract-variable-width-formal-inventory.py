@@ -52,6 +52,8 @@ def declarations(root: Path) -> list[dict[str, object]]:
                 "kind": match.group(1) if language == "rocq" else "TLA_assertion",
                 "language": language,
                 "source": location,
+                "source_path": str(source.relative_to(root)),
+                "source_line": line_number,
                 "source_sha256": source_digest,
                 "negative_controls": [],
             }

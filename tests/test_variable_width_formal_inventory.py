@@ -31,6 +31,8 @@ class FormalInventoryTest(unittest.TestCase):
         self.assertEqual(sum(bool(row["negative_controls"]) for row in rows), 16)
         self.assertTrue(all(row["kind"] in {"Theorem", "TLA_assertion"} for row in rows))
         self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}", row["source_sha256"]) for row in rows))
+        self.assertTrue(all(Path(row["source_path"]).is_file() for row in rows))
+        self.assertTrue(all(row["source_line"] > 0 for row in rows))
         for row in rows:
             for control in row["negative_controls"]:
                 self.assertTrue((ROOT / control).is_file(), control)
