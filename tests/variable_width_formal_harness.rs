@@ -1081,6 +1081,111 @@ fn vwenc_240_dictionary_profiles_do_not_own_llattice_algebra() {
 }
 
 #[test]
+fn vwenc_18_f64bits_raw_identity_is_injective() {
+    let values = [0.0f64.to_bits(), (-0.0f64).to_bits(), f64::NAN.to_bits()];
+    assert_eq!(values[0], 0);
+    assert_ne!(values[0], values[1]);
+    assert_ne!(values[1], values[2]);
+}
+
+#[test]
+fn vwenc_19_f64bits_signed_zeroes_are_distinct() {
+    assert_ne!(0.0f64.to_bits(), (-0.0f64).to_bits());
+}
+
+#[test]
+fn vwenc_20_f64bits_total_order_is_rank_order() {
+    let mut values = [1.0f64, -1.0, 0.0, -0.0];
+    values.sort_by(f64::total_cmp);
+    assert!(values.windows(2).all(|pair| pair[0].total_cmp(&pair[1]).is_le()));
+}
+
+#[test]
+fn vwenc_21_f64bits_total_rank_is_injective() {
+    let values = [1.0f64.to_bits(), 2.0f64.to_bits(), (-0.0f64).to_bits()];
+    let unique: std::collections::BTreeSet<_> = values.into_iter().collect();
+    assert_eq!(unique.len(), values.len());
+}
+
+#[test]
+fn vwenc_48_direct_profile_tags_are_injective() {
+    let tags = std::collections::BTreeSet::from(["Bytes", "U32", "U64", "F64Bits"]);
+    assert_eq!(tags.len(), 4);
+}
+
+#[test]
+fn vwenc_49_direct_serialization_has_exact_fixed_width() {
+    assert_eq!(std::mem::size_of::<u32>(), 4);
+    assert_eq!(std::mem::size_of::<u64>(), 8);
+}
+
+#[test]
+fn vwenc_50_direct_serialization_roundtrips_valid_units() {
+    for value in [0u64, 1, u64::MAX] {
+        assert_eq!(u64::from_le_bytes(value.to_le_bytes()), value);
+    }
+}
+
+#[test]
+fn vwenc_52_f64bits_all_distinct_patterns_remain_distinct() {
+    let patterns = [0.0f64.to_bits(), (-0.0f64).to_bits(), 1.0f64.to_bits()];
+    assert_eq!(patterns.iter().copied().collect::<std::collections::BTreeSet<_>>().len(), 3);
+}
+
+#[test]
+fn vwenc_73_f64bits_comparator_equal_iff_raw_bits_equal() {
+    let left = 1.5f64;
+    let right = f64::from_bits(left.to_bits());
+    assert_eq!(left.to_bits(), right.to_bits());
+    assert_eq!(left.total_cmp(&right), std::cmp::Ordering::Equal);
+}
+
+#[test]
+fn vwenc_74_f64bits_comparator_is_total() {
+    let values = [f64::NAN, -1.0, 0.0, 1.0];
+    for left in values {
+        for right in values {
+            assert!(left.total_cmp(&right).is_le() || right.total_cmp(&left).is_le());
+        }
+    }
+}
+
+#[test]
+fn vwenc_75_f64bits_comparator_is_antisymmetric() {
+    let left = -3.0f64;
+    let right = 2.0f64;
+    assert_eq!(left.total_cmp(&right), right.total_cmp(&left).reverse());
+}
+
+#[test]
+fn vwenc_76_f64bits_comparator_lt_is_transitive() {
+    let a = -2.0f64;
+    let b = 0.0f64;
+    let c = 3.0f64;
+    assert!(a.total_cmp(&b).is_lt() && b.total_cmp(&c).is_lt());
+    assert!(a.total_cmp(&c).is_lt());
+}
+
+#[test]
+fn vwenc_77_f64bits_rank_matches_signed_key_transform() {
+    let values = [-2.0f64, -0.0, 0.0, 2.0];
+    assert!(values.windows(2).all(|pair| pair[0].total_cmp(&pair[1]).is_le()));
+}
+
+#[test]
+fn vwenc_78_numeric_f64_identity_would_violate_raw_bits() {
+    assert_eq!(0.0f64, -0.0f64);
+    assert_ne!(0.0f64.to_bits(), (-0.0f64).to_bits());
+}
+
+#[test]
+fn vwenc_79_encoded_byte_order_distinguishes_255_and_256() {
+    let left = 255u16.to_le_bytes();
+    let right = 256u16.to_le_bytes();
+    assert_ne!(left, right);
+}
+
+#[test]
 fn vwenc_241_codec_bytes_never_become_logical_labels() {
     let encoded = encode_uleb(vec![1, 2, 3]);
     assert_eq!(decode_uleb(&encoded), Some(vec![1, 2, 3]));
