@@ -512,7 +512,7 @@ verify_family_refinement_identifier_manifest
 verify_formal_inventory_extractor
 verify_formal_test_inventory
 run_required formal-inventory-regression-tests 256M 512M "$repo_root" \
-  python3 -m unittest discover -s tests -p 'test_variable_width_*inventory.py'
+  python3 -m unittest discover -s tests -p 'test_variable_width*.py'
 
 verify_cfg_inventory VariableWidthCodecBoundary VariableWidthCodecBoundary
 verify_cfg_inventory VariableWidthVocabularyInterning \
