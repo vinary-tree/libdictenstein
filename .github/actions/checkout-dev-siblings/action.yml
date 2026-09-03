@@ -83,6 +83,9 @@ runs:
                   "$remote" "refs/tags/$tagged_ref" >/dev/null 2>&1
               then
                 selected_ref="$tagged_ref"
+              elif [ -n "$required_version" ]; then
+                echo "ERROR: $repo requires $tagged_ref from Cargo.toml, but that upstream ref is unavailable" >&2
+                exit 1
               fi
             fi
             if [ -z "$selected_ref" ]; then
