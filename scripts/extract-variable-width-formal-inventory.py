@@ -55,6 +55,7 @@ def declarations(root: Path) -> list[dict[str, object]]:
                 "source_path": str(source.relative_to(root)),
                 "source_line": line_number,
                 "source_sha256": source_digest,
+                "declaration": line.strip(),
                 "negative_controls": [],
             }
             if identifier in found:
