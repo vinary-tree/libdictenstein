@@ -19,6 +19,22 @@ ROCQ_RE = re.compile(r"^(Theorem|Lemma|Corollary)\s+(VWENC_[A-Za-z0-9_]+)")
 TLA_RE = re.compile(r"^(VWENC_[A-Za-z0-9_]+)\s*==")
 CFG_RE = re.compile(r"^\s*(VWENC_[A-Za-z0-9_]+)\s*$")
 ID_RE = re.compile(r"^VWENC_(\d+)_")
+SOURCE_AREAS = {
+    "VariableWidthCodecSpec.v": "codec",
+    "VariableWidthCodecBoundary.tla": "codec",
+    "VariableWidthInterningSpec.v": "interning",
+    "VariableWidthVocabularyInterning.tla": "interning",
+    "VariableWidthVocabularyPublication.tla": "interning",
+    "VariableWidthFamilyRefinementSpec.v": "family_refinement",
+    "VariableWidthFamilyRefinement.tla": "family_refinement",
+}
+
+
+def semantic_area(source: Path) -> str:
+    try:
+        return SOURCE_AREAS[source.name]
+    except KeyError as error:
+        raise ValueError(f"unclassified variable-width formal source: {source}") from error
 
 
 def declarations(root: Path) -> list[dict[str, object]]:
@@ -51,11 +67,7 @@ def declarations(root: Path) -> list[dict[str, object]]:
                 "numeric_id": numeric_id,
                 "kind": match.group(1) if language == "rocq" else "TLA_assertion",
                 "language": language,
-                "semantic_area": (
-                    "codec" if "Codec" in source.name else
-                    "interning" if "Interning" in source.name else
-                    "family_refinement"
-                ),
+                "semantic_area": semantic_area(source),
                 "source": location,
                 "source_path": str(source.relative_to(root)),
                 "source_line": line_number,

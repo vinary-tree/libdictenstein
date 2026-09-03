@@ -12,6 +12,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXTRACTOR = ROOT / "scripts" / "extract-variable-width-formal-inventory.py"
+SOURCE_AREAS = {
+    "VariableWidthCodecSpec.v": "codec",
+    "VariableWidthCodecBoundary.tla": "codec",
+    "VariableWidthInterningSpec.v": "interning",
+    "VariableWidthVocabularyInterning.tla": "interning",
+    "VariableWidthVocabularyPublication.tla": "interning",
+    "VariableWidthFamilyRefinementSpec.v": "family_refinement",
+    "VariableWidthFamilyRefinement.tla": "family_refinement",
+}
 
 
 class FormalInventoryTest(unittest.TestCase):
@@ -45,11 +54,7 @@ class FormalInventoryTest(unittest.TestCase):
             self.assertTrue(all(row["source_sha256"] == expected for row in rows if row["source_path"] == source_path))
         for row in rows:
             source_name = Path(row["source_path"]).name
-            expected_area = (
-                "codec" if "Codec" in source_name else
-                "interning" if "Interning" in source_name else
-                "family_refinement"
-            )
+            expected_area = SOURCE_AREAS[source_name]
             self.assertEqual(row["semantic_area"], expected_area)
             for control in row["negative_controls"]:
                 self.assertTrue((ROOT / control).is_file(), control)
