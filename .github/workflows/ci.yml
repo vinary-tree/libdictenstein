@@ -404,6 +404,8 @@ jobs:
           VARIABLE_WIDTH_FORMAL_TIMEOUT_SECONDS: "7200"
           VARIABLE_WIDTH_TLC_JAVA_OPTIONS: "-Xms64m -Xmx512m -XX:+UseParallelGC"
         run: bash scripts/verify-variable-width-formal.sh
+      - name: Run invariant-derived reference harness
+        run: prlimit --rss=2147483648 -- cargo test --test variable_width_formal_harness
 
   # -----------------------------------------------------------------
   # Miri unsafe-boundary checks. Runs on nightly because `cargo miri`
