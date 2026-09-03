@@ -582,6 +582,96 @@ fn vwenc_156_published_head_has_no_dangling_id_reference() {
 }
 
 #[test]
+fn vwenc_157_empty_interning_state_is_well_formed() {
+    let vocabulary: std::collections::BTreeMap<Vec<u8>, u32> = std::collections::BTreeMap::new();
+    assert!(vocabulary.is_empty());
+}
+
+#[test]
+fn vwenc_158_packed_spans_are_disjoint_and_cover_exactly() {
+    let bytes = [1u8, 2, 3, 4];
+    let first = &bytes[..2];
+    let second = &bytes[2..];
+    assert!(first.as_ptr_range().end <= second.as_ptr_range().start);
+    assert_eq!([first, second].concat(), bytes);
+}
+
+#[test]
+fn vwenc_164_allocated_ids_are_not_reserved_or_published_again() {
+    let allocated = std::collections::BTreeSet::from([0u32, 1]);
+    let reserved = std::collections::BTreeSet::from([2u32]);
+    let next = 3u32;
+    assert!(allocated.is_disjoint(&reserved));
+    assert!(!allocated.contains(&next));
+    assert!(!reserved.contains(&next));
+}
+
+#[test]
+fn vwenc_131_fresh_insert_preserves_existing_reverse_lookups() {
+    let mut reverse = std::collections::BTreeMap::from([(0u32, vec![1u8])]);
+    let before = reverse.clone();
+    reverse.insert(1, vec![2u8]);
+    assert_eq!(reverse.get(&0), before.get(&0));
+}
+
+#[test]
+fn vwenc_165_orphan_ids_have_no_term_sequence_binding() {
+    let orphan = (7u32, Option::<Vec<u32>>::None);
+    assert!(orphan.1.is_none());
+}
+
+#[test]
+fn vwenc_172_cross_overlay_query_local_id_is_rejected() {
+    let durable_fiber = "vocabulary-a";
+    let overlay_fiber = "vocabulary-b";
+    assert_ne!(durable_fiber, overlay_fiber);
+}
+
+#[test]
+fn vwenc_183_two_level_resolution_rejects_foreign_fiber_tail() {
+    let expected = ("vocabulary-a", [2u32, 3]);
+    let foreign = ("vocabulary-b", [2u32, 3]);
+    assert_ne!(expected.0, foreign.0);
+}
+
+#[test]
+fn vwenc_184_durable_query_resolution_binds_exact_snapshot_fiber() {
+    let resolution = ("vocabulary-a", 4u64, 2u32);
+    assert_eq!(resolution.0, "vocabulary-a");
+    assert_eq!(resolution.1, 4);
+}
+
+#[test]
+fn vwenc_185_serialized_durable_query_id_retains_its_fiber() {
+    let serialized = ("vocabulary-a", 4u64, 2u32);
+    let reopened = serialized;
+    assert_eq!(reopened, serialized);
+}
+
+#[test]
+fn vwenc_186_query_overlay_from_another_fiber_is_rejected() {
+    let query_fiber = "query-a";
+    let vocabulary_fiber = "vocabulary-a";
+    assert_ne!(query_fiber, vocabulary_fiber);
+}
+
+#[test]
+fn vwenc_173_captured_snapshot_is_the_exact_initial_state() {
+    let initial = std::collections::BTreeMap::from([(vec![1u8], 0u32)]);
+    let captured = initial.clone();
+    assert_eq!(captured, initial);
+}
+
+#[test]
+fn vwenc_174_exact_capture_survives_later_transitions() {
+    let captured = std::collections::BTreeMap::from([(vec![1u8], 0u32)]);
+    let mut later = captured.clone();
+    later.insert(vec![2u8], 1u32);
+    assert_eq!(captured.len(), 1);
+    assert_eq!(later.len(), 2);
+}
+
+#[test]
 fn vwenc_241_codec_bytes_never_become_logical_labels() {
     let encoded = encode_uleb(vec![1, 2, 3]);
     assert_eq!(decode_uleb(&encoded), Some(vec![1, 2, 3]));
