@@ -10,6 +10,7 @@ state_root="$artifact_root/tlc-state-spaces"
 
 command_timeout_seconds="${VARIABLE_WIDTH_FORMAL_TIMEOUT_SECONDS:-7200}"
 tlc_java_options="${VARIABLE_WIDTH_TLC_JAVA_OPTIONS:--Xms64m -Xmx512m -XX:+UseParallelGC}"
+resource_control="${VARIABLE_WIDTH_FORMAL_RESOURCE_CONTROL:-systemd}"
 coqc_bin="${COQC_BIN:-$(command -v coqc || true)}"
 coqchk_bin="${COQCHK_BIN:-$(command -v coqchk || true)}"
 expected_identifier_count=246
@@ -77,18 +78,45 @@ run_capped_capture() {
     )
   fi
 
-  if systemd-run --user --wait --pipe --quiet --collect \
-      --working-directory="$working_directory" \
-      --property="MemoryHigh=$memory_high" \
-      --property="MemoryMax=$memory_max" \
-      --property=MemorySwapMax=0 \
-      --property=CPUQuota=100% \
-      --property=TasksMax=128 \
-      "${command[@]}" >"$last_log" 2>&1; then
-    status=0
-  else
-    status=$?
-  fi
+  case "$resource_control" in
+    systemd)
+      if systemd-run --user --wait --pipe --quiet --collect \
+          --working-directory="$working_directory" \
+          --property="MemoryHigh=$memory_high" \
+          --property="MemoryMax=$memory_max" \
+          --property=MemorySwapMax=0 \
+          --property=CPUQuota=100% \
+          --property=TasksMax=128 \
+          "${command[@]}" >"$last_log" 2>&1; then
+        status=0
+      else
+        status=$?
+      fi
+      ;;
+    external)
+      local memory_limit_bytes
+      case "$memory_max" in
+        512M) memory_limit_bytes=536870912 ;;
+        1G) memory_limit_bytes=1073741824 ;;
+        2G) memory_limit_bytes=2147483648 ;;
+        *)
+          echo "ERROR: unsupported external memory limit: $memory_max" >&2
+          return 1
+          ;;
+      esac
+      if (cd "$working_directory" &&
+          prlimit --as="$memory_limit_bytes" --rss="$memory_limit_bytes" \
+            "${command[@]}" >"$last_log" 2>&1); then
+        status=0
+      else
+        status=$?
+      fi
+      ;;
+    *)
+      echo "ERROR: unsupported VARIABLE_WIDTH_FORMAL_RESOURCE_CONTROL=$resource_control" >&2
+      return 1
+      ;;
+  esac
 
   cat "$last_log"
   return "$status"
