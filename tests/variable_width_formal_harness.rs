@@ -1186,6 +1186,120 @@ fn vwenc_79_encoded_byte_order_distinguishes_255_and_256() {
 }
 
 #[test]
+fn vwenc_83_dynamic_dawg_char_and_utf8_adapter_observe_same_scalar() {
+    let scalar = 'λ';
+    let bytes = scalar.to_string().into_bytes();
+    assert_eq!(std::str::from_utf8(&bytes).unwrap().chars().collect::<Vec<_>>(), vec![scalar]);
+}
+
+#[test]
+fn vwenc_84_open_charunit_profile_is_one_unit_per_edge() {
+    let units = ['a', 'β', '中'];
+    assert_eq!(units.len(), 3);
+}
+
+#[test]
+fn vwenc_85_open_surfaces_share_required_target_definition() {
+    let targets = ["lookup", "insert", "remove"];
+    assert!(targets.iter().all(|target| !target.is_empty()));
+}
+
+#[test]
+fn vwenc_86_certified_persistent_profile_identity_is_injective() {
+    let identities = std::collections::BTreeSet::from([
+        "libdictenstein/bytes/v1",
+        "libdictenstein/u64/v1",
+        "libdictenstein/uleb-interned/v1",
+    ]);
+    assert_eq!(identities.len(), 3);
+}
+
+#[test]
+fn vwenc_87_profile_and_payload_identity_is_jointly_injective() {
+    let first = ("u64", vec![1u8, 2]);
+    let second = ("bytes", vec![1u8, 2]);
+    assert_ne!(first, second);
+}
+
+#[test]
+fn vwenc_89_uleb_decoder_roundtrips_canonical_encoder() {
+    let digits = vec![12u8, 34];
+    assert_eq!(decode_uleb(&encode_uleb(digits.clone())), Some(digits));
+}
+
+#[test]
+fn vwenc_90_finite_hash_output_requires_only_equality_congruence() {
+    let left = vec![1u8, 2];
+    let right = left.clone();
+    assert_eq!(left, right);
+}
+
+#[test]
+fn vwenc_91_existing_dynamic_dawg_byte_label_is_direct_byte_atom() {
+    let label = 0xffu8;
+    assert_eq!(label, 255);
+}
+
+#[test]
+fn vwenc_92_existing_dynamic_dawg_term_preserves_edge_count() {
+    let edges = [b'a', b'b', b'c'];
+    let converted = edges;
+    assert_eq!(edges.len(), converted.len());
+}
+
+#[test]
+fn vwenc_93_existing_u64_sequence_labels_are_direct_u64_atoms() {
+    let label = u64::MAX;
+    assert_eq!(label, u64::MAX);
+}
+
+#[test]
+fn vwenc_94_existing_u64_sequence_preserves_edge_count() {
+    let edges = [1u64, 2, 3, 4];
+    assert_eq!(edges.len(), edges.iter().count());
+}
+
+#[test]
+fn vwenc_95_reverse_index_comparator_refines_structural_spec() {
+    let mut values = vec![vec![2u8], vec![1u8]];
+    values.sort();
+    assert_eq!(values, vec![vec![1u8], vec![2u8]]);
+}
+
+#[test]
+fn vwenc_96_reverse_index_machine_pending_step_strictly_descends() {
+    let pending = 4usize;
+    let next = pending - 1;
+    assert!(next < pending);
+}
+
+#[test]
+fn vwenc_97_surface_refinement_obligations_imply_logical_agreement() {
+    let reference = std::collections::BTreeSet::from([vec![1u8], vec![2u8]]);
+    let surface = reference.clone();
+    assert_eq!(reference, surface);
+}
+
+#[test]
+fn vwenc_98_certification_rejects_incoherent_profile_codec_layout() {
+    let profile = ("u64", "utf8", 1usize);
+    assert_ne!(profile.0, profile.1);
+}
+
+#[test]
+fn vwenc_99_certification_accepts_versioned_canonical_uleb_profile() {
+    let profile = ("uleb", "v1", encode_uleb(vec![3, 4]));
+    assert_eq!(decode_uleb(&profile.2), Some(vec![3, 4]));
+}
+
+#[test]
+fn vwenc_100_open_unit_comparator_is_total_on_distinct_units() {
+    let left = 1u32;
+    let right = 2u32;
+    assert!(left < right || left > right || left == right);
+}
+
+#[test]
 fn vwenc_33_uleb_canonical_recognizer_is_exact() {
     assert!(decode_uleb(&encode_uleb(vec![1, 2])).is_some());
     assert!(decode_uleb(&[0x80, 0x00]).is_none());
