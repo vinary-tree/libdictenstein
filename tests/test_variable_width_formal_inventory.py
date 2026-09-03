@@ -1,6 +1,7 @@
 """Regression tests for the source-derived VWENC inventory extractor."""
 
 import json
+import hashlib
 import re
 import subprocess
 import sys
@@ -33,6 +34,9 @@ class FormalInventoryTest(unittest.TestCase):
         self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}", row["source_sha256"]) for row in rows))
         self.assertTrue(all(Path(row["source_path"]).is_file() for row in rows))
         self.assertTrue(all(row["source_line"] > 0 for row in rows))
+        for source_path in {row["source_path"] for row in rows}:
+            expected = hashlib.sha256((ROOT / source_path).read_bytes()).hexdigest()
+            self.assertTrue(all(row["source_sha256"] == expected for row in rows if row["source_path"] == source_path))
         for row in rows:
             for control in row["negative_controls"]:
                 self.assertTrue((ROOT / control).is_file(), control)
