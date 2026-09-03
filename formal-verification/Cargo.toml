@@ -1,0 +1,15 @@
+[package]
+name = "libdictenstein-variable-width-harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+rust-version = "1.95"
+
+[dev-dependencies]
+proptest = "1.11"
+
+[[test]]
+name = "variable_width_formal_harness"
+path = "../tests/variable_width_formal_harness.rs"
+
+[workspace]
