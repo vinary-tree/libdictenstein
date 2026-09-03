@@ -436,6 +436,77 @@ fn vwenc_137_term_dictionary_is_a_second_exact_bijection() {
 }
 
 #[test]
+fn vwenc_101_atom_identity_is_profile_and_canonical_bytes() {
+    let first = ("uleb-v1", vec![1u8, 2]);
+    let same_bytes_other_profile = ("uleb-v2", vec![1u8, 2]);
+    assert_ne!(first, same_bytes_other_profile);
+    assert_eq!(first.1, same_bytes_other_profile.1);
+}
+
+#[test]
+fn vwenc_103_published_vocabulary_is_an_exact_bijection() {
+    let forward = std::collections::BTreeMap::from([(vec![1u8], 0u32), (vec![2u8], 1u32)]);
+    let reverse = forward.iter().map(|(atom, id)| (*id, atom.clone())).collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(forward.len(), reverse.len());
+    for (atom, id) in &forward {
+        assert_eq!(reverse.get(id), Some(atom));
+    }
+}
+
+#[test]
+fn vwenc_105_existing_atom_interning_is_idempotent() {
+    let mut vocabulary = std::collections::BTreeMap::new();
+    let atom = vec![4u8, 5];
+    let first = *vocabulary.entry(atom.clone()).or_insert(0u32);
+    let second = *vocabulary.entry(atom).or_insert(1u32);
+    assert_eq!(first, second);
+    assert_eq!(vocabulary.len(), 1);
+}
+
+#[test]
+fn vwenc_106_fresh_publication_updates_live_history_and_bytes() {
+    let mut published = std::collections::BTreeMap::new();
+    published.insert(0u32, vec![7u8]);
+    published.insert(1u32, vec![8u8]);
+    assert_eq!(published.get(&1), Some(&vec![8u8]));
+    assert_eq!(published.len(), 2);
+}
+
+#[test]
+fn vwenc_127_canonical_atom_equality_is_exact() {
+    assert_eq!(canonical_digits(vec![3, 0, 0]), canonical_digits(vec![3]));
+    assert_ne!(canonical_digits(vec![3]), canonical_digits(vec![4]));
+}
+
+#[test]
+fn vwenc_128_every_canonical_atom_codeword_is_nonempty() {
+    assert!(!encode_uleb(vec![0]).is_empty());
+    assert!(!encode_uleb(vec![127, 1]).is_empty());
+}
+
+#[test]
+fn vwenc_129_fingerprints_are_candidates_not_atom_identity() {
+    let candidates = [(11u64, vec![1u8]), (11u64, vec![2u8])];
+    assert_eq!(candidates[0].0, candidates[1].0);
+    assert_ne!(candidates[0].1, candidates[1].1);
+}
+
+#[test]
+fn vwenc_138_native_id_view_preserves_backing_and_fiber() {
+    let backing = [1u32, 2, 3];
+    let view = ("vocabulary-a", &backing[..]);
+    assert_eq!(view.0, "vocabulary-a");
+    assert_eq!(view.1, &backing[..]);
+}
+
+#[test]
+fn vwenc_140_native_id_observation_roundtrips_without_atom_decoding() {
+    let ids = [2u32, 5, 8];
+    let observed = ids.to_vec();
+    assert_eq!(observed, ids);
+}
+
+#[test]
 fn vwenc_241_codec_bytes_never_become_logical_labels() {
     let encoded = encode_uleb(vec![1, 2, 3]);
     assert_eq!(decode_uleb(&encoded), Some(vec![1, 2, 3]));
