@@ -83,6 +83,15 @@ runs:
                   "$remote" "refs/tags/$tagged_ref" >/dev/null 2>&1
               then
                 selected_ref="$tagged_ref"
+              elif [ -n "$required_version" ] && \
+                git ls-remote --exit-code --heads \
+                  "$remote" master >/dev/null 2>&1
+              then
+                # The release branch may publish an exact version on master
+                # before creating a version tag.  Select master only as an
+                # explicit fallback; the post-checkout package-version audit
+                # below remains authoritative and rejects mismatches.
+                selected_ref=master
               elif [ -n "$required_version" ]; then
                 echo "ERROR: $repo requires $tagged_ref from Cargo.toml, but that upstream ref is unavailable" >&2
                 exit 1
