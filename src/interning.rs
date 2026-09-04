@@ -396,6 +396,26 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionaryU64<K, V> {
         Ok(self.id_dictionary.get_units_value(sequence.as_ids()))
     }
 
+    /// Export atom sequences and mapped values in deterministic ID-dictionary
+    /// order.  Every ID is resolved while the vocabulary snapshot is held;
+    /// unknown IDs are reported instead of being silently omitted.
+    pub fn visible_entries(&self) -> Result<Vec<(Vec<K>, Option<V>)>, InterningError> {
+        let vocabulary = self
+            .vocabulary
+            .lock()
+            .map_err(|_| InterningError::Poisoned)?;
+        self.id_dictionary
+            .visible_entries()
+            .into_iter()
+            .map(|(ids, value)| {
+                ids.into_iter()
+                    .map(|id| vocabulary.value(id).cloned().ok_or(InterningError::UnknownId(id)))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|atoms| (atoms, value))
+            })
+            .collect()
+    }
+
     /// Intern atoms and insert their sequence using the `u64` carrier.
     pub fn insert<I>(&self, atoms: I, value: Option<V>) -> Result<bool, InterningError>
     where
@@ -549,6 +569,25 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
         Ok(self.id_dictionary.get_units_value(&ids))
     }
 
+    /// Export atom sequences and mapped values in deterministic ID-dictionary
+    /// order, validating every vocabulary ID before exposing the snapshot.
+    pub fn visible_entries(&self) -> Result<Vec<(Vec<K>, Option<V>)>, InterningError> {
+        let vocabulary = self
+            .vocabulary
+            .lock()
+            .map_err(|_| InterningError::Poisoned)?;
+        self.id_dictionary
+            .visible_entries()
+            .into_iter()
+            .map(|(ids, value)| {
+                ids.into_iter()
+                    .map(|id| vocabulary.value(u64::from(id)).cloned().ok_or(InterningError::UnknownId(u64::from(id))))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|atoms| (atoms, value))
+            })
+            .collect()
+    }
+
     /// Intern atoms and insert their ID sequence atomically with respect to
     /// other vocabulary mutations.
     pub fn insert<I>(&self, atoms: I, value: Option<V>) -> Result<bool, InterningError>
@@ -649,6 +688,7 @@ mod coordinated_tests {
         assert_eq!(dictionary.vocabulary().unwrap().generation(), 7);
         assert_eq!(dictionary.generation(), Ok(7));
         assert_eq!(dictionary.id_dictionary().term_count(), 1);
+        assert_eq!(dictionary.visible_entries().unwrap(), vec![(vec![10, 20], Some(99))]);
         assert_eq!(
             dictionary.id_dictionary().visible_entries(),
             vec![(vec![0u32, 1u32], Some(99))]
@@ -687,6 +727,7 @@ mod coordinated_tests {
         let ids = InternedSequence::from_ids_with_generation(9, [0]);
         assert!(dictionary.contains_id_sequence(&ids).unwrap());
         assert_eq!(dictionary.get_id_sequence_value(&ids).unwrap(), Some(17));
+        assert_eq!(dictionary.visible_entries().unwrap(), vec![(vec![u32::MAX], Some(17))]);
         assert_eq!(dictionary.vocabulary().unwrap().generation(), 9);
         assert_eq!(dictionary.generation(), Ok(9));
     }
