@@ -168,7 +168,7 @@ pub use double_array_trie::DoubleArrayTrieUleb128;
 pub use dynamic_dawg::core::{DawgCore, DawgNode};
 pub use dynamic_dawg::{
     DynamicDawgByteProfile, DynamicDawgCharProfile, DynamicDawgGeneric, DynamicDawgProfile,
-    DynamicDawgU32, DynamicDawgU64Profile, DynamicDawgUleb128,
+    DynamicDawgU32, DynamicDawgU64Profile, DynamicDawgUleb128, DynamicDawgUtf8,
 };
 pub use interning::{
     InternedId, InternedIdDictionaryView, InternedSequence, InternedSequenceDictionary,
@@ -177,6 +177,8 @@ pub use interning::{
 };
 pub use iterator::{DictionaryIterator, DictionaryTermIterator};
 pub use node_signature::NodeSignature;
+#[cfg(feature = "pathmap-backend")]
+pub use pathmap::PathMapDictionaryUleb128;
 pub use profile::{
     AtomProfile, AtomSequence, AtomStream, Bytes, F64Bits, ProfileError, ProfileKind,
     UnicodeScalar, Utf8, U32, U64,
@@ -189,8 +191,6 @@ pub use variable_width::{
     Uleb128, Uleb128Codec, Uleb128Error, Uleb128Ref, Uleb128Sequence, Uleb128Stream,
     VariableWidthCodec, VariableWidthProfile, ULEB128_PROFILE,
 };
-#[cfg(feature = "pathmap-backend")]
-pub use pathmap::PathMapDictionaryUleb128;
 pub use zipper::{DictZipper, ValuedDictZipper, ZipperTraversalNode};
 
 // Re-export persistent ARTrie types (only available with feature)
@@ -1894,9 +1894,8 @@ pub mod prelude {
         DictionaryLanguageEntries, DictionaryLanguageTerms, DictionaryNode, DictionaryTerms,
         DictionaryValue, DictionaryValues, ExactSnapshotEntryIterator, InsertError,
         MappedDictionary, MappedDictionaryNode, MutableDictionary, MutableMappedDictionary,
-        SnapshotEntryIterator, SnapshotTermIterator, SyncStrategy, ValuedDictZipper,
+        SnapshotEntryIterator, SnapshotTermIterator, SyncStrategy, Utf8, ValuedDictZipper,
         ValuedZipperCollection, ZipperCollection, ZipperEntryIterator, ZipperTermIterator,
-        Utf8,
     };
 
     // Re-export common dictionary types
@@ -1904,7 +1903,7 @@ pub mod prelude {
         DoubleArrayTrie, DoubleArrayTrieChar, DoubleArrayTrieUleb128,
     };
     pub use crate::dynamic_dawg::{
-        DynamicDawg, DynamicDawgChar, DynamicDawgU64, DynamicDawgUleb128,
+        DynamicDawg, DynamicDawgChar, DynamicDawgU64, DynamicDawgUleb128, DynamicDawgUtf8,
     };
     #[cfg(feature = "pathmap-backend")]
     pub use crate::pathmap::PathMapDictionaryUleb128;

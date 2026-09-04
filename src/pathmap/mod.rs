@@ -173,11 +173,16 @@ mod profile_tests {
     fn uleb_adapter_builds_unvalued_sequences_and_rejects_malformed_images() {
         let sequence = crate::Uleb128Sequence::from_atoms([crate::Uleb128::from_u64(9)]);
         let dictionary = PathMapDictionaryUleb128::<()>::from_sequences([sequence.clone()]);
-        assert_eq!(dictionary.contains_encoded(sequence.to_encoded().as_slice()), Ok(true));
+        assert_eq!(
+            dictionary.contains_encoded(sequence.to_encoded().as_slice()),
+            Ok(true)
+        );
         assert!(dictionary.contains_encoded(&[0x80]).is_err());
         assert_eq!(dictionary.term_count(), 1);
         assert_eq!(dictionary.visible_entries().unwrap().len(), 1);
-        assert!(dictionary.remove_encoded(sequence.to_encoded().as_slice()).unwrap());
+        assert!(dictionary
+            .remove_encoded(sequence.to_encoded().as_slice())
+            .unwrap());
         assert!(dictionary.is_empty());
     }
 

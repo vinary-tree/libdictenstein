@@ -267,6 +267,99 @@ pub struct DynamicDawgUleb128<V: crate::DictionaryValue = ()> {
     inner: DynamicDawgGeneric<u8, V>,
 }
 
+/// Variable-width UTF-8 dictionary boundary.
+///
+/// UTF-8 bytes are retained by the byte-oriented core, while this wrapper
+/// validates and exposes complete Unicode strings so continuation bytes never
+/// become logical transitions.
+#[derive(Clone, Debug)]
+pub struct DynamicDawgUtf8<V: crate::DictionaryValue = ()> {
+    inner: DynamicDawgGeneric<u8, V>,
+}
+
+impl<V: crate::DictionaryValue> Default for DynamicDawgUtf8<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<V: crate::DictionaryValue> DynamicDawgUtf8<V> {
+    pub fn new() -> Self {
+        Self {
+            inner: DynamicDawgGeneric::new(),
+        }
+    }
+
+    pub fn from_terms<I, S>(terms: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self {
+            inner: DynamicDawgGeneric::from_sequences(
+                terms.into_iter().map(|s| s.as_ref().as_bytes().to_vec()),
+            ),
+        }
+    }
+
+    pub fn from_terms_with_values<I, S>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (S, V)>,
+        S: AsRef<str>,
+    {
+        let mut encoded = entries
+            .into_iter()
+            .map(|(s, v)| (s.as_ref().as_bytes().to_vec(), v))
+            .collect::<Vec<_>>();
+        encoded.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        Self {
+            inner: DynamicDawgGeneric::from_sorted_entries(encoded),
+        }
+    }
+
+    #[inline]
+    pub fn insert(&self, term: &str) -> bool {
+        self.inner.insert_units(term.as_bytes())
+    }
+    #[inline]
+    pub fn insert_with_value(&self, term: &str, value: V) -> bool {
+        self.inner.insert_units_with_value(term.as_bytes(), value)
+    }
+    #[inline]
+    pub fn contains(&self, term: &str) -> bool {
+        self.inner.contains_units(term.as_bytes())
+    }
+    #[inline]
+    pub fn get_value(&self, term: &str) -> Option<V> {
+        self.inner.get_units_value(term.as_bytes())
+    }
+    #[inline]
+    pub fn remove(&self, term: &str) -> bool {
+        self.inner.remove_units(term.as_bytes())
+    }
+    #[inline]
+    pub fn term_count(&self) -> usize {
+        self.inner.term_count()
+    }
+    #[inline]
+    pub fn node_count(&self) -> usize {
+        self.inner.node_count()
+    }
+
+    pub fn contains_encoded(&self, encoded: &[u8]) -> Result<bool, std::str::Utf8Error> {
+        std::str::from_utf8(encoded)?;
+        Ok(self.inner.contains_units(encoded))
+    }
+
+    pub fn visible_entries(&self) -> Result<Vec<(String, Option<V>)>, std::str::Utf8Error> {
+        self.inner
+            .visible_entries()
+            .into_iter()
+            .map(|(bytes, value)| std::str::from_utf8(&bytes).map(|term| (term.to_owned(), value)))
+            .collect()
+    }
+}
+
 impl<V: crate::DictionaryValue> Default for DynamicDawgUleb128<V> {
     fn default() -> Self {
         Self::new()
@@ -418,7 +511,21 @@ mod generic_tests {
         let atom = crate::Uleb128::from_u64(624_485);
         let sequence = crate::Uleb128Sequence::from_atoms([atom]);
         let dictionary = super::DynamicDawgUleb128::<u16>::from_sequences([sequence.clone()]);
-        assert_eq!(dictionary.contains_encoded(sequence.to_encoded().as_slice()), Ok(true));
+        assert_eq!(
+            dictionary.contains_encoded(sequence.to_encoded().as_slice()),
+            Ok(true)
+        );
+        assert!(dictionary.contains_encoded(&[0x80]).is_err());
+    }
+
+    #[test]
+    fn utf8_wrapper_preserves_scalar_boundaries() {
+        let dictionary =
+            super::DynamicDawgUtf8::<u16>::from_terms_with_values([("λ🎉", 4), ("a", 1)]);
+        assert!(dictionary.contains("λ🎉"));
+        assert_eq!(dictionary.get_value("λ🎉"), Some(4));
+        assert_eq!(dictionary.visible_entries().unwrap().len(), 2);
+        assert!(dictionary.contains_encoded("λ🎉".as_bytes()).unwrap());
         assert!(dictionary.contains_encoded(&[0x80]).is_err());
     }
 

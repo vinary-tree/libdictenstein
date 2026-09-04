@@ -137,7 +137,10 @@ mod profile_tests {
         assert!(dictionary.contains(&sequence));
         assert_eq!(dictionary.get_value(&sequence), Some(19));
         assert_eq!(dictionary.term_count(), 1);
-        assert_eq!(dictionary.contains_encoded(sequence.to_encoded().as_slice()), Ok(true));
+        assert_eq!(
+            dictionary.contains_encoded(sequence.to_encoded().as_slice()),
+            Ok(true)
+        );
         assert!(dictionary.get_encoded_value(&[0x80]).is_err());
         assert_eq!(dictionary.visible_entries().unwrap().len(), 1);
     }

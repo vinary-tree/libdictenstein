@@ -552,7 +552,10 @@ mod tests {
         );
         assert_eq!(ProfileKind::Uleb128.legacy_name(), None);
         assert_eq!(ProfileKind::Utf8.width_bytes(), None);
-        assert_eq!(ProfileKind::from_identity(Utf8::PROFILE), Some(ProfileKind::Utf8));
+        assert_eq!(
+            ProfileKind::from_identity(Utf8::PROFILE),
+            Some(ProfileKind::Utf8)
+        );
         assert_eq!(
             ProfileKind::from_identity(VariableWidthProfile::new("u64", 1)),
             Some(ProfileKind::U64)
@@ -567,7 +570,10 @@ mod tests {
     fn utf8_profile_preserves_scalar_boundaries_and_rejects_malformed_input() {
         let sequence = AtomSequence::<Utf8>::from_atoms(['a', 'λ', '🎉']);
         let encoded = sequence.to_encoded();
-        assert_eq!(AtomSequence::<Utf8>::from_encoded(&encoded).unwrap(), sequence);
+        assert_eq!(
+            AtomSequence::<Utf8>::from_encoded(&encoded).unwrap(),
+            sequence
+        );
         let observed: Vec<_> = AtomSequence::<Utf8>::stream(&encoded)
             .map(|atom| atom.unwrap())
             .collect();
