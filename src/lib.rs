@@ -1918,7 +1918,8 @@ pub mod prelude {
 
     #[cfg(feature = "persistent-artrie")]
     pub use crate::persistent_artrie::{
-        PersistentARTrieU64, PersistentScdawg, PersistentScdawgChar, PersistentSuffixAutomaton,
-        PersistentSuffixAutomatonChar, PersistentSuffixTree, PersistentSuffixTreeChar,
+        PersistentARTrieU64, PersistentARTrieUleb128, PersistentARTrieUtf8, PersistentScdawg,
+        PersistentScdawgChar, PersistentSuffixAutomaton, PersistentSuffixAutomatonChar,
+        PersistentSuffixTree, PersistentSuffixTreeChar,
     };
 }
