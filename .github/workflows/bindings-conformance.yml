@@ -84,7 +84,10 @@ jobs:
           '
           julia --project=bindings/julia/Libdictenstein/docs -e '
             using Pkg
-            Pkg.develop(path=ENV["GITHUB_WORKSPACE"] * "/../vinary-tree-interop/bindings/julia/VinaryTreeInterop")
+            Pkg.develop([
+              PackageSpec(path=ENV["GITHUB_WORKSPACE"] * "/../vinary-tree-interop/bindings/julia/VinaryTreeInterop"),
+              PackageSpec(path=ENV["GITHUB_WORKSPACE"] * "/bindings/julia/Libdictenstein")
+            ])
             Pkg.instantiate()
             include("bindings/julia/Libdictenstein/docs/make.jl")
           '

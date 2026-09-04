@@ -2,8 +2,5 @@
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 Libdictenstein = "bafc558c-9074-40dc-b084-d73291979eb7"
 
-[sources]
-Libdictenstein = {path = ".."}
-
 [compat]
 Documenter = "1"
