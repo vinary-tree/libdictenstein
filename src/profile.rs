@@ -55,6 +55,17 @@ impl ProfileKind {
         }
     }
 
+    /// Legacy public type name, when one exists.  These names are aliases for
+    /// source compatibility only and are not accepted as persisted metadata.
+    pub const fn legacy_name(self) -> Option<&'static str> {
+        match self {
+            Self::Bytes => Some("DynamicDawg"),
+            Self::UnicodeScalar => Some("DynamicDawgChar"),
+            Self::U64 => Some("DynamicDawgU64"),
+            Self::U32 | Self::F64Bits | Self::Uleb128 => None,
+        }
+    }
+
     /// Resolve a profile only when both name and version match exactly.
     pub fn from_identity(identity: VariableWidthProfile) -> Option<Self> {
         let kind = Self::from_name(identity.name)?;
@@ -463,6 +474,8 @@ mod tests {
             assert_eq!(ProfileKind::from_name(kind.as_str()), Some(kind));
         }
         assert_eq!(ProfileKind::from_name("DynamicDawgChar"), None);
+        assert_eq!(ProfileKind::UnicodeScalar.legacy_name(), Some("DynamicDawgChar"));
+        assert_eq!(ProfileKind::Uleb128.legacy_name(), None);
         assert_eq!(
             ProfileKind::from_identity(VariableWidthProfile::new("u64", 1)),
             Some(ProfileKind::U64)
