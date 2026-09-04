@@ -1840,6 +1840,18 @@ impl<V: DictionaryValue> PersistentSuffixTreeChar<V> {
         }
         dict
     }
+
+    /// Build from Unicode-scalar profile sequences while preserving logical
+    /// scalar boundaries before insertion into the persistent suffix index.
+    pub fn from_atom_sequences<P, I>(sequences: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = char>,
+        I: IntoIterator<Item = crate::AtomSequence<P>>,
+    {
+        Self::from_texts(sequences.into_iter().map(|sequence| {
+            sequence.as_atoms().iter().copied().collect::<String>()
+        }))
+    }
 }
 
 impl<V: DictionaryValue> PersistentSuffixTreeChar<V, MmapDiskManager> {

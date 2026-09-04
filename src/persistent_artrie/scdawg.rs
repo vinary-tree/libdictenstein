@@ -1328,6 +1328,18 @@ impl<V: DictionaryValue> PersistentScdawgChar<V> {
         }
         dict
     }
+
+    /// Build from Unicode-scalar profile sequences without exposing UTF-8
+    /// encoding bytes as logical suffix transitions.
+    pub fn from_atom_sequences<P, I>(sequences: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = char>,
+        I: IntoIterator<Item = crate::AtomSequence<P>>,
+    {
+        Self::from_terms(sequences.into_iter().map(|sequence| {
+            sequence.as_atoms().iter().copied().collect::<String>()
+        }))
+    }
 }
 
 impl<V: DictionaryValue> PersistentScdawgChar<V, MmapDiskManager> {
