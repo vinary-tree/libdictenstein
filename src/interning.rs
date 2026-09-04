@@ -19,6 +19,8 @@ pub enum InterningError {
     GenerationMismatch { expected: u64, actual: u64 },
     /// A caller attempted to use an atom that has not been interned.
     UnknownKey,
+    /// The coordinated vocabulary lock was poisoned by a prior panic.
+    Poisoned,
 }
 
 /// Compact capsule-local sequence of vocabulary IDs.
@@ -298,7 +300,7 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
         let mut vocabulary = self
             .vocabulary
             .lock()
-            .map_err(|_| InterningError::UnknownKey)?;
+            .map_err(|_| InterningError::Poisoned)?;
         let sequence = vocabulary.intern_sequence(atoms);
         let ids: Vec<u32> = sequence
             .as_ids()
@@ -321,7 +323,7 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
         let vocabulary = self
             .vocabulary
             .lock()
-            .map_err(|_| InterningError::UnknownKey)?;
+            .map_err(|_| InterningError::Poisoned)?;
         let mut ids = Vec::new();
         for atom in atoms {
             let id = vocabulary.id_of(&atom).ok_or(InterningError::UnknownKey)?;
@@ -338,7 +340,7 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
         let vocabulary = self
             .vocabulary
             .lock()
-            .map_err(|_| InterningError::UnknownKey)?;
+            .map_err(|_| InterningError::Poisoned)?;
         let mut ids = Vec::new();
         for atom in atoms {
             let id = vocabulary.id_of(&atom).ok_or(InterningError::UnknownKey)?;
