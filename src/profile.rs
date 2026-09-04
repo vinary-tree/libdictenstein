@@ -3,7 +3,7 @@
 use crate::variable_width::{VariableWidthProfile, ULEB128_PROFILE};
 use core::marker::PhantomData;
 
-/// Errors returned by fixed-width profile decoders.
+/// Errors returned by logical-atom profile decoders.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProfileError {
     /// The input does not contain one complete atom.
