@@ -150,6 +150,35 @@ impl Uleb128 {
         Ok(Self(bytes))
     }
 
+    /// Encode a machine-width value using the same canonical representation.
+    pub fn from_u64(mut value: u64) -> Self {
+        let mut bytes = Vec::with_capacity(10);
+        loop {
+            let payload = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                bytes.push(payload);
+                break;
+            }
+            bytes.push(payload | 0x80);
+        }
+        Self(bytes)
+    }
+
+    /// Decode into `u64` when the atom fits; return `None` for wider values.
+    pub fn to_u64(&self) -> Option<u64> {
+        let mut value = 0u64;
+        for (index, &byte) in self.0.iter().enumerate() {
+            let shift = u32::try_from(index).ok()?.checked_mul(7)?;
+            let payload = u64::from(byte & 0x7f);
+            if shift >= u64::BITS || payload > (u64::MAX >> shift) {
+                return None;
+            }
+            value = value.checked_add(payload << shift)?;
+        }
+        Some(value)
+    }
+
     /// Return the base-128 payload digits in least-significant-first order.
     pub fn to_payload_digits(&self) -> Vec<u8> {
         self.0.iter().map(|byte| byte & 0x7f).collect()
@@ -365,6 +394,17 @@ mod tests {
         assert_eq!(Uleb128Codec::PROFILE, ULEB128_PROFILE);
         assert_eq!(ULEB128_PROFILE.name, "uleb128");
         assert_eq!(ULEB128_PROFILE.version, 1);
+    }
+
+    #[test]
+    fn bounded_u64_fast_path_refines_arbitrary_width_form() {
+        for value in [0, 1, 127, 128, u64::MAX] {
+            let atom = Uleb128::from_u64(value);
+            assert_eq!(atom.to_u64(), Some(value));
+            assert_eq!(Uleb128::from_bytes(atom.as_bytes()).unwrap(), atom);
+        }
+        let wide = Uleb128::from_payload_digits(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 2]).unwrap();
+        assert_eq!(wide.to_u64(), None);
     }
 
     #[test]
