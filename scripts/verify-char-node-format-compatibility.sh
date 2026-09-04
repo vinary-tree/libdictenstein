@@ -33,10 +33,9 @@ require_commit() {
   # CI checkouts are intentionally shallow.  Fetch the immutable fixture
   # revision on demand so the compatibility proof does not depend on an
   # incidental checkout depth while still refusing any substituted object.
-  actual="$(git -C "$repository" rev-parse "${expected}^{commit}" 2>/dev/null || true)"
-  if [ -z "$actual" ]; then
+  if ! actual="$(git -C "$repository" rev-parse --verify "${expected}^{commit}" 2>/dev/null)"; then
     git -C "$repository" fetch --no-tags --depth=1 origin "$expected"
-    actual="$(git -C "$repository" rev-parse "${expected}^{commit}")"
+    actual="$(git -C "$repository" rev-parse --verify "${expected}^{commit}")"
   fi
   if [ "$actual" != "$expected" ]; then
     echo "commit mismatch for $repository: expected $expected, found $actual" >&2
