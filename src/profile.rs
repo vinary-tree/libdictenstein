@@ -86,6 +86,8 @@ pub trait AtomProfile {
 
     /// Stable persisted profile identity.
     const PROFILE: VariableWidthProfile;
+    /// Built-in kind corresponding to the profile identity.
+    const KIND: ProfileKind;
     /// Fixed wire width in bytes, or `None` for variable-width profiles.
     const WIDTH_BYTES: Option<usize>;
 
@@ -138,6 +140,12 @@ impl<P: AtomProfile> AtomSequence<P> {
     #[inline]
     pub const fn profile() -> VariableWidthProfile {
         P::PROFILE
+    }
+
+    /// Built-in profile kind corresponding to this sequence.
+    #[inline]
+    pub const fn profile_kind() -> ProfileKind {
+        P::KIND
     }
 
     /// Wire width of one atom, or `None` for variable-width profiles.
@@ -258,6 +266,7 @@ pub struct Bytes;
 impl AtomProfile for Bytes {
     type Atom = u8;
     const PROFILE: VariableWidthProfile = VariableWidthProfile::new("bytes", 1);
+    const KIND: ProfileKind = ProfileKind::Bytes;
     const WIDTH_BYTES: Option<usize> = Some(1);
 
     fn encode(atom: u8) -> Vec<u8> {
@@ -276,6 +285,7 @@ pub struct UnicodeScalar;
 impl AtomProfile for UnicodeScalar {
     type Atom = char;
     const PROFILE: VariableWidthProfile = VariableWidthProfile::new("unicode-scalar", 1);
+    const KIND: ProfileKind = ProfileKind::UnicodeScalar;
     const WIDTH_BYTES: Option<usize> = Some(4);
 
     fn encode(atom: char) -> Vec<u8> {
@@ -301,6 +311,7 @@ pub struct U32;
 impl AtomProfile for U32 {
     type Atom = u32;
     const PROFILE: VariableWidthProfile = VariableWidthProfile::new("u32", 1);
+    const KIND: ProfileKind = ProfileKind::U32;
     const WIDTH_BYTES: Option<usize> = Some(4);
 
     fn encode(atom: u32) -> Vec<u8> {
@@ -324,6 +335,7 @@ pub struct U64;
 impl AtomProfile for U64 {
     type Atom = u64;
     const PROFILE: VariableWidthProfile = VariableWidthProfile::new("u64", 1);
+    const KIND: ProfileKind = ProfileKind::U64;
     const WIDTH_BYTES: Option<usize> = Some(8);
 
     fn encode(atom: u64) -> Vec<u8> {
@@ -348,6 +360,7 @@ pub struct F64Bits;
 impl AtomProfile for F64Bits {
     type Atom = u64;
     const PROFILE: VariableWidthProfile = VariableWidthProfile::new("f64-bits", 1);
+    const KIND: ProfileKind = ProfileKind::F64Bits;
     const WIDTH_BYTES: Option<usize> = Some(8);
 
     fn encode(atom: u64) -> Vec<u8> {
@@ -417,6 +430,7 @@ mod tests {
         assert_eq!(AtomSequence::<U64>::profile(), U64::PROFILE);
         assert_eq!(AtomSequence::<U64>::width_bytes(), Some(8));
         assert_eq!(AtomSequence::<Bytes>::width_bytes(), Some(1));
+        assert_eq!(AtomSequence::<U64>::profile_kind(), ProfileKind::U64);
     }
 
     #[test]
