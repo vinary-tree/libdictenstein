@@ -21,6 +21,8 @@ pub enum InterningError {
     UnknownKey,
     /// The coordinated vocabulary lock was poisoned by a prior panic.
     Poisoned,
+    /// No representable local ID remains.
+    IdExhausted,
 }
 
 /// Compact capsule-local sequence of vocabulary IDs.
@@ -142,13 +144,20 @@ impl<K: Ord + Clone> InternedVocabulary<K> {
 
     /// Return the existing ID or assign the next monotonic ID.
     pub fn intern(&mut self, key: K) -> InternedId {
+        self.try_intern(key)
+            .expect("InternedVocabulary ID space exhausted")
+    }
+
+    /// Return the existing ID or assign the next ID, reporting exhaustion.
+    pub fn try_intern(&mut self, key: K) -> Result<InternedId, InterningError> {
         if let Some(&id) = self.forward.get(&key) {
-            return id;
+            return Ok(id);
         }
-        let id = self.reverse.len() as InternedId;
+        let id =
+            InternedId::try_from(self.reverse.len()).map_err(|_| InterningError::IdExhausted)?;
         self.forward.insert(key.clone(), id);
         self.reverse.push(key);
-        id
+        Ok(id)
     }
 
     /// Intern a logical sequence and return its compact ID representation.
@@ -160,6 +169,21 @@ impl<K: Ord + Clone> InternedVocabulary<K> {
             self.generation,
             keys.into_iter().map(|key| self.intern(key)),
         )
+    }
+
+    /// Fallible sequence interning with typed ID exhaustion.
+    pub fn try_intern_sequence<I>(&mut self, keys: I) -> Result<InternedSequence, InterningError>
+    where
+        I: IntoIterator<Item = K>,
+    {
+        let ids = keys
+            .into_iter()
+            .map(|key| self.try_intern(key))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(InternedSequence::from_ids_with_generation(
+            self.generation,
+            ids,
+        ))
     }
 
     /// Resolve every ID in a sequence, failing if one ID is not in this
@@ -338,7 +362,7 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionaryU64<K, V> {
             .vocabulary
             .lock()
             .map_err(|_| InterningError::Poisoned)?;
-        let sequence = vocabulary.intern_sequence(atoms);
+        let sequence = vocabulary.try_intern_sequence(atoms)?;
         let ids = sequence.as_ids().to_vec();
         Ok(match value {
             Some(value) => self.id_dictionary.insert_units_with_value(&ids, value),
@@ -430,7 +454,7 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
             .vocabulary
             .lock()
             .map_err(|_| InterningError::Poisoned)?;
-        let sequence = vocabulary.intern_sequence(atoms);
+        let sequence = vocabulary.try_intern_sequence(atoms)?;
         let ids: Vec<u32> = sequence
             .as_ids()
             .iter()
