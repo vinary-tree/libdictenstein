@@ -170,7 +170,7 @@ pub use substring::{
     BidirectionalDictionaryNode, ExtensionResult, SubstringDictionary, SubstringMatch,
 };
 pub use value::DictionaryValue;
-pub use profile::{AtomProfile, Bytes, F64Bits, ProfileError, U32, U64, UnicodeScalar};
+pub use profile::{AtomProfile, AtomSequence, Bytes, F64Bits, ProfileError, U32, U64, UnicodeScalar};
 pub use variable_width::{
     Uleb128, Uleb128Codec, Uleb128Error, Uleb128Ref, VariableWidthCodec, VariableWidthProfile,
     Uleb128Sequence, Uleb128Stream, ULEB128_PROFILE,

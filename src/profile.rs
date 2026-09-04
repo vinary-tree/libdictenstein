@@ -1,6 +1,7 @@
 //! Shared logical-atom profiles for generic dictionary families.
 
 use crate::variable_width::VariableWidthProfile;
+use core::marker::PhantomData;
 
 /// Errors returned by fixed-width profile decoders.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +27,91 @@ pub trait AtomProfile {
     /// Decode one atom from the beginning of `bytes`, returning the atom and
     /// the number of bytes consumed.
     fn decode(bytes: &[u8]) -> Result<(Self::Atom, usize), ProfileError>;
+}
+
+/// Owned logical sequence parameterized by an [`AtomProfile`].
+#[derive(Clone, Debug)]
+pub struct AtomSequence<P: AtomProfile> {
+    atoms: Vec<P::Atom>,
+    marker: PhantomData<P>,
+}
+
+impl<P: AtomProfile> PartialEq for AtomSequence<P> {
+    fn eq(&self, other: &Self) -> bool {
+        self.atoms == other.atoms
+    }
+}
+
+impl<P: AtomProfile> Eq for AtomSequence<P> {}
+
+impl<P: AtomProfile> Default for AtomSequence<P> {
+    fn default() -> Self {
+        Self {
+            atoms: Vec::new(),
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<P: AtomProfile> AtomSequence<P> {
+    /// Construct an empty sequence.
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build a sequence from logical atoms.
+    pub fn from_atoms<I>(atoms: I) -> Self
+    where
+        I: IntoIterator<Item = P::Atom>,
+    {
+        Self {
+            atoms: atoms.into_iter().collect(),
+            marker: PhantomData,
+        }
+    }
+
+    /// Decode a complete concatenated wire image.
+    pub fn from_encoded(bytes: &[u8]) -> Result<Self, ProfileError> {
+        let mut atoms = Vec::new();
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let (atom, consumed) = P::decode(&bytes[offset..])?;
+            if consumed == 0 || consumed > bytes.len() - offset {
+                return Err(ProfileError::InvalidLength);
+            }
+            atoms.push(atom);
+            offset += consumed;
+        }
+        Ok(Self::from_atoms(atoms))
+    }
+
+    /// Append one logical atom.
+    #[inline]
+    pub fn push(&mut self, atom: P::Atom) {
+        self.atoms.push(atom);
+    }
+
+    /// Number of logical atoms.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.atoms.len()
+    }
+
+    /// Iterate over logical atoms without decoding.
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = &P::Atom> {
+        self.atoms.iter()
+    }
+
+    /// Encode the sequence in logical order.
+    pub fn to_encoded(&self) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        for &atom in &self.atoms {
+            encoded.extend_from_slice(&P::encode(atom));
+        }
+        encoded
+    }
 }
 
 /// Raw byte profile (`DynamicDawg` compatibility semantics).
@@ -162,5 +248,15 @@ mod tests {
             UnicodeScalar::decode(&0xd800u32.to_le_bytes()),
             Err(ProfileError::InvalidScalar)
         );
+    }
+
+    #[test]
+    fn generic_atom_sequence_round_trips_each_fixed_profile() {
+        let bytes = AtomSequence::<Bytes>::from_atoms([1, 2, 3]);
+        assert_eq!(AtomSequence::<Bytes>::from_encoded(&bytes.to_encoded()).unwrap(), bytes);
+        let words = AtomSequence::<U32>::from_atoms([1, u32::MAX]);
+        assert_eq!(AtomSequence::<U32>::from_encoded(&words.to_encoded()).unwrap(), words);
+        let chars = AtomSequence::<UnicodeScalar>::from_atoms(['a', 'λ']);
+        assert_eq!(AtomSequence::<UnicodeScalar>::from_encoded(&chars.to_encoded()).unwrap(), chars);
     }
 }
