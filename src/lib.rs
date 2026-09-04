@@ -137,6 +137,7 @@ pub mod pathmap;
 pub mod scdawg;
 pub mod suffix_automaton;
 pub mod variable_width;
+pub mod profile;
 
 // === Persistent ARTrie modules (feature-gated at module level) ===
 // These modules are gated here; internal code does NOT need feature gates.
@@ -169,6 +170,7 @@ pub use substring::{
     BidirectionalDictionaryNode, ExtensionResult, SubstringDictionary, SubstringMatch,
 };
 pub use value::DictionaryValue;
+pub use profile::{AtomProfile, Bytes, F64Bits, ProfileError, U32, U64, UnicodeScalar};
 pub use variable_width::{
     Uleb128, Uleb128Codec, Uleb128Error, Uleb128Ref, VariableWidthCodec, VariableWidthProfile,
     Uleb128Sequence, Uleb128Stream, ULEB128_PROFILE,
