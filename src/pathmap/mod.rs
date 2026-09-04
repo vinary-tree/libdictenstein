@@ -39,6 +39,16 @@ mod profile_tests {
     }
 
     #[test]
+    fn byte_adapter_supports_arbitrary_encoded_keys() {
+        let dictionary = PathMapDictionary::<u16>::new();
+        assert!(dictionary.insert_bytes_with_value(&[0, 255, 1], 34));
+        assert!(dictionary.contains_bytes(&[0, 255, 1]));
+        assert_eq!(dictionary.get_bytes_value(&[0, 255, 1]), Some(34));
+        assert!(dictionary.remove_bytes(&[0, 255, 1]));
+        assert!(!dictionary.contains_bytes(&[0, 255, 1]));
+    }
+
+    #[test]
     fn unicode_profile_constructor_preserves_scalar_boundaries_and_values() {
         let dictionary = PathMapDictionaryChar::<u16>::from_atom_sequences_with_values::<
             UnicodeScalar,

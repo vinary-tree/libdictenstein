@@ -223,6 +223,29 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
         }
     }
 
+    /// Insert or update an arbitrary byte key without UTF-8 coercion.
+    pub fn insert_bytes_with_value(&self, bytes: &[u8], value: V) -> bool {
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.load_state();
+            let mut next_map = current.map.clone();
+            let inserted = next_map.insert(bytes, value.clone()).is_none();
+            let next_len = current.len + usize::from(inserted);
+            if self.compare_store_state(&current, PathMapState::new(next_map, next_len)) {
+                return inserted;
+            }
+            backoff.snooze();
+        }
+    }
+
+    /// Insert an arbitrary byte key with a default value.
+    pub fn insert_bytes(&self, bytes: &[u8]) -> bool
+    where
+        V: Default,
+    {
+        self.insert_bytes_with_value(bytes, V::default())
+    }
+
     /// Remove a term from the dictionary
     ///
     /// Returns `true` if the term was present and removed, `false` if it didn't exist.
@@ -246,6 +269,23 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
                 return true;
             }
 
+            backoff.snooze();
+        }
+    }
+
+    /// Remove an arbitrary byte key without UTF-8 coercion.
+    pub fn remove_bytes(&self, bytes: &[u8]) -> bool {
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.load_state();
+            let mut next_map = current.map.clone();
+            if next_map.remove_val_at(bytes, true).is_none() {
+                return false;
+            }
+            let next_len = current.len.saturating_sub(1);
+            if self.compare_store_state(&current, PathMapState::new(next_map, next_len)) {
+                return true;
+            }
             backoff.snooze();
         }
     }
@@ -278,6 +318,11 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     /// This method atomically loads the current snapshot.
     pub fn term_count(&self) -> usize {
         self.load_state().len
+    }
+
+    /// Test membership of an arbitrary byte key without UTF-8 coercion.
+    pub fn contains_bytes(&self, bytes: &[u8]) -> bool {
+        self.load_state().map.get_val_at(bytes).is_some()
     }
 
     /// Serialize to PathMap's native .paths format
@@ -329,6 +374,11 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
         let bytes = term.as_bytes();
         let state = self.load_state();
         state.map.get_val_at(bytes).cloned()
+    }
+
+    /// Read a mapped value for an arbitrary byte key without UTF-8 coercion.
+    pub fn get_bytes_value(&self, bytes: &[u8]) -> Option<V> {
+        self.load_state().map.get_val_at(bytes).cloned()
     }
 
     /// Update an existing term's value in place, or insert a new term with a default value.
