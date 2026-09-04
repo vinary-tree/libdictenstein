@@ -10,6 +10,8 @@ pub enum ProfileError {
     InvalidLength,
     /// A scalar profile received a value outside the Unicode scalar range.
     InvalidScalar,
+    /// The input is not one complete valid UTF-8 scalar encoding.
+    InvalidUtf8,
 }
 
 /// Stable descriptor for the built-in logical alphabets.
@@ -19,6 +21,8 @@ pub enum ProfileKind {
     Bytes,
     /// Unicode scalar values (not UTF-8 byte transitions).
     UnicodeScalar,
+    /// UTF-8 encoded Unicode scalar values (one variable-width codeword per scalar).
+    Utf8,
     /// Native 32-bit unsigned values.
     U32,
     /// Native 64-bit unsigned values.
@@ -35,6 +39,7 @@ impl ProfileKind {
         match self {
             Self::Bytes => "bytes",
             Self::UnicodeScalar => "unicode-scalar",
+            Self::Utf8 => "utf8",
             Self::U32 => "u32",
             Self::U64 => "u64",
             Self::F64Bits => "f64-bits",
@@ -47,6 +52,7 @@ impl ProfileKind {
         match name {
             "bytes" => Some(Self::Bytes),
             "unicode-scalar" => Some(Self::UnicodeScalar),
+            "utf8" => Some(Self::Utf8),
             "u32" => Some(Self::U32),
             "u64" => Some(Self::U64),
             "f64-bits" => Some(Self::F64Bits),
@@ -61,6 +67,7 @@ impl ProfileKind {
         match self {
             Self::Bytes => Some("DynamicDawg"),
             Self::UnicodeScalar => Some("DynamicDawgChar"),
+            Self::Utf8 => None,
             Self::U64 => Some("DynamicDawgU64"),
             Self::U32 | Self::F64Bits | Self::Uleb128 => None,
         }
@@ -77,6 +84,7 @@ impl ProfileKind {
         match self {
             Self::Bytes => Bytes::PROFILE,
             Self::UnicodeScalar => UnicodeScalar::PROFILE,
+            Self::Utf8 => Utf8::PROFILE,
             Self::U32 => U32::PROFILE,
             Self::U64 => U64::PROFILE,
             Self::F64Bits => F64Bits::PROFILE,
@@ -88,6 +96,7 @@ impl ProfileKind {
     pub const fn width_bytes(self) -> Option<usize> {
         match self {
             Self::Uleb128 => None,
+            Self::Utf8 => None,
             Self::Bytes => Bytes::WIDTH_BYTES,
             Self::UnicodeScalar => UnicodeScalar::WIDTH_BYTES,
             Self::U32 => U32::WIDTH_BYTES,
@@ -303,6 +312,43 @@ impl AtomProfile for Bytes {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UnicodeScalar;
 
+/// Variable-width UTF-8 scalar profile.  Each logical atom is one Unicode
+/// scalar and its canonical UTF-8 codeword; continuation bytes are never
+/// semantic transitions.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Utf8;
+
+impl AtomProfile for Utf8 {
+    type Atom = char;
+    const PROFILE: VariableWidthProfile = VariableWidthProfile::new("utf8", 1);
+    const KIND: ProfileKind = ProfileKind::Utf8;
+    const WIDTH_BYTES: Option<usize> = None;
+
+    fn encode(atom: char) -> Vec<u8> {
+        let mut bytes = [0u8; 4];
+        atom.encode_utf8(&mut bytes).as_bytes().to_vec()
+    }
+
+    fn decode(bytes: &[u8]) -> Result<(char, usize), ProfileError> {
+        let first = *bytes.first().ok_or(ProfileError::InvalidLength)?;
+        let width = match first {
+            0x00..=0x7f => 1,
+            0xc2..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf4 => 4,
+            _ => return Err(ProfileError::InvalidUtf8),
+        };
+        let slice = bytes.get(..width).ok_or(ProfileError::InvalidLength)?;
+        let text = core::str::from_utf8(slice).map_err(|_| ProfileError::InvalidUtf8)?;
+        let mut chars = text.chars();
+        let atom = chars.next().ok_or(ProfileError::InvalidUtf8)?;
+        if chars.next().is_some() {
+            return Err(ProfileError::InvalidUtf8);
+        }
+        Ok((atom, width))
+    }
+}
+
 impl AtomProfile for UnicodeScalar {
     type Atom = char;
     const PROFILE: VariableWidthProfile = VariableWidthProfile::new("unicode-scalar", 1);
@@ -491,6 +537,7 @@ mod tests {
         for kind in [
             ProfileKind::Bytes,
             ProfileKind::UnicodeScalar,
+            ProfileKind::Utf8,
             ProfileKind::U32,
             ProfileKind::U64,
             ProfileKind::F64Bits,
@@ -504,6 +551,8 @@ mod tests {
             Some("DynamicDawgChar")
         );
         assert_eq!(ProfileKind::Uleb128.legacy_name(), None);
+        assert_eq!(ProfileKind::Utf8.width_bytes(), None);
+        assert_eq!(ProfileKind::from_identity(Utf8::PROFILE), Some(ProfileKind::Utf8));
         assert_eq!(
             ProfileKind::from_identity(VariableWidthProfile::new("u64", 1)),
             Some(ProfileKind::U64)
@@ -512,5 +561,17 @@ mod tests {
             ProfileKind::from_identity(VariableWidthProfile::new("u64", 2)),
             None
         );
+    }
+
+    #[test]
+    fn utf8_profile_preserves_scalar_boundaries_and_rejects_malformed_input() {
+        let sequence = AtomSequence::<Utf8>::from_atoms(['a', 'λ', '🎉']);
+        let encoded = sequence.to_encoded();
+        assert_eq!(AtomSequence::<Utf8>::from_encoded(&encoded).unwrap(), sequence);
+        let observed: Vec<_> = AtomSequence::<Utf8>::stream(&encoded)
+            .map(|atom| atom.unwrap())
+            .collect();
+        assert_eq!(observed, vec!['a', 'λ', '🎉']);
+        assert!(AtomSequence::<Utf8>::from_encoded(&[0x80]).is_err());
     }
 }

@@ -179,7 +179,7 @@ pub use iterator::{DictionaryIterator, DictionaryTermIterator};
 pub use node_signature::NodeSignature;
 pub use profile::{
     AtomProfile, AtomSequence, AtomStream, Bytes, F64Bits, ProfileError, ProfileKind,
-    UnicodeScalar, U32, U64,
+    UnicodeScalar, Utf8, U32, U64,
 };
 pub use substring::{
     BidirectionalDictionaryNode, ExtensionResult, SubstringDictionary, SubstringMatch,
