@@ -1181,6 +1181,19 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
         trie
     }
 
+    /// Build from owned sequences produced by a `u64` atom profile.
+    pub fn from_atom_sequences<P, I>(sequences: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = u64>,
+        I: IntoIterator<Item = crate::AtomSequence<P>>,
+    {
+        Self::from_sequences(
+            sequences
+                .into_iter()
+                .map(|sequence| sequence.as_atoms().to_vec()),
+        )
+    }
+
     pub fn from_sequences_with_values<I, T>(entries: I) -> Self
     where
         I: IntoIterator<Item = (T, V)>,
@@ -1191,6 +1204,19 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
             trie.insert_sequence_with_value(sequence.as_ref(), value);
         }
         trie
+    }
+
+    /// Build a value-bearing trie from `u64` atom-profile sequences.
+    pub fn from_atom_sequences_with_values<P, I>(entries: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = u64>,
+        I: IntoIterator<Item = (crate::AtomSequence<P>, V)>,
+    {
+        Self::from_sequences_with_values(
+            entries
+                .into_iter()
+                .map(|(sequence, value)| (sequence.as_atoms().to_vec(), value)),
+        )
     }
 
     pub fn from_terms<I, T>(terms: I) -> Self
@@ -2039,6 +2065,7 @@ impl<V: DictionaryValue> Default for EncodedPersistentARTrieU64<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{AtomSequence, U64};
     use serde::{Deserialize, Serialize};
 
     static ITERATOR_VALUE_CLONES: AtomicUsize = AtomicUsize::new(0);
@@ -2054,6 +2081,19 @@ mod tests {
     }
 
     impl DictionaryValue for CloneObservedValue {}
+
+    #[test]
+    fn profile_sequences_construct_native_u64_trie() {
+        let trie = PersistentARTrieU64::<u16>::from_atom_sequences::<U64, _>([
+            AtomSequence::<U64>::from_atoms([2, 4]),
+        ]);
+        assert!(trie.contains_sequence(&[2, 4]));
+        let valued = PersistentARTrieU64::<u16>::from_atom_sequences_with_values::<U64, _>([(
+            AtomSequence::<U64>::from_atoms([8]),
+            17,
+        )]);
+        assert_eq!(valued.get_sequence_value(&[8]), Some(17));
+    }
 
     fn disk_ptr(index: usize) -> u64 {
         SwizzledPtr::on_disk(
