@@ -426,6 +426,13 @@ impl<V: crate::DictionaryValue> DynamicDawgUleb128<V> {
             .insert_units_with_value(&sequence.to_encoded(), value)
     }
 
+    /// Insert one complete canonical encoded ULEB128 sequence without
+    /// materializing its decoded atoms.
+    pub fn insert_encoded(&self, encoded: &[u8], value: V) -> Result<bool, crate::Uleb128Error> {
+        crate::Uleb128Sequence::from_encoded(encoded)?;
+        Ok(self.inner.insert_units_with_value(encoded, value))
+    }
+
     /// Test membership of one complete ULEB128 sequence.
     #[inline]
     pub fn contains(&self, sequence: &crate::Uleb128Sequence) -> bool {
@@ -498,6 +505,10 @@ mod generic_tests {
         assert!(dictionary.insert_with_value(&sequence, 9));
         assert!(dictionary.contains(&sequence));
         assert_eq!(dictionary.get_value(&sequence), Some(9));
+        let encoded = sequence.to_encoded();
+        assert!(dictionary.insert_encoded(&encoded, 10).is_ok());
+        assert_eq!(dictionary.get_encoded_value(&encoded).unwrap(), Some(10));
+        assert!(dictionary.insert_encoded(&[0x80], 1).is_err());
         let entries = dictionary.visible_entries().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].0, sequence);

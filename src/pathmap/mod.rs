@@ -163,6 +163,13 @@ impl<V: crate::DictionaryValue> PathMapDictionaryUleb128<V> {
             .insert_bytes_with_value(&sequence.to_encoded(), value)
     }
 
+    /// Insert one complete canonical encoded ULEB128 sequence without
+    /// materializing its decoded atoms.
+    pub fn insert_encoded(&self, encoded: &[u8], value: V) -> Result<bool, crate::Uleb128Error> {
+        crate::Uleb128Sequence::from_encoded(encoded)?;
+        Ok(self.inner.insert_bytes_with_value(encoded, value))
+    }
+
     /// Test one complete ULEB128 sequence.
     #[inline]
     pub fn contains(&self, sequence: &crate::Uleb128Sequence) -> bool {
@@ -252,6 +259,10 @@ mod profile_tests {
         assert!(dictionary.insert_with_value(&sequence, 19));
         assert!(dictionary.contains(&sequence));
         assert_eq!(dictionary.get_value(&sequence), Some(19));
+        let encoded = sequence.to_encoded();
+        assert!(dictionary.insert_encoded(&encoded, 20).is_ok());
+        assert_eq!(dictionary.get_encoded_value(&encoded).unwrap(), Some(20));
+        assert!(dictionary.insert_encoded(&[0x80], 1).is_err());
         assert!(dictionary.remove(&sequence));
         assert!(!dictionary.contains(&sequence));
     }
