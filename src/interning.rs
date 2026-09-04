@@ -231,7 +231,8 @@ impl<K: Ord + Clone> InternedVocabulary<K> {
     /// Resolve an ID without mutating the vocabulary.
     #[inline]
     pub fn value(&self, id: InternedId) -> Option<&K> {
-        self.reverse.get(id as usize)
+        let index = usize::try_from(id).ok()?;
+        self.reverse.get(index)
     }
 
     /// Number of interned values.
@@ -727,6 +728,7 @@ mod tests {
             vocabulary.validate_sequence(&unknown),
             Err(InterningError::UnknownId(99))
         );
+        assert_eq!(vocabulary.value(InternedId::MAX), None);
         let other = InternedVocabulary::<Uleb128>::with_generation(7);
         assert_eq!(other.generation(), 7);
         assert_eq!(
