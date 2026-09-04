@@ -1639,7 +1639,7 @@ Proof.
   - intros units. repeat split.
     + apply legacy_and_canonical_encoded_u64_sequences_are_equal.
     + apply encoded_u64_sequence_has_exact_physical_width.
-    + apply length_map.
+    + apply map_length.
 Qed.
 
 Record DynamicToDatConversion
@@ -2168,7 +2168,7 @@ Theorem VWENC_234_DIRECT_UNITS_PRESERVE_ONE_CODEWORD_PER_LOGICAL_EDGE :
       (serialized_direct_codewords profile units).
 Proof.
   intros profile units. split.
-  - apply length_map.
+  - apply map_length.
   - induction units as [| unit rest IH]; simpl; constructor.
     + apply VWENC_49_DIRECT_SERIALIZATION_HAS_EXACT_FIXED_WIDTH.
     + exact IH.
@@ -2186,7 +2186,7 @@ Theorem VWENC_235_INTERNED_IDS_PRESERVE_ONE_FIXED_CODEWORD_PER_LOGICAL_EDGE :
       (serialized_symbol_id_codewords I ids).
 Proof.
   intros I ids. split.
-  - apply length_map.
+  - apply map_length.
   - induction ids as [| id rest IH]; simpl; constructor.
     + exact (proj1 (symbol_id_fixed_width_encoding_roundtrips I id)).
     + exact IH.

@@ -251,7 +251,7 @@ Theorem VWENC_06_ULEB_OVERLONG_REJECTED :
 Proof.
   intros bytes [_ [_ [_ Hminimal]]] [Hlength Hzero].
   apply Hminimal.
-  - unfold decode_uleb_payloads. rewrite length_map. exact Hlength.
+  - unfold decode_uleb_payloads. rewrite map_length. exact Hlength.
   - exact Hzero.
 Qed.
 
@@ -297,7 +297,7 @@ Theorem VWENC_09_ULEB_DECODING_IS_INPUT_BOUNDED :
   forall bytes,
     length (decode_uleb_payloads bytes) = length bytes.
 Proof.
-  intros bytes. apply length_map.
+  intros bytes. apply map_length.
 Qed.
 
 Fixpoint byte_sequence_eqb
@@ -825,13 +825,13 @@ Proof.
     apply canonical_uleb_shorter_width_has_smaller_value.
     + exact Hleft_digits.
     + exact Hright_digits.
-    + unfold decode_uleb_payloads. now rewrite !length_map.
+    + unfold decode_uleb_payloads. now rewrite !map_length.
   - apply Nat.compare_gt_iff in Hwidth.
     symmetry. apply Nat.compare_gt_iff.
     apply canonical_uleb_shorter_width_has_smaller_value.
     + exact Hright_digits.
     + exact Hleft_digits.
-    + unfold decode_uleb_payloads. now rewrite !length_map.
+    + unfold decode_uleb_payloads. now rewrite !map_length.
 Qed.
 
 Lemma compare_equal_width_uleb_bytes_eq_payloads :
@@ -1976,7 +1976,7 @@ Qed.
 Theorem VWENC_92_EXISTING_DYNAMIC_DAWG_TERM_PRESERVES_EDGE_COUNT :
   forall term : DawgTerm,
     length (existing_byte_term_observations term) = length term.
-Proof. intros term. apply length_map. Qed.
+Proof. intros term. apply map_length. Qed.
 
 Definition existing_u64_sequence_observations
     (sequence : U64Sequence) : list (list LogicalAtom) :=
@@ -2016,7 +2016,7 @@ Qed.
 Theorem VWENC_94_EXISTING_U64_SEQUENCE_PRESERVES_EDGE_COUNT :
   forall sequence : U64Sequence,
     length (existing_u64_sequence_observations sequence) = length sequence.
-Proof. intros sequence. apply length_map. Qed.
+Proof. intros sequence. apply map_length. Qed.
 
 (** Open in-memory unit law carrier. This record does not enumerate the unit
     type and therefore preserves downstream implementation of [CharUnit].
