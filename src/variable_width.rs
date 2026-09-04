@@ -17,6 +17,8 @@ pub enum Uleb128Error {
     Unterminated,
     /// A multi-byte atom may not contain a redundant zero group.
     NonCanonical,
+    /// A payload digit must fit in the seven-bit ULEB128 payload.
+    InvalidPayload,
 }
 
 impl fmt::Display for Uleb128Error {
@@ -25,6 +27,7 @@ impl fmt::Display for Uleb128Error {
             Self::Empty => "empty ULEB128 atom",
             Self::Unterminated => "unterminated ULEB128 atom",
             Self::NonCanonical => "non-canonical ULEB128 atom",
+            Self::InvalidPayload => "ULEB128 payload digit exceeds seven bits",
         })
     }
 }
@@ -60,6 +63,33 @@ impl Uleb128 {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Uleb128Error> {
         Uleb128Ref::try_from(bytes)?;
         Ok(Self(bytes.to_vec()))
+    }
+
+    /// Encode canonical base-128 payload digits in least-significant-first
+    /// order.  This is the direct arbitrary-width form used by dictionary
+    /// profiles; unlike `from_le_bytes`, it does not reinterpret digits as a
+    /// base-256 magnitude.
+    pub fn from_payload_digits(digits: &[u8]) -> Result<Self, Uleb128Error> {
+        if digits.is_empty() {
+            return Ok(Self(vec![0]));
+        }
+        if digits.iter().any(|&digit| digit >= 128) {
+            return Err(Uleb128Error::InvalidPayload);
+        }
+        let mut bytes = digits.to_vec();
+        while bytes.len() > 1 && bytes.last() == Some(&0) {
+            bytes.pop();
+        }
+        let continuation_len = bytes.len().saturating_sub(1);
+        for byte in &mut bytes[..continuation_len] {
+            *byte |= 0x80;
+        }
+        Ok(Self(bytes))
+    }
+
+    /// Return the base-128 payload digits in least-significant-first order.
+    pub fn to_payload_digits(&self) -> Vec<u8> {
+        self.0.iter().map(|byte| byte & 0x7f).collect()
     }
 
     /// Encode an unsigned magnitude represented as little-endian base-256
@@ -237,5 +267,16 @@ mod tests {
         let view = Uleb128Ref::new(&wire).unwrap();
         assert_eq!(view.as_bytes().as_ptr(), wire.as_ptr());
         assert_eq!(view.to_owned().as_bytes(), &wire);
+    }
+
+    #[test]
+    fn payload_digit_form_matches_profile_reference() {
+        let value = Uleb128::from_payload_digits(&[3, 4]).unwrap();
+        assert_eq!(value.as_bytes(), &[0x83, 0x04]);
+        assert_eq!(value.to_payload_digits(), vec![3, 4]);
+        assert_eq!(
+            Uleb128::from_payload_digits(&[128]),
+            Err(Uleb128Error::InvalidPayload)
+        );
     }
 }
