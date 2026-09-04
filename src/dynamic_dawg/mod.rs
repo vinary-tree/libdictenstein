@@ -88,6 +88,19 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
         )
     }
 
+    /// Build a value-bearing DAWG from profile sequences and their values.
+    pub fn from_atom_sequences_with_values<P, I>(entries: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = U>,
+        I: IntoIterator<Item = (crate::AtomSequence<P>, V)>,
+    {
+        Self::from_sorted_entries(
+            entries
+                .into_iter()
+                .map(|(sequence, value)| (sequence.as_atoms().to_vec(), value)),
+        )
+    }
+
     /// Build a value-bearing DAWG from lexicographically sorted sequences.
     pub fn from_sorted_entries<I, S>(entries: I) -> Self
     where
@@ -254,6 +267,15 @@ mod generic_tests {
         ]);
         assert!(dictionary.contains_units(&[7, 11]));
         assert!(dictionary.contains_units(&[7, 13]));
+    }
+
+    #[test]
+    fn generic_surface_builds_profile_sequences_with_values() {
+        let dictionary = DynamicDawgGeneric::<u32, u16>::from_atom_sequences_with_values::<
+            crate::U32,
+            _,
+        >([(crate::AtomSequence::from_atoms([3, 5]), 42)]);
+        assert_eq!(dictionary.get_units_value(&[3, 5]), Some(42));
     }
 
     #[test]
