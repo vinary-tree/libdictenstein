@@ -42,8 +42,8 @@ use super::scdawg::Scdawg;
 use super::suffix_automaton::char::SuffixAutomatonChar;
 use super::suffix_automaton::SuffixAutomaton;
 use super::{Dictionary, SyncStrategy};
-use crate::Uleb128Sequence;
 use crate::{ProfileKind, VariableWidthProfile};
+use crate::{Uleb128Error, Uleb128Sequence};
 
 /// Dictionary backend types.
 ///
@@ -167,6 +167,30 @@ impl Uleb128DictionaryContainer {
             Self::DoubleArrayTrie(dictionary) => dictionary.contains(sequence),
             #[cfg(feature = "pathmap-backend")]
             Self::PathMap(dictionary) => dictionary.contains(sequence),
+        }
+    }
+
+    /// Test a complete canonical encoded sequence without materializing its
+    /// decoded atoms.  Validation ensures malformed or non-canonical bytes do
+    /// not become observable backend transitions.
+    pub fn contains_encoded(&self, encoded: &[u8]) -> Result<bool, Uleb128Error> {
+        match self {
+            Self::DynamicDawg(dictionary) => dictionary.contains_encoded(encoded),
+            Self::DoubleArrayTrie(dictionary) => dictionary.contains_encoded(encoded),
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(dictionary) => dictionary.contains_encoded(encoded),
+        }
+    }
+
+    /// Export complete logical sequences while keeping physical codec bytes
+    /// private to each backend.  Decoding occurs only at this explicit logical
+    /// boundary and malformed images are reported as errors.
+    pub fn visible_entries(&self) -> Result<Vec<(Uleb128Sequence, Option<()>)>, Uleb128Error> {
+        match self {
+            Self::DynamicDawg(dictionary) => dictionary.visible_entries(),
+            Self::DoubleArrayTrie(dictionary) => dictionary.visible_entries(),
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(dictionary) => dictionary.visible_entries(),
         }
     }
 }
@@ -1014,6 +1038,10 @@ mod tests {
             assert_eq!(dictionary.profile_descriptor().kind, ProfileKind::Uleb128);
             assert_eq!(dictionary.term_count(), 1);
             assert!(dictionary.contains(&sequence), "{backend:?}");
+            let encoded = sequence.to_encoded();
+            assert!(dictionary.contains_encoded(&encoded).unwrap());
+            let entries = dictionary.visible_entries().unwrap();
+            assert_eq!(entries, vec![(sequence.clone(), None)]);
         }
         assert_eq!(
             Uleb128Backend::DynamicDawg.to_string(),
