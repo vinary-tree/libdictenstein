@@ -533,6 +533,35 @@ impl<V: DictionaryValue> SuffixAutomatonChar<V> {
         )
     }
 
+    /// Build a value-bearing suffix automaton from Unicode-scalar profile
+    /// sequences without introducing UTF-8 byte transitions.
+    pub fn from_atom_sequences_with_values<P, I>(entries: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = char>,
+        I: IntoIterator<Item = (crate::AtomSequence<P>, V)>,
+    {
+        Self::from_records(
+            entries
+                .into_iter()
+                .map(|(sequence, value)| {
+                    (
+                        sequence.as_atoms().iter().copied().collect::<String>(),
+                        Some(value),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// Read a mapped value for a Unicode-scalar profile sequence.
+    pub fn get_atom_sequence_value<P>(&self, sequence: &crate::AtomSequence<P>) -> Option<V>
+    where
+        P: crate::AtomProfile<Atom = char>,
+    {
+        let term: String = sequence.as_atoms().iter().collect();
+        <Self as crate::MappedDictionary>::get_value(self, &term)
+    }
+
     /// Insert a text string.
     ///
     /// Returns `true` if the operation succeeded (always true currently).
@@ -1640,6 +1669,16 @@ mod tests {
 
         let node_t = root.transition('t').unwrap();
         assert!(node_t.has_edge('e'));
+    }
+
+    #[test]
+    fn profile_sequences_preserve_values() {
+        let dictionary = SuffixAutomatonChar::<u16>::from_atom_sequences_with_values::<
+            crate::UnicodeScalar,
+            _,
+        >([(crate::AtomSequence::from_atoms(['λ', 'x']), 42)]);
+        let sequence = crate::AtomSequence::<crate::UnicodeScalar>::from_atoms(['λ', 'x']);
+        assert_eq!(dictionary.get_atom_sequence_value(&sequence), Some(42));
     }
 
     #[test]
