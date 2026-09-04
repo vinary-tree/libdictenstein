@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::dynamic_dawg::{DynamicDawgGeneric, DynamicDawgU32};
-use crate::DictionaryValue;
 use crate::Uleb128;
+use crate::{CharUnit, DictionaryValue};
 
 /// Dense identifier assigned by an [`InternedVocabulary`].
 pub type InternedId = u64;
@@ -250,6 +250,43 @@ pub struct InternedSequenceDictionary<K: Ord + Clone, V: DictionaryValue = ()> {
 /// only generation-bound fixed-width IDs.
 pub type InternedUlebSequenceDictionary<V = ()> = InternedSequenceDictionary<Uleb128, V>;
 
+/// Capability-limited read view of an interned ID-sequence backend.
+#[derive(Clone, Copy, Debug)]
+pub struct InternedIdDictionaryView<'a, U: CharUnit, V: DictionaryValue> {
+    dictionary: &'a DynamicDawgGeneric<U, V>,
+}
+
+impl<'a, U: CharUnit, V: DictionaryValue> InternedIdDictionaryView<'a, U, V> {
+    #[inline]
+    fn new(dictionary: &'a DynamicDawgGeneric<U, V>) -> Self {
+        Self { dictionary }
+    }
+
+    /// Test membership in the already-bound ID domain.
+    #[inline]
+    pub fn contains_units(&self, ids: &[U]) -> bool {
+        self.dictionary.contains_units(ids)
+    }
+
+    /// Read a mapped value in the already-bound ID domain.
+    #[inline]
+    pub fn get_units_value(&self, ids: &[U]) -> Option<V> {
+        self.dictionary.get_units_value(ids)
+    }
+
+    /// Number of visible ID sequences.
+    #[inline]
+    pub fn term_count(&self) -> usize {
+        self.dictionary.term_count()
+    }
+
+    /// Number of physical nodes in the ID backend.
+    #[inline]
+    pub fn node_count(&self) -> usize {
+        self.dictionary.node_count()
+    }
+}
+
 /// Explicit `u64` carrier specialization for vocabularies larger than the
 /// default `u32` ID domain.  The vocabulary and generation semantics are
 /// identical to [`InternedSequenceDictionary`].
@@ -288,8 +325,8 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionaryU64<K, V> {
 
     /// Access the `u64` ID-native dictionary for hot-loop consumers.
     #[inline]
-    pub fn id_dictionary(&self) -> &DynamicDawgGeneric<u64, V> {
-        &self.id_dictionary
+    pub fn id_dictionary(&self) -> InternedIdDictionaryView<'_, u64, V> {
+        InternedIdDictionaryView::new(&self.id_dictionary)
     }
 
     /// Intern atoms and insert their sequence using the `u64` carrier.
@@ -379,8 +416,8 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
     /// generation.  The vocabulary remains the authority for constructing
     /// valid sequences.
     #[inline]
-    pub fn id_dictionary(&self) -> &DynamicDawgU32<V> {
-        &self.id_dictionary
+    pub fn id_dictionary(&self) -> InternedIdDictionaryView<'_, u32, V> {
+        InternedIdDictionaryView::new(&self.id_dictionary)
     }
 
     /// Intern atoms and insert their ID sequence atomically with respect to

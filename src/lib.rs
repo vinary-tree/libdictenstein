@@ -167,8 +167,9 @@ pub use collection::{
 pub use dynamic_dawg::core::{DawgCore, DawgNode};
 pub use dynamic_dawg::{DynamicDawgGeneric, DynamicDawgProfile, DynamicDawgU32};
 pub use interning::{
-    InternedId, InternedSequence, InternedSequenceDictionary, InternedSequenceDictionaryU64,
-    InternedUlebSequenceDictionary, InternedVocabulary, InterningError,
+    InternedId, InternedIdDictionaryView, InternedSequence, InternedSequenceDictionary,
+    InternedSequenceDictionaryU64, InternedUlebSequenceDictionary, InternedVocabulary,
+    InterningError,
 };
 pub use iterator::{DictionaryIterator, DictionaryTermIterator};
 pub use node_signature::NodeSignature;
