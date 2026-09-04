@@ -44,6 +44,8 @@ mod profile_tests {
         assert!(dictionary.insert_bytes_with_value(&[0, 255, 1], 34));
         assert!(dictionary.contains_bytes(&[0, 255, 1]));
         assert_eq!(dictionary.get_bytes_value(&[0, 255, 1]), Some(34));
+        let sequence = AtomSequence::<Bytes>::from_atoms([0, 255, 1]);
+        assert_eq!(dictionary.get_atom_sequence_value(&sequence), Some(34));
         assert!(dictionary.remove_bytes(&[0, 255, 1]));
         assert!(!dictionary.contains_bytes(&[0, 255, 1]));
     }
@@ -57,5 +59,7 @@ mod profile_tests {
         assert!(dictionary.contains("λx"));
         assert!(!dictionary.contains("lx"));
         assert_eq!(dictionary.get_value("λx"), Some(21));
+        let sequence = AtomSequence::<UnicodeScalar>::from_atoms(['λ', 'x']);
+        assert_eq!(dictionary.get_atom_sequence_value(&sequence), Some(21));
     }
 }

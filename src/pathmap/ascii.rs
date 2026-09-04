@@ -381,6 +381,15 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
         self.load_state().map.get_val_at(bytes).cloned()
     }
 
+    /// Read a value for a byte-profile sequence without UTF-8 coercion.
+    #[inline]
+    pub fn get_atom_sequence_value<P>(&self, sequence: &crate::AtomSequence<P>) -> Option<V>
+    where
+        P: crate::AtomProfile<Atom = u8>,
+    {
+        self.get_bytes_value(sequence.as_atoms())
+    }
+
     /// Update an existing term's value in place, or insert a new term with a default value.
     ///
     /// This method is useful for accumulation patterns where you want to modify an existing

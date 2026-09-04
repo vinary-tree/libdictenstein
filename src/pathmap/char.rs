@@ -323,6 +323,17 @@ impl<V: DictionaryValue> PathMapDictionaryChar<V> {
         state.map.get_val_at(bytes).cloned()
     }
 
+    /// Read a value for a Unicode-scalar profile sequence.  PathMap stores
+    /// UTF-8 bytes, so this adapter performs one bounded encoding allocation at
+    /// the representation boundary; traversal remains scalar-level to callers.
+    pub fn get_atom_sequence_value<P>(&self, sequence: &crate::AtomSequence<P>) -> Option<V>
+    where
+        P: crate::AtomProfile<Atom = char>,
+    {
+        let term: String = sequence.as_atoms().iter().collect();
+        self.get_value(&term)
+    }
+
     /// Update an existing term's value in place, or insert a new term with a default value.
     ///
     /// This method is useful for accumulation patterns where you want to modify an existing
