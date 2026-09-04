@@ -189,6 +189,8 @@ pub use variable_width::{
     Uleb128, Uleb128Codec, Uleb128Error, Uleb128Ref, Uleb128Sequence, Uleb128Stream,
     VariableWidthCodec, VariableWidthProfile, ULEB128_PROFILE,
 };
+#[cfg(feature = "pathmap-backend")]
+pub use pathmap::PathMapDictionaryUleb128;
 pub use zipper::{DictZipper, ValuedDictZipper, ZipperTraversalNode};
 
 // Re-export persistent ARTrie types (only available with feature)
@@ -1903,6 +1905,8 @@ pub mod prelude {
     pub use crate::dynamic_dawg::{
         DynamicDawg, DynamicDawgChar, DynamicDawgU64, DynamicDawgUleb128,
     };
+    #[cfg(feature = "pathmap-backend")]
+    pub use crate::pathmap::PathMapDictionaryUleb128;
     pub use crate::scdawg::{Scdawg, ScdawgChar};
     pub use crate::suffix_automaton::{SuffixAutomaton, SuffixAutomatonChar};
 
