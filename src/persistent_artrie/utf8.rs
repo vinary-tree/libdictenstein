@@ -144,10 +144,23 @@ impl<V: DictionaryValue> PersistentARTrieUtf8<V> {
     }
 
     /// Enumerate complete UTF-8 terms and values in byte-lexicographic order.
-    pub fn visible_entries(&self) -> Result<Vec<(String, Option<V>)>, std::str::Utf8Error> {
-        self.inner
-            .iter_with_values()
-            .map(|(bytes, value)| Ok((std::str::from_utf8(&bytes)?.to_owned(), value)))
+    ///
+    /// Traversal failures and malformed persisted bytes are returned explicitly;
+    /// neither is converted into an empty result.
+    pub fn visible_entries(&self) -> crate::persistent_artrie::Result<Vec<(String, Option<V>)>> {
+        let entries = self.inner.iter_prefix_with_arena(b"")?.unwrap_or_default();
+        entries
+            .into_iter()
+            .map(|entry| {
+                let value = self.inner.get_value_bytes(&entry.term);
+                std::str::from_utf8(&entry.term)
+                    .map(|term| (term.to_owned(), value))
+                    .map_err(|error| {
+                        crate::persistent_artrie::PersistentARTrieError::CorruptedFile {
+                            reason: format!("invalid UTF-8 entry: {error}"),
+                        }
+                    })
+            })
             .collect()
     }
 }
