@@ -67,6 +67,18 @@ impl<P: AtomProfile> AtomSequence<P> {
         Self::default()
     }
 
+    /// Stable profile identity for this sequence's wire representation.
+    #[inline]
+    pub const fn profile() -> VariableWidthProfile {
+        P::PROFILE
+    }
+
+    /// Wire width of one atom, or `None` for variable-width profiles.
+    #[inline]
+    pub const fn width_bytes() -> Option<usize> {
+        P::WIDTH_BYTES
+    }
+
     /// Build a sequence from logical atoms.
     pub fn from_atoms<I>(atoms: I) -> Self
     where
@@ -320,5 +332,12 @@ mod tests {
     fn fixed_sequence_rejects_truncated_images() {
         assert!(AtomSequence::<U64>::from_encoded(&[1, 2, 3]).is_err());
         assert!(AtomSequence::<Bytes>::from_encoded(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn sequence_exposes_profile_identity_and_width() {
+        assert_eq!(AtomSequence::<U64>::profile(), U64::PROFILE);
+        assert_eq!(AtomSequence::<U64>::width_bytes(), Some(8));
+        assert_eq!(AtomSequence::<Bytes>::width_bytes(), Some(1));
     }
 }
