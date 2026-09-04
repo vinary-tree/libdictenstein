@@ -182,6 +182,36 @@ impl<V: DictionaryValue> PathMapDictionaryChar<V> {
         Self::from_state(map, count)
     }
 
+    /// Build from Unicode-scalar profile sequences while retaining scalar
+    /// boundaries at the adapter API.
+    pub fn from_atom_sequences<P, I>(sequences: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = char>,
+        I: IntoIterator<Item = crate::AtomSequence<P>>,
+        V: Default,
+    {
+        Self::from_char_entries(
+            sequences
+                .into_iter()
+                .map(|sequence| (sequence.as_atoms().to_vec(), V::default()))
+                .collect(),
+        )
+    }
+
+    /// Build a value-bearing dictionary from Unicode-scalar profile sequences.
+    pub fn from_atom_sequences_with_values<P, I>(entries: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = char>,
+        I: IntoIterator<Item = (crate::AtomSequence<P>, V)>,
+    {
+        Self::from_char_entries(
+            entries
+                .into_iter()
+                .map(|(sequence, value)| (sequence.as_atoms().to_vec(), value))
+                .collect(),
+        )
+    }
+
     /// Insert a term with a default value into the dictionary
     ///
     /// Returns `true` if the term was newly inserted, `false` if it already existed.
