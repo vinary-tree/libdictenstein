@@ -1502,15 +1502,6 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomaton<V, S> {
         self.index.insert(text, Some(value))
     }
 
-    /// Read a mapped value for a Unicode-scalar profile sequence.
-    pub fn get_atom_sequence_value<P>(&self, sequence: &crate::AtomSequence<P>) -> Option<V>
-    where
-        P: crate::AtomProfile<Atom = char>,
-    {
-        let text: String = sequence.as_atoms().iter().collect();
-        self.index.get_value(&text)
-    }
-
     pub fn insert(&self, text: &str) -> bool {
         self.try_insert(text).unwrap_or_else(|error| {
             log::warn!("PersistentSuffixAutomaton::insert failed: {error}");
@@ -1717,6 +1708,15 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomatonChar<V, S> {
 
     pub fn try_insert_with_value(&self, text: &str, value: V) -> Result<bool> {
         self.index.insert(text, Some(value))
+    }
+
+    /// Read a mapped value for a Unicode-scalar profile sequence.
+    pub fn get_atom_sequence_value<P>(&self, sequence: &crate::AtomSequence<P>) -> Option<V>
+    where
+        P: crate::AtomProfile<Atom = char>,
+    {
+        let text: String = sequence.as_atoms().iter().collect();
+        self.index.load().get_value(&text)
     }
 
     pub fn insert(&self, text: &str) -> bool {

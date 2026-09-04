@@ -83,6 +83,16 @@ impl<V: DictionaryValue, S: BlockStorage> super::PersistentARTrieChar<V, S> {
         self.overlay_get_value(term).flatten()
     }
 
+    /// Read a mapped value for a Unicode-scalar profile sequence while
+    /// preserving the canonical overlay-routed lookup path.
+    pub fn get_atom_sequence_value<P>(&self, sequence: &crate::AtomSequence<P>) -> Option<V>
+    where
+        P: crate::AtomProfile<Atom = char>,
+    {
+        let term: String = sequence.as_atoms().iter().collect();
+        self.get_value(&term)
+    }
+
     /// Get a value by term with explicit error handling.
     ///
     /// This version returns a `Result` for lazy loading I/O errors.
