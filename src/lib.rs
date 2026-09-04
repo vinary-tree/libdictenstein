@@ -1896,6 +1896,7 @@ pub mod prelude {
         MappedDictionary, MappedDictionaryNode, MutableDictionary, MutableMappedDictionary,
         SnapshotEntryIterator, SnapshotTermIterator, SyncStrategy, ValuedDictZipper,
         ValuedZipperCollection, ZipperCollection, ZipperEntryIterator, ZipperTermIterator,
+        Utf8,
     };
 
     // Re-export common dictionary types
