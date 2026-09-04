@@ -689,6 +689,34 @@ impl<U: CharUnit, V: DictionaryValue> DATCoreShared<U, V> {
         }
     }
 
+    /// Walk the trie using already-decoded logical units, avoiding text
+    /// conversion at byte/profile API boundaries.
+    pub fn term_value_units_from(&self, units: &[U], root_state: usize) -> Option<V>
+    where
+        V: Clone,
+    {
+        let mut state = root_state;
+        for unit in units {
+            if state >= self.base.len() {
+                return None;
+            }
+            let base = self.base[state];
+            if base < 0 {
+                return None;
+            }
+            let next = (base as usize).wrapping_add(unit.to_dat_offset());
+            if next >= self.check.len() || self.check[next] != state as i32 {
+                return None;
+            }
+            state = next;
+        }
+        if state < self.is_final.len() && self.is_final[state] {
+            self.values.get(state).and_then(|value| value.clone())
+        } else {
+            None
+        }
+    }
+
     /// `contains_term_from` with byte-DAT's `root_state = 1` convention.
     #[inline]
     pub fn contains_term(&self, term: &str) -> bool {

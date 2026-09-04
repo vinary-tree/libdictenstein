@@ -669,6 +669,11 @@ impl<V: DictionaryValue> DoubleArrayTrie<V> {
         self.shared.term_value(term)
     }
 
+    /// Get a value for an arbitrary byte key without UTF-8 coercion.
+    pub fn get_bytes_value(&self, bytes: &[u8]) -> Option<V> {
+        self.shared.term_value_units_from(bytes, 1)
+    }
+
     /// Get the number of terms in the dictionary.
     pub fn len(&self) -> Option<usize> {
         Some(self.term_count)

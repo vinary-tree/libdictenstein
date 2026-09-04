@@ -34,10 +34,10 @@ mod profile_tests {
     #[test]
     fn byte_profile_sequences_preserve_values() {
         let dictionary = DoubleArrayTrie::<u16>::from_atom_sequences_with_values::<Bytes, _>([(
-            AtomSequence::<Bytes>::from_atoms([b'a', b'b']),
+            AtomSequence::<Bytes>::from_atoms([0, 255]),
             9,
         )]);
-        assert_eq!(dictionary.get_value("ab"), Some(9));
+        assert_eq!(dictionary.get_bytes_value(&[0, 255]), Some(9));
     }
 
     #[test]
