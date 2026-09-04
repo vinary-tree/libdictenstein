@@ -84,6 +84,21 @@ impl<V: crate::DictionaryValue> DoubleArrayTrieUleb128<V> {
         Ok(self.inner.get_bytes_value(encoded))
     }
 
+    /// Export complete logical sequences from the immutable DAT.
+    /// Traversal remains iterative in the byte-backed core; decoding occurs
+    /// only at this boundary and malformed images are rejected.
+    pub fn visible_entries(
+        &self,
+    ) -> Result<Vec<(crate::Uleb128Sequence, Option<V>)>, crate::Uleb128Error> {
+        self.inner
+            .iter_bytes()
+            .map(|(bytes, value)| {
+                crate::Uleb128Sequence::from_encoded(&bytes)
+                    .map(|sequence| (sequence, Some(value)))
+            })
+            .collect()
+    }
+
     /// Number of visible logical sequences.
     #[inline]
     pub fn term_count(&self) -> usize {
@@ -122,6 +137,7 @@ mod profile_tests {
         assert_eq!(dictionary.term_count(), 1);
         assert_eq!(dictionary.contains_encoded(sequence.to_encoded().as_slice()), Ok(true));
         assert!(dictionary.get_encoded_value(&[0x80]).is_err());
+        assert_eq!(dictionary.visible_entries().unwrap().len(), 1);
     }
 
     #[test]
