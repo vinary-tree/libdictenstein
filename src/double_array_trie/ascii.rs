@@ -674,6 +674,15 @@ impl<V: DictionaryValue> DoubleArrayTrie<V> {
         self.shared.term_value_units_from(bytes, 1)
     }
 
+    /// Get a value for a byte-profile sequence without UTF-8 coercion.
+    #[inline]
+    pub fn get_atom_sequence_value<P>(&self, sequence: &crate::AtomSequence<P>) -> Option<V>
+    where
+        P: crate::AtomProfile<Atom = u8>,
+    {
+        self.get_bytes_value(sequence.as_atoms())
+    }
+
     /// Get the number of terms in the dictionary.
     pub fn len(&self) -> Option<usize> {
         Some(self.term_count)

@@ -38,6 +38,8 @@ mod profile_tests {
             9,
         )]);
         assert_eq!(dictionary.get_bytes_value(&[0, 255]), Some(9));
+        let sequence = AtomSequence::<Bytes>::from_atoms([0, 255]);
+        assert_eq!(dictionary.get_atom_sequence_value(&sequence), Some(9));
     }
 
     #[test]
@@ -60,5 +62,7 @@ mod profile_tests {
         >([(AtomSequence::<UnicodeScalar>::from_atoms(['λ']), 7)]);
         assert_eq!(dictionary.get_value("λ"), Some(7));
         assert_eq!(dictionary.get_chars_value(&['λ']), Some(7));
+        let sequence = AtomSequence::<UnicodeScalar>::from_atoms(['λ']);
+        assert_eq!(dictionary.get_atom_sequence_value(&sequence), Some(7));
     }
 }

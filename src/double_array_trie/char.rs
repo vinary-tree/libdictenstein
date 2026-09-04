@@ -436,6 +436,15 @@ impl<V: DictionaryValue> DoubleArrayTrieChar<V> {
     pub fn get_chars_value(&self, units: &[char]) -> Option<V> {
         self.shared.term_value_units_from(units, 0)
     }
+
+    /// Get a value for a Unicode-scalar profile sequence directly.
+    #[inline]
+    pub fn get_atom_sequence_value<P>(&self, sequence: &crate::AtomSequence<P>) -> Option<V>
+    where
+        P: crate::AtomProfile<Atom = char>,
+    {
+        self.get_chars_value(sequence.as_atoms())
+    }
     /// Iterate over all `(term, value)` pairs as character vectors.
     ///
     /// Returns an iterator yielding `(Vec<char>, V)` tuples in depth-first order.
