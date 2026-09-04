@@ -28,7 +28,7 @@ pub use zipper::PathMapZipper;
 /// PathMap adapter boundary for canonical variable-width ULEB128 sequences.
 /// The third-party map remains byte-backed; this type exposes only complete
 /// logical sequences and never publishes continuation bytes as symbols.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PathMapDictionaryUleb128<V: crate::DictionaryValue = ()> {
     inner: PathMapDictionary<V>,
 }

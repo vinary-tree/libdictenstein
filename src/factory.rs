@@ -25,14 +25,16 @@
 //! ```
 
 use super::double_array_trie::char::DoubleArrayTrieChar;
-use super::double_array_trie::{DoubleArrayTrie, DoubleArrayTrieUtf8};
+use super::double_array_trie::{DoubleArrayTrie, DoubleArrayTrieUleb128, DoubleArrayTrieUtf8};
 use super::dynamic_dawg::char::DynamicDawgChar;
 use super::dynamic_dawg::u64::DynamicDawgU64;
-use super::dynamic_dawg::{DynamicDawg, DynamicDawgUtf8};
+use super::dynamic_dawg::{DynamicDawg, DynamicDawgUleb128, DynamicDawgUtf8};
 #[cfg(feature = "pathmap-backend")]
 use super::pathmap::char::PathMapDictionaryChar;
 #[cfg(feature = "pathmap-backend")]
 use super::pathmap::PathMapDictionary;
+#[cfg(feature = "pathmap-backend")]
+use super::pathmap::PathMapDictionaryUleb128;
 #[cfg(feature = "pathmap-backend")]
 use super::pathmap::PathMapDictionaryUtf8;
 use super::scdawg::char::ScdawgChar;
@@ -40,6 +42,7 @@ use super::scdawg::Scdawg;
 use super::suffix_automaton::char::SuffixAutomatonChar;
 use super::suffix_automaton::SuffixAutomaton;
 use super::{Dictionary, SyncStrategy};
+use crate::Uleb128Sequence;
 use crate::{ProfileKind, VariableWidthProfile};
 
 /// Dictionary backend types.
@@ -81,6 +84,71 @@ pub enum DictionaryBackend {
     Scdawg,
     /// Compact Suffix DAWG, character (Unicode) variant.
     ScdawgChar,
+}
+
+/// Typed factory selectors for canonical ULEB128 sequence dictionaries.
+///
+/// This selector is separate from [`DictionaryBackend`] because the latter's
+/// compatibility factory accepts text terms.  ULEB sequences must remain
+/// typed at the boundary; converting them through `str` would be lossy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Uleb128Backend {
+    /// Mutable in-memory DAWG over encoded canonical ULEB sequences.
+    DynamicDawg,
+    /// Immutable double-array trie over encoded canonical ULEB sequences.
+    DoubleArrayTrie,
+    /// PathMap adapter over encoded canonical ULEB sequences.
+    #[cfg(feature = "pathmap-backend")]
+    PathMap,
+}
+
+/// Set-like container returned by the typed ULEB128 factory.
+#[derive(Debug)]
+pub enum Uleb128DictionaryContainer {
+    /// Dynamic DAWG specialization.
+    DynamicDawg(DynamicDawgUleb128),
+    /// Double-array trie specialization.
+    DoubleArrayTrie(DoubleArrayTrieUleb128),
+    /// PathMap adapter specialization.
+    #[cfg(feature = "pathmap-backend")]
+    PathMap(PathMapDictionaryUleb128),
+}
+
+impl Uleb128DictionaryContainer {
+    /// Return the selected typed backend.
+    pub const fn backend(&self) -> Uleb128Backend {
+        match self {
+            Self::DynamicDawg(_) => Uleb128Backend::DynamicDawg,
+            Self::DoubleArrayTrie(_) => Uleb128Backend::DoubleArrayTrie,
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(_) => Uleb128Backend::PathMap,
+        }
+    }
+
+    /// Number of complete logical sequences.
+    pub fn term_count(&self) -> usize {
+        match self {
+            Self::DynamicDawg(dictionary) => dictionary.term_count(),
+            Self::DoubleArrayTrie(dictionary) => dictionary.term_count(),
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(dictionary) => dictionary.term_count(),
+        }
+    }
+
+    /// Whether no complete logical sequence is stored.
+    pub fn is_empty(&self) -> bool {
+        self.term_count() == 0
+    }
+
+    /// Test membership in logical sequence space.
+    pub fn contains(&self, sequence: &Uleb128Sequence) -> bool {
+        match self {
+            Self::DynamicDawg(dictionary) => dictionary.contains(sequence),
+            Self::DoubleArrayTrie(dictionary) => dictionary.contains(sequence),
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(dictionary) => dictionary.contains(sequence),
+        }
+    }
 }
 
 /// Edge-label unit used by a backend.
@@ -463,6 +531,55 @@ impl DictionaryContainer {
 pub struct DictionaryFactory;
 
 impl DictionaryFactory {
+    /// Create a typed ULEB128 dictionary from logical sequences.
+    ///
+    /// Unlike [`Self::create`], this method does not accept strings: each
+    /// sequence is validated and retained as a canonical variable-width
+    /// value, preserving arbitrary widths and logical atom boundaries.
+    pub fn create_uleb128<I>(backend: Uleb128Backend, sequences: I) -> Uleb128DictionaryContainer
+    where
+        I: IntoIterator<Item = Uleb128Sequence>,
+    {
+        match backend {
+            Uleb128Backend::DynamicDawg => Uleb128DictionaryContainer::DynamicDawg(
+                DynamicDawgUleb128::from_sequences(sequences),
+            ),
+            Uleb128Backend::DoubleArrayTrie => Uleb128DictionaryContainer::DoubleArrayTrie(
+                DoubleArrayTrieUleb128::from_sequences(sequences),
+            ),
+            #[cfg(feature = "pathmap-backend")]
+            Uleb128Backend::PathMap => Uleb128DictionaryContainer::PathMap(
+                PathMapDictionaryUleb128::from_sequences(sequences),
+            ),
+        }
+    }
+
+    /// Create an empty typed ULEB128 dictionary.
+    pub fn empty_uleb128(backend: Uleb128Backend) -> Uleb128DictionaryContainer {
+        match backend {
+            Uleb128Backend::DynamicDawg => {
+                Uleb128DictionaryContainer::DynamicDawg(DynamicDawgUleb128::new())
+            }
+            Uleb128Backend::DoubleArrayTrie => {
+                Uleb128DictionaryContainer::DoubleArrayTrie(DoubleArrayTrieUleb128::new())
+            }
+            #[cfg(feature = "pathmap-backend")]
+            Uleb128Backend::PathMap => {
+                Uleb128DictionaryContainer::PathMap(PathMapDictionaryUleb128::new())
+            }
+        }
+    }
+
+    /// List the typed ULEB128 backends available in this build.
+    pub fn available_uleb128_backends() -> Vec<Uleb128Backend> {
+        vec![
+            Uleb128Backend::DynamicDawg,
+            Uleb128Backend::DoubleArrayTrie,
+            #[cfg(feature = "pathmap-backend")]
+            Uleb128Backend::PathMap,
+        ]
+    }
+
     /// Create a dictionary with the specified backend.
     ///
     /// # Arguments
@@ -862,6 +979,20 @@ mod tests {
             assert!(dict.contains("apple"), "{backend} should contain 'apple'");
             assert!(dict.contains("banana"), "{backend} should contain 'banana'");
             assert!(dict.contains("cherry"), "{backend} should contain 'cherry'");
+        }
+    }
+
+    #[test]
+    fn typed_uleb_factory_preserves_variable_width_sequences() {
+        let sequence = Uleb128Sequence::from_atoms([
+            crate::Uleb128::from_payload_digits(&[1; 24]).unwrap(),
+            crate::Uleb128::from_u64(7),
+        ]);
+        for backend in DictionaryFactory::available_uleb128_backends() {
+            let dictionary = DictionaryFactory::create_uleb128(backend, [sequence.clone()]);
+            assert_eq!(dictionary.backend(), backend);
+            assert_eq!(dictionary.term_count(), 1);
+            assert!(dictionary.contains(&sequence), "{backend:?}");
         }
     }
 }
