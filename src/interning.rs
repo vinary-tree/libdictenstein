@@ -69,6 +69,7 @@ impl InternedSequence {
 pub struct InternedVocabulary<K: Ord + Clone> {
     forward: BTreeMap<K, InternedId>,
     reverse: Vec<K>,
+    generation: u64,
 }
 
 impl<K: Ord + Clone> Default for InternedVocabulary<K> {
@@ -76,6 +77,7 @@ impl<K: Ord + Clone> Default for InternedVocabulary<K> {
         Self {
             forward: BTreeMap::new(),
             reverse: Vec::new(),
+            generation: 0,
         }
     }
 }
@@ -85,6 +87,21 @@ impl<K: Ord + Clone> InternedVocabulary<K> {
     #[inline]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Construct an empty vocabulary with an explicit generation identity.
+    pub const fn with_generation(generation: u64) -> Self {
+        Self {
+            forward: BTreeMap::new(),
+            reverse: Vec::new(),
+            generation,
+        }
+    }
+
+    /// Generation identity to bind alongside every persisted ID sequence.
+    #[inline]
+    pub const fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Return the existing ID or assign the next monotonic ID.
@@ -181,6 +198,7 @@ mod tests {
     #[test]
     fn interning_is_bijective_and_deterministic() {
         let mut vocabulary = InternedVocabulary::new();
+        assert_eq!(vocabulary.generation(), 0);
         let first = vocabulary.intern(Uleb128::from_u64(42));
         assert_eq!(first, vocabulary.intern(Uleb128::from_u64(42)));
         let second = vocabulary.intern(Uleb128::from_u64(1 << 63));
@@ -206,5 +224,6 @@ mod tests {
             vocabulary.validate_sequence(&unknown),
             Err(InterningError::UnknownId(99))
         );
+        assert_eq!(InternedVocabulary::<Uleb128>::with_generation(7).generation(), 7);
     }
 }
