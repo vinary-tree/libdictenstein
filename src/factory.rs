@@ -38,6 +38,7 @@ use super::scdawg::Scdawg;
 use super::suffix_automaton::char::SuffixAutomatonChar;
 use super::suffix_automaton::SuffixAutomaton;
 use super::{Dictionary, SyncStrategy};
+use crate::{ProfileKind, VariableWidthProfile};
 
 /// Dictionary backend types.
 ///
@@ -121,6 +122,21 @@ pub struct BackendCapabilities {
     pub lock_free_writes: bool,
 }
 
+/// Stable logical-profile metadata for a factory backend.
+///
+/// The canonical profile identity is independent of the legacy Rust backend
+/// spelling and is suitable for capability negotiation and serialized
+/// descriptors.  `width_bytes == None` denotes a variable-width profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackendProfileDescriptor {
+    /// Built-in logical profile kind.
+    pub kind: ProfileKind,
+    /// Canonical name/version identity for persistence and negotiation.
+    pub identity: VariableWidthProfile,
+    /// Fixed encoded width, or `None` for variable-width atoms.
+    pub width_bytes: Option<usize>,
+}
+
 impl BackendCapabilities {
     /// Returns true for Unicode scalar-value backends.
     pub fn is_unicode(self) -> bool {
@@ -145,6 +161,39 @@ impl BackendCapabilities {
 }
 
 impl DictionaryBackend {
+    /// Return the stable logical profile represented by this legacy backend.
+    pub const fn profile_descriptor(self) -> BackendProfileDescriptor {
+        let kind = match self {
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap
+            | Self::DynamicDawg
+            | Self::DoubleArrayTrie
+            | Self::SuffixAutomaton
+            | Self::Scdawg => ProfileKind::Bytes,
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMapChar
+            | Self::DynamicDawgChar
+            | Self::DoubleArrayTrieChar
+            | Self::SuffixAutomatonChar
+            | Self::ScdawgChar => ProfileKind::UnicodeScalar,
+            #[cfg(not(feature = "pathmap-backend"))]
+            Self::DynamicDawg | Self::DoubleArrayTrie | Self::SuffixAutomaton | Self::Scdawg => {
+                ProfileKind::Bytes
+            }
+            #[cfg(not(feature = "pathmap-backend"))]
+            Self::DynamicDawgChar
+            | Self::DoubleArrayTrieChar
+            | Self::SuffixAutomatonChar
+            | Self::ScdawgChar => ProfileKind::UnicodeScalar,
+            Self::DynamicDawgU64 => ProfileKind::U64,
+        };
+        BackendProfileDescriptor {
+            kind,
+            identity: kind.identity(),
+            width_bytes: kind.width_bytes(),
+        }
+    }
+
     /// Machine-readable backend characteristics.
     pub fn capabilities(self) -> BackendCapabilities {
         match self {
@@ -671,6 +720,24 @@ mod tests {
             DictionaryBackend::DynamicDawgU64.capabilities().key_unit,
             BackendKeyUnit::U64
         );
+    }
+
+    #[test]
+    fn backend_profile_descriptor_uses_canonical_identity() {
+        let bytes = DictionaryBackend::DynamicDawg.profile_descriptor();
+        assert_eq!(bytes.kind, ProfileKind::Bytes);
+        assert_eq!(bytes.identity, ProfileKind::Bytes.identity());
+        assert_eq!(bytes.width_bytes, Some(1));
+
+        let chars = DictionaryBackend::DynamicDawgChar.profile_descriptor();
+        assert_eq!(chars.kind, ProfileKind::UnicodeScalar);
+        assert_eq!(chars.identity.name, "unicode-scalar");
+        assert_eq!(chars.width_bytes, Some(4));
+
+        let words = DictionaryBackend::DynamicDawgU64.profile_descriptor();
+        assert_eq!(words.kind, ProfileKind::U64);
+        assert_eq!(words.identity.version, 1);
+        assert_eq!(words.width_bytes, Some(8));
     }
 
     #[test]
