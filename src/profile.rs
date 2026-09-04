@@ -36,6 +36,13 @@ pub struct AtomSequence<P: AtomProfile> {
     marker: PhantomData<P>,
 }
 
+/// Fail-closed iterator over logical atoms in an encoded profile stream.
+pub struct AtomStream<'a, P: AtomProfile> {
+    remaining: &'a [u8],
+    failed: bool,
+    marker: PhantomData<P>,
+}
+
 impl<P: AtomProfile> PartialEq for AtomSequence<P> {
     fn eq(&self, other: &Self) -> bool {
         self.atoms == other.atoms
@@ -86,6 +93,16 @@ impl<P: AtomProfile> AtomSequence<P> {
         Ok(Self::from_atoms(atoms))
     }
 
+    /// Iterate logical atoms directly from an immutable encoded image.
+    #[inline]
+    pub fn stream(bytes: &[u8]) -> AtomStream<'_, P> {
+        AtomStream {
+            remaining: bytes,
+            failed: false,
+            marker: PhantomData,
+        }
+    }
+
     /// Append one logical atom.
     #[inline]
     pub fn push(&mut self, atom: P::Atom) {
@@ -111,6 +128,30 @@ impl<P: AtomProfile> AtomSequence<P> {
             encoded.extend_from_slice(&P::encode(atom));
         }
         encoded
+    }
+}
+
+impl<'a, P: AtomProfile> Iterator for AtomStream<'a, P> {
+    type Item = Result<P::Atom, ProfileError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.failed || self.remaining.is_empty() {
+            return None;
+        }
+        match P::decode(self.remaining) {
+            Ok((atom, consumed)) if consumed > 0 && consumed <= self.remaining.len() => {
+                self.remaining = &self.remaining[consumed..];
+                Some(Ok(atom))
+            }
+            Ok(_) => {
+                self.failed = true;
+                Some(Err(ProfileError::InvalidLength))
+            }
+            Err(error) => {
+                self.failed = true;
+                Some(Err(error))
+            }
+        }
     }
 }
 
@@ -258,5 +299,14 @@ mod tests {
         assert_eq!(AtomSequence::<U32>::from_encoded(&words.to_encoded()).unwrap(), words);
         let chars = AtomSequence::<UnicodeScalar>::from_atoms(['a', 'λ']);
         assert_eq!(AtomSequence::<UnicodeScalar>::from_encoded(&chars.to_encoded()).unwrap(), chars);
+    }
+
+    #[test]
+    fn atom_stream_exposes_logical_units_not_physical_bytes() {
+        let sequence = AtomSequence::<U32>::from_atoms([0x0102_0304, 7]);
+        let observed: Vec<_> = AtomSequence::<U32>::stream(&sequence.to_encoded())
+            .map(|atom| atom.unwrap())
+            .collect();
+        assert_eq!(observed, vec![0x0102_0304, 7]);
     }
 }
