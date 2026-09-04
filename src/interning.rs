@@ -109,6 +109,16 @@ impl<K: Ord + Clone> InternedVocabulary<K> {
         values.map(Vec::into_iter)
     }
 
+    /// Borrow each resolved value in ID order without allocating.  A `None`
+    /// item denotes an unknown ID and must be treated as a vocabulary-boundary
+    /// error by consumers.
+    pub fn resolve_iter<'a>(
+        &'a self,
+        sequence: &'a InternedSequence,
+    ) -> impl Iterator<Item = Option<&'a K>> {
+        sequence.ids.iter().map(|&id| self.value(id))
+    }
+
     /// Look up an ID without mutating the vocabulary.
     #[inline]
     pub fn id_of(&self, key: &K) -> Option<InternedId> {
@@ -165,5 +175,8 @@ mod tests {
         assert_eq!(sequence.as_ids(), &[first, second]);
         let resolved: Vec<_> = vocabulary.resolve_sequence(&sequence).unwrap().collect();
         assert_eq!(resolved.len(), 2);
+        assert!(vocabulary.resolve_iter(&sequence).all(|value| value.is_some()));
+        let unknown = InternedSequence::from_ids([99]);
+        assert_eq!(vocabulary.resolve_iter(&unknown).next(), Some(None));
     }
 }
