@@ -171,7 +171,7 @@ pub use substring::{
 pub use value::DictionaryValue;
 pub use variable_width::{
     Uleb128, Uleb128Codec, Uleb128Error, Uleb128Ref, VariableWidthCodec, VariableWidthProfile,
-    ULEB128_PROFILE,
+    Uleb128Stream, ULEB128_PROFILE,
 };
 pub use zipper::{DictZipper, ValuedDictZipper, ZipperTraversalNode};
 

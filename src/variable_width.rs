@@ -46,6 +46,12 @@ pub struct Uleb128(Vec<u8>);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Uleb128Ref<'a>(&'a [u8]);
 
+/// Iterator over concatenated canonical ULEB128 atoms in one immutable image.
+pub struct Uleb128Stream<'a> {
+    remaining: &'a [u8],
+    failed: bool,
+}
+
 /// Stable metadata identifying a variable-width wire profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct VariableWidthProfile {
@@ -306,6 +312,15 @@ impl<'a> Uleb128Ref<'a> {
         Ok((view, consumed))
     }
 
+    /// Construct a zero-allocation iterator over concatenated atoms.
+    #[inline]
+    pub fn stream(bytes: &'a [u8]) -> Uleb128Stream<'a> {
+        Uleb128Stream {
+            remaining: bytes,
+            failed: false,
+        }
+    }
+
     /// Return the exact borrowed wire bytes.
     #[inline]
     pub fn as_bytes(self) -> &'a [u8] {
@@ -328,6 +343,26 @@ impl<'a> Uleb128Ref<'a> {
                 .map(|b| b & 0x7f)
                 .cmp(other.0.iter().rev().map(|b| b & 0x7f))
         })
+    }
+}
+
+impl<'a> Iterator for Uleb128Stream<'a> {
+    type Item = Result<Uleb128Ref<'a>, Uleb128Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.failed || self.remaining.is_empty() {
+            return None;
+        }
+        match Uleb128Ref::from_prefix(self.remaining) {
+            Ok((atom, consumed)) => {
+                self.remaining = &self.remaining[consumed..];
+                Some(Ok(atom))
+            }
+            Err(error) => {
+                self.failed = true;
+                Some(Err(error))
+            }
+        }
     }
 }
 
@@ -442,5 +477,15 @@ mod tests {
         assert_eq!(first.as_bytes(), &[0x83, 0x04]);
         assert_eq!(&stream[consumed..], &[0x01]);
         assert_eq!(Uleb128Ref::from_prefix(&[0x80]), Err(Uleb128Error::Unterminated));
+    }
+
+    #[test]
+    fn stream_iterator_preserves_atom_boundaries_and_fails_closed() {
+        let stream = [0x83, 0x04, 0x01, 0x80];
+        let mut atoms = Uleb128Ref::stream(&stream);
+        assert_eq!(atoms.next().unwrap().unwrap().as_bytes(), &[0x83, 0x04]);
+        assert_eq!(atoms.next().unwrap().unwrap().as_bytes(), &[0x01]);
+        assert_eq!(atoms.next(), Some(Err(Uleb128Error::Unterminated)));
+        assert_eq!(atoms.next(), None);
     }
 }
