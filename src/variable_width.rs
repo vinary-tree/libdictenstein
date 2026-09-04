@@ -68,6 +68,12 @@ impl VariableWidthProfile {
     }
 }
 
+impl std::fmt::Display for VariableWidthProfile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}-v{}", self.name, self.version)
+    }
+}
+
 /// Codec contract for variable-width logical atoms.
 pub trait VariableWidthCodec {
     /// Stable profile identity that must be persisted with dictionary images.
@@ -568,6 +574,7 @@ mod tests {
         assert_eq!(Uleb128Codec::PROFILE, ULEB128_PROFILE);
         assert_eq!(ULEB128_PROFILE.name, "uleb128");
         assert_eq!(ULEB128_PROFILE.version, 1);
+        assert_eq!(ULEB128_PROFILE.to_string(), "uleb128-v1");
     }
 
     #[test]
