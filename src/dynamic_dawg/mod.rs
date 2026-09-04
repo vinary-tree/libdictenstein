@@ -170,6 +170,16 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
         self.contains_units(sequence.as_atoms())
     }
 
+    /// Read a mapped value for a profile sequence directly in logical-unit
+    /// space.
+    #[inline]
+    pub fn get_atom_sequence_value<P>(&self, sequence: &crate::AtomSequence<P>) -> Option<V>
+    where
+        P: crate::AtomProfile<Atom = U>,
+    {
+        self.get_units_value(sequence.as_atoms())
+    }
+
     /// Remove a profile sequence directly in logical-unit space.
     #[inline]
     pub fn remove_atom_sequence<P>(&self, sequence: &crate::AtomSequence<P>) -> bool
@@ -283,6 +293,8 @@ mod generic_tests {
             _,
         >([(crate::AtomSequence::from_atoms([3, 5]), 42)]);
         assert_eq!(dictionary.get_units_value(&[3, 5]), Some(42));
+        let sequence = crate::AtomSequence::<crate::U32>::from_atoms([3, 5]);
+        assert_eq!(dictionary.get_atom_sequence_value(&sequence), Some(42));
     }
 
     #[test]
