@@ -42,6 +42,20 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
         }
     }
 
+    /// Build from lexicographically sorted logical-unit sequences.
+    pub fn from_sorted_sequences<I, S>(sequences: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<[U]>,
+    {
+        Self {
+            inner: std::sync::Arc::new(lockfree::LockFreeDawg::from_sorted_terms_by(
+                sequences,
+                |sequence, units| units.extend_from_slice(sequence.as_ref()),
+            )),
+        }
+    }
+
     /// Insert one logical-unit sequence.
     #[inline]
     pub fn insert_units(&self, units: &[U]) -> bool {
@@ -124,6 +138,17 @@ mod generic_tests {
         assert!(dictionary.insert_units_with_value(&[4], 99));
         assert_eq!(dictionary.get_units_value(&[4]), Some(99));
         assert!(dictionary.node_count() > 0);
+    }
+
+    #[test]
+    fn generic_batch_constructor_uses_sorted_logical_sequences() {
+        let dictionary = DynamicDawgGeneric::<u32>::from_sorted_sequences([
+            vec![1u32, 2],
+            vec![1, 3],
+        ]);
+        assert!(dictionary.contains_units(&[1, 2]));
+        assert!(dictionary.contains_units(&[1, 3]));
+        assert_eq!(dictionary.term_count(), 2);
     }
 }
 
