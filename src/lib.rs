@@ -179,6 +179,8 @@ pub use iterator::{DictionaryIterator, DictionaryTermIterator};
 pub use node_signature::NodeSignature;
 #[cfg(feature = "pathmap-backend")]
 pub use pathmap::PathMapDictionaryUleb128;
+#[cfg(feature = "pathmap-backend")]
+pub use pathmap::PathMapDictionaryUtf8;
 pub use profile::{
     AtomProfile, AtomSequence, AtomStream, Bytes, F64Bits, ProfileError, ProfileKind,
     UnicodeScalar, Utf8, U32, U64,
@@ -1906,7 +1908,7 @@ pub mod prelude {
         DynamicDawg, DynamicDawgChar, DynamicDawgU64, DynamicDawgUleb128, DynamicDawgUtf8,
     };
     #[cfg(feature = "pathmap-backend")]
-    pub use crate::pathmap::PathMapDictionaryUleb128;
+    pub use crate::pathmap::{PathMapDictionaryUleb128, PathMapDictionaryUtf8};
     pub use crate::scdawg::{Scdawg, ScdawgChar};
     pub use crate::suffix_automaton::{SuffixAutomaton, SuffixAutomatonChar};
 

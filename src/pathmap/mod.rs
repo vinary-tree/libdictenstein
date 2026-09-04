@@ -33,6 +33,86 @@ pub struct PathMapDictionaryUleb128<V: crate::DictionaryValue = ()> {
     inner: PathMapDictionary<V>,
 }
 
+/// PathMap adapter boundary for variable-width UTF-8 strings.
+#[derive(Clone)]
+pub struct PathMapDictionaryUtf8<V: crate::DictionaryValue = ()> {
+    inner: PathMapDictionary<V>,
+}
+
+impl<V: crate::DictionaryValue> Default for PathMapDictionaryUtf8<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<V: crate::DictionaryValue> PathMapDictionaryUtf8<V> {
+    pub fn new() -> Self {
+        Self {
+            inner: PathMapDictionary::new(),
+        }
+    }
+    pub fn from_terms<I, S>(terms: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let dictionary = Self::new();
+        for term in terms {
+            dictionary.insert(term.as_ref());
+        }
+        dictionary
+    }
+    pub fn from_terms_with_values<I, S>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (S, V)>,
+        S: AsRef<str>,
+    {
+        let dictionary = Self::new();
+        for (term, value) in entries {
+            dictionary.insert_with_value(term.as_ref(), value);
+        }
+        dictionary
+    }
+    #[inline]
+    pub fn insert(&self, term: &str) -> bool {
+        self.inner.insert_bytes(term.as_bytes())
+    }
+    #[inline]
+    pub fn insert_with_value(&self, term: &str, value: V) -> bool {
+        self.inner.insert_bytes_with_value(term.as_bytes(), value)
+    }
+    #[inline]
+    pub fn contains(&self, term: &str) -> bool {
+        self.inner.contains_bytes(term.as_bytes())
+    }
+    #[inline]
+    pub fn get_value(&self, term: &str) -> Option<V> {
+        self.inner.get_bytes_value(term.as_bytes())
+    }
+    #[inline]
+    pub fn remove(&self, term: &str) -> bool {
+        self.inner.remove_bytes(term.as_bytes())
+    }
+    #[inline]
+    pub fn term_count(&self) -> usize {
+        self.inner.len().unwrap_or(0)
+    }
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.term_count() == 0
+    }
+    pub fn contains_encoded(&self, encoded: &[u8]) -> Result<bool, std::str::Utf8Error> {
+        std::str::from_utf8(encoded)?;
+        Ok(self.inner.contains_bytes(encoded))
+    }
+    pub fn visible_entries(&self) -> Result<Vec<(String, Option<V>)>, std::str::Utf8Error> {
+        self.inner
+            .entries()
+            .map(|entry| std::str::from_utf8(&entry.key).map(|s| (s.to_owned(), entry.value)))
+            .collect()
+    }
+}
+
 impl<V: crate::DictionaryValue> PathMapDictionaryUleb128<V> {
     /// Construct an empty ULEB128 PathMap adapter.
     pub fn new() -> Self {
@@ -152,7 +232,9 @@ impl<V: crate::DictionaryValue> Default for PathMapDictionaryUleb128<V> {
 
 #[cfg(all(test, feature = "pathmap-backend"))]
 mod profile_tests {
-    use super::{PathMapDictionary, PathMapDictionaryChar, PathMapDictionaryUleb128};
+    use super::{
+        PathMapDictionary, PathMapDictionaryChar, PathMapDictionaryUleb128, PathMapDictionaryUtf8,
+    };
     use crate::{AtomSequence, Bytes, Dictionary, UnicodeScalar};
 
     #[test]
@@ -184,6 +266,17 @@ mod profile_tests {
             .remove_encoded(sequence.to_encoded().as_slice())
             .unwrap());
         assert!(dictionary.is_empty());
+    }
+
+    #[test]
+    fn utf8_adapter_preserves_logical_entries() {
+        let dictionary =
+            PathMapDictionaryUtf8::<u16>::from_terms_with_values([("λ🎉", 9), ("a", 1)]);
+        assert!(dictionary.contains("λ🎉"));
+        assert_eq!(dictionary.get_value("λ🎉"), Some(9));
+        assert_eq!(dictionary.visible_entries().unwrap().len(), 2);
+        assert!(dictionary.contains_encoded("λ🎉".as_bytes()).unwrap());
+        assert!(dictionary.contains_encoded(&[0x80]).is_err());
     }
 
     #[test]
