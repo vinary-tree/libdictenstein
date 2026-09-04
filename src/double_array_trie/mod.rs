@@ -11,6 +11,8 @@ pub mod char_zipper;
 pub mod core;
 pub mod zipper;
 
+use crate::DictionaryEntries;
+
 pub use ascii::{DoubleArrayTrie, DoubleArrayTrieBuilder, DoubleArrayTrieNode};
 pub use char::{DoubleArrayTrieChar, DoubleArrayTrieCharNode};
 pub use char_zipper::DoubleArrayTrieCharZipper;
@@ -91,10 +93,10 @@ impl<V: crate::DictionaryValue> DoubleArrayTrieUleb128<V> {
         &self,
     ) -> Result<Vec<(crate::Uleb128Sequence, Option<V>)>, crate::Uleb128Error> {
         self.inner
-            .iter_bytes()
-            .map(|(bytes, value)| {
-                crate::Uleb128Sequence::from_encoded(&bytes)
-                    .map(|sequence| (sequence, Some(value)))
+            .entries()
+            .map(|entry| {
+                crate::Uleb128Sequence::from_encoded(&entry.key)
+                    .map(|sequence| (sequence, entry.value))
             })
             .collect()
     }

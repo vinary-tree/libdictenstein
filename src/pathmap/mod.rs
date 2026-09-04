@@ -15,7 +15,7 @@ pub mod core;
 pub mod snapshot;
 pub mod zipper;
 
-use crate::Dictionary;
+use crate::{Dictionary, DictionaryEntries};
 
 pub use self::core::{
     trie_ref_root, trie_ref_root_borrowed, TrieRefLike, TrieRefNode, TrieRefNodeChar,
@@ -135,10 +135,10 @@ impl<V: crate::DictionaryValue> PathMapDictionaryUleb128<V> {
         &self,
     ) -> Result<Vec<(crate::Uleb128Sequence, Option<V>)>, crate::Uleb128Error> {
         self.inner
-            .iter_bytes()
-            .map(|(bytes, value)| {
-                crate::Uleb128Sequence::from_encoded(&bytes)
-                    .map(|sequence| (sequence, Some(value)))
+            .entries()
+            .map(|entry| {
+                crate::Uleb128Sequence::from_encoded(&entry.key)
+                    .map(|sequence| (sequence, entry.value))
             })
             .collect()
     }
