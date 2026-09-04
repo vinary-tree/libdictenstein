@@ -257,9 +257,131 @@ pub type DynamicDawgU32<V = ()> = DynamicDawgGeneric<u32, V>;
 /// Source-compatible alias for native 64-bit logical units.
 pub type DynamicDawgU64Profile<V = ()> = DynamicDawgGeneric<u64, V>;
 
+/// Variable-width ULEB128 DAWG boundary.
+///
+/// Canonical ULEB atoms are packed into the byte-oriented core for storage,
+/// while this wrapper accepts and returns complete logical atom sequences. The
+/// encoded continuation bytes are never exposed as dictionary transitions.
+#[derive(Clone, Debug)]
+pub struct DynamicDawgUleb128<V: crate::DictionaryValue = ()> {
+    inner: DynamicDawgGeneric<u8, V>,
+}
+
+impl<V: crate::DictionaryValue> Default for DynamicDawgUleb128<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<V: crate::DictionaryValue> DynamicDawgUleb128<V> {
+    /// Construct an empty ULEB128 dictionary.
+    pub fn new() -> Self {
+        Self {
+            inner: DynamicDawgGeneric::new(),
+        }
+    }
+
+    /// Build from complete canonical ULEB128 sequences.
+    pub fn from_sequences<I>(sequences: I) -> Self
+    where
+        I: IntoIterator<Item = crate::Uleb128Sequence>,
+    {
+        let inner = DynamicDawgGeneric::from_sequences(
+            sequences.into_iter().map(|sequence| sequence.to_encoded()),
+        );
+        Self { inner }
+    }
+
+    /// Build a value-bearing dictionary from complete ULEB128 sequences.
+    pub fn from_sequences_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (crate::Uleb128Sequence, V)>,
+    {
+        let mut encoded: Vec<(Vec<u8>, V)> = entries
+            .into_iter()
+            .map(|(sequence, value)| (sequence.to_encoded(), value))
+            .collect();
+        encoded.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        let inner = DynamicDawgGeneric::from_sorted_entries(encoded);
+        Self { inner }
+    }
+
+    /// Insert one complete ULEB128 sequence.
+    #[inline]
+    pub fn insert(&self, sequence: &crate::Uleb128Sequence) -> bool {
+        self.inner.insert_units(&sequence.to_encoded())
+    }
+
+    /// Insert one complete ULEB128 sequence with a mapped value.
+    #[inline]
+    pub fn insert_with_value(&self, sequence: &crate::Uleb128Sequence, value: V) -> bool {
+        self.inner
+            .insert_units_with_value(&sequence.to_encoded(), value)
+    }
+
+    /// Test membership of one complete ULEB128 sequence.
+    #[inline]
+    pub fn contains(&self, sequence: &crate::Uleb128Sequence) -> bool {
+        self.inner.contains_units(&sequence.to_encoded())
+    }
+
+    /// Read a mapped value for one complete ULEB128 sequence.
+    #[inline]
+    pub fn get_value(&self, sequence: &crate::Uleb128Sequence) -> Option<V> {
+        self.inner.get_units_value(&sequence.to_encoded())
+    }
+
+    /// Remove one complete ULEB128 sequence.
+    #[inline]
+    pub fn remove(&self, sequence: &crate::Uleb128Sequence) -> bool {
+        self.inner.remove_units(&sequence.to_encoded())
+    }
+
+    /// Number of visible logical sequences.
+    #[inline]
+    pub fn term_count(&self) -> usize {
+        self.inner.term_count()
+    }
+
+    /// Number of physical byte nodes.
+    #[inline]
+    pub fn node_count(&self) -> usize {
+        self.inner.node_count()
+    }
+
+    /// Export logical sequences, rejecting any malformed internal image.
+    pub fn visible_entries(
+        &self,
+    ) -> Result<Vec<(crate::Uleb128Sequence, Option<V>)>, crate::Uleb128Error> {
+        self.inner
+            .visible_entries()
+            .into_iter()
+            .map(|(bytes, value)| {
+                crate::Uleb128Sequence::from_encoded(&bytes).map(|sequence| (sequence, value))
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod generic_tests {
     use super::DynamicDawgGeneric;
+
+    #[test]
+    fn uleb_wrapper_preserves_atom_boundaries() {
+        let first = crate::Uleb128::from_u64(624_485);
+        let second = crate::Uleb128::from_payload_digits(&[3, 4]).unwrap();
+        let sequence = crate::Uleb128Sequence::from_atoms([first, second]);
+        let dictionary = super::DynamicDawgUleb128::<u16>::new();
+        assert!(dictionary.insert_with_value(&sequence, 9));
+        assert!(dictionary.contains(&sequence));
+        assert_eq!(dictionary.get_value(&sequence), Some(9));
+        let entries = dictionary.visible_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, sequence);
+        assert!(dictionary.remove(&sequence));
+        assert!(!dictionary.contains(&sequence));
+    }
 
     #[test]
     fn generic_surface_uses_logical_units_directly() {

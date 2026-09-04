@@ -167,7 +167,7 @@ pub use collection::{
 pub use dynamic_dawg::core::{DawgCore, DawgNode};
 pub use dynamic_dawg::{
     DynamicDawgByteProfile, DynamicDawgCharProfile, DynamicDawgGeneric, DynamicDawgProfile,
-    DynamicDawgU32, DynamicDawgU64Profile,
+    DynamicDawgU32, DynamicDawgU64Profile, DynamicDawgUleb128,
 };
 pub use interning::{
     InternedId, InternedIdDictionaryView, InternedSequence, InternedSequenceDictionary,
