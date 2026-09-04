@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::dynamic_dawg::DynamicDawgU32;
 use crate::DictionaryValue;
+use crate::Uleb128;
 
 /// Dense identifier assigned by an [`InternedVocabulary`].
 pub type InternedId = u64;
@@ -242,6 +243,11 @@ pub struct InternedSequenceDictionary<K: Ord + Clone, V: DictionaryValue = ()> {
     id_dictionary: DynamicDawgU32<V>,
 }
 
+/// Canonical arbitrary-width ULEB atoms interned to the default `u32` carrier.
+/// The atom bytes remain the vocabulary's external identity; the DAWG sees
+/// only generation-bound fixed-width IDs.
+pub type InternedUlebSequenceDictionary<V = ()> = InternedSequenceDictionary<Uleb128, V>;
+
 impl<K: Ord + Clone, V: DictionaryValue> Default for InternedSequenceDictionary<K, V> {
     fn default() -> Self {
         Self::new()
@@ -344,7 +350,8 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
 
 #[cfg(test)]
 mod coordinated_tests {
-    use super::InternedSequenceDictionary;
+    use super::{InternedSequenceDictionary, InternedUlebSequenceDictionary};
+    use crate::Uleb128;
 
     #[test]
     fn coordinates_atoms_and_id_sequences() {
@@ -365,6 +372,17 @@ mod coordinated_tests {
             Err(super::InterningError::UnknownKey)
         );
         assert_eq!(dictionary.vocabulary().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn canonical_uleb_atoms_use_the_same_composite_boundary() {
+        let dictionary = InternedUlebSequenceDictionary::<u32>::with_generation(3);
+        let atoms = [Uleb128::from_u64(624_485), Uleb128::from_u64(1u64 << 63)];
+        assert!(dictionary.insert(atoms.iter().cloned(), Some(11)).unwrap());
+        assert!(dictionary.contains(atoms.iter().cloned()).unwrap());
+        let vocabulary = dictionary.vocabulary().unwrap();
+        assert_eq!(vocabulary.len(), 2);
+        assert_eq!(vocabulary.generation(), 3);
     }
 }
 
