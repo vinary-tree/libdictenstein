@@ -52,6 +52,78 @@ pub struct Uleb128Stream<'a> {
     failed: bool,
 }
 
+/// Owned logical sequence of arbitrary-width ULEB128 atoms.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
+pub struct Uleb128Sequence {
+    atoms: Vec<Uleb128>,
+}
+
+impl Uleb128Sequence {
+    /// Create an empty sequence.
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build a sequence from already validated atoms.
+    pub fn from_atoms<I>(atoms: I) -> Self
+    where
+        I: IntoIterator<Item = Uleb128>,
+    {
+        Self {
+            atoms: atoms.into_iter().collect(),
+        }
+    }
+
+    /// Decode every atom in one concatenated wire image.
+    pub fn from_encoded(bytes: &[u8]) -> Result<Self, Uleb128Error> {
+        let mut atoms = Vec::new();
+        for atom in Uleb128Ref::stream(bytes) {
+            atoms.push(atom?.to_owned());
+        }
+        Ok(Self { atoms })
+    }
+
+    /// Append one atom.
+    #[inline]
+    pub fn push(&mut self, atom: Uleb128) {
+        self.atoms.push(atom);
+    }
+
+    /// Number of logical atoms.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.atoms.len()
+    }
+
+    /// Whether the sequence contains no logical atoms.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.atoms.is_empty()
+    }
+
+    /// Iterate over owned atoms without decoding.
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = &Uleb128> {
+        self.atoms.iter()
+    }
+
+    /// Number of bytes in the concatenated wire image.
+    #[inline]
+    pub fn encoded_len(&self) -> usize {
+        self.atoms.iter().map(|atom| atom.as_bytes().len()).sum()
+    }
+
+    /// Encode the sequence in logical order.
+    pub fn to_encoded(&self) -> Vec<u8> {
+        let mut encoded = Vec::with_capacity(self.encoded_len());
+        for atom in &self.atoms {
+            encoded.extend_from_slice(atom.as_bytes());
+        }
+        encoded
+    }
+}
+
 /// Stable metadata identifying a variable-width wire profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct VariableWidthProfile {
@@ -487,5 +559,19 @@ mod tests {
         assert_eq!(atoms.next().unwrap().unwrap().as_bytes(), &[0x01]);
         assert_eq!(atoms.next(), Some(Err(Uleb128Error::Unterminated)));
         assert_eq!(atoms.next(), None);
+    }
+
+    #[test]
+    fn owned_sequence_round_trips_concatenated_atoms() {
+        let sequence = Uleb128Sequence::from_atoms([
+            Uleb128::from_u64(1),
+            Uleb128::from_payload_digits(&[3, 4]).unwrap(),
+            Uleb128::from_u64(u64::MAX),
+        ]);
+        let encoded = sequence.to_encoded();
+        let decoded = Uleb128Sequence::from_encoded(&encoded).unwrap();
+        assert_eq!(decoded, sequence);
+        assert_eq!(decoded.len(), 3);
+        assert_eq!(decoded.encoded_len(), encoded.len());
     }
 }
