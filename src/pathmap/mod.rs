@@ -34,7 +34,7 @@ pub struct PathMapDictionaryUleb128<V: crate::DictionaryValue = ()> {
 }
 
 /// PathMap adapter boundary for variable-width UTF-8 strings.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PathMapDictionaryUtf8<V: crate::DictionaryValue = ()> {
     inner: PathMapDictionary<V>,
 }

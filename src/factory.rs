@@ -25,14 +25,16 @@
 //! ```
 
 use super::double_array_trie::char::DoubleArrayTrieChar;
-use super::double_array_trie::DoubleArrayTrie;
+use super::double_array_trie::{DoubleArrayTrie, DoubleArrayTrieUtf8};
 use super::dynamic_dawg::char::DynamicDawgChar;
 use super::dynamic_dawg::u64::DynamicDawgU64;
-use super::dynamic_dawg::DynamicDawg;
+use super::dynamic_dawg::{DynamicDawg, DynamicDawgUtf8};
 #[cfg(feature = "pathmap-backend")]
 use super::pathmap::char::PathMapDictionaryChar;
 #[cfg(feature = "pathmap-backend")]
 use super::pathmap::PathMapDictionary;
+#[cfg(feature = "pathmap-backend")]
+use super::pathmap::PathMapDictionaryUtf8;
 use super::scdawg::char::ScdawgChar;
 use super::scdawg::Scdawg;
 use super::suffix_automaton::char::SuffixAutomatonChar;
@@ -54,14 +56,21 @@ pub enum DictionaryBackend {
     /// PathMap-based trie, character (Unicode) variant.
     #[cfg(feature = "pathmap-backend")]
     PathMapChar,
+    /// PathMap trie whose physical bytes are validated as UTF-8 logical terms.
+    #[cfg(feature = "pathmap-backend")]
+    PathMapUtf8,
     /// Double-Array Trie (O(1) transitions, excellent cache, byte-keyed).
     DoubleArrayTrie,
     /// Double-Array Trie, character (Unicode) variant.
     DoubleArrayTrieChar,
+    /// Byte-backed DAT with UTF-8 profile semantics.
+    DoubleArrayTrieUtf8,
     /// Dynamic DAWG dictionary (space-efficient, byte-keyed, supports modifications).
     DynamicDawg,
     /// Dynamic DAWG, character (Unicode) variant.
     DynamicDawgChar,
+    /// Byte-backed dynamic DAWG with UTF-8 profile semantics.
+    DynamicDawgUtf8,
     /// Dynamic DAWG keyed on `u64` sequences (token sequences, time series).
     DynamicDawgU64,
     /// Suffix automaton dictionary (substring matching, byte-keyed, dynamic).
@@ -176,6 +185,9 @@ impl DictionaryBackend {
             | Self::DoubleArrayTrieChar
             | Self::SuffixAutomatonChar
             | Self::ScdawgChar => ProfileKind::UnicodeScalar,
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMapUtf8 => ProfileKind::Utf8,
+            Self::DoubleArrayTrieUtf8 | Self::DynamicDawgUtf8 => ProfileKind::Utf8,
             #[cfg(not(feature = "pathmap-backend"))]
             Self::DynamicDawg | Self::DoubleArrayTrie | Self::SuffixAutomaton | Self::Scdawg => {
                 ProfileKind::Bytes
@@ -215,6 +227,15 @@ impl DictionaryBackend {
                 lock_free_reads: true,
                 lock_free_writes: true,
             },
+            #[cfg(feature = "pathmap-backend")]
+            DictionaryBackend::PathMapUtf8 => BackendCapabilities {
+                key_unit: BackendKeyUnit::Byte,
+                query: BackendQuerySemantics::ExactTerm,
+                updates: BackendUpdateMode::InsertRemove,
+                sync_strategy: SyncStrategy::InternalSync,
+                lock_free_reads: true,
+                lock_free_writes: true,
+            },
             DictionaryBackend::DoubleArrayTrie => BackendCapabilities {
                 key_unit: BackendKeyUnit::Byte,
                 query: BackendQuerySemantics::ExactTerm,
@@ -231,6 +252,14 @@ impl DictionaryBackend {
                 lock_free_reads: true,
                 lock_free_writes: false,
             },
+            DictionaryBackend::DoubleArrayTrieUtf8 => BackendCapabilities {
+                key_unit: BackendKeyUnit::Byte,
+                query: BackendQuerySemantics::ExactTerm,
+                updates: BackendUpdateMode::Immutable,
+                sync_strategy: SyncStrategy::Persistent,
+                lock_free_reads: true,
+                lock_free_writes: false,
+            },
             DictionaryBackend::DynamicDawg => BackendCapabilities {
                 key_unit: BackendKeyUnit::Byte,
                 query: BackendQuerySemantics::ExactTerm,
@@ -241,6 +270,14 @@ impl DictionaryBackend {
             },
             DictionaryBackend::DynamicDawgChar => BackendCapabilities {
                 key_unit: BackendKeyUnit::Char,
+                query: BackendQuerySemantics::ExactTerm,
+                updates: BackendUpdateMode::InsertRemove,
+                sync_strategy: SyncStrategy::InternalSync,
+                lock_free_reads: true,
+                lock_free_writes: true,
+            },
+            DictionaryBackend::DynamicDawgUtf8 => BackendCapabilities {
+                key_unit: BackendKeyUnit::Byte,
                 query: BackendQuerySemantics::ExactTerm,
                 updates: BackendUpdateMode::InsertRemove,
                 sync_strategy: SyncStrategy::InternalSync,
@@ -298,10 +335,14 @@ impl std::fmt::Display for DictionaryBackend {
             DictionaryBackend::PathMap => write!(f, "PathMap"),
             #[cfg(feature = "pathmap-backend")]
             DictionaryBackend::PathMapChar => write!(f, "PathMapChar"),
+            #[cfg(feature = "pathmap-backend")]
+            DictionaryBackend::PathMapUtf8 => write!(f, "PathMapUtf8"),
             DictionaryBackend::DoubleArrayTrie => write!(f, "DoubleArrayTrie"),
             DictionaryBackend::DoubleArrayTrieChar => write!(f, "DoubleArrayTrieChar"),
+            DictionaryBackend::DoubleArrayTrieUtf8 => write!(f, "DoubleArrayTrieUtf8"),
             DictionaryBackend::DynamicDawg => write!(f, "DynamicDAWG"),
             DictionaryBackend::DynamicDawgChar => write!(f, "DynamicDAWGChar"),
+            DictionaryBackend::DynamicDawgUtf8 => write!(f, "DynamicDAWGUtf8"),
             DictionaryBackend::DynamicDawgU64 => write!(f, "DynamicDAWGU64"),
             DictionaryBackend::SuffixAutomaton => write!(f, "SuffixAutomaton"),
             DictionaryBackend::SuffixAutomatonChar => write!(f, "SuffixAutomatonChar"),
@@ -321,10 +362,14 @@ pub enum DictionaryContainer {
     PathMap(PathMapDictionary),
     #[cfg(feature = "pathmap-backend")]
     PathMapChar(PathMapDictionaryChar),
+    #[cfg(feature = "pathmap-backend")]
+    PathMapUtf8(PathMapDictionaryUtf8),
     DoubleArrayTrie(DoubleArrayTrie),
     DoubleArrayTrieChar(DoubleArrayTrieChar),
+    DoubleArrayTrieUtf8(DoubleArrayTrieUtf8),
     DynamicDawg(DynamicDawg),
     DynamicDawgChar(DynamicDawgChar),
+    DynamicDawgUtf8(DynamicDawgUtf8),
     DynamicDawgU64(DynamicDawgU64),
     SuffixAutomaton(SuffixAutomaton),
     SuffixAutomatonChar(SuffixAutomatonChar),
@@ -340,10 +385,14 @@ impl DictionaryContainer {
             DictionaryContainer::PathMap(_) => DictionaryBackend::PathMap,
             #[cfg(feature = "pathmap-backend")]
             DictionaryContainer::PathMapChar(_) => DictionaryBackend::PathMapChar,
+            #[cfg(feature = "pathmap-backend")]
+            DictionaryContainer::PathMapUtf8(_) => DictionaryBackend::PathMapUtf8,
             DictionaryContainer::DoubleArrayTrie(_) => DictionaryBackend::DoubleArrayTrie,
             DictionaryContainer::DoubleArrayTrieChar(_) => DictionaryBackend::DoubleArrayTrieChar,
+            DictionaryContainer::DoubleArrayTrieUtf8(_) => DictionaryBackend::DoubleArrayTrieUtf8,
             DictionaryContainer::DynamicDawg(_) => DictionaryBackend::DynamicDawg,
             DictionaryContainer::DynamicDawgChar(_) => DictionaryBackend::DynamicDawgChar,
+            DictionaryContainer::DynamicDawgUtf8(_) => DictionaryBackend::DynamicDawgUtf8,
             DictionaryContainer::DynamicDawgU64(_) => DictionaryBackend::DynamicDawgU64,
             DictionaryContainer::SuffixAutomaton(_) => DictionaryBackend::SuffixAutomaton,
             DictionaryContainer::SuffixAutomatonChar(_) => DictionaryBackend::SuffixAutomatonChar,
@@ -365,10 +414,14 @@ impl DictionaryContainer {
             DictionaryContainer::PathMap(d) => d.len(),
             #[cfg(feature = "pathmap-backend")]
             DictionaryContainer::PathMapChar(d) => d.len(),
+            #[cfg(feature = "pathmap-backend")]
+            DictionaryContainer::PathMapUtf8(d) => Some(d.term_count()),
             DictionaryContainer::DoubleArrayTrie(d) => d.len(),
             DictionaryContainer::DoubleArrayTrieChar(d) => d.len(),
+            DictionaryContainer::DoubleArrayTrieUtf8(d) => Some(d.term_count()),
             DictionaryContainer::DynamicDawg(d) => d.len(),
             DictionaryContainer::DynamicDawgChar(d) => d.len(),
+            DictionaryContainer::DynamicDawgUtf8(d) => Some(d.term_count()),
             DictionaryContainer::DynamicDawgU64(d) => d.len(),
             DictionaryContainer::SuffixAutomaton(d) => d.len(),
             DictionaryContainer::SuffixAutomatonChar(d) => d.len(),
@@ -389,10 +442,14 @@ impl DictionaryContainer {
             DictionaryContainer::PathMap(d) => d.contains(term),
             #[cfg(feature = "pathmap-backend")]
             DictionaryContainer::PathMapChar(d) => d.contains(term),
+            #[cfg(feature = "pathmap-backend")]
+            DictionaryContainer::PathMapUtf8(d) => d.contains(term),
             DictionaryContainer::DoubleArrayTrie(d) => d.contains(term),
             DictionaryContainer::DoubleArrayTrieChar(d) => d.contains(term),
+            DictionaryContainer::DoubleArrayTrieUtf8(d) => d.contains(term),
             DictionaryContainer::DynamicDawg(d) => d.contains(term),
             DictionaryContainer::DynamicDawgChar(d) => d.contains(term),
+            DictionaryContainer::DynamicDawgUtf8(d) => d.contains(term),
             DictionaryContainer::DynamicDawgU64(d) => d.contains(term),
             DictionaryContainer::SuffixAutomaton(d) => d.contains(term),
             DictionaryContainer::SuffixAutomatonChar(d) => d.contains(term),
@@ -438,17 +495,27 @@ impl DictionaryFactory {
             DictionaryBackend::PathMapChar => {
                 DictionaryContainer::PathMapChar(PathMapDictionaryChar::from_terms(terms))
             }
+            #[cfg(feature = "pathmap-backend")]
+            DictionaryBackend::PathMapUtf8 => {
+                DictionaryContainer::PathMapUtf8(PathMapDictionaryUtf8::from_terms(terms))
+            }
             DictionaryBackend::DoubleArrayTrie => {
                 DictionaryContainer::DoubleArrayTrie(DoubleArrayTrie::from_terms(terms))
             }
             DictionaryBackend::DoubleArrayTrieChar => {
                 DictionaryContainer::DoubleArrayTrieChar(DoubleArrayTrieChar::from_terms(terms))
             }
+            DictionaryBackend::DoubleArrayTrieUtf8 => {
+                DictionaryContainer::DoubleArrayTrieUtf8(DoubleArrayTrieUtf8::from_terms(terms))
+            }
             DictionaryBackend::DynamicDawg => {
                 DictionaryContainer::DynamicDawg(DynamicDawg::from_terms(terms))
             }
             DictionaryBackend::DynamicDawgChar => {
                 DictionaryContainer::DynamicDawgChar(DynamicDawgChar::from_terms(terms))
+            }
+            DictionaryBackend::DynamicDawgUtf8 => {
+                DictionaryContainer::DynamicDawgUtf8(DynamicDawgUtf8::from_terms(terms))
             }
             DictionaryBackend::DynamicDawgU64 => {
                 DictionaryContainer::DynamicDawgU64(DynamicDawgU64::from_terms(terms))
@@ -484,6 +551,10 @@ impl DictionaryFactory {
             DictionaryBackend::PathMapChar => {
                 DictionaryContainer::PathMapChar(PathMapDictionaryChar::new())
             }
+            #[cfg(feature = "pathmap-backend")]
+            DictionaryBackend::PathMapUtf8 => {
+                DictionaryContainer::PathMapUtf8(PathMapDictionaryUtf8::new())
+            }
             DictionaryBackend::DoubleArrayTrie => {
                 DictionaryContainer::DoubleArrayTrie(DoubleArrayTrie::new())
             }
@@ -491,9 +562,15 @@ impl DictionaryFactory {
                 // DoubleArrayTrieChar uses `empty()` instead of `new()`.
                 DictionaryContainer::DoubleArrayTrieChar(DoubleArrayTrieChar::empty())
             }
+            DictionaryBackend::DoubleArrayTrieUtf8 => {
+                DictionaryContainer::DoubleArrayTrieUtf8(DoubleArrayTrieUtf8::new())
+            }
             DictionaryBackend::DynamicDawg => DictionaryContainer::DynamicDawg(DynamicDawg::new()),
             DictionaryBackend::DynamicDawgChar => {
                 DictionaryContainer::DynamicDawgChar(DynamicDawgChar::new())
+            }
+            DictionaryBackend::DynamicDawgUtf8 => {
+                DictionaryContainer::DynamicDawgUtf8(DynamicDawgUtf8::new())
             }
             DictionaryBackend::DynamicDawgU64 => {
                 DictionaryContainer::DynamicDawgU64(DynamicDawgU64::new())
@@ -516,10 +593,14 @@ impl DictionaryFactory {
             DictionaryBackend::PathMap,
             #[cfg(feature = "pathmap-backend")]
             DictionaryBackend::PathMapChar,
+            #[cfg(feature = "pathmap-backend")]
+            DictionaryBackend::PathMapUtf8,
             DictionaryBackend::DoubleArrayTrie,
             DictionaryBackend::DoubleArrayTrieChar,
+            DictionaryBackend::DoubleArrayTrieUtf8,
             DictionaryBackend::DynamicDawg,
             DictionaryBackend::DynamicDawgChar,
+            DictionaryBackend::DynamicDawgUtf8,
             DictionaryBackend::DynamicDawgU64,
             DictionaryBackend::SuffixAutomaton,
             DictionaryBackend::SuffixAutomatonChar,
@@ -544,6 +625,10 @@ impl DictionaryFactory {
             DictionaryBackend::PathMapChar => {
                 "PathMap-based character trie. Unicode-aware variant of PathMap."
             }
+            #[cfg(feature = "pathmap-backend")]
+            DictionaryBackend::PathMapUtf8 => {
+                "PathMap-based UTF-8 byte trie with validated logical Unicode terms."
+            }
             DictionaryBackend::DoubleArrayTrie => {
                 "Byte-keyed double-array trie. O(1) transitions, excellent cache locality, \
                  read-mostly. Best for static dictionaries."
@@ -551,12 +636,18 @@ impl DictionaryFactory {
             DictionaryBackend::DoubleArrayTrieChar => {
                 "Character-keyed double-array trie. Unicode-aware variant of DoubleArrayTrie."
             }
+            DictionaryBackend::DoubleArrayTrieUtf8 => {
+                "UTF-8 byte-backed double-array trie with validated logical Unicode terms."
+            }
             DictionaryBackend::DynamicDawg => {
                 "Byte-keyed dynamic DAWG. Space-efficient with full dynamic modification \
                  support. Best for evolving dictionaries."
             }
             DictionaryBackend::DynamicDawgChar => {
                 "Character-keyed dynamic DAWG. Unicode-aware variant of DynamicDawg."
+            }
+            DictionaryBackend::DynamicDawgUtf8 => {
+                "UTF-8 byte-backed dynamic DAWG with validated logical Unicode terms."
             }
             DictionaryBackend::DynamicDawgU64 => {
                 "u64-keyed dynamic DAWG. For token-sequence dictionaries, time series, \
@@ -620,7 +711,9 @@ mod tests {
 
         for backend in [
             DictionaryBackend::DoubleArrayTrieChar,
+            DictionaryBackend::DoubleArrayTrieUtf8,
             DictionaryBackend::DynamicDawgChar,
+            DictionaryBackend::DynamicDawgUtf8,
             DictionaryBackend::SuffixAutomatonChar,
             DictionaryBackend::ScdawgChar,
         ] {
@@ -655,17 +748,20 @@ mod tests {
     #[test]
     fn test_available_backends() {
         let backends = DictionaryFactory::available_backends();
-        // 11 backends total: 4 byte + 4 char + DynamicDawgU64 + 2 scdawg.
+        // 14 backends total with PathMap enabled: legacy backends plus two
+        // byte-backed UTF-8 profile adapters; PathMap variants are feature-gated.
         // PathMap and PathMapChar gated behind feature.
         #[cfg(feature = "pathmap-backend")]
-        assert_eq!(backends.len(), 11);
+        assert_eq!(backends.len(), 14);
         #[cfg(not(feature = "pathmap-backend"))]
-        assert_eq!(backends.len(), 9);
+        assert_eq!(backends.len(), 11);
         assert!(backends.contains(&DictionaryBackend::DoubleArrayTrie));
         assert!(backends.contains(&DictionaryBackend::DynamicDawg));
         assert!(backends.contains(&DictionaryBackend::DynamicDawgChar));
         assert!(backends.contains(&DictionaryBackend::SuffixAutomaton));
         assert!(backends.contains(&DictionaryBackend::Scdawg));
+        assert!(backends.contains(&DictionaryBackend::DoubleArrayTrieUtf8));
+        assert!(backends.contains(&DictionaryBackend::DynamicDawgUtf8));
     }
 
     #[test]
@@ -745,6 +841,16 @@ mod tests {
         assert_eq!(words.kind, ProfileKind::U64);
         assert_eq!(words.identity.version, 1);
         assert_eq!(words.width_bytes, Some(8));
+
+        let utf8 = DictionaryBackend::DynamicDawgUtf8.profile_descriptor();
+        assert_eq!(utf8.kind, ProfileKind::Utf8);
+        assert_eq!(utf8.identity.name, "utf8");
+        assert_eq!(utf8.width_bytes, None);
+        #[cfg(feature = "pathmap-backend")]
+        assert_eq!(
+            DictionaryBackend::PathMapUtf8.profile_descriptor().kind,
+            ProfileKind::Utf8
+        );
     }
 
     #[test]

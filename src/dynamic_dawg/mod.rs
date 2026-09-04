@@ -347,6 +347,10 @@ impl<V: crate::DictionaryValue> DynamicDawgUtf8<V> {
         self.inner.term_count()
     }
     #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.term_count() == 0
+    }
+    #[inline]
     pub fn node_count(&self) -> usize {
         self.inner.node_count()
     }
