@@ -115,6 +115,12 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
         self.inner.remove_units(units)
     }
 
+    /// Remove every logical-unit sequence from the current revision.
+    #[inline]
+    pub fn clear(&self) -> bool {
+        self.inner.clear()
+    }
+
     /// Number of visible terminal sequences.
     #[inline]
     pub fn term_count(&self) -> usize {
@@ -167,6 +173,8 @@ mod generic_tests {
         assert!(dictionary.insert_units_with_value(&[4], 99));
         assert_eq!(dictionary.get_units_value(&[4]), Some(99));
         assert!(dictionary.node_count() > 0);
+        assert!(dictionary.clear());
+        assert_eq!(dictionary.term_count(), 0);
     }
 
     #[test]
