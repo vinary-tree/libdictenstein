@@ -23,10 +23,90 @@ pub use char::{PathMapDictionaryChar, PathMapNodeChar};
 pub use snapshot::{PathMapRef, PathMapRefChar, PathMapSnapshot, PathMapSnapshotChar};
 pub use zipper::PathMapZipper;
 
+/// PathMap adapter boundary for canonical variable-width ULEB128 sequences.
+/// The third-party map remains byte-backed; this type exposes only complete
+/// logical sequences and never publishes continuation bytes as symbols.
+#[derive(Clone)]
+pub struct PathMapDictionaryUleb128<V: crate::DictionaryValue = ()> {
+    inner: PathMapDictionary<V>,
+}
+
+impl<V: crate::DictionaryValue> PathMapDictionaryUleb128<V> {
+    /// Construct an empty ULEB128 PathMap adapter.
+    pub fn new() -> Self {
+        Self {
+            inner: PathMapDictionary::new(),
+        }
+    }
+
+    /// Build a value-bearing adapter from complete canonical ULEB sequences.
+    pub fn from_sequences_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (crate::Uleb128Sequence, V)>,
+    {
+        let dictionary = Self::new();
+        for (sequence, value) in entries {
+            dictionary.insert_with_value(&sequence, value);
+        }
+        dictionary
+    }
+
+    /// Insert one complete ULEB128 sequence.
+    #[inline]
+    pub fn insert(&self, sequence: &crate::Uleb128Sequence) -> bool {
+        self.inner.insert_bytes(&sequence.to_encoded())
+    }
+
+    /// Insert one complete ULEB128 sequence with a mapped value.
+    #[inline]
+    pub fn insert_with_value(&self, sequence: &crate::Uleb128Sequence, value: V) -> bool {
+        self.inner
+            .insert_bytes_with_value(&sequence.to_encoded(), value)
+    }
+
+    /// Test one complete ULEB128 sequence.
+    #[inline]
+    pub fn contains(&self, sequence: &crate::Uleb128Sequence) -> bool {
+        self.inner.contains_bytes(&sequence.to_encoded())
+    }
+
+    /// Read a mapped value for one complete ULEB128 sequence.
+    #[inline]
+    pub fn get_value(&self, sequence: &crate::Uleb128Sequence) -> Option<V> {
+        self.inner.get_bytes_value(&sequence.to_encoded())
+    }
+
+    /// Remove one complete ULEB128 sequence.
+    #[inline]
+    pub fn remove(&self, sequence: &crate::Uleb128Sequence) -> bool {
+        self.inner.remove_bytes(&sequence.to_encoded())
+    }
+}
+
+impl<V: crate::DictionaryValue> Default for PathMapDictionaryUleb128<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(all(test, feature = "pathmap-backend"))]
 mod profile_tests {
-    use super::{PathMapDictionary, PathMapDictionaryChar};
+    use super::{PathMapDictionary, PathMapDictionaryChar, PathMapDictionaryUleb128};
     use crate::{AtomSequence, Bytes, Dictionary, UnicodeScalar};
+
+    #[test]
+    fn uleb_adapter_preserves_logical_sequences() {
+        let sequence = crate::Uleb128Sequence::from_atoms([
+            crate::Uleb128::from_u64(624_485),
+            crate::Uleb128::from_u64(7),
+        ]);
+        let dictionary = PathMapDictionaryUleb128::<u16>::new();
+        assert!(dictionary.insert_with_value(&sequence, 19));
+        assert!(dictionary.contains(&sequence));
+        assert_eq!(dictionary.get_value(&sequence), Some(19));
+        assert!(dictionary.remove(&sequence));
+        assert!(!dictionary.contains(&sequence));
+    }
 
     #[test]
     fn byte_profile_constructor_preserves_membership_and_values() {
