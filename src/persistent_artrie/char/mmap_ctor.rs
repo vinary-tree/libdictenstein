@@ -734,6 +734,36 @@ impl<V: DictionaryValue> super::PersistentARTrieChar<V> {
         }
     }
 
+    /// Build an in-memory character ART from Unicode-scalar profile sequences.
+    pub fn from_atom_sequences<P, I>(sequences: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = char>,
+        I: IntoIterator<Item = crate::AtomSequence<P>>,
+    {
+        let trie = Self::new();
+        for sequence in sequences {
+            let text: String = sequence.as_atoms().iter().copied().collect();
+            trie.insert(&text)
+                .expect("in-memory profile insertion must succeed");
+        }
+        trie
+    }
+
+    /// Build a value-bearing in-memory character ART from profile sequences.
+    pub fn from_atom_sequences_with_values<P, I>(entries: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = char>,
+        I: IntoIterator<Item = (crate::AtomSequence<P>, V)>,
+    {
+        let trie = Self::new();
+        for (sequence, value) in entries {
+            let text: String = sequence.as_atoms().iter().copied().collect();
+            trie.insert_with_value(&text, value)
+                .expect("in-memory profile insertion must succeed");
+        }
+        trie
+    }
+
     /// Flush dirty arenas in sequential order for optimized disk I/O.
     ///
     /// Sorts dirty arenas by ID before flushing, improving I/O locality
