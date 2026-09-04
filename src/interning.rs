@@ -10,12 +10,15 @@ pub type InternedId = u64;
 pub enum InterningError {
     /// The ID is not present in this vocabulary generation.
     UnknownId(InternedId),
+    /// The sequence belongs to a different vocabulary generation.
+    GenerationMismatch { expected: u64, actual: u64 },
 }
 
 /// Compact capsule-local sequence of vocabulary IDs.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub struct InternedSequence {
     ids: Vec<InternedId>,
+    generation: u64,
 }
 
 impl InternedSequence {
@@ -32,6 +35,18 @@ impl InternedSequence {
     {
         Self {
             ids: ids.into_iter().collect(),
+            generation: 0,
+        }
+    }
+
+    /// Construct IDs bound to an explicit vocabulary generation.
+    pub fn from_ids_with_generation<I>(generation: u64, ids: I) -> Self
+    where
+        I: IntoIterator<Item = InternedId>,
+    {
+        Self {
+            ids: ids.into_iter().collect(),
+            generation,
         }
     }
 
@@ -39,6 +54,12 @@ impl InternedSequence {
     #[inline]
     pub fn as_ids(&self) -> &[InternedId] {
         &self.ids
+    }
+
+    /// Vocabulary generation that owns these IDs.
+    #[inline]
+    pub const fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Iterate IDs without allocation.
@@ -120,7 +141,10 @@ impl<K: Ord + Clone> InternedVocabulary<K> {
     where
         I: IntoIterator<Item = K>,
     {
-        InternedSequence::from_ids(keys.into_iter().map(|key| self.intern(key)))
+        InternedSequence::from_ids_with_generation(
+            self.generation,
+            keys.into_iter().map(|key| self.intern(key)),
+        )
     }
 
     /// Resolve every ID in a sequence, failing if one ID is not in this
@@ -138,6 +162,12 @@ impl<K: Ord + Clone> InternedVocabulary<K> {
         &self,
         sequence: &InternedSequence,
     ) -> Result<(), InterningError> {
+        if sequence.generation != self.generation {
+            return Err(InterningError::GenerationMismatch {
+                expected: self.generation,
+                actual: sequence.generation,
+            });
+        }
         sequence
             .ids
             .iter()
@@ -211,6 +241,7 @@ mod tests {
             Uleb128::from_u64(1 << 63),
         ]);
         assert_eq!(sequence.as_ids(), &[first, second]);
+        assert_eq!(sequence.generation(), 0);
         let resolved: Vec<_> = vocabulary.resolve_sequence(&sequence).unwrap().collect();
         assert_eq!(resolved.len(), 2);
         assert!(vocabulary.resolve_iter(&sequence).all(|value| value.is_some()));
@@ -224,6 +255,14 @@ mod tests {
             vocabulary.validate_sequence(&unknown),
             Err(InterningError::UnknownId(99))
         );
-        assert_eq!(InternedVocabulary::<Uleb128>::with_generation(7).generation(), 7);
+        let other = InternedVocabulary::<Uleb128>::with_generation(7);
+        assert_eq!(other.generation(), 7);
+        assert_eq!(
+            other.validate_sequence(&sequence),
+            Err(InterningError::GenerationMismatch {
+                expected: 7,
+                actual: 0,
+            })
+        );
     }
 }
