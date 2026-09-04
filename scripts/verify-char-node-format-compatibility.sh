@@ -3,13 +3,26 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scratch="$repo_root/target/char-format-compat"
-baseline_commit="6a1b267a60fe9c445a0c8c7c8136e6dd40aedbf5"
-interop_commit="6694ad4fcb5ce498f69b77cb14ce1ea7a2f20033"
-llattice_commit="2ec21ca70ae3cbb2d8afdd295c9ed09517003324"
-interop_repo="${VINARY_TREE_INTEROP_REPO:-$repo_root/../vinary-tree-interop-rc2-stack-safety-clean}"
-llattice_repo="${LLATTICE_REPO:-$repo_root/../llattice}"
 fixture_dir="$repo_root/tests/fixtures/char-node-format"
 manifest="$fixture_dir/manifest.toml"
+interop_repo="${VINARY_TREE_INTEROP_REPO:-$repo_root/../vinary-tree-interop}"
+llattice_repo="${LLATTICE_REPO:-$repo_root/../llattice}"
+
+manifest_value() {
+  local section="$1"
+  local key="$2"
+  local value
+  value="$(sed -n "/^\[$section\]/,/^\[/s/^${key} = \"\([^\"]*\)\"/\1/p" "$manifest")"
+  if [ -z "$value" ]; then
+    echo "missing [$section].$key in $manifest" >&2
+    exit 1
+  fi
+  printf '%s\n' "$value"
+}
+
+baseline_commit="$(manifest_value baseline commit)"
+interop_commit="$(manifest_value dependencies vinary_tree_interop_commit)"
+llattice_commit="$(manifest_value dependencies llattice_commit)"
 
 case "$scratch" in
   "$repo_root"/target/char-format-compat) ;;

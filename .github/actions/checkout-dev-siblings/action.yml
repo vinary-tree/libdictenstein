@@ -31,6 +31,12 @@ inputs:
     description: Exact vinary-tree-interop ref; defaults to `ref`.
     required: false
     default: ""
+  fetch-depth:
+    description: >
+      Number of commits to fetch for each sibling. Use `0` for complete
+      history when a verification job reads immutable historical commits.
+    required: false
+    default: "1"
 
 runs:
   using: composite
@@ -42,6 +48,7 @@ runs:
         LLATTICE_REF: ${{ inputs.llattice-ref }}
         LIBLEVENSHTEIN_RUST_REF: ${{ inputs.liblevenshtein-rust-ref }}
         INTEROP_REF: ${{ inputs.vinary-tree-interop-ref }}
+        FETCH_DEPTH: ${{ inputs.fetch-depth }}
       run: |
         set -euo pipefail
         # The main repo is checked out at $GITHUB_WORKSPACE; its parent is
@@ -53,6 +60,14 @@ runs:
         if [ -n "$event_ref" ]; then
           git check-ref-format --branch "$event_ref" >/dev/null
         fi
+        case "$FETCH_DEPTH" in
+          0|[1-9]|[1-9][0-9]*) ;;
+          *)
+            echo "fetch-depth must be 0 or a positive integer;" \
+              "found: $FETCH_DEPTH" >&2
+            exit 1
+            ;;
+        esac
         for repo in llattice liblevenshtein-rust vinary-tree-interop; do
           case "$repo" in
             llattice) selected_ref="$LLATTICE_REF" ;;
@@ -74,13 +89,25 @@ runs:
           dest="$parent/$repo"
           if [ -d "$dest/.git" ]; then
             echo "::group::Updating $repo to $selected_ref"
-            git -C "$dest" fetch --depth 1 origin "$selected_ref"
+            if [ "$FETCH_DEPTH" = 0 ]; then
+              if [ -f "$dest/.git/shallow" ]; then
+                git -C "$dest" fetch --unshallow origin
+              fi
+              git -C "$dest" fetch origin "$selected_ref"
+            else
+              git -C "$dest" fetch --depth "$FETCH_DEPTH" origin "$selected_ref"
+            fi
             git -C "$dest" checkout -f FETCH_HEAD
             echo "::endgroup::"
           else
             echo "::group::Cloning $repo @ $selected_ref"
-            git clone --depth 1 --branch "$selected_ref" \
-              "https://github.com/vinary-tree/$repo.git" "$dest"
+            if [ "$FETCH_DEPTH" = 0 ]; then
+              git clone --branch "$selected_ref" \
+                "https://github.com/vinary-tree/$repo.git" "$dest"
+            else
+              git clone --depth "$FETCH_DEPTH" --branch "$selected_ref" \
+                "https://github.com/vinary-tree/$repo.git" "$dest"
+            fi
             echo "::endgroup::"
           fi
         done
