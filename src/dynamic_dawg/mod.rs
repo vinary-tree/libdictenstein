@@ -71,6 +71,20 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
         Self::from_sorted_sequences(owned)
     }
 
+    /// Build a value-bearing DAWG from lexicographically sorted sequences.
+    pub fn from_sorted_entries<I, S>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (S, V)>,
+        S: AsRef<[U]>,
+    {
+        Self {
+            inner: std::sync::Arc::new(lockfree::LockFreeDawg::from_sorted_entries_by(
+                entries.into_iter().map(|(sequence, value)| (sequence, Some(value))),
+                |sequence, units| units.extend_from_slice(sequence.as_ref()),
+            )),
+        }
+    }
+
     /// Insert one logical-unit sequence.
     #[inline]
     pub fn insert_units(&self, units: &[U]) -> bool {
@@ -170,6 +184,12 @@ mod generic_tests {
         ]);
         assert!(unsorted.contains_units(&[1, 2]));
         assert!(unsorted.contains_units(&[1, 3]));
+        let valued = DynamicDawgGeneric::<u32, u32>::from_sorted_entries([
+            (vec![1u32, 2], 10),
+            (vec![1, 3], 20),
+        ]);
+        assert_eq!(valued.get_units_value(&[1, 2]), Some(10));
+        assert_eq!(valued.get_units_value(&[1, 3]), Some(20));
     }
 }
 
