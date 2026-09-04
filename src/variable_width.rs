@@ -52,78 +52,6 @@ pub struct Uleb128Stream<'a> {
     failed: bool,
 }
 
-/// Owned logical sequence of arbitrary-width ULEB128 atoms.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
-pub struct Uleb128Sequence {
-    atoms: Vec<Uleb128>,
-}
-
-impl Uleb128Sequence {
-    /// Create an empty sequence.
-    #[inline]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Build a sequence from already validated atoms.
-    pub fn from_atoms<I>(atoms: I) -> Self
-    where
-        I: IntoIterator<Item = Uleb128>,
-    {
-        Self {
-            atoms: atoms.into_iter().collect(),
-        }
-    }
-
-    /// Decode every atom in one concatenated wire image.
-    pub fn from_encoded(bytes: &[u8]) -> Result<Self, Uleb128Error> {
-        let mut atoms = Vec::new();
-        for atom in Uleb128Ref::stream(bytes) {
-            atoms.push(atom?.to_owned());
-        }
-        Ok(Self { atoms })
-    }
-
-    /// Append one atom.
-    #[inline]
-    pub fn push(&mut self, atom: Uleb128) {
-        self.atoms.push(atom);
-    }
-
-    /// Number of logical atoms.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.atoms.len()
-    }
-
-    /// Whether the sequence contains no logical atoms.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.atoms.is_empty()
-    }
-
-    /// Iterate over owned atoms without decoding.
-    #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = &Uleb128> {
-        self.atoms.iter()
-    }
-
-    /// Number of bytes in the concatenated wire image.
-    #[inline]
-    pub fn encoded_len(&self) -> usize {
-        self.atoms.iter().map(|atom| atom.as_bytes().len()).sum()
-    }
-
-    /// Encode the sequence in logical order.
-    pub fn to_encoded(&self) -> Vec<u8> {
-        let mut encoded = Vec::with_capacity(self.encoded_len());
-        for atom in &self.atoms {
-            encoded.extend_from_slice(atom.as_bytes());
-        }
-        encoded
-    }
-}
-
 /// Stable metadata identifying a variable-width wire profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct VariableWidthProfile {
@@ -479,6 +407,106 @@ fn validate(bytes: &[u8]) -> Result<(), Uleb128Error> {
     }
     Ok(())
 }
+
+/// Owned sequence generic over any variable-width codec.
+#[derive(Clone, Debug)]
+pub struct VariableAtomSequence<C: VariableWidthCodec> {
+    atoms: Vec<C::Owned>,
+    marker: core::marker::PhantomData<C>,
+}
+
+impl<C: VariableWidthCodec> Default for VariableAtomSequence<C> {
+    fn default() -> Self {
+        Self {
+            atoms: Vec::new(),
+            marker: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<C: VariableWidthCodec> PartialEq for VariableAtomSequence<C> {
+    fn eq(&self, other: &Self) -> bool {
+        self.atoms == other.atoms
+    }
+}
+
+impl<C: VariableWidthCodec> Eq for VariableAtomSequence<C> {}
+
+impl<C: VariableWidthCodec> VariableAtomSequence<C> {
+    /// Construct an empty sequence.
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build a sequence from owned atoms.
+    pub fn from_atoms<I>(atoms: I) -> Self
+    where
+        I: IntoIterator<Item = C::Owned>,
+    {
+        Self {
+            atoms: atoms.into_iter().collect(),
+            marker: core::marker::PhantomData,
+        }
+    }
+
+    /// Decode a complete concatenated image.
+    pub fn from_encoded(bytes: &[u8]) -> Result<Self, Uleb128Error> {
+        let mut atoms = Vec::new();
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            let (atom, consumed) = C::decode_prefix(remaining)?;
+            if consumed == 0 || consumed > remaining.len() {
+                return Err(Uleb128Error::Unterminated);
+            }
+            atoms.push(atom);
+            remaining = &remaining[consumed..];
+        }
+        Ok(Self::from_atoms(atoms))
+    }
+
+    /// Append one atom.
+    #[inline]
+    pub fn push(&mut self, atom: C::Owned) {
+        self.atoms.push(atom);
+    }
+
+    /// Number of logical atoms.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.atoms.len()
+    }
+
+    /// Whether this sequence is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.atoms.is_empty()
+    }
+
+    /// Number of bytes in the encoded sequence.
+    #[inline]
+    pub fn encoded_len(&self) -> usize {
+        self.atoms.iter().map(|atom| C::encode(atom).len()).sum()
+    }
+
+    /// Encode the sequence in logical order.
+    pub fn to_encoded(&self) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        for atom in &self.atoms {
+            encoded.extend_from_slice(&C::encode(atom));
+        }
+        encoded
+    }
+
+    /// Iterate owned atoms without decoding.
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = &C::Owned> {
+        self.atoms.iter()
+    }
+}
+
+/// Backwards-compatible name for the ULEB128 specialization.
+pub type Uleb128Sequence = VariableAtomSequence<Uleb128Codec>;
 
 #[cfg(test)]
 mod tests {
