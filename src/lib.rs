@@ -1894,10 +1894,13 @@ pub mod prelude {
         BijectiveDictionary, BijectiveMap, CharUnit, CompactableDictionary, DictZipper, Dictionary,
         DictionaryEntries, DictionaryEntriesIter, DictionaryEntry, DictionaryKeys,
         DictionaryLanguageEntries, DictionaryLanguageTerms, DictionaryNode, DictionaryTerms,
-        DictionaryValue, DictionaryValues, ExactSnapshotEntryIterator, InsertError,
-        MappedDictionary, MappedDictionaryNode, MutableDictionary, MutableMappedDictionary,
-        SnapshotEntryIterator, SnapshotTermIterator, SyncStrategy, Utf8, ValuedDictZipper,
-        ValuedZipperCollection, ZipperCollection, ZipperEntryIterator, ZipperTermIterator,
+        DictionaryValue, DictionaryValues, ExactSnapshotEntryIterator, InsertError, InternedId,
+        InternedIdDictionaryView, InternedSequence, InternedSequenceDictionary,
+        InternedSequenceDictionaryU64, InternedUlebSequenceDictionary,
+        InternedUlebSequenceDictionaryU64, InternedVocabulary, MappedDictionary,
+        MappedDictionaryNode, MutableDictionary, MutableMappedDictionary, SnapshotEntryIterator,
+        SnapshotTermIterator, SyncStrategy, Utf8, ValuedDictZipper, ValuedZipperCollection,
+        ZipperCollection, ZipperEntryIterator, ZipperTermIterator,
     };
 
     // Re-export common dictionary types
