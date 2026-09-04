@@ -60,6 +60,12 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
         self.inner.contains_units(units)
     }
 
+    /// Read the value associated with a logical-unit sequence.
+    #[inline]
+    pub fn get_units_value(&self, units: &[U]) -> Option<V> {
+        self.inner.get_units_value(units)
+    }
+
     /// Remove a logical-unit sequence.
     #[inline]
     pub fn remove_units(&self, units: &[U]) -> bool {
@@ -70,6 +76,18 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
     #[inline]
     pub fn term_count(&self) -> usize {
         self.inner.term_count()
+    }
+
+    /// Number of physical nodes in the current graph revision.
+    #[inline]
+    pub fn node_count(&self) -> usize {
+        self.inner.node_count()
+    }
+
+    /// Whether the current revision has pending non-minimal structure.
+    #[inline]
+    pub fn needs_compaction(&self) -> bool {
+        self.inner.needs_compaction()
     }
 
     /// Compact/minimize the current immutable graph.
@@ -94,12 +112,15 @@ mod generic_tests {
 
     #[test]
     fn generic_surface_uses_logical_units_directly() {
-        let dictionary = DynamicDawgGeneric::<u32>::new();
+        let dictionary = DynamicDawgGeneric::<u32, u32>::new();
         assert!(dictionary.insert_units(&[1, 2, 3]));
         assert!(dictionary.contains_units(&[1, 2, 3]));
         assert!(!dictionary.contains_units(&[1, 2]));
         assert!(dictionary.remove_units(&[1, 2, 3]));
         assert!(!dictionary.contains_units(&[1, 2, 3]));
+        assert!(dictionary.insert_units_with_value(&[4], 99));
+        assert_eq!(dictionary.get_units_value(&[4]), Some(99));
+        assert!(dictionary.node_count() > 0);
     }
 }
 
