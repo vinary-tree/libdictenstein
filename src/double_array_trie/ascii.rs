@@ -599,6 +599,20 @@ impl<V: DictionaryValue> DoubleArrayTrie<V> {
         DoubleArrayTrieBuilder::new().build()
     }
 
+    /// Build from fixed-width byte-profile sequences without text coercion.
+    pub fn from_atom_sequences<P, I>(sequences: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = u8>,
+        I: IntoIterator<Item = crate::AtomSequence<P>>,
+    {
+        sequences
+            .into_iter()
+            .map(|sequence| sequence.as_atoms().to_vec())
+            .collect::<Vec<Vec<u8>>>()
+            .into_iter()
+            .collect()
+    }
+
     /// Create a DAT from an iterator of (term, value) pairs.
     ///
     /// For optimal space efficiency, terms should be sorted.

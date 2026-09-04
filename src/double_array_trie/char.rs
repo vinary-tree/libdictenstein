@@ -257,6 +257,20 @@ impl<V: DictionaryValue> DoubleArrayTrieChar<V> {
         }
     }
 
+    /// Build from Unicode-scalar profile sequences without UTF-8 edges.
+    pub fn from_atom_sequences<P, I>(sequences: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = char>,
+        I: IntoIterator<Item = crate::AtomSequence<P>>,
+    {
+        sequences
+            .into_iter()
+            .map(|sequence| sequence.as_atoms().to_vec())
+            .collect::<Vec<Vec<char>>>()
+            .into_iter()
+            .collect()
+    }
+
     /// Create a character-level DAT from an iterator of (term, value) pairs.
     ///
     /// # Example
