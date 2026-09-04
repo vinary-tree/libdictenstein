@@ -6,7 +6,15 @@ scratch="$repo_root/target/char-format-compat"
 baseline_commit="6a1b267a60fe9c445a0c8c7c8136e6dd40aedbf5"
 interop_commit="6694ad4fcb5ce498f69b77cb14ce1ea7a2f20033"
 llattice_commit="2ec21ca70ae3cbb2d8afdd295c9ed09517003324"
-interop_repo="${VINARY_TREE_INTEROP_REPO:-$repo_root/../vinary-tree-interop-rc2-stack-safety-clean}"
+if [ -n "${VINARY_TREE_INTEROP_REPO:-}" ]; then
+  interop_repo="$VINARY_TREE_INTEROP_REPO"
+elif [ -d "$repo_root/../vinary-tree-interop-rc2-stack-safety-clean/.git" ]; then
+  # Preserve the historical local stack-safety fixture when it is present.
+  interop_repo="$repo_root/../vinary-tree-interop-rc2-stack-safety-clean"
+else
+  # CI and ordinary development checkouts use the canonical sibling name.
+  interop_repo="$repo_root/../vinary-tree-interop"
+fi
 llattice_repo="${LLATTICE_REPO:-$repo_root/../llattice}"
 fixture_dir="$repo_root/tests/fixtures/char-node-format"
 manifest="$fixture_dir/manifest.toml"
