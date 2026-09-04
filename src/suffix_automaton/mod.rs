@@ -17,6 +17,24 @@ pub use char::{SuffixAutomatonChar, SuffixNodeCharHandle};
 pub use char_zipper::SuffixAutomatonCharZipper;
 pub use zipper::SuffixAutomatonZipper;
 
+#[cfg(test)]
+mod profile_tests {
+    use super::SuffixAutomatonChar;
+    use crate::{AtomSequence, Dictionary, UnicodeScalar};
+
+    #[test]
+    fn unicode_profile_sequences_preserve_substring_boundaries() {
+        let dictionary: SuffixAutomatonChar = SuffixAutomatonChar::from_atom_sequences::<
+            UnicodeScalar,
+            _,
+        >([
+            AtomSequence::<UnicodeScalar>::from_atoms(['λ', 'x', 'y']),
+        ]);
+        assert!(dictionary.contains("λx"));
+        assert!(dictionary.contains("xy"));
+    }
+}
+
 #[cfg(feature = "persistent-artrie")]
 pub use crate::persistent_artrie::{
     PersistentSuffixAutomaton, PersistentSuffixAutomatonChar, PersistentSuffixAutomatonCharNode,

@@ -519,6 +519,20 @@ impl<V: DictionaryValue> SuffixAutomatonChar<V> {
         Self::from_inner(inner)
     }
 
+    /// Build from Unicode-scalar profile sequences without UTF-8 byte
+    /// transitions or suffixes beginning inside a scalar.
+    pub fn from_atom_sequences<P, I>(sequences: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = char>,
+        I: IntoIterator<Item = crate::AtomSequence<P>>,
+    {
+        Self::from_texts(
+            sequences
+                .into_iter()
+                .map(|sequence| sequence.as_atoms().iter().copied().collect::<String>()),
+        )
+    }
+
     /// Insert a text string.
     ///
     /// Returns `true` if the operation succeeded (always true currently).
