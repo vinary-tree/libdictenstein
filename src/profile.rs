@@ -139,6 +139,17 @@ impl<P: AtomProfile> AtomSequence<P> {
         self.atoms.iter()
     }
 
+    /// Borrow the logical atom slice for dictionary kernels.
+    #[inline]
+    pub fn as_atoms(&self) -> &[P::Atom] {
+        &self.atoms
+    }
+
+    /// Number of bytes in the encoded sequence.
+    pub fn encoded_len(&self) -> usize {
+        self.atoms.iter().map(|&atom| P::encode(atom).len()).sum()
+    }
+
     /// Encode the sequence in logical order.
     pub fn to_encoded(&self) -> Vec<u8> {
         let mut encoded = Vec::new();
@@ -339,5 +350,12 @@ mod tests {
         assert_eq!(AtomSequence::<U64>::profile(), U64::PROFILE);
         assert_eq!(AtomSequence::<U64>::width_bytes(), Some(8));
         assert_eq!(AtomSequence::<Bytes>::width_bytes(), Some(1));
+    }
+
+    #[test]
+    fn sequence_borrows_logical_atoms_directly() {
+        let sequence = AtomSequence::<U64>::from_atoms([11, 22]);
+        assert_eq!(sequence.as_atoms(), &[11, 22]);
+        assert_eq!(sequence.encoded_len(), 16);
     }
 }
