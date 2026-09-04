@@ -1,6 +1,6 @@
 //! Shared logical-atom profiles for generic dictionary families.
 
-use crate::variable_width::VariableWidthProfile;
+use crate::variable_width::{VariableWidthProfile, ULEB128_PROFILE};
 use core::marker::PhantomData;
 
 /// Errors returned by fixed-width profile decoders.
@@ -10,6 +10,48 @@ pub enum ProfileError {
     InvalidLength,
     /// A scalar profile received a value outside the Unicode scalar range.
     InvalidScalar,
+}
+
+/// Stable descriptor for the built-in logical alphabets.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum ProfileKind {
+    /// Raw bytes.
+    Bytes,
+    /// Unicode scalar values (not UTF-8 byte transitions).
+    UnicodeScalar,
+    /// Native 32-bit unsigned values.
+    U32,
+    /// Native 64-bit unsigned values.
+    U64,
+    /// IEEE-754 binary64 represented by raw `u64` bits.
+    F64Bits,
+    /// Arbitrary-width canonical ULEB128 atoms.
+    Uleb128,
+}
+
+impl ProfileKind {
+    /// Stable persisted identity.
+    pub const fn identity(self) -> VariableWidthProfile {
+        match self {
+            Self::Bytes => Bytes::PROFILE,
+            Self::UnicodeScalar => UnicodeScalar::PROFILE,
+            Self::U32 => U32::PROFILE,
+            Self::U64 => U64::PROFILE,
+            Self::F64Bits => F64Bits::PROFILE,
+            Self::Uleb128 => ULEB128_PROFILE,
+        }
+    }
+
+    /// Fixed wire width, or `None` for variable-width ULEB atoms.
+    pub const fn width_bytes(self) -> Option<usize> {
+        match self {
+            Self::Uleb128 => None,
+            Self::Bytes => Bytes::WIDTH_BYTES,
+            Self::UnicodeScalar => UnicodeScalar::WIDTH_BYTES,
+            Self::U32 => U32::WIDTH_BYTES,
+            Self::U64 | Self::F64Bits => Some(8),
+        }
+    }
 }
 
 /// Codec contract for one logical dictionary edge.
@@ -357,5 +399,13 @@ mod tests {
         let sequence = AtomSequence::<U64>::from_atoms([11, 22]);
         assert_eq!(sequence.as_atoms(), &[11, 22]);
         assert_eq!(sequence.encoded_len(), 16);
+    }
+
+    #[test]
+    fn profile_kind_identity_and_width_are_total() {
+        assert_eq!(ProfileKind::Bytes.width_bytes(), Some(1));
+        assert_eq!(ProfileKind::UnicodeScalar.width_bytes(), Some(4));
+        assert_eq!(ProfileKind::Uleb128.width_bytes(), None);
+        assert_eq!(ProfileKind::Uleb128.identity(), ULEB128_PROFILE);
     }
 }

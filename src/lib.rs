@@ -172,7 +172,8 @@ pub use substring::{
 };
 pub use value::DictionaryValue;
 pub use profile::{
-    AtomProfile, AtomSequence, AtomStream, Bytes, F64Bits, ProfileError, U32, U64, UnicodeScalar,
+    AtomProfile, AtomSequence, AtomStream, Bytes, F64Bits, ProfileError, ProfileKind, U32, U64,
+    UnicodeScalar,
 };
 pub use interning::{InternedId, InternedSequence, InternedVocabulary, InterningError};
 pub use variable_width::{
