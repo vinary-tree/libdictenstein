@@ -213,6 +213,11 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
         self.inner.term_count()
     }
 
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.term_count() == 0
+    }
+
     /// Number of physical nodes in the current graph revision.
     #[inline]
     pub fn node_count(&self) -> usize {
@@ -527,6 +532,7 @@ mod generic_tests {
         assert_eq!(dictionary.visible_entries().unwrap().len(), 2);
         assert!(dictionary.contains_encoded("λ🎉".as_bytes()).unwrap());
         assert!(dictionary.contains_encoded(&[0x80]).is_err());
+        assert!(!dictionary.is_empty());
     }
 
     #[test]

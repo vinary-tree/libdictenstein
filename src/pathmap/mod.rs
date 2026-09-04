@@ -105,6 +105,11 @@ impl<V: crate::DictionaryValue> PathMapDictionaryUtf8<V> {
         std::str::from_utf8(encoded)?;
         Ok(self.inner.contains_bytes(encoded))
     }
+
+    pub fn remove_encoded(&self, encoded: &[u8]) -> Result<bool, std::str::Utf8Error> {
+        std::str::from_utf8(encoded)?;
+        Ok(self.inner.remove_bytes(encoded))
+    }
     pub fn visible_entries(&self) -> Result<Vec<(String, Option<V>)>, std::str::Utf8Error> {
         self.inner
             .entries()
@@ -277,6 +282,9 @@ mod profile_tests {
         assert_eq!(dictionary.visible_entries().unwrap().len(), 2);
         assert!(dictionary.contains_encoded("λ🎉".as_bytes()).unwrap());
         assert!(dictionary.contains_encoded(&[0x80]).is_err());
+        assert!(!dictionary.is_empty());
+        assert!(dictionary.remove_encoded("λ🎉".as_bytes()).unwrap());
+        assert!(!dictionary.contains("λ🎉"));
     }
 
     #[test]
