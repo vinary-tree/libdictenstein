@@ -517,15 +517,24 @@ mod tests {
     fn arbitrary_width_round_trip() {
         let magnitude = vec![0x00, 0xff, 0x01, 0x80, 0x7f, 0x42];
         let value = Uleb128::from_le_bytes(&magnitude);
-        assert_eq!(value.to_le_bytes(), vec![0x00, 0xff, 0x01, 0x80, 0x7f, 0x42]);
+        assert_eq!(
+            value.to_le_bytes(),
+            vec![0x00, 0xff, 0x01, 0x80, 0x7f, 0x42]
+        );
         assert_eq!(Uleb128::from_bytes(value.as_bytes()).unwrap(), value);
     }
 
     #[test]
     fn malformed_encodings_are_rejected() {
         assert_eq!(Uleb128::from_bytes(&[]), Err(Uleb128Error::Empty));
-        assert_eq!(Uleb128::from_bytes(&[0x80]), Err(Uleb128Error::Unterminated));
-        assert_eq!(Uleb128::from_bytes(&[0x80, 0]), Err(Uleb128Error::NonCanonical));
+        assert_eq!(
+            Uleb128::from_bytes(&[0x80]),
+            Err(Uleb128Error::Unterminated)
+        );
+        assert_eq!(
+            Uleb128::from_bytes(&[0x80, 0]),
+            Err(Uleb128Error::NonCanonical)
+        );
     }
 
     #[test]
@@ -576,7 +585,10 @@ mod tests {
     fn known_uleb_encoding_and_zero_copy_payload_iteration() {
         let value = Uleb128::from_u64(624_485);
         assert_eq!(value.as_bytes(), &[0xe5, 0x8e, 0x26]);
-        assert_eq!(value.payload_digits().collect::<Vec<_>>(), vec![0x65, 0x0e, 0x26]);
+        assert_eq!(
+            value.payload_digits().collect::<Vec<_>>(),
+            vec![0x65, 0x0e, 0x26]
+        );
         assert_eq!(AsRef::<[u8]>::as_ref(&value), value.as_bytes());
     }
 
@@ -586,7 +598,10 @@ mod tests {
         let (first, consumed) = Uleb128Ref::from_prefix(&stream).unwrap();
         assert_eq!(first.as_bytes(), &[0x83, 0x04]);
         assert_eq!(&stream[consumed..], &[0x01]);
-        assert_eq!(Uleb128Ref::from_prefix(&[0x80]), Err(Uleb128Error::Unterminated));
+        assert_eq!(
+            Uleb128Ref::from_prefix(&[0x80]),
+            Err(Uleb128Error::Unterminated)
+        );
     }
 
     #[test]

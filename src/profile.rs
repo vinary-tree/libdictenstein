@@ -291,7 +291,11 @@ impl AtomProfile for Bytes {
     }
 
     fn decode(bytes: &[u8]) -> Result<(u8, usize), ProfileError> {
-        bytes.first().copied().map(|byte| (byte, 1)).ok_or(ProfileError::InvalidLength)
+        bytes
+            .first()
+            .copied()
+            .map(|byte| (byte, 1))
+            .ok_or(ProfileError::InvalidLength)
     }
 }
 
@@ -401,16 +405,28 @@ mod tests {
     #[test]
     fn fixed_profiles_round_trip() {
         assert_eq!(Bytes::decode(&[7, 8]).unwrap(), (7, 1));
-        assert_eq!(UnicodeScalar::decode(&('λ' as u32).to_le_bytes()).unwrap(), ('λ', 4));
-        assert_eq!(U32::decode(&0xdead_beefu32.to_le_bytes()).unwrap(), (0xdead_beef, 4));
+        assert_eq!(
+            UnicodeScalar::decode(&('λ' as u32).to_le_bytes()).unwrap(),
+            ('λ', 4)
+        );
+        assert_eq!(
+            U32::decode(&0xdead_beefu32.to_le_bytes()).unwrap(),
+            (0xdead_beef, 4)
+        );
         assert_eq!(U64::decode(&u64::MAX.to_le_bytes()).unwrap(), (u64::MAX, 8));
         let nan_bits = 0x7ff8_0000_0000_0042u64;
-        assert_eq!(F64Bits::decode(&F64Bits::encode(nan_bits)).unwrap().0, nan_bits);
+        assert_eq!(
+            F64Bits::decode(&F64Bits::encode(nan_bits)).unwrap().0,
+            nan_bits
+        );
     }
 
     #[test]
     fn scalar_profile_rejects_surrogates_and_short_input() {
-        assert_eq!(UnicodeScalar::decode(&[0; 3]), Err(ProfileError::InvalidLength));
+        assert_eq!(
+            UnicodeScalar::decode(&[0; 3]),
+            Err(ProfileError::InvalidLength)
+        );
         assert_eq!(
             UnicodeScalar::decode(&0xd800u32.to_le_bytes()),
             Err(ProfileError::InvalidScalar)
@@ -420,11 +436,20 @@ mod tests {
     #[test]
     fn generic_atom_sequence_round_trips_each_fixed_profile() {
         let bytes = AtomSequence::<Bytes>::from_atoms([1, 2, 3]);
-        assert_eq!(AtomSequence::<Bytes>::from_encoded(&bytes.to_encoded()).unwrap(), bytes);
+        assert_eq!(
+            AtomSequence::<Bytes>::from_encoded(&bytes.to_encoded()).unwrap(),
+            bytes
+        );
         let words = AtomSequence::<U32>::from_atoms([1, u32::MAX]);
-        assert_eq!(AtomSequence::<U32>::from_encoded(&words.to_encoded()).unwrap(), words);
+        assert_eq!(
+            AtomSequence::<U32>::from_encoded(&words.to_encoded()).unwrap(),
+            words
+        );
         let chars = AtomSequence::<UnicodeScalar>::from_atoms(['a', 'λ']);
-        assert_eq!(AtomSequence::<UnicodeScalar>::from_encoded(&chars.to_encoded()).unwrap(), chars);
+        assert_eq!(
+            AtomSequence::<UnicodeScalar>::from_encoded(&chars.to_encoded()).unwrap(),
+            chars
+        );
     }
 
     #[test]
@@ -474,7 +499,10 @@ mod tests {
             assert_eq!(ProfileKind::from_name(kind.as_str()), Some(kind));
         }
         assert_eq!(ProfileKind::from_name("DynamicDawgChar"), None);
-        assert_eq!(ProfileKind::UnicodeScalar.legacy_name(), Some("DynamicDawgChar"));
+        assert_eq!(
+            ProfileKind::UnicodeScalar.legacy_name(),
+            Some("DynamicDawgChar")
+        );
         assert_eq!(ProfileKind::Uleb128.legacy_name(), None);
         assert_eq!(
             ProfileKind::from_identity(VariableWidthProfile::new("u64", 1)),

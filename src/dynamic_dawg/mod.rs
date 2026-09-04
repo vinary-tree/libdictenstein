@@ -79,7 +79,9 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
     {
         Self {
             inner: std::sync::Arc::new(lockfree::LockFreeDawg::from_sorted_entries_by(
-                entries.into_iter().map(|(sequence, value)| (sequence, Some(value))),
+                entries
+                    .into_iter()
+                    .map(|(sequence, value)| (sequence, Some(value))),
                 |sequence, units| units.extend_from_slice(sequence.as_ref()),
             )),
         }
@@ -185,17 +187,12 @@ mod generic_tests {
 
     #[test]
     fn generic_batch_constructor_uses_sorted_logical_sequences() {
-        let dictionary = DynamicDawgGeneric::<u32>::from_sorted_sequences([
-            vec![1u32, 2],
-            vec![1, 3],
-        ]);
+        let dictionary =
+            DynamicDawgGeneric::<u32>::from_sorted_sequences([vec![1u32, 2], vec![1, 3]]);
         assert!(dictionary.contains_units(&[1, 2]));
         assert!(dictionary.contains_units(&[1, 3]));
         assert_eq!(dictionary.term_count(), 2);
-        let unsorted = DynamicDawgGeneric::<u32>::from_sequences([
-            vec![1u32, 3],
-            vec![1, 2],
-        ]);
+        let unsorted = DynamicDawgGeneric::<u32>::from_sequences([vec![1u32, 3], vec![1, 2]]);
         assert!(unsorted.contains_units(&[1, 2]));
         assert!(unsorted.contains_units(&[1, 3]));
         let valued = DynamicDawgGeneric::<u32, u32>::from_sorted_entries([

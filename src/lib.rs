@@ -132,13 +132,13 @@ pub mod value_diff_zipper;
 // substrate shared by the variants, and `*zipper` = the navigators.
 pub mod double_array_trie;
 pub mod dynamic_dawg;
+pub mod interning;
 #[cfg(feature = "pathmap-backend")]
 pub mod pathmap;
+pub mod profile;
 pub mod scdawg;
 pub mod suffix_automaton;
 pub mod variable_width;
-pub mod profile;
-pub mod interning;
 
 // === Persistent ARTrie modules (feature-gated at module level) ===
 // These modules are gated here; internal code does NOT need feature gates.
@@ -166,20 +166,22 @@ pub use collection::{
 };
 pub use dynamic_dawg::core::{DawgCore, DawgNode};
 pub use dynamic_dawg::{DynamicDawgGeneric, DynamicDawgProfile, DynamicDawgU32};
+pub use interning::{
+    InternedId, InternedSequence, InternedVocabulary, InternedSequenceDictionary, InterningError,
+};
 pub use iterator::{DictionaryIterator, DictionaryTermIterator};
 pub use node_signature::NodeSignature;
+pub use profile::{
+    AtomProfile, AtomSequence, AtomStream, Bytes, F64Bits, ProfileError, ProfileKind,
+    UnicodeScalar, U32, U64,
+};
 pub use substring::{
     BidirectionalDictionaryNode, ExtensionResult, SubstringDictionary, SubstringMatch,
 };
 pub use value::DictionaryValue;
-pub use profile::{
-    AtomProfile, AtomSequence, AtomStream, Bytes, F64Bits, ProfileError, ProfileKind, U32, U64,
-    UnicodeScalar,
-};
-pub use interning::{InternedId, InternedSequence, InternedVocabulary, InterningError};
 pub use variable_width::{
-    Uleb128, Uleb128Codec, Uleb128Error, Uleb128Ref, VariableWidthCodec, VariableWidthProfile,
-    Uleb128Sequence, Uleb128Stream, ULEB128_PROFILE,
+    Uleb128, Uleb128Codec, Uleb128Error, Uleb128Ref, Uleb128Sequence, Uleb128Stream,
+    VariableWidthCodec, VariableWidthProfile, ULEB128_PROFILE,
 };
 pub use zipper::{DictZipper, ValuedDictZipper, ZipperTraversalNode};
 

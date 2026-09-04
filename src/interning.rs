@@ -1,6 +1,10 @@
 //! Deterministic capsule-local vocabulary interning.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+use crate::dynamic_dawg::DynamicDawgU32;
+use crate::DictionaryValue;
 
 /// Dense identifier assigned by an [`InternedVocabulary`].
 pub type InternedId = u64;
@@ -12,6 +16,8 @@ pub enum InterningError {
     UnknownId(InternedId),
     /// The sequence belongs to a different vocabulary generation.
     GenerationMismatch { expected: u64, actual: u64 },
+    /// A caller attempted to use an atom that has not been interned.
+    UnknownKey,
 }
 
 /// Compact capsule-local sequence of vocabulary IDs.
@@ -164,10 +170,7 @@ impl<K: Ord + Clone> InternedVocabulary<K> {
     }
 
     /// Validate that every ID belongs to this vocabulary generation.
-    pub fn validate_sequence(
-        &self,
-        sequence: &InternedSequence,
-    ) -> Result<(), InterningError> {
+    pub fn validate_sequence(&self, sequence: &InternedSequence) -> Result<(), InterningError> {
         if sequence.generation != self.generation {
             return Err(InterningError::GenerationMismatch {
                 expected: self.generation,
@@ -226,6 +229,145 @@ impl<K: Ord + Clone> InternedVocabulary<K> {
     }
 }
 
+/// A vocabulary and its ID-sequence dictionary as one ownership boundary.
+///
+/// The vocabulary is the only component that can create IDs.  The underlying
+/// DAWG is private so a caller cannot insert an arbitrary local-ID sequence
+/// without going through vocabulary validation.  Read-only ID access remains
+/// available through [`Self::id_dictionary`] for engines whose hot loops are
+/// already bound to this capsule's generation.
+#[derive(Clone, Debug)]
+pub struct InternedSequenceDictionary<K: Ord + Clone, V: DictionaryValue = ()> {
+    vocabulary: Arc<Mutex<InternedVocabulary<K>>>,
+    id_dictionary: DynamicDawgU32<V>,
+}
+
+impl<K: Ord + Clone, V: DictionaryValue> Default for InternedSequenceDictionary<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
+    /// Construct an empty coordinated dictionary with generation zero.
+    pub fn new() -> Self {
+        Self::with_generation(0)
+    }
+
+    /// Construct an empty coordinated dictionary with an explicit generation.
+    pub fn with_generation(generation: u64) -> Self {
+        Self {
+            vocabulary: Arc::new(Mutex::new(InternedVocabulary::with_generation(generation))),
+            id_dictionary: DynamicDawgU32::new(),
+        }
+    }
+
+    /// Borrow the vocabulary lock for read-only identity and reverse lookup.
+    ///
+    /// The guard is intentionally returned instead of cloning the vocabulary,
+    /// preserving zero-copy access and making the lifetime of the observation
+    /// explicit to callers.
+    pub fn vocabulary(
+        &self,
+    ) -> std::sync::LockResult<std::sync::MutexGuard<'_, InternedVocabulary<K>>> {
+        self.vocabulary.lock()
+    }
+
+    /// Access the ID-native dictionary for hot-loop consumers.
+    ///
+    /// Its sequences are meaningful only with this instance's vocabulary and
+    /// generation.  The vocabulary remains the authority for constructing
+    /// valid sequences.
+    #[inline]
+    pub fn id_dictionary(&self) -> &DynamicDawgU32<V> {
+        &self.id_dictionary
+    }
+
+    /// Intern atoms and insert their ID sequence atomically with respect to
+    /// other vocabulary mutations.
+    pub fn insert<I>(&self, atoms: I, value: Option<V>) -> Result<bool, InterningError>
+    where
+        I: IntoIterator<Item = K>,
+    {
+        let mut vocabulary = self
+            .vocabulary
+            .lock()
+            .map_err(|_| InterningError::UnknownKey)?;
+        let sequence = vocabulary.intern_sequence(atoms);
+        let ids: Vec<u32> = sequence
+            .as_ids()
+            .iter()
+            .copied()
+            .map(|id| u32::try_from(id).map_err(|_| InterningError::UnknownId(id)))
+            .collect::<Result<_, _>>()?;
+        let inserted = match value {
+            Some(value) => self.id_dictionary.insert_units_with_value(&ids, value),
+            None => self.id_dictionary.insert_units(&ids),
+        };
+        Ok(inserted)
+    }
+
+    /// Test an atom sequence without changing the vocabulary.
+    pub fn contains<I>(&self, atoms: I) -> Result<bool, InterningError>
+    where
+        I: IntoIterator<Item = K>,
+    {
+        let vocabulary = self
+            .vocabulary
+            .lock()
+            .map_err(|_| InterningError::UnknownKey)?;
+        let mut ids = Vec::new();
+        for atom in atoms {
+            let id = vocabulary.id_of(&atom).ok_or(InterningError::UnknownKey)?;
+            ids.push(u32::try_from(id).map_err(|_| InterningError::UnknownId(id))?);
+        }
+        Ok(self.id_dictionary.contains_units(&ids))
+    }
+
+    /// Remove an atom sequence without changing vocabulary assignments.
+    pub fn remove<I>(&self, atoms: I) -> Result<bool, InterningError>
+    where
+        I: IntoIterator<Item = K>,
+    {
+        let vocabulary = self
+            .vocabulary
+            .lock()
+            .map_err(|_| InterningError::UnknownKey)?;
+        let mut ids = Vec::new();
+        for atom in atoms {
+            let id = vocabulary.id_of(&atom).ok_or(InterningError::UnknownKey)?;
+            ids.push(u32::try_from(id).map_err(|_| InterningError::UnknownId(id))?);
+        }
+        Ok(self.id_dictionary.remove_units(&ids))
+    }
+}
+
+#[cfg(test)]
+mod coordinated_tests {
+    use super::InternedSequenceDictionary;
+
+    #[test]
+    fn coordinates_atoms_and_id_sequences() {
+        let dictionary = InternedSequenceDictionary::<u32, u32>::with_generation(7);
+        assert!(dictionary.insert([10, 20], Some(99)).unwrap());
+        assert!(dictionary.contains([10, 20]).unwrap());
+        assert_eq!(dictionary.vocabulary().unwrap().generation(), 7);
+        assert_eq!(dictionary.id_dictionary().term_count(), 1);
+        assert!(dictionary.remove([10, 20]).unwrap());
+        assert!(!dictionary.contains([10, 20]).unwrap());
+    }
+
+    #[test]
+    fn unknown_atoms_fail_closed_without_mutation() {
+        let dictionary = InternedSequenceDictionary::<u32>::new();
+        assert_eq!(
+            dictionary.contains([1]),
+            Err(super::InterningError::UnknownKey)
+        );
+        assert_eq!(dictionary.vocabulary().unwrap().len(), 0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,23 +383,23 @@ mod tests {
         assert_eq!(vocabulary.id_of(&Uleb128::from_u64(42)), Some(first));
         assert_eq!(vocabulary.value(second), Some(&Uleb128::from_u64(1 << 63)));
         assert_eq!(vocabulary.len(), 2);
-        assert_eq!(vocabulary.iter().map(|(id, _)| id).collect::<Vec<_>>(), vec![0, 1]);
-        let sequence = vocabulary.intern_sequence([
-            Uleb128::from_u64(42),
-            Uleb128::from_u64(1 << 63),
-        ]);
+        assert_eq!(
+            vocabulary.iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        let sequence =
+            vocabulary.intern_sequence([Uleb128::from_u64(42), Uleb128::from_u64(1 << 63)]);
         assert_eq!(sequence.as_ids(), &[first, second]);
         assert_eq!(sequence.generation(), 0);
         assert!(sequence.is_bound_to(0));
         let resolved: Vec<_> = vocabulary.resolve_sequence(&sequence).unwrap().collect();
         assert_eq!(resolved.len(), 2);
-        assert!(vocabulary.resolve_iter(&sequence).all(|value| value.is_some()));
+        assert!(vocabulary
+            .resolve_iter(&sequence)
+            .all(|value| value.is_some()));
         let unknown = InternedSequence::from_ids([99]);
         assert_eq!(vocabulary.resolve_iter(&unknown).next(), Some(None));
-        assert_eq!(
-            vocabulary.validate_sequence(&sequence),
-            Ok(())
-        );
+        assert_eq!(vocabulary.validate_sequence(&sequence), Ok(()));
         assert_eq!(
             vocabulary.validate_sequence(&unknown),
             Err(InterningError::UnknownId(99))
