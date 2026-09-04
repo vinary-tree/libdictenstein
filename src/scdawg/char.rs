@@ -231,6 +231,20 @@ impl<V: DictionaryValue> ScdawgChar<V> {
         Self::from_inner(inner)
     }
 
+    /// Build from Unicode-scalar profile sequences without introducing
+    /// UTF-8 byte transitions or suffixes inside a scalar.
+    pub fn from_atom_sequences<P, I>(sequences: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = char>,
+        I: IntoIterator<Item = crate::AtomSequence<P>>,
+    {
+        Self::from_terms(
+            sequences
+                .into_iter()
+                .map(|sequence| sequence.as_atoms().iter().copied().collect::<String>()),
+        )
+    }
+
     /// Create from an iterator of (term, value) pairs.
     pub fn from_terms_with_values<I, S>(terms: I) -> Self
     where
