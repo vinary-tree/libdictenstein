@@ -139,6 +139,12 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
         self.inner.needs_compaction()
     }
 
+    /// Collect visible logical-unit entries in deterministic lexicographic
+    /// order for snapshot/export boundaries.
+    pub fn visible_entries(&self) -> Vec<(Vec<U>, Option<V>)> {
+        self.inner.collect_visible_entries()
+    }
+
     /// Compact/minimize the current immutable graph.
     #[inline]
     pub fn compact(&self) -> usize {
@@ -198,6 +204,10 @@ mod generic_tests {
         ]);
         assert_eq!(valued.get_units_value(&[1, 2]), Some(10));
         assert_eq!(valued.get_units_value(&[1, 3]), Some(20));
+        assert_eq!(
+            valued.visible_entries(),
+            vec![(vec![1, 2], Some(10)), (vec![1, 3], Some(20))]
+        );
     }
 }
 
