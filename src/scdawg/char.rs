@@ -410,6 +410,15 @@ impl<V: DictionaryValue> ScdawgChar<V> {
         }
     }
 
+    /// Read a mapped value for a Unicode-scalar profile sequence.
+    pub fn get_atom_sequence_value<P>(&self, sequence: &crate::AtomSequence<P>) -> Option<V>
+    where
+        P: crate::AtomProfile<Atom = char>,
+    {
+        let term: String = sequence.as_atoms().iter().collect();
+        self.get_value(&term)
+    }
+
     // ========================================================================
     // IS Features (Blumer et al. 1987)
     // ========================================================================
@@ -1205,6 +1214,8 @@ mod tests {
         scdawg.insert_with_value("日本語", 42);
 
         assert_eq!(scdawg.get_value("日本語"), Some(42));
+        let sequence = crate::AtomSequence::<crate::UnicodeScalar>::from_atoms(['日', '本', '語']);
+        assert_eq!(scdawg.get_atom_sequence_value(&sequence), Some(42));
         assert_eq!(scdawg.get_value("日本"), None);
     }
 
