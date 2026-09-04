@@ -164,7 +164,7 @@ pub use collection::{
     ExactSnapshotEntryIterator, SnapshotEntryIterator, SnapshotTermIterator,
     ValuedZipperCollection, ZipperCollection, ZipperEntryIterator, ZipperTermIterator,
 };
-pub use double_array_trie::DoubleArrayTrieUleb128;
+pub use double_array_trie::{DoubleArrayTrieUleb128, DoubleArrayTrieUtf8};
 pub use dynamic_dawg::core::{DawgCore, DawgNode};
 pub use dynamic_dawg::{
     DynamicDawgByteProfile, DynamicDawgCharProfile, DynamicDawgGeneric, DynamicDawgProfile,
@@ -1900,7 +1900,7 @@ pub mod prelude {
 
     // Re-export common dictionary types
     pub use crate::double_array_trie::{
-        DoubleArrayTrie, DoubleArrayTrieChar, DoubleArrayTrieUleb128,
+        DoubleArrayTrie, DoubleArrayTrieChar, DoubleArrayTrieUleb128, DoubleArrayTrieUtf8,
     };
     pub use crate::dynamic_dawg::{
         DynamicDawg, DynamicDawgChar, DynamicDawgU64, DynamicDawgUleb128, DynamicDawgUtf8,

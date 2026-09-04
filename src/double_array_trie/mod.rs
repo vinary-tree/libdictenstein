@@ -26,6 +26,76 @@ pub struct DoubleArrayTrieUleb128<V: crate::DictionaryValue = ()> {
     inner: DoubleArrayTrie<V>,
 }
 
+/// Immutable byte-backed DAT boundary for variable-width UTF-8 strings.
+#[derive(Clone, Debug)]
+pub struct DoubleArrayTrieUtf8<V: crate::DictionaryValue = ()> {
+    inner: DoubleArrayTrie<V>,
+}
+
+impl<V: crate::DictionaryValue> Default for DoubleArrayTrieUtf8<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<V: crate::DictionaryValue> DoubleArrayTrieUtf8<V> {
+    pub fn new() -> Self {
+        Self {
+            inner: DoubleArrayTrie::new(),
+        }
+    }
+    pub fn from_terms<I, S>(terms: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self {
+            inner: terms
+                .into_iter()
+                .map(|s| s.as_ref().as_bytes().to_vec())
+                .collect(),
+        }
+    }
+    pub fn from_terms_with_values<I, S>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (S, V)>,
+        S: AsRef<str>,
+    {
+        Self {
+            inner: entries
+                .into_iter()
+                .map(|(s, v)| (s.as_ref().as_bytes().to_vec(), v))
+                .collect(),
+        }
+    }
+    #[inline]
+    pub fn contains(&self, term: &str) -> bool {
+        self.inner.contains_bytes(term.as_bytes())
+    }
+    #[inline]
+    pub fn get_value(&self, term: &str) -> Option<V> {
+        self.inner.get_bytes_value(term.as_bytes())
+    }
+    #[inline]
+    pub fn term_count(&self) -> usize {
+        self.inner.len().unwrap_or(0)
+    }
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.term_count() == 0
+    }
+    pub fn contains_encoded(&self, encoded: &[u8]) -> Result<bool, std::str::Utf8Error> {
+        std::str::from_utf8(encoded)?;
+        Ok(self.inner.contains_bytes(encoded))
+    }
+    pub fn visible_entries(&self) -> Result<Vec<(String, Option<V>)>, std::str::Utf8Error> {
+        self.inner
+            .entries()
+            .map(|entry| std::str::from_utf8(&entry.key).map(|s| (s.to_owned(), entry.value)))
+            .collect()
+    }
+}
+
 impl<V: crate::DictionaryValue> DoubleArrayTrieUleb128<V> {
     /// Construct an empty ULEB128 DAT.
     pub fn new() -> Self {
@@ -122,7 +192,9 @@ impl<V: crate::DictionaryValue> Default for DoubleArrayTrieUleb128<V> {
 
 #[cfg(test)]
 mod profile_tests {
-    use super::{DoubleArrayTrie, DoubleArrayTrieChar, DoubleArrayTrieUleb128};
+    use super::{
+        DoubleArrayTrie, DoubleArrayTrieChar, DoubleArrayTrieUleb128, DoubleArrayTrieUtf8,
+    };
     use crate::{AtomSequence, Bytes, Dictionary, UnicodeScalar};
 
     #[test]
@@ -143,6 +215,16 @@ mod profile_tests {
         );
         assert!(dictionary.get_encoded_value(&[0x80]).is_err());
         assert_eq!(dictionary.visible_entries().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn utf8_wrapper_preserves_logical_entries() {
+        let dictionary = DoubleArrayTrieUtf8::<u16>::from_terms_with_values([("λ🎉", 9), ("a", 1)]);
+        assert!(dictionary.contains("λ🎉"));
+        assert_eq!(dictionary.get_value("λ🎉"), Some(9));
+        assert_eq!(dictionary.visible_entries().unwrap().len(), 2);
+        assert!(dictionary.contains_encoded("λ🎉".as_bytes()).unwrap());
+        assert!(dictionary.contains_encoded(&[0x80]).is_err());
     }
 
     #[test]
