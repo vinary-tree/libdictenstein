@@ -25,4 +25,14 @@ mod profile_tests {
         assert!(dictionary.contains_substring("λx"));
         assert!(dictionary.contains_substring("xy"));
     }
+
+    #[test]
+    fn unicode_profile_sequences_preserve_mapped_values() {
+        let dictionary =
+            ScdawgChar::<u16>::from_atom_sequences_with_values::<UnicodeScalar, _>([(
+                AtomSequence::<UnicodeScalar>::from_atoms(['λ', 'x']),
+                8,
+            )]);
+        assert_eq!(dictionary.get_value("λx"), Some(8));
+    }
 }

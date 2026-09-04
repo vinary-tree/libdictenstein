@@ -1336,9 +1336,11 @@ impl<V: DictionaryValue> PersistentScdawgChar<V> {
         P: crate::AtomProfile<Atom = char>,
         I: IntoIterator<Item = crate::AtomSequence<P>>,
     {
-        Self::from_terms(sequences.into_iter().map(|sequence| {
-            sequence.as_atoms().iter().copied().collect::<String>()
-        }))
+        Self::from_terms(
+            sequences
+                .into_iter()
+                .map(|sequence| sequence.as_atoms().iter().copied().collect::<String>()),
+        )
     }
 
     /// Build a value-bearing SCDAWG from Unicode-scalar profile sequences.

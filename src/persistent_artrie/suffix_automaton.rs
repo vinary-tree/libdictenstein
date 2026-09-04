@@ -1632,9 +1632,11 @@ impl<V: DictionaryValue> PersistentSuffixAutomatonChar<V> {
         P: crate::AtomProfile<Atom = char>,
         I: IntoIterator<Item = crate::AtomSequence<P>>,
     {
-        Self::from_texts(sequences.into_iter().map(|sequence| {
-            sequence.as_atoms().iter().copied().collect::<String>()
-        }))
+        Self::from_texts(
+            sequences
+                .into_iter()
+                .map(|sequence| sequence.as_atoms().iter().copied().collect::<String>()),
+        )
     }
 
     /// Build a value-bearing automaton from Unicode-scalar profile sequences.

@@ -1848,9 +1848,11 @@ impl<V: DictionaryValue> PersistentSuffixTreeChar<V> {
         P: crate::AtomProfile<Atom = char>,
         I: IntoIterator<Item = crate::AtomSequence<P>>,
     {
-        Self::from_texts(sequences.into_iter().map(|sequence| {
-            sequence.as_atoms().iter().copied().collect::<String>()
-        }))
+        Self::from_texts(
+            sequences
+                .into_iter()
+                .map(|sequence| sequence.as_atoms().iter().copied().collect::<String>()),
+        )
     }
 
     /// Build a value-bearing tree from Unicode-scalar profile sequences.

@@ -245,6 +245,20 @@ impl<V: DictionaryValue> ScdawgChar<V> {
         )
     }
 
+    /// Build a value-bearing SCDAWG from Unicode-scalar profile sequences.
+    pub fn from_atom_sequences_with_values<P, I>(entries: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = char>,
+        I: IntoIterator<Item = (crate::AtomSequence<P>, V)>,
+    {
+        Self::from_terms_with_values(entries.into_iter().map(|(sequence, value)| {
+            (
+                sequence.as_atoms().iter().copied().collect::<String>(),
+                value,
+            )
+        }))
+    }
+
     /// Create from an iterator of (term, value) pairs.
     pub fn from_terms_with_values<I, S>(terms: I) -> Self
     where

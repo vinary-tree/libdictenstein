@@ -30,19 +30,20 @@ mod profile_tests {
 
     #[test]
     fn byte_profile_constructor_preserves_membership_and_values() {
-        let dictionary = PathMapDictionary::<u16>::from_atom_sequences_with_values::<Bytes, _>([
-            (AtomSequence::<Bytes>::from_atoms([b'a', b'b']), 13),
-        ]);
+        let dictionary = PathMapDictionary::<u16>::from_atom_sequences_with_values::<Bytes, _>([(
+            AtomSequence::<Bytes>::from_atoms([b'a', b'b']),
+            13,
+        )]);
         assert!(dictionary.contains("ab"));
         assert_eq!(dictionary.get_value("ab"), Some(13));
     }
 
     #[test]
     fn unicode_profile_constructor_preserves_scalar_boundaries_and_values() {
-        let dictionary =
-            PathMapDictionaryChar::<u16>::from_atom_sequences_with_values::<UnicodeScalar, _>([
-                (AtomSequence::<UnicodeScalar>::from_atoms(['λ', 'x']), 21),
-            ]);
+        let dictionary = PathMapDictionaryChar::<u16>::from_atom_sequences_with_values::<
+            UnicodeScalar,
+            _,
+        >([(AtomSequence::<UnicodeScalar>::from_atoms(['λ', 'x']), 21)]);
         assert!(dictionary.contains("λx"));
         assert!(!dictionary.contains("lx"));
         assert_eq!(dictionary.get_value("λx"), Some(21));
