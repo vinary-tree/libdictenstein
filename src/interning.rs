@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use crate::dynamic_dawg::DynamicDawgU32;
+use crate::dynamic_dawg::{DynamicDawgGeneric, DynamicDawgU32};
 use crate::DictionaryValue;
 use crate::Uleb128;
 
@@ -250,6 +250,98 @@ pub struct InternedSequenceDictionary<K: Ord + Clone, V: DictionaryValue = ()> {
 /// only generation-bound fixed-width IDs.
 pub type InternedUlebSequenceDictionary<V = ()> = InternedSequenceDictionary<Uleb128, V>;
 
+/// Explicit `u64` carrier specialization for vocabularies larger than the
+/// default `u32` ID domain.  The vocabulary and generation semantics are
+/// identical to [`InternedSequenceDictionary`].
+#[derive(Clone, Debug)]
+pub struct InternedSequenceDictionaryU64<K: Ord + Clone, V: DictionaryValue = ()> {
+    vocabulary: Arc<Mutex<InternedVocabulary<K>>>,
+    id_dictionary: DynamicDawgGeneric<u64, V>,
+}
+
+impl<K: Ord + Clone, V: DictionaryValue> Default for InternedSequenceDictionaryU64<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionaryU64<K, V> {
+    /// Construct an empty coordinated dictionary with generation zero.
+    pub fn new() -> Self {
+        Self::with_generation(0)
+    }
+
+    /// Construct an empty coordinated dictionary with an explicit generation.
+    pub fn with_generation(generation: u64) -> Self {
+        Self {
+            vocabulary: Arc::new(Mutex::new(InternedVocabulary::with_generation(generation))),
+            id_dictionary: DynamicDawgGeneric::new(),
+        }
+    }
+
+    /// Borrow the vocabulary lock for identity and reverse lookup.
+    pub fn vocabulary(
+        &self,
+    ) -> std::sync::LockResult<std::sync::MutexGuard<'_, InternedVocabulary<K>>> {
+        self.vocabulary.lock()
+    }
+
+    /// Access the `u64` ID-native dictionary for hot-loop consumers.
+    #[inline]
+    pub fn id_dictionary(&self) -> &DynamicDawgGeneric<u64, V> {
+        &self.id_dictionary
+    }
+
+    /// Intern atoms and insert their sequence using the `u64` carrier.
+    pub fn insert<I>(&self, atoms: I, value: Option<V>) -> Result<bool, InterningError>
+    where
+        I: IntoIterator<Item = K>,
+    {
+        let mut vocabulary = self
+            .vocabulary
+            .lock()
+            .map_err(|_| InterningError::Poisoned)?;
+        let sequence = vocabulary.intern_sequence(atoms);
+        let ids = sequence.as_ids().to_vec();
+        Ok(match value {
+            Some(value) => self.id_dictionary.insert_units_with_value(&ids, value),
+            None => self.id_dictionary.insert_units(&ids),
+        })
+    }
+
+    /// Test an atom sequence without mutating the vocabulary.
+    pub fn contains<I>(&self, atoms: I) -> Result<bool, InterningError>
+    where
+        I: IntoIterator<Item = K>,
+    {
+        let vocabulary = self
+            .vocabulary
+            .lock()
+            .map_err(|_| InterningError::Poisoned)?;
+        let ids = atoms
+            .into_iter()
+            .map(|atom| vocabulary.id_of(&atom).ok_or(InterningError::UnknownKey))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(self.id_dictionary.contains_units(&ids))
+    }
+
+    /// Remove an atom sequence without changing vocabulary assignments.
+    pub fn remove<I>(&self, atoms: I) -> Result<bool, InterningError>
+    where
+        I: IntoIterator<Item = K>,
+    {
+        let vocabulary = self
+            .vocabulary
+            .lock()
+            .map_err(|_| InterningError::Poisoned)?;
+        let ids = atoms
+            .into_iter()
+            .map(|atom| vocabulary.id_of(&atom).ok_or(InterningError::UnknownKey))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(self.id_dictionary.remove_units(&ids))
+    }
+}
+
 impl<K: Ord + Clone, V: DictionaryValue> Default for InternedSequenceDictionary<K, V> {
     fn default() -> Self {
         Self::new()
@@ -352,7 +444,9 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
 
 #[cfg(test)]
 mod coordinated_tests {
-    use super::{InternedSequenceDictionary, InternedUlebSequenceDictionary};
+    use super::{
+        InternedSequenceDictionary, InternedSequenceDictionaryU64, InternedUlebSequenceDictionary,
+    };
     use crate::Uleb128;
 
     #[test]
@@ -385,6 +479,14 @@ mod coordinated_tests {
         let vocabulary = dictionary.vocabulary().unwrap();
         assert_eq!(vocabulary.len(), 2);
         assert_eq!(vocabulary.generation(), 3);
+    }
+
+    #[test]
+    fn explicit_u64_carrier_preserves_generation_binding() {
+        let dictionary = InternedSequenceDictionaryU64::<u32, u32>::with_generation(9);
+        assert!(dictionary.insert([u32::MAX], Some(17)).unwrap());
+        assert!(dictionary.contains([u32::MAX]).unwrap());
+        assert_eq!(dictionary.vocabulary().unwrap().generation(), 9);
     }
 }
 
