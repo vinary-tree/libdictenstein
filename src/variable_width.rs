@@ -46,8 +46,26 @@ pub struct Uleb128(Vec<u8>);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Uleb128Ref<'a>(&'a [u8]);
 
+/// Stable metadata identifying a variable-width wire profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct VariableWidthProfile {
+    /// Globally names the logical encoding family.
+    pub name: &'static str,
+    /// Evolves when canonical wire semantics change.
+    pub version: u16,
+}
+
+impl VariableWidthProfile {
+    /// Construct profile identity metadata.
+    pub const fn new(name: &'static str, version: u16) -> Self {
+        Self { name, version }
+    }
+}
+
 /// Codec contract for variable-width logical atoms.
 pub trait VariableWidthCodec {
+    /// Stable profile identity that must be persisted with dictionary images.
+    const PROFILE: VariableWidthProfile;
     /// Owned atom used when a value must outlive its source image.
     type Owned: Clone + Eq + Ord;
     /// Borrowed validated view used by zero-copy traversal.
@@ -67,7 +85,11 @@ pub trait VariableWidthCodec {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Uleb128Codec;
 
+/// Canonical ULEB128 profile identity.
+pub const ULEB128_PROFILE: VariableWidthProfile = VariableWidthProfile::new("uleb128", 1);
+
 impl VariableWidthCodec for Uleb128Codec {
+    const PROFILE: VariableWidthProfile = ULEB128_PROFILE;
     type Owned = Uleb128;
     type View<'a> = Uleb128Ref<'a>;
 
@@ -336,6 +358,13 @@ mod tests {
             Uleb128::from_payload_digits(&[128]),
             Err(Uleb128Error::InvalidPayload)
         );
+    }
+
+    #[test]
+    fn codec_exposes_stable_profile_identity() {
+        assert_eq!(Uleb128Codec::PROFILE, ULEB128_PROFILE);
+        assert_eq!(ULEB128_PROFILE.name, "uleb128");
+        assert_eq!(ULEB128_PROFILE.version, 1);
     }
 
     #[test]
