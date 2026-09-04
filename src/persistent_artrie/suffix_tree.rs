@@ -1852,6 +1852,20 @@ impl<V: DictionaryValue> PersistentSuffixTreeChar<V> {
             sequence.as_atoms().iter().copied().collect::<String>()
         }))
     }
+
+    /// Build a value-bearing tree from Unicode-scalar profile sequences.
+    pub fn from_atom_sequences_with_values<P, I>(entries: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = char>,
+        I: IntoIterator<Item = (crate::AtomSequence<P>, V)>,
+    {
+        let dict = Self::new();
+        for (sequence, value) in entries {
+            let text: String = sequence.as_atoms().iter().copied().collect();
+            dict.insert_with_value(&text, value);
+        }
+        dict
+    }
 }
 
 impl<V: DictionaryValue> PersistentSuffixTreeChar<V, MmapDiskManager> {
