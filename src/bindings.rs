@@ -87,6 +87,33 @@ pub enum BindingUnitDomain {
     U64 = 3,
 }
 
+/// Canonical profile metadata associated with a binding unit domain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BindingProfileDescriptor {
+    /// Built-in logical profile kind.
+    pub kind: crate::ProfileKind,
+    /// Canonical profile name and version.
+    pub identity: crate::VariableWidthProfile,
+    /// Fixed width in bytes, or `None` for variable-width profiles.
+    pub width_bytes: Option<usize>,
+}
+
+impl BindingUnitDomain {
+    /// Return stable profile metadata without relying on ABI or Rust names.
+    pub const fn profile_descriptor(self) -> BindingProfileDescriptor {
+        let kind = match self {
+            Self::Byte => crate::ProfileKind::Bytes,
+            Self::UnicodeScalar => crate::ProfileKind::UnicodeScalar,
+            Self::U64 => crate::ProfileKind::U64,
+        };
+        BindingProfileDescriptor {
+            kind,
+            identity: kind.identity(),
+            width_bytes: kind.width_bytes(),
+        }
+    }
+}
+
 /// One owned term emitted by a binding snapshot traversal.
 ///
 /// The variants preserve arbitrary byte and `u64` keys without coercing them
@@ -169,6 +196,12 @@ impl BindingEntries {
             VtUnitDomain::UnicodeScalar => BindingUnitDomain::UnicodeScalar,
             VtUnitDomain::U64 => BindingUnitDomain::U64,
         }
+    }
+
+    /// Return canonical profile metadata for this immutable traversal.
+    #[inline]
+    pub fn profile_descriptor(&self) -> BindingProfileDescriptor {
+        self.domain().profile_descriptor()
     }
 }
 
