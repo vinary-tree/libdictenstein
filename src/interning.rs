@@ -62,6 +62,12 @@ impl InternedSequence {
         self.generation
     }
 
+    /// Whether this sequence belongs to the supplied vocabulary generation.
+    #[inline]
+    pub const fn is_bound_to(&self, generation: u64) -> bool {
+        self.generation == generation
+    }
+
     /// Iterate IDs without allocation.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = InternedId> + '_ {
@@ -242,6 +248,7 @@ mod tests {
         ]);
         assert_eq!(sequence.as_ids(), &[first, second]);
         assert_eq!(sequence.generation(), 0);
+        assert!(sequence.is_bound_to(0));
         let resolved: Vec<_> = vocabulary.resolve_sequence(&sequence).unwrap().collect();
         assert_eq!(resolved.len(), 2);
         assert!(vocabulary.resolve_iter(&sequence).all(|value| value.is_some()));
