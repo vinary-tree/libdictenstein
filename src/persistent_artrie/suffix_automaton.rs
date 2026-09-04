@@ -1502,6 +1502,15 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomaton<V, S> {
         self.index.insert(text, Some(value))
     }
 
+    /// Read a mapped value for a Unicode-scalar profile sequence.
+    pub fn get_atom_sequence_value<P>(&self, sequence: &crate::AtomSequence<P>) -> Option<V>
+    where
+        P: crate::AtomProfile<Atom = char>,
+    {
+        let text: String = sequence.as_atoms().iter().collect();
+        self.index.get_value(&text)
+    }
+
     pub fn insert(&self, text: &str) -> bool {
         self.try_insert(text).unwrap_or_else(|error| {
             log::warn!("PersistentSuffixAutomaton::insert failed: {error}");
@@ -2401,6 +2410,16 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    #[test]
+    fn unicode_profile_value_lookup_uses_logical_sequence() {
+        let dictionary = PersistentSuffixAutomatonChar::<u16>::from_atom_sequences_with_values::<
+            crate::UnicodeScalar,
+            _,
+        >([(crate::AtomSequence::from_atoms(['λ', 'x']), 42)]);
+        let sequence = crate::AtomSequence::<crate::UnicodeScalar>::from_atoms(['λ', 'x']);
+        assert_eq!(dictionary.get_atom_sequence_value(&sequence), Some(42));
+    }
 
     fn assert_direct_cursor_matches_owned<N>(root: N)
     where
