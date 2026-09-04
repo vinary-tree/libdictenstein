@@ -1762,6 +1762,15 @@ impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU
         self.get_sequence_value(&sequence)
     }
 
+    /// Read a mapped value for a `u64` atom-profile sequence directly.
+    #[inline]
+    pub fn get_atom_sequence_value<P>(&self, sequence: &crate::AtomSequence<P>) -> Option<V>
+    where
+        P: crate::AtomProfile<Atom = u64>,
+    {
+        self.get_sequence_value(sequence.as_atoms())
+    }
+
     pub fn remove(&self, term: &str) -> bool {
         let sequence = <u64 as CharUnit>::from_str(term);
         self.remove_sequence(&sequence)
@@ -2093,6 +2102,8 @@ mod tests {
             17,
         )]);
         assert_eq!(valued.get_sequence_value(&[8]), Some(17));
+        let sequence = AtomSequence::<U64>::from_atoms([8]);
+        assert_eq!(valued.get_atom_sequence_value(&sequence), Some(17));
     }
 
     fn disk_ptr(index: usize) -> u64 {
