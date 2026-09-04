@@ -325,10 +325,25 @@ impl<V: crate::DictionaryValue> DynamicDawgUleb128<V> {
         self.inner.contains_units(&sequence.to_encoded())
     }
 
+    /// Test a complete canonical encoded sequence without first allocating an
+    /// owned [`Uleb128Sequence`].  Validation is kept at this boundary so
+    /// continuation bytes can never become visible DAWG transitions.
+    pub fn contains_encoded(&self, encoded: &[u8]) -> Result<bool, crate::Uleb128Error> {
+        crate::Uleb128Sequence::from_encoded(encoded)?;
+        Ok(self.inner.contains_units(encoded))
+    }
+
     /// Read a mapped value for one complete ULEB128 sequence.
     #[inline]
     pub fn get_value(&self, sequence: &crate::Uleb128Sequence) -> Option<V> {
         self.inner.get_units_value(&sequence.to_encoded())
+    }
+
+    /// Read a value for a complete canonical encoded sequence without
+    /// materializing its decoded atoms.
+    pub fn get_encoded_value(&self, encoded: &[u8]) -> Result<Option<V>, crate::Uleb128Error> {
+        crate::Uleb128Sequence::from_encoded(encoded)?;
+        Ok(self.inner.get_units_value(encoded))
     }
 
     /// Remove one complete ULEB128 sequence.
@@ -396,6 +411,15 @@ mod generic_tests {
         assert!(dictionary.node_count() > 0);
         assert!(dictionary.clear());
         assert_eq!(dictionary.term_count(), 0);
+    }
+
+    #[test]
+    fn encoded_lookup_rejects_malformed_and_preserves_zero_copy_boundary() {
+        let atom = crate::Uleb128::from_u64(624_485);
+        let sequence = crate::Uleb128Sequence::from_atoms([atom]);
+        let dictionary = super::DynamicDawgUleb128::<u16>::from_sequences([sequence.clone()]);
+        assert_eq!(dictionary.contains_encoded(sequence.to_encoded().as_slice()), Ok(true));
+        assert!(dictionary.contains_encoded(&[0x80]).is_err());
     }
 
     #[test]

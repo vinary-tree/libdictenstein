@@ -51,6 +51,18 @@ impl<V: crate::DictionaryValue> PathMapDictionaryUleb128<V> {
         dictionary
     }
 
+    /// Build an unvalued adapter from complete canonical ULEB sequences.
+    pub fn from_sequences<I>(sequences: I) -> Self
+    where
+        I: IntoIterator<Item = crate::Uleb128Sequence>,
+    {
+        let dictionary = Self::new();
+        for sequence in sequences {
+            dictionary.insert(&sequence);
+        }
+        dictionary
+    }
+
     /// Insert one complete ULEB128 sequence.
     #[inline]
     pub fn insert(&self, sequence: &crate::Uleb128Sequence) -> bool {
@@ -70,10 +82,24 @@ impl<V: crate::DictionaryValue> PathMapDictionaryUleb128<V> {
         self.inner.contains_bytes(&sequence.to_encoded())
     }
 
+    /// Test a complete canonical encoded sequence without materializing its
+    /// decoded atoms.  Malformed or non-canonical images are rejected.
+    pub fn contains_encoded(&self, encoded: &[u8]) -> Result<bool, crate::Uleb128Error> {
+        crate::Uleb128Sequence::from_encoded(encoded)?;
+        Ok(self.inner.contains_bytes(encoded))
+    }
+
     /// Read a mapped value for one complete ULEB128 sequence.
     #[inline]
     pub fn get_value(&self, sequence: &crate::Uleb128Sequence) -> Option<V> {
         self.inner.get_bytes_value(&sequence.to_encoded())
+    }
+
+    /// Read a value for a complete canonical encoded sequence without
+    /// materializing its decoded atoms.
+    pub fn get_encoded_value(&self, encoded: &[u8]) -> Result<Option<V>, crate::Uleb128Error> {
+        crate::Uleb128Sequence::from_encoded(encoded)?;
+        Ok(self.inner.get_bytes_value(encoded))
     }
 
     /// Remove one complete ULEB128 sequence.
@@ -106,6 +132,14 @@ mod profile_tests {
         assert_eq!(dictionary.get_value(&sequence), Some(19));
         assert!(dictionary.remove(&sequence));
         assert!(!dictionary.contains(&sequence));
+    }
+
+    #[test]
+    fn uleb_adapter_builds_unvalued_sequences_and_rejects_malformed_images() {
+        let sequence = crate::Uleb128Sequence::from_atoms([crate::Uleb128::from_u64(9)]);
+        let dictionary = PathMapDictionaryUleb128::<()>::from_sequences([sequence.clone()]);
+        assert_eq!(dictionary.contains_encoded(sequence.to_encoded().as_slice()), Ok(true));
+        assert!(dictionary.contains_encoded(&[0x80]).is_err());
     }
 
     #[test]

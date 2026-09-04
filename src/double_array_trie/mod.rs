@@ -64,10 +64,24 @@ impl<V: crate::DictionaryValue> DoubleArrayTrieUleb128<V> {
         self.inner.contains_bytes(&sequence.to_encoded())
     }
 
+    /// Test a complete canonical encoded sequence without materializing its
+    /// decoded atoms.  Malformed or non-canonical images are rejected.
+    pub fn contains_encoded(&self, encoded: &[u8]) -> Result<bool, crate::Uleb128Error> {
+        crate::Uleb128Sequence::from_encoded(encoded)?;
+        Ok(self.inner.contains_bytes(encoded))
+    }
+
     /// Read a mapped value for one complete ULEB128 sequence.
     #[inline]
     pub fn get_value(&self, sequence: &crate::Uleb128Sequence) -> Option<V> {
         self.inner.get_bytes_value(&sequence.to_encoded())
+    }
+
+    /// Read a value for a complete canonical encoded sequence without
+    /// materializing its decoded atoms.
+    pub fn get_encoded_value(&self, encoded: &[u8]) -> Result<Option<V>, crate::Uleb128Error> {
+        crate::Uleb128Sequence::from_encoded(encoded)?;
+        Ok(self.inner.get_bytes_value(encoded))
     }
 
     /// Number of visible logical sequences.
@@ -106,6 +120,8 @@ mod profile_tests {
         assert!(dictionary.contains(&sequence));
         assert_eq!(dictionary.get_value(&sequence), Some(19));
         assert_eq!(dictionary.term_count(), 1);
+        assert_eq!(dictionary.contains_encoded(sequence.to_encoded().as_slice()), Ok(true));
+        assert!(dictionary.get_encoded_value(&[0x80]).is_err());
     }
 
     #[test]
