@@ -139,7 +139,7 @@ impl<V: crate::DictionaryValue> DoubleArrayTrieUleb128<V> {
     /// Test a complete canonical encoded sequence without materializing its
     /// decoded atoms.  Malformed or non-canonical images are rejected.
     pub fn contains_encoded(&self, encoded: &[u8]) -> Result<bool, crate::Uleb128Error> {
-        crate::Uleb128Sequence::from_encoded(encoded)?;
+        crate::validate_uleb128_sequence(encoded)?;
         Ok(self.inner.contains_bytes(encoded))
     }
 
@@ -152,7 +152,7 @@ impl<V: crate::DictionaryValue> DoubleArrayTrieUleb128<V> {
     /// Read a value for a complete canonical encoded sequence without
     /// materializing its decoded atoms.
     pub fn get_encoded_value(&self, encoded: &[u8]) -> Result<Option<V>, crate::Uleb128Error> {
-        crate::Uleb128Sequence::from_encoded(encoded)?;
+        crate::validate_uleb128_sequence(encoded)?;
         Ok(self.inner.get_bytes_value(encoded))
     }
 

@@ -415,6 +415,15 @@ fn validate(bytes: &[u8]) -> Result<(), Uleb128Error> {
     Ok(())
 }
 
+/// Validate a complete concatenation of canonical ULEB128 atoms without
+/// allocating or decoding them into machine-width integers.
+pub fn validate_uleb128_sequence(bytes: &[u8]) -> Result<(), Uleb128Error> {
+    for atom in Uleb128Ref::stream(bytes) {
+        atom?;
+    }
+    Ok(())
+}
+
 /// Owned sequence generic over any variable-width codec.
 #[derive(Clone, Debug)]
 pub struct VariableAtomSequence<C: VariableWidthCodec> {
@@ -556,6 +565,19 @@ mod tests {
         let view = Uleb128Ref::new(&wire).unwrap();
         assert_eq!(view.as_bytes().as_ptr(), wire.as_ptr());
         assert_eq!(view.to_owned().as_bytes(), &wire);
+    }
+
+    #[test]
+    fn sequence_validation_is_zero_copy_and_boundary_aware() {
+        assert!(validate_uleb128_sequence(&[0x80, 0x01, 0x00]).is_ok());
+        assert_eq!(
+            validate_uleb128_sequence(&[0x80]),
+            Err(Uleb128Error::Unterminated)
+        );
+        assert_eq!(
+            validate_uleb128_sequence(&[0x80, 0x00]),
+            Err(Uleb128Error::NonCanonical)
+        );
     }
 
     #[test]

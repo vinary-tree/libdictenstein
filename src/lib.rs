@@ -190,8 +190,8 @@ pub use substring::{
 };
 pub use value::DictionaryValue;
 pub use variable_width::{
-    Uleb128, Uleb128Codec, Uleb128Error, Uleb128Ref, Uleb128Sequence, Uleb128Stream,
-    VariableWidthCodec, VariableWidthProfile, ULEB128_PROFILE,
+    validate_uleb128_sequence, Uleb128, Uleb128Codec, Uleb128Error, Uleb128Ref, Uleb128Sequence,
+    Uleb128Stream, VariableWidthCodec, VariableWidthProfile, ULEB128_PROFILE,
 };
 pub use zipper::{DictZipper, ValuedDictZipper, ZipperTraversalNode};
 
