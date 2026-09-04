@@ -1042,6 +1042,7 @@ mod tests {
             assert!(dictionary.contains_encoded(&encoded).unwrap());
             let entries = dictionary.visible_entries().unwrap();
             assert_eq!(entries, vec![(sequence.clone(), None)]);
+            assert!(dictionary.contains_encoded(&[0x80]).is_err());
         }
         assert_eq!(
             Uleb128Backend::DynamicDawg.to_string(),
