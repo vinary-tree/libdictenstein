@@ -210,6 +210,15 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveMap<V> {
         }))
     }
 
+    /// Read a mapped value for a Unicode-scalar profile sequence.
+    pub fn get_atom_sequence_value<P>(&self, sequence: &crate::AtomSequence<P>) -> Option<V>
+    where
+        P: crate::AtomProfile<Atom = char>,
+    {
+        let term: String = sequence.as_atoms().iter().collect();
+        self.get_value(&term)
+    }
+
     /// Insert a term-value pair.
     ///
     /// # Panics
@@ -667,6 +676,8 @@ mod tests {
             BijectiveDictionary::get_term(&bimap, &7).as_deref(),
             Some("λx")
         );
+        let sequence = AtomSequence::<UnicodeScalar>::from_atoms(['λ', 'x']);
+        assert_eq!(bimap.get_atom_sequence_value(&sequence), Some(7));
     }
 
     #[test]
