@@ -30,6 +30,8 @@ mod tests {
         assert!(dictionary.contains(&first));
         assert_eq!(dictionary.get_value(&first), Some(7));
         assert_eq!(dictionary.term_count(), 2);
+        assert_eq!(dictionary.try_term_count().unwrap(), 2);
+        assert!(!dictionary.try_is_empty().unwrap());
         let entries = dictionary.visible_entries().unwrap();
         assert_eq!(entries.len(), 2);
         assert!(dictionary.contains_encoded(&first.to_encoded()).unwrap());
@@ -110,10 +112,26 @@ impl<V: DictionaryValue> PersistentARTrieUleb128<V> {
         self.inner.len().unwrap_or(0)
     }
 
+    /// Count complete logical sequences with an explicit traversal result.
+    ///
+    /// Unlike the compatibility [`term_count`](Self::term_count) accessor,
+    /// this method never converts an unavailable/corrupt traversal into zero.
+    pub fn try_term_count(&self) -> crate::persistent_artrie::Result<usize> {
+        Ok(self
+            .inner
+            .iter_prefix_with_arena(b"")?
+            .map_or(0, |entries| entries.len()))
+    }
+
     /// Whether the logical dictionary contains no complete sequences.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.term_count() == 0
+    }
+
+    /// Checked emptiness query; storage failures remain errors.
+    pub fn try_is_empty(&self) -> crate::persistent_artrie::Result<bool> {
+        Ok(self.try_term_count()? == 0)
     }
 
     /// Checked insertion preserving persistence failures.

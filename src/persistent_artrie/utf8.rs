@@ -22,10 +22,13 @@ mod tests {
         assert!(dictionary.contains("λ🎉"));
         assert_eq!(dictionary.get_value("λ🎉"), Some(9));
         assert!(dictionary.contains_encoded("λ🎉".as_bytes()).unwrap());
+        assert_eq!(dictionary.try_term_count().unwrap(), 1);
+        assert!(!dictionary.try_is_empty().unwrap());
         assert!(dictionary.contains_encoded(&[0x80]).is_err());
         assert_eq!(dictionary.visible_entries().unwrap().len(), 1);
         assert!(dictionary.remove_encoded("λ🎉".as_bytes()).unwrap());
         assert!(dictionary.is_empty());
+        assert!(dictionary.try_is_empty().unwrap());
     }
 }
 
@@ -102,10 +105,26 @@ impl<V: DictionaryValue> PersistentARTrieUtf8<V> {
         self.inner.len().unwrap_or(0)
     }
 
+    /// Count complete UTF-8 terms with an explicit traversal result.
+    ///
+    /// Unlike the compatibility [`term_count`](Self::term_count) accessor,
+    /// this method never converts an unavailable/corrupt traversal into zero.
+    pub fn try_term_count(&self) -> crate::persistent_artrie::Result<usize> {
+        Ok(self
+            .inner
+            .iter_prefix_with_arena(b"")?
+            .map_or(0, |entries| entries.len()))
+    }
+
     /// Whether no complete UTF-8 terms are stored.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.term_count() == 0
+    }
+
+    /// Checked emptiness query; storage failures remain errors.
+    pub fn try_is_empty(&self) -> crate::persistent_artrie::Result<bool> {
+        Ok(self.try_term_count()? == 0)
     }
 
     /// Checked insertion preserving persistence failures.
