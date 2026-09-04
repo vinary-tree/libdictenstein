@@ -46,6 +46,47 @@ pub struct Uleb128(Vec<u8>);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Uleb128Ref<'a>(&'a [u8]);
 
+/// Codec contract for variable-width logical atoms.
+pub trait VariableWidthCodec {
+    /// Owned atom used when a value must outlive its source image.
+    type Owned: Clone + Eq + Ord;
+    /// Borrowed validated view used by zero-copy traversal.
+    type View<'a>: Copy
+    where
+        Self: 'a;
+
+    /// Validate and borrow one complete canonical atom.
+    fn borrow<'a>(bytes: &'a [u8]) -> Result<Self::View<'a>, Uleb128Error>;
+    /// Encode an owned atom into canonical wire bytes.
+    fn encode(value: &Self::Owned) -> Vec<u8>;
+    /// Materialise an owned atom from canonical wire bytes.
+    fn decode(bytes: &[u8]) -> Result<Self::Owned, Uleb128Error>;
+}
+
+/// ULEB128 implementation of [`VariableWidthCodec`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Uleb128Codec;
+
+impl VariableWidthCodec for Uleb128Codec {
+    type Owned = Uleb128;
+    type View<'a> = Uleb128Ref<'a>;
+
+    #[inline]
+    fn borrow<'a>(bytes: &'a [u8]) -> Result<Self::View<'a>, Uleb128Error> {
+        Uleb128Ref::new(bytes)
+    }
+
+    #[inline]
+    fn encode(value: &Self::Owned) -> Vec<u8> {
+        value.as_bytes().to_vec()
+    }
+
+    #[inline]
+    fn decode(bytes: &[u8]) -> Result<Self::Owned, Uleb128Error> {
+        Uleb128::from_bytes(bytes)
+    }
+}
+
 impl Default for Uleb128 {
     fn default() -> Self {
         Self(vec![0])
