@@ -221,6 +221,12 @@ impl Uleb128 {
         &self.0
     }
 
+    /// Iterate over payload digits without allocating or decoding.
+    #[inline]
+    pub fn payload_digits(&self) -> impl Iterator<Item = u8> + '_ {
+        self.0.iter().map(|byte| byte & 0x7f)
+    }
+
     /// Decode to a little-endian base-256 magnitude.
     pub fn to_le_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -258,6 +264,20 @@ impl Uleb128 {
                 .cmp(other.0.iter().rev().map(|b| b & 0x7f)),
             order => order,
         }
+    }
+}
+
+impl AsRef<[u8]> for Uleb128 {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+impl<'a> AsRef<[u8]> for Uleb128Ref<'a> {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self.0
     }
 }
 
@@ -405,6 +425,14 @@ mod tests {
         }
         let wide = Uleb128::from_payload_digits(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 2]).unwrap();
         assert_eq!(wide.to_u64(), None);
+    }
+
+    #[test]
+    fn known_uleb_encoding_and_zero_copy_payload_iteration() {
+        let value = Uleb128::from_u64(624_485);
+        assert_eq!(value.as_bytes(), &[0xe5, 0x8e, 0x26]);
+        assert_eq!(value.payload_digits().collect::<Vec<_>>(), vec![0x65, 0x0e, 0x26]);
+        assert_eq!(AsRef::<[u8]>::as_ref(&value), value.as_bytes());
     }
 
     #[test]
