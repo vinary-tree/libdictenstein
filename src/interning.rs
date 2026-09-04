@@ -382,6 +382,19 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionaryU64<K, V> {
         Ok(self.id_dictionary.contains_units(sequence.as_ids()))
     }
 
+    /// Read a mapped value for a generation-bound ID sequence.
+    pub fn get_id_sequence_value(
+        &self,
+        sequence: &InternedSequence,
+    ) -> Result<Option<V>, InterningError> {
+        let vocabulary = self
+            .vocabulary
+            .lock()
+            .map_err(|_| InterningError::Poisoned)?;
+        vocabulary.validate_sequence(sequence)?;
+        Ok(self.id_dictionary.get_units_value(sequence.as_ids()))
+    }
+
     /// Intern atoms and insert their sequence using the `u64` carrier.
     pub fn insert<I>(&self, atoms: I, value: Option<V>) -> Result<bool, InterningError>
     where
@@ -413,6 +426,22 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionaryU64<K, V> {
             .map(|atom| vocabulary.id_of(&atom).ok_or(InterningError::UnknownKey))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(self.id_dictionary.contains_units(&ids))
+    }
+
+    /// Read a mapped value for an already-interned atom sequence.
+    pub fn get_value<I>(&self, atoms: I) -> Result<Option<V>, InterningError>
+    where
+        I: IntoIterator<Item = K>,
+    {
+        let vocabulary = self
+            .vocabulary
+            .lock()
+            .map_err(|_| InterningError::Poisoned)?;
+        let ids = atoms
+            .into_iter()
+            .map(|atom| vocabulary.id_of(&atom).ok_or(InterningError::UnknownKey))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(self.id_dictionary.get_units_value(&ids))
     }
 
     /// Remove an atom sequence without changing vocabulary assignments.
@@ -500,6 +529,25 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
         Ok(self.id_dictionary.contains_units(&ids))
     }
 
+    /// Read a mapped value for a generation-bound ID sequence.
+    pub fn get_id_sequence_value(
+        &self,
+        sequence: &InternedSequence,
+    ) -> Result<Option<V>, InterningError> {
+        let vocabulary = self
+            .vocabulary
+            .lock()
+            .map_err(|_| InterningError::Poisoned)?;
+        vocabulary.validate_sequence(sequence)?;
+        let ids = sequence
+            .as_ids()
+            .iter()
+            .copied()
+            .map(|id| u32::try_from(id).map_err(|_| InterningError::UnknownId(id)))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(self.id_dictionary.get_units_value(&ids))
+    }
+
     /// Intern atoms and insert their ID sequence atomically with respect to
     /// other vocabulary mutations.
     pub fn insert<I>(&self, atoms: I, value: Option<V>) -> Result<bool, InterningError>
@@ -541,6 +589,27 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
         Ok(self.id_dictionary.contains_units(&ids))
     }
 
+    /// Read a mapped value for an already-interned atom sequence.
+    pub fn get_value<I>(&self, atoms: I) -> Result<Option<V>, InterningError>
+    where
+        I: IntoIterator<Item = K>,
+    {
+        let vocabulary = self
+            .vocabulary
+            .lock()
+            .map_err(|_| InterningError::Poisoned)?;
+        let ids = atoms
+            .into_iter()
+            .map(|atom| {
+                vocabulary
+                    .id_of(&atom)
+                    .ok_or(InterningError::UnknownKey)
+                    .and_then(|id| u32::try_from(id).map_err(|_| InterningError::UnknownId(id)))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(self.id_dictionary.get_units_value(&ids))
+    }
+
     /// Remove an atom sequence without changing vocabulary assignments.
     pub fn remove<I>(&self, atoms: I) -> Result<bool, InterningError>
     where
@@ -572,8 +641,10 @@ mod coordinated_tests {
         let dictionary = InternedSequenceDictionary::<u32, u32>::with_generation(7);
         assert!(dictionary.insert([10, 20], Some(99)).unwrap());
         assert!(dictionary.contains([10, 20]).unwrap());
+        assert_eq!(dictionary.get_value([10, 20]).unwrap(), Some(99));
         let ids = InternedSequence::from_ids_with_generation(7, [0, 1]);
         assert!(dictionary.contains_id_sequence(&ids).unwrap());
+        assert_eq!(dictionary.get_id_sequence_value(&ids).unwrap(), Some(99));
         assert_eq!(dictionary.vocabulary().unwrap().generation(), 7);
         assert_eq!(dictionary.generation(), Ok(7));
         assert_eq!(dictionary.id_dictionary().term_count(), 1);
@@ -611,8 +682,10 @@ mod coordinated_tests {
         let dictionary = InternedSequenceDictionaryU64::<u32, u32>::with_generation(9);
         assert!(dictionary.insert([u32::MAX], Some(17)).unwrap());
         assert!(dictionary.contains([u32::MAX]).unwrap());
+        assert_eq!(dictionary.get_value([u32::MAX]).unwrap(), Some(17));
         let ids = InternedSequence::from_ids_with_generation(9, [0]);
         assert!(dictionary.contains_id_sequence(&ids).unwrap());
+        assert_eq!(dictionary.get_id_sequence_value(&ids).unwrap(), Some(17));
         assert_eq!(dictionary.vocabulary().unwrap().generation(), 9);
         assert_eq!(dictionary.generation(), Ok(9));
     }
