@@ -46,6 +46,30 @@ impl<V: DictionaryValue> Default for PersistentARTrieUleb128<V> {
 }
 
 impl<V: DictionaryValue> PersistentARTrieUleb128<V> {
+    /// Construct an in-memory adapter from complete ULEB sequences.
+    pub fn from_sequences<I>(sequences: I) -> Self
+    where
+        I: IntoIterator<Item = Uleb128Sequence>,
+    {
+        let dictionary = Self::new();
+        for sequence in sequences {
+            dictionary.insert(&sequence);
+        }
+        dictionary
+    }
+
+    /// Construct an in-memory adapter from complete sequences and values.
+    pub fn from_sequences_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (Uleb128Sequence, V)>,
+    {
+        let dictionary = Self::new();
+        for (sequence, value) in entries {
+            dictionary.insert_with_value(&sequence, value);
+        }
+        dictionary
+    }
+
     /// Create a fresh persistent ULEB dictionary at `path`.
     pub fn create<P: AsRef<std::path::Path>>(path: P) -> crate::persistent_artrie::Result<Self> {
         Ok(Self::from_inner(PersistentARTrie::create(path)?))

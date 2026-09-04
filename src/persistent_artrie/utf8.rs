@@ -36,6 +36,32 @@ impl<V: DictionaryValue> Default for PersistentARTrieUtf8<V> {
 }
 
 impl<V: DictionaryValue> PersistentARTrieUtf8<V> {
+    /// Construct an in-memory adapter from UTF-8 terms.
+    pub fn from_terms<I, T>(terms: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: AsRef<str>,
+    {
+        let dictionary = Self::new();
+        for term in terms {
+            dictionary.insert(term.as_ref());
+        }
+        dictionary
+    }
+
+    /// Construct an in-memory adapter from UTF-8 terms and values.
+    pub fn from_terms_with_values<I, T>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (T, V)>,
+        T: AsRef<str>,
+    {
+        let dictionary = Self::new();
+        for (term, value) in entries {
+            dictionary.insert_with_value(term.as_ref(), value);
+        }
+        dictionary
+    }
+
     /// Create a fresh persistent UTF-8 dictionary at `path`.
     pub fn create<P: AsRef<std::path::Path>>(path: P) -> crate::persistent_artrie::Result<Self> {
         Ok(Self::from_inner(PersistentARTrie::create(path)?))
