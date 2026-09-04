@@ -39,6 +39,12 @@ impl std::error::Error for Uleb128Error {}
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct Uleb128(Vec<u8>);
 
+impl Default for Uleb128 {
+    fn default() -> Self {
+        Self(vec![0])
+    }
+}
+
 impl fmt::Debug for Uleb128 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Uleb128").field(&self.0).finish()
