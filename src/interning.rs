@@ -355,6 +355,14 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionaryU64<K, V> {
         self.vocabulary.lock()
     }
 
+    /// Read the generation identity without exposing vocabulary storage.
+    pub fn generation(&self) -> Result<u64, InterningError> {
+        self.vocabulary
+            .lock()
+            .map(|vocabulary| vocabulary.generation())
+            .map_err(|_| InterningError::Poisoned)
+    }
+
     /// Access the `u64` ID-native dictionary for hot-loop consumers.
     #[inline]
     pub fn id_dictionary(&self) -> InternedIdDictionaryView<'_, u64, V> {
@@ -442,6 +450,14 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
         self.vocabulary.lock()
     }
 
+    /// Read the generation identity without exposing vocabulary storage.
+    pub fn generation(&self) -> Result<u64, InterningError> {
+        self.vocabulary
+            .lock()
+            .map(|vocabulary| vocabulary.generation())
+            .map_err(|_| InterningError::Poisoned)
+    }
+
     /// Access the ID-native dictionary for hot-loop consumers.
     ///
     /// Its sequences are meaningful only with this instance's vocabulary and
@@ -524,6 +540,7 @@ mod coordinated_tests {
         assert!(dictionary.insert([10, 20], Some(99)).unwrap());
         assert!(dictionary.contains([10, 20]).unwrap());
         assert_eq!(dictionary.vocabulary().unwrap().generation(), 7);
+        assert_eq!(dictionary.generation(), Ok(7));
         assert_eq!(dictionary.id_dictionary().term_count(), 1);
         assert_eq!(
             dictionary.id_dictionary().visible_entries(),
@@ -560,6 +577,7 @@ mod coordinated_tests {
         assert!(dictionary.insert([u32::MAX], Some(17)).unwrap());
         assert!(dictionary.contains([u32::MAX]).unwrap());
         assert_eq!(dictionary.vocabulary().unwrap().generation(), 9);
+        assert_eq!(dictionary.generation(), Ok(9));
     }
 }
 
