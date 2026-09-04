@@ -86,6 +86,17 @@ impl<V: DictionaryValue> PersistentARTrieUleb128<V> {
         self.inner.len().unwrap_or(0)
     }
 
+    /// Whether the logical dictionary contains no complete sequences.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.term_count() == 0
+    }
+
+    /// Checked insertion preserving persistence failures.
+    pub fn try_insert(&self, sequence: &Uleb128Sequence) -> crate::persistent_artrie::Result<bool> {
+        self.inner.try_insert_bytes(&sequence.to_encoded())
+    }
+
     /// Insert a complete canonical sequence.
     #[inline]
     pub fn insert(&self, sequence: &Uleb128Sequence) -> bool {
@@ -97,6 +108,16 @@ impl<V: DictionaryValue> PersistentARTrieUleb128<V> {
     pub fn insert_with_value(&self, sequence: &Uleb128Sequence, value: V) -> bool {
         self.inner
             .insert_with_value_bytes(&sequence.to_encoded(), value)
+    }
+
+    /// Checked value insertion preserving persistence failures.
+    pub fn try_insert_with_value(
+        &self,
+        sequence: &Uleb128Sequence,
+        value: V,
+    ) -> crate::persistent_artrie::Result<bool> {
+        self.inner
+            .try_insert_with_value_bytes(&sequence.to_encoded(), value)
     }
 
     /// Test membership of a complete sequence.
@@ -115,6 +136,11 @@ impl<V: DictionaryValue> PersistentARTrieUleb128<V> {
     #[inline]
     pub fn remove(&self, sequence: &Uleb128Sequence) -> bool {
         self.inner.remove_bytes(&sequence.to_encoded())
+    }
+
+    /// Checked removal preserving persistence failures.
+    pub fn try_remove(&self, sequence: &Uleb128Sequence) -> crate::persistent_artrie::Result<bool> {
+        self.inner.try_remove_bytes(&sequence.to_encoded())
     }
 
     /// Validate and query an already encoded sequence without decoding it.
