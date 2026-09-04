@@ -165,6 +165,7 @@ pub use collection::{
     ValuedZipperCollection, ZipperCollection, ZipperEntryIterator, ZipperTermIterator,
 };
 pub use dynamic_dawg::core::{DawgCore, DawgNode};
+pub use dynamic_dawg::{DynamicDawgGeneric, DynamicDawgProfile};
 pub use iterator::{DictionaryIterator, DictionaryTermIterator};
 pub use node_signature::NodeSignature;
 pub use substring::{

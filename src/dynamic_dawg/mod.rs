@@ -25,6 +25,84 @@ pub use u64::{DynamicDawgU64, DynamicDawgU64Node};
 pub use u64_zipper::DynamicDawgU64Zipper;
 pub use zipper::DynamicDawgZipper;
 
+/// Public unit-generic dynamic DAWG surface.
+///
+/// The legacy string-oriented aliases remain unchanged; this type exposes the
+/// shared lock-free core directly for callers that already own logical units.
+#[derive(Clone, Debug)]
+pub struct DynamicDawgGeneric<U: crate::CharUnit, V: crate::DictionaryValue = ()> {
+    inner: std::sync::Arc<lockfree::LockFreeDawg<U, V>>,
+}
+
+impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
+    /// Construct an empty generic DAWG.
+    pub fn new() -> Self {
+        Self {
+            inner: std::sync::Arc::new(lockfree::LockFreeDawg::new()),
+        }
+    }
+
+    /// Insert one logical-unit sequence.
+    #[inline]
+    pub fn insert_units(&self, units: &[U]) -> bool {
+        self.inner.insert_units(units)
+    }
+
+    /// Insert one sequence with an associated value.
+    #[inline]
+    pub fn insert_units_with_value(&self, units: &[U], value: V) -> bool {
+        self.inner.insert_units_with_value(units, value)
+    }
+
+    /// Test membership using logical units.
+    #[inline]
+    pub fn contains_units(&self, units: &[U]) -> bool {
+        self.inner.contains_units(units)
+    }
+
+    /// Remove a logical-unit sequence.
+    #[inline]
+    pub fn remove_units(&self, units: &[U]) -> bool {
+        self.inner.remove_units(units)
+    }
+
+    /// Number of visible terminal sequences.
+    #[inline]
+    pub fn term_count(&self) -> usize {
+        self.inner.term_count()
+    }
+
+    /// Compact/minimize the current immutable graph.
+    #[inline]
+    pub fn compact(&self) -> usize {
+        self.inner.compact()
+    }
+}
+
+impl<U: crate::CharUnit, V: crate::DictionaryValue> Default for DynamicDawgGeneric<U, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Alias emphasizing that this wrapper accepts profile-defined units.
+pub type DynamicDawgProfile<U, V = ()> = DynamicDawgGeneric<U, V>;
+
+#[cfg(test)]
+mod generic_tests {
+    use super::DynamicDawgGeneric;
+
+    #[test]
+    fn generic_surface_uses_logical_units_directly() {
+        let dictionary = DynamicDawgGeneric::<u32>::new();
+        assert!(dictionary.insert_units(&[1, 2, 3]));
+        assert!(dictionary.contains_units(&[1, 2, 3]));
+        assert!(!dictionary.contains_units(&[1, 2]));
+        assert!(dictionary.remove_units(&[1, 2, 3]));
+        assert!(!dictionary.contains_units(&[1, 2, 3]));
+    }
+}
+
 /// Opaque provenance-bearing cursor into one immutable DynamicDAWG revision.
 ///
 /// This type is deliberately distinct from [`crate::DenseSnapshotCursor`]. It

@@ -219,6 +219,47 @@ impl CharUnit for u64 {
     }
 }
 
+/// 32-bit unit implementation for native U32 token sequences.
+impl CharUnit for u32 {
+    #[inline]
+    fn from_str(s: &str) -> Vec<Self> {
+        s.as_bytes()
+            .chunks(4)
+            .map(|chunk| {
+                let mut arr = [0u8; 4];
+                arr[..chunk.len()].copy_from_slice(chunk);
+                u32::from_le_bytes(arr)
+            })
+            .collect()
+    }
+
+    #[inline]
+    fn to_string(units: &[Self]) -> String {
+        let bytes: Vec<u8> = units.iter().flat_map(|&unit| unit.to_le_bytes()).collect();
+        let end = bytes
+            .iter()
+            .rposition(|&byte| byte != 0)
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        String::from_utf8_lossy(&bytes[..end]).into_owned()
+    }
+
+    #[inline]
+    fn iter_str(s: &str) -> Box<dyn Iterator<Item = Self> + '_> {
+        Box::new(Self::from_str(s).into_iter())
+    }
+
+    #[inline]
+    fn to_dat_offset(&self) -> usize {
+        *self as usize
+    }
+
+    #[inline]
+    fn to_dense_index(&self) -> Option<u8> {
+        u8::try_from(*self).ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,5 +393,13 @@ mod tests {
         let collected: Vec<u64> = u64::iter_str(s).collect();
         assert_eq!(collected.len(), 2);
         assert_eq!(<u64 as CharUnit>::to_string(&collected), s);
+    }
+
+    #[test]
+    fn test_u32_native_units() {
+        let s = "hello world!";
+        let units = u32::from_str(s);
+        assert_eq!(units.len(), 3);
+        assert_eq!(<u32 as CharUnit>::to_string(&units), s);
     }
 }
