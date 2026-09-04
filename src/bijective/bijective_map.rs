@@ -658,11 +658,15 @@ mod tests {
 
     #[test]
     fn profile_sequence_constructor_preserves_bijection() {
-        let bimap = BijectiveMap::<u32>::from_atom_sequences_with_values::<UnicodeScalar, _>([
-            (AtomSequence::<UnicodeScalar>::from_atoms(['λ', 'x']), 7),
-        ]);
+        let bimap = BijectiveMap::<u32>::from_atom_sequences_with_values::<UnicodeScalar, _>([(
+            AtomSequence::<UnicodeScalar>::from_atoms(['λ', 'x']),
+            7,
+        )]);
         assert_eq!(bimap.get_value("λx"), Some(7));
-        assert_eq!(BijectiveDictionary::get_term(&bimap, &7).as_deref(), Some("λx"));
+        assert_eq!(
+            BijectiveDictionary::get_term(&bimap, &7).as_deref(),
+            Some("λx")
+        );
     }
 
     #[test]

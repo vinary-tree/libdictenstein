@@ -165,7 +165,10 @@ pub use collection::{
     ValuedZipperCollection, ZipperCollection, ZipperEntryIterator, ZipperTermIterator,
 };
 pub use dynamic_dawg::core::{DawgCore, DawgNode};
-pub use dynamic_dawg::{DynamicDawgGeneric, DynamicDawgProfile, DynamicDawgU32};
+pub use dynamic_dawg::{
+    DynamicDawgByteProfile, DynamicDawgCharProfile, DynamicDawgGeneric, DynamicDawgProfile,
+    DynamicDawgU32, DynamicDawgU64Profile,
+};
 pub use interning::{
     InternedId, InternedIdDictionaryView, InternedSequence, InternedSequenceDictionary,
     InternedSequenceDictionaryU64, InternedUlebSequenceDictionary, InternedVocabulary,
