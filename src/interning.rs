@@ -309,6 +309,14 @@ impl<'a, U: CharUnit, V: DictionaryValue> InternedIdDictionaryView<'a, U, V> {
     pub fn node_count(&self) -> usize {
         self.dictionary.node_count()
     }
+
+    /// Export visible ID sequences in deterministic lexicographic order.
+    ///
+    /// This is an explicit snapshot boundary; hot-loop consumers should use
+    /// `contains_units` and `get_units_value` instead of repeatedly exporting.
+    pub fn visible_entries(&self) -> Vec<(Vec<U>, Option<V>)> {
+        self.dictionary.visible_entries()
+    }
 }
 
 /// Explicit `u64` carrier specialization for vocabularies larger than the
@@ -517,6 +525,10 @@ mod coordinated_tests {
         assert!(dictionary.contains([10, 20]).unwrap());
         assert_eq!(dictionary.vocabulary().unwrap().generation(), 7);
         assert_eq!(dictionary.id_dictionary().term_count(), 1);
+        assert_eq!(
+            dictionary.id_dictionary().visible_entries(),
+            vec![(vec![0u32, 1u32], Some(99))]
+        );
         assert!(dictionary.remove([10, 20]).unwrap());
         assert!(!dictionary.contains([10, 20]).unwrap());
     }
