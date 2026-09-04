@@ -40,9 +40,17 @@ From Coq Require Import Logic.ProofIrrelevance.
 From Coq Require Import Strings.String.
 From Coq Require Import Sorting.Permutation.
 Require Import ARTrie.Spec.VariableWidthCodecSpec.
-Require Import ARTrie.Model.ListCompat.
 Import ListNotations.
 Import VariableWidthCodecSpec.
+
+Lemma skipn_length_local :
+  forall (A : Type) (n : nat) (xs : list A),
+    List.length (skipn n xs) = List.length xs - n.
+Proof.
+  intros A n. induction n as [| n IH]; intros xs; simpl; [lia|].
+  destruct xs as [| x xs]; simpl; [lia|].
+  rewrite IH. lia.
+Qed.
 
 Module VariableWidthInterning.
 
@@ -869,7 +877,7 @@ Proof.
   simpl.
   rewrite firstn_app.
   replace (count - List.length (skipn offset prefix)) with 0.
-  2: rewrite skipn_length_portable; lia.
+  2: rewrite skipn_length_local; lia.
   simpl. now rewrite app_nil_r.
 Qed.
 
@@ -899,7 +907,7 @@ Proof.
     + split.
       * apply read_appended_suffix_exact.
       * split; [reflexivity |].
-        unfold span_in_bounds. simpl. rewrite length_app. lia.
+        unfold span_in_bounds. simpl. rewrite app_length. lia.
 Qed.
 
 Theorem VWENC_115_SAFE_PACKED_APPEND_PRESERVES_EXISTING_SPANS :
@@ -1179,7 +1187,7 @@ Proof.
             (right_id := right_id). }
       * split.
         { unfold packed_spans_cover_bytes in *.
-          simpl. intros offset. rewrite length_app. split.
+          simpl. intros offset. rewrite app_length. split.
           - intros Hbelow.
             destruct (Nat.lt_ge_cases offset
               (List.length (packed_canonical_bytes I storage)))
@@ -1225,7 +1233,7 @@ Proof.
                         (canonical_atom_valid P atom)) as Hnonempty.
                     destruct (canonical_atom_bytes P atom);
                       simpl; [contradiction | lia].
-                  * unfold span_in_bounds. simpl. rewrite length_app. lia. }
+                  * unfold span_in_bounds. simpl. rewrite app_length. lia. }
             { specialize (Hhistory_exact existing_atom existing_id Hold).
               destruct Hhistory_exact as
                 [span [Hlookup [Hread [Hlength [Hpositive Hbounds]]]]].
@@ -1243,7 +1251,7 @@ Proof.
                 + split; [exact Hlength |].
                   split; [exact Hpositive |].
                   unfold span_in_bounds in Hbounds |- *. simpl.
-                  rewrite length_app. lia. }
+                  rewrite app_length. lia. }
           - intros existing_id span Hin.
             simpl in Hin. destruct Hin as [Hnew | Hold].
             { inversion Hnew. subst existing_id span.

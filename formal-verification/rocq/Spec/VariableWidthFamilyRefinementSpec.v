@@ -1597,7 +1597,7 @@ Proof.
   change
     (length (encoded_u64_unit_bytes unit ++
        canonical_encoded_u64_sequence rest) = 8 * S (length rest)).
-  rewrite length_app, IH.
+  rewrite app_length, IH.
   assert (Hunit : length (encoded_u64_unit_bytes unit) = 8).
   { unfold encoded_u64_unit_bytes. apply fixed_little_endian_length. }
   rewrite Hunit. lia.
@@ -1995,14 +1995,14 @@ Proof.
         destruct Hlater as [prefix [suffix [Hrest Hoffset]]].
         exists (codeword :: prefix), suffix. split.
         -- simpl. now rewrite Hrest.
-        -- simpl. rewrite length_app. lia.
+        -- simpl. rewrite app_length. lia.
     + intros [prefix [suffix [Hequal Hoffset]]].
       destruct prefix as [| first prefix].
       * simpl in Hoffset. left. lia.
       * simpl in Hequal. inversion Hequal; subst first.
         right. rewrite <- H1. apply IH.
         exists prefix, suffix. split; [assumption |].
-        simpl in Hoffset. rewrite length_app in Hoffset. lia.
+        simpl in Hoffset. rewrite app_length in Hoffset. lia.
 Qed.
 
 Theorem VWENC_229_CODEWORD_BOUNDARY_OFFSETS_ARE_EXACTLY_LOGICAL_SPLITS :
