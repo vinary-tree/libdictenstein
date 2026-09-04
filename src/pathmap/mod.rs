@@ -15,6 +15,8 @@ pub mod core;
 pub mod snapshot;
 pub mod zipper;
 
+use crate::Dictionary;
+
 pub use self::core::{
     trie_ref_root, trie_ref_root_borrowed, TrieRefLike, TrieRefNode, TrieRefNodeChar,
 };
@@ -107,6 +109,39 @@ impl<V: crate::DictionaryValue> PathMapDictionaryUleb128<V> {
     pub fn remove(&self, sequence: &crate::Uleb128Sequence) -> bool {
         self.inner.remove_bytes(&sequence.to_encoded())
     }
+
+    /// Remove a complete canonical encoded sequence without decoding it.
+    pub fn remove_encoded(&self, encoded: &[u8]) -> Result<bool, crate::Uleb128Error> {
+        crate::Uleb128Sequence::from_encoded(encoded)?;
+        Ok(self.inner.remove_bytes(encoded))
+    }
+
+    /// Number of visible logical sequences in the current snapshot.
+    #[inline]
+    pub fn term_count(&self) -> usize {
+        self.inner.len().unwrap_or(0)
+    }
+
+    /// Whether the current snapshot contains no logical sequences.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.term_count() == 0
+    }
+
+    /// Export complete logical sequences from one immutable PathMap snapshot.
+    /// Continuation bytes are decoded only at this boundary and never exposed
+    /// as semantic transitions.
+    pub fn visible_entries(
+        &self,
+    ) -> Result<Vec<(crate::Uleb128Sequence, Option<V>)>, crate::Uleb128Error> {
+        self.inner
+            .iter_bytes()
+            .map(|(bytes, value)| {
+                crate::Uleb128Sequence::from_encoded(&bytes)
+                    .map(|sequence| (sequence, Some(value)))
+            })
+            .collect()
+    }
 }
 
 impl<V: crate::DictionaryValue> Default for PathMapDictionaryUleb128<V> {
@@ -140,6 +175,10 @@ mod profile_tests {
         let dictionary = PathMapDictionaryUleb128::<()>::from_sequences([sequence.clone()]);
         assert_eq!(dictionary.contains_encoded(sequence.to_encoded().as_slice()), Ok(true));
         assert!(dictionary.contains_encoded(&[0x80]).is_err());
+        assert_eq!(dictionary.term_count(), 1);
+        assert_eq!(dictionary.visible_entries().unwrap().len(), 1);
+        assert!(dictionary.remove_encoded(sequence.to_encoded().as_slice()).unwrap());
+        assert!(dictionary.is_empty());
     }
 
     #[test]
