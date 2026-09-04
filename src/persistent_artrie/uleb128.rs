@@ -156,10 +156,25 @@ impl<V: DictionaryValue> PersistentARTrieUleb128<V> {
     }
 
     /// Enumerate complete logical sequences and values in encoded order.
-    pub fn visible_entries(&self) -> Result<Vec<(Uleb128Sequence, Option<V>)>, Uleb128Error> {
-        self.inner
-            .iter_with_values()
-            .map(|(bytes, value)| Ok((Uleb128Sequence::from_encoded(&bytes)?, value)))
+    ///
+    /// Traversal failures and malformed persisted codewords are returned as
+    /// corruption errors; neither is converted into an empty result.
+    pub fn visible_entries(
+        &self,
+    ) -> crate::persistent_artrie::Result<Vec<(Uleb128Sequence, Option<V>)>> {
+        let entries = self.inner.iter_prefix_with_arena(b"")?.unwrap_or_default();
+        entries
+            .into_iter()
+            .map(|entry| {
+                let value = self.inner.get_value_bytes(&entry.term);
+                Uleb128Sequence::from_encoded(&entry.term)
+                    .map(|sequence| (sequence, value))
+                    .map_err(|error| {
+                        crate::persistent_artrie::PersistentARTrieError::CorruptedFile {
+                            reason: format!("invalid ULEB128 entry: {error}"),
+                        }
+                    })
+            })
             .collect()
     }
 }
