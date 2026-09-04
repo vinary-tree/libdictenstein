@@ -10,6 +10,9 @@ use crate::{CharUnit, DictionaryValue};
 /// Dense identifier assigned by an [`InternedVocabulary`].
 pub type InternedId = u64;
 
+/// Lossless snapshot rows exported by a coordinated vocabulary/ID dictionary.
+pub type InternedEntries<K, V> = Vec<(Vec<K>, Option<V>)>;
+
 /// Validation failures at the vocabulary boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InterningError {
@@ -404,7 +407,7 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionaryU64<K, V> {
     /// Export atom sequences and mapped values in deterministic ID-dictionary
     /// order.  Every ID is resolved while the vocabulary snapshot is held;
     /// unknown IDs are reported instead of being silently omitted.
-    pub fn visible_entries(&self) -> Result<Vec<(Vec<K>, Option<V>)>, InterningError> {
+    pub fn visible_entries(&self) -> Result<InternedEntries<K, V>, InterningError> {
         let vocabulary = self
             .vocabulary
             .lock()
@@ -581,7 +584,7 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
 
     /// Export atom sequences and mapped values in deterministic ID-dictionary
     /// order, validating every vocabulary ID before exposing the snapshot.
-    pub fn visible_entries(&self) -> Result<Vec<(Vec<K>, Option<V>)>, InterningError> {
+    pub fn visible_entries(&self) -> Result<InternedEntries<K, V>, InterningError> {
         let vocabulary = self
             .vocabulary
             .lock()
