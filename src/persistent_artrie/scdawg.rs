@@ -1402,6 +1402,15 @@ impl<V: DictionaryValue> PersistentScdawgChar<V, MmapDiskManager> {
 }
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentScdawgChar<V, S> {
+    /// Read a mapped value for a Unicode-scalar profile sequence.
+    pub fn get_atom_sequence_value<P>(&self, sequence: &crate::AtomSequence<P>) -> Option<V>
+    where
+        P: crate::AtomProfile<Atom = char>,
+    {
+        let text: String = sequence.as_atoms().iter().collect();
+        <Self as crate::MappedDictionary>::get_value(self, &text)
+    }
+
     pub fn try_insert(&self, term: &str) -> Result<bool> {
         self.index.insert(term, None)
     }
