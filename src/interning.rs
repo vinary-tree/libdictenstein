@@ -369,6 +369,19 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionaryU64<K, V> {
         InternedIdDictionaryView::new(&self.id_dictionary)
     }
 
+    /// Query a generation-bound ID sequence after validating its vocabulary.
+    pub fn contains_id_sequence(
+        &self,
+        sequence: &InternedSequence,
+    ) -> Result<bool, InterningError> {
+        let vocabulary = self
+            .vocabulary
+            .lock()
+            .map_err(|_| InterningError::Poisoned)?;
+        vocabulary.validate_sequence(sequence)?;
+        Ok(self.id_dictionary.contains_units(sequence.as_ids()))
+    }
+
     /// Intern atoms and insert their sequence using the `u64` carrier.
     pub fn insert<I>(&self, atoms: I, value: Option<V>) -> Result<bool, InterningError>
     where
@@ -468,6 +481,25 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
         InternedIdDictionaryView::new(&self.id_dictionary)
     }
 
+    /// Query a generation-bound ID sequence after validating its vocabulary.
+    pub fn contains_id_sequence(
+        &self,
+        sequence: &InternedSequence,
+    ) -> Result<bool, InterningError> {
+        let vocabulary = self
+            .vocabulary
+            .lock()
+            .map_err(|_| InterningError::Poisoned)?;
+        vocabulary.validate_sequence(sequence)?;
+        let ids = sequence
+            .as_ids()
+            .iter()
+            .copied()
+            .map(|id| u32::try_from(id).map_err(|_| InterningError::UnknownId(id)))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(self.id_dictionary.contains_units(&ids))
+    }
+
     /// Intern atoms and insert their ID sequence atomically with respect to
     /// other vocabulary mutations.
     pub fn insert<I>(&self, atoms: I, value: Option<V>) -> Result<bool, InterningError>
@@ -530,7 +562,8 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
 #[cfg(test)]
 mod coordinated_tests {
     use super::{
-        InternedSequenceDictionary, InternedSequenceDictionaryU64, InternedUlebSequenceDictionary,
+        InternedSequence, InternedSequenceDictionary, InternedSequenceDictionaryU64,
+        InternedUlebSequenceDictionary,
     };
     use crate::Uleb128;
 
@@ -539,6 +572,8 @@ mod coordinated_tests {
         let dictionary = InternedSequenceDictionary::<u32, u32>::with_generation(7);
         assert!(dictionary.insert([10, 20], Some(99)).unwrap());
         assert!(dictionary.contains([10, 20]).unwrap());
+        let ids = InternedSequence::from_ids_with_generation(7, [0, 1]);
+        assert!(dictionary.contains_id_sequence(&ids).unwrap());
         assert_eq!(dictionary.vocabulary().unwrap().generation(), 7);
         assert_eq!(dictionary.generation(), Ok(7));
         assert_eq!(dictionary.id_dictionary().term_count(), 1);
@@ -576,6 +611,8 @@ mod coordinated_tests {
         let dictionary = InternedSequenceDictionaryU64::<u32, u32>::with_generation(9);
         assert!(dictionary.insert([u32::MAX], Some(17)).unwrap());
         assert!(dictionary.contains([u32::MAX]).unwrap());
+        let ids = InternedSequence::from_ids_with_generation(9, [0]);
+        assert!(dictionary.contains_id_sequence(&ids).unwrap());
         assert_eq!(dictionary.vocabulary().unwrap().generation(), 9);
         assert_eq!(dictionary.generation(), Ok(9));
     }
