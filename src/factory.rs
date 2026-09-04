@@ -352,6 +352,12 @@ impl DictionaryContainer {
         }
     }
 
+    /// Return canonical logical-profile metadata for this instance.
+    #[inline]
+    pub fn profile_descriptor(&self) -> BackendProfileDescriptor {
+        self.backend().profile_descriptor()
+    }
+
     /// Get the number of terms in the dictionary.
     pub fn len(&self) -> Option<usize> {
         match self {
@@ -605,6 +611,7 @@ mod tests {
         assert!(dict.contains("bar"));
         assert!(dict.contains("baz"));
         assert!(!dict.contains("qux"));
+        assert_eq!(dict.profile_descriptor().kind, ProfileKind::Bytes);
     }
 
     #[test]
