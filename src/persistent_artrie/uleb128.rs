@@ -46,6 +46,16 @@ impl<V: DictionaryValue> Default for PersistentARTrieUleb128<V> {
 }
 
 impl<V: DictionaryValue> PersistentARTrieUleb128<V> {
+    /// Create a fresh persistent ULEB dictionary at `path`.
+    pub fn create<P: AsRef<std::path::Path>>(path: P) -> crate::persistent_artrie::Result<Self> {
+        Ok(Self::from_inner(PersistentARTrie::create(path)?))
+    }
+
+    /// Open an existing persistent ULEB dictionary from `path`.
+    pub fn open<P: AsRef<std::path::Path>>(path: P) -> crate::persistent_artrie::Result<Self> {
+        Ok(Self::from_inner(PersistentARTrie::open(path)?))
+    }
+
     /// Construct an empty in-memory adapter.
     #[allow(deprecated)]
     pub fn new() -> Self {
