@@ -56,6 +56,21 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
         }
     }
 
+    /// Build from arbitrary logical-unit sequences, sorting once for
+    /// deterministic and suffix-sharing-friendly construction.
+    pub fn from_sequences<I, S>(sequences: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<[U]>,
+    {
+        let mut owned: Vec<Vec<U>> = sequences
+            .into_iter()
+            .map(|sequence| sequence.as_ref().to_vec())
+            .collect();
+        owned.sort_unstable();
+        Self::from_sorted_sequences(owned)
+    }
+
     /// Insert one logical-unit sequence.
     #[inline]
     pub fn insert_units(&self, units: &[U]) -> bool {
@@ -149,6 +164,12 @@ mod generic_tests {
         assert!(dictionary.contains_units(&[1, 2]));
         assert!(dictionary.contains_units(&[1, 3]));
         assert_eq!(dictionary.term_count(), 2);
+        let unsorted = DynamicDawgGeneric::<u32>::from_sequences([
+            vec![1u32, 3],
+            vec![1, 2],
+        ]);
+        assert!(unsorted.contains_units(&[1, 2]));
+        assert!(unsorted.contains_units(&[1, 3]));
     }
 }
 
