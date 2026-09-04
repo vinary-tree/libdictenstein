@@ -26,6 +26,19 @@ use super::dict_impl::PersistentARTrie;
 use super::error::Result;
 
 impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
+    /// Fallibly insert an arbitrary byte key without UTF-8 coercion.
+    pub fn try_insert_bytes(&self, term: &[u8]) -> Result<bool> {
+        self.insert_cas_durable(term)
+    }
+
+    /// Insert an arbitrary byte key without UTF-8 coercion.
+    pub fn insert_bytes(&self, term: &[u8]) -> bool {
+        self.try_insert_bytes(term).unwrap_or_else(|error| {
+            warn!("insert byte-key overlay route failed: {:?}", error);
+            false
+        })
+    }
+
     /// Fallibly insert a term, preserving the backend error.
     pub fn try_insert(&self, term: &str) -> Result<bool> {
         self.insert_cas_durable(term.as_bytes())
@@ -83,6 +96,15 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             );
             false
         })
+    }
+
+    /// Insert or update an arbitrary byte key with a mapped value.
+    pub fn insert_with_value_bytes(&self, term: &[u8], value: V) -> bool {
+        self.try_insert_with_value_bytes(term, value)
+            .unwrap_or_else(|error| {
+                warn!("insert byte-key value route failed: {:?}", error);
+                false
+            })
     }
 
     /// Insert multiple terms in a single batch operation.
