@@ -25,6 +25,13 @@ pub struct DoubleArrayTrieUleb128<V: crate::DictionaryValue = ()> {
 }
 
 impl<V: crate::DictionaryValue> DoubleArrayTrieUleb128<V> {
+    /// Construct an empty ULEB128 DAT.
+    pub fn new() -> Self {
+        Self {
+            inner: DoubleArrayTrie::new(),
+        }
+    }
+
     /// Build from complete canonical ULEB128 sequences.
     pub fn from_sequences<I>(sequences: I) -> Self
     where
@@ -68,6 +75,18 @@ impl<V: crate::DictionaryValue> DoubleArrayTrieUleb128<V> {
     pub fn term_count(&self) -> usize {
         self.inner.len().unwrap_or(0)
     }
+
+    /// Whether no logical ULEB sequences are present.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.term_count() == 0
+    }
+}
+
+impl<V: crate::DictionaryValue> Default for DoubleArrayTrieUleb128<V> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -77,6 +96,7 @@ mod profile_tests {
 
     #[test]
     fn uleb_wrapper_preserves_logical_sequences() {
+        assert!(DoubleArrayTrieUleb128::<u16>::new().is_empty());
         let sequence = crate::Uleb128Sequence::from_atoms([
             crate::Uleb128::from_u64(624_485),
             crate::Uleb128::from_u64(7),
