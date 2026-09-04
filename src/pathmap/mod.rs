@@ -22,3 +22,29 @@ pub use ascii::{PathMapDictionary, PathMapNode};
 pub use char::{PathMapDictionaryChar, PathMapNodeChar};
 pub use snapshot::{PathMapRef, PathMapRefChar, PathMapSnapshot, PathMapSnapshotChar};
 pub use zipper::PathMapZipper;
+
+#[cfg(all(test, feature = "pathmap-backend"))]
+mod profile_tests {
+    use super::{PathMapDictionary, PathMapDictionaryChar};
+    use crate::{AtomSequence, Bytes, Dictionary, UnicodeScalar};
+
+    #[test]
+    fn byte_profile_constructor_preserves_membership_and_values() {
+        let dictionary = PathMapDictionary::<u16>::from_atom_sequences_with_values::<Bytes, _>([
+            (AtomSequence::<Bytes>::from_atoms([b'a', b'b']), 13),
+        ]);
+        assert!(dictionary.contains("ab"));
+        assert_eq!(dictionary.get_value("ab"), Some(13));
+    }
+
+    #[test]
+    fn unicode_profile_constructor_preserves_scalar_boundaries_and_values() {
+        let dictionary =
+            PathMapDictionaryChar::<u16>::from_atom_sequences_with_values::<UnicodeScalar, _>([
+                (AtomSequence::<UnicodeScalar>::from_atoms(['λ', 'x']), 21),
+            ]);
+        assert!(dictionary.contains("λx"));
+        assert!(!dictionary.contains("lx"));
+        assert_eq!(dictionary.get_value("λx"), Some(21));
+    }
+}
