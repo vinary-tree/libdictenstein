@@ -106,6 +106,9 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> Default for DynamicDawgGener
 /// Alias emphasizing that this wrapper accepts profile-defined units.
 pub type DynamicDawgProfile<U, V = ()> = DynamicDawgGeneric<U, V>;
 
+/// Source-compatible alias for native 32-bit logical units.
+pub type DynamicDawgU32<V = ()> = DynamicDawgGeneric<u32, V>;
+
 #[cfg(test)]
 mod generic_tests {
     use super::DynamicDawgGeneric;
