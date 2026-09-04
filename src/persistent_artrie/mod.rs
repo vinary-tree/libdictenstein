@@ -233,6 +233,8 @@ pub mod suffix_tree;
 
 // Sequence-keyed u64 persistent ARTrie with native-key overlay and CX snapshots.
 pub mod u64;
+// Validated logical ULEB128 boundary over the persistent byte ART.
+pub mod uleb128;
 
 // IoUringDiskManager-specific constructors (Phase-5 split out of dict_impl).
 #[cfg(feature = "io-uring-backend")]
@@ -469,6 +471,7 @@ pub use u64::{
     PersistentARTrieU64Node, PersistentARTrieU64Prefix3Compat,
     PersistentARTrieU64Prefix3CompatNode, U64_CX_PREFIX_COMPACT, U64_CX_PREFIX_COMPAT,
 };
+pub use uleb128::PersistentARTrieUleb128;
 
 pub use block_storage::{AlignedBlock, BlockStorage};
 pub use buffer_manager::{BufferManager, BufferPoolStats, PageReadGuard, PageWriteGuard};

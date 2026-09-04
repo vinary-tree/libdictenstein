@@ -214,12 +214,12 @@ pub use persistent_artrie::vocab::{IndexedVocabularyPersistent, PersistentVocabA
 pub use persistent_artrie::wal::Lsn;
 #[cfg(feature = "persistent-artrie")]
 pub use persistent_artrie::{
-    PersistentARTrie, PersistentARTrieU64, PersistentARTrieU64Node, PersistentARTrieZipper,
-    PersistentScdawg, PersistentScdawgChar, PersistentScdawgCharNode, PersistentScdawgNode,
-    PersistentSuffixAutomaton, PersistentSuffixAutomatonChar, PersistentSuffixAutomatonCharNode,
-    PersistentSuffixAutomatonNode, PersistentSuffixTree, PersistentSuffixTreeChar,
-    PersistentSuffixTreeCharNode, PersistentSuffixTreeNode, RecoveryMode, RecoveryReport,
-    WalConfig,
+    PersistentARTrie, PersistentARTrieU64, PersistentARTrieU64Node, PersistentARTrieUleb128,
+    PersistentARTrieZipper, PersistentScdawg, PersistentScdawgChar, PersistentScdawgCharNode,
+    PersistentScdawgNode, PersistentSuffixAutomaton, PersistentSuffixAutomatonChar,
+    PersistentSuffixAutomatonCharNode, PersistentSuffixAutomatonNode, PersistentSuffixTree,
+    PersistentSuffixTreeChar, PersistentSuffixTreeCharNode, PersistentSuffixTreeNode, RecoveryMode,
+    RecoveryReport, WalConfig,
 };
 
 /// Synchronization strategy for dictionary operations.
