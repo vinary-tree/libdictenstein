@@ -30,6 +30,31 @@ pub enum ProfileKind {
 }
 
 impl ProfileKind {
+    /// Canonical persisted name.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bytes => "bytes",
+            Self::UnicodeScalar => "unicode-scalar",
+            Self::U32 => "u32",
+            Self::U64 => "u64",
+            Self::F64Bits => "f64-bits",
+            Self::Uleb128 => "uleb128",
+        }
+    }
+
+    /// Parse a canonical persisted name.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "bytes" => Some(Self::Bytes),
+            "unicode-scalar" => Some(Self::UnicodeScalar),
+            "u32" => Some(Self::U32),
+            "u64" => Some(Self::U64),
+            "f64-bits" => Some(Self::F64Bits),
+            "uleb128" => Some(Self::Uleb128),
+            _ => None,
+        }
+    }
+
     /// Stable persisted identity.
     pub const fn identity(self) -> VariableWidthProfile {
         match self {
@@ -407,5 +432,16 @@ mod tests {
         assert_eq!(ProfileKind::UnicodeScalar.width_bytes(), Some(4));
         assert_eq!(ProfileKind::Uleb128.width_bytes(), None);
         assert_eq!(ProfileKind::Uleb128.identity(), ULEB128_PROFILE);
+        for kind in [
+            ProfileKind::Bytes,
+            ProfileKind::UnicodeScalar,
+            ProfileKind::U32,
+            ProfileKind::U64,
+            ProfileKind::F64Bits,
+            ProfileKind::Uleb128,
+        ] {
+            assert_eq!(ProfileKind::from_name(kind.as_str()), Some(kind));
+        }
+        assert_eq!(ProfileKind::from_name("DynamicDawgChar"), None);
     }
 }
