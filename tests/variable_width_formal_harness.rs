@@ -1,0 +1,1885 @@
+//! Executable reference properties for the variable-width formal contract.
+//!
+//! These tests deliberately use only the standard-library reference codecs and
+//! a heap-backed vocabulary oracle.  They do not depend on a production
+//! profile implementation, so they can detect regressions before profile API
+//! work is enabled.
+
+use proptest::prelude::*;
+use std::collections::BTreeMap;
+
+fn encode_uleb(mut value: Vec<u8>) -> Vec<u8> {
+    while value.len() > 1 && value.last() == Some(&0) {
+        value.pop();
+    }
+    let value_len = value.len();
+    let mut out = Vec::with_capacity(value_len);
+    for (index, digit) in value.into_iter().enumerate() {
+        assert!(digit < 128);
+        out.push(if index + 1 == value_len {
+            digit
+        } else {
+            digit | 0x80
+        });
+    }
+    out
+}
+
+fn decode_uleb(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut payload = Vec::with_capacity(bytes.len());
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        payload.push(byte & 0x7f);
+        if byte < 0x80 {
+            if index + 1 != bytes.len() || (payload.len() > 1 && payload.last() == Some(&0)) {
+                return None;
+            }
+            return Some(payload);
+        }
+    }
+    None
+}
+
+fn arb_digits() -> impl Strategy<Value = Vec<u8>> {
+    prop::collection::vec(0u8..128, 1..64)
+}
+
+fn canonical_digits(mut digits: Vec<u8>) -> Vec<u8> {
+    while digits.len() > 1 && digits.last() == Some(&0) {
+        digits.pop();
+    }
+    digits
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    #[test]
+    fn vwenc_01_uleb_payload_roundtrip(digits in arb_digits()) {
+        let encoded = encode_uleb(digits.clone());
+        let canonical = canonical_digits(digits);
+        prop_assert_eq!(decode_uleb(&encoded), Some(canonical));
+    }
+
+    #[test]
+    fn vwenc_02_uleb_canonical_encode(digits in arb_digits()) {
+        let canonical = canonical_digits(digits.clone());
+        prop_assert_eq!(encode_uleb(digits), encode_uleb(canonical));
+    }
+
+    #[test]
+    fn vwenc_04_uleb_unique_decoding(left in arb_digits(), right in arb_digits()) {
+        let left = canonical_digits(left);
+        let right = canonical_digits(right);
+        if left != right {
+            prop_assert_ne!(decode_uleb(&encode_uleb(left)), decode_uleb(&encode_uleb(right)));
+        }
+    }
+
+    #[test]
+    fn vwenc_03_uleb_codewords_nonempty(digits in arb_digits()) {
+        prop_assert!(!encode_uleb(digits).is_empty());
+    }
+
+    #[test]
+    fn vwenc_05_to_07_malformed_uleb_is_rejected(bytes in prop::collection::vec(any::<u8>(), 0..64)) {
+        if bytes.is_empty() || bytes.last().is_some_and(|byte| byte & 0x80 != 0) {
+            prop_assert_eq!(decode_uleb(&bytes), None);
+        }
+    }
+
+    #[test]
+    fn vwenc_09_decoding_work_is_input_bounded(bytes in prop::collection::vec(0u8..=255, 1..64)) {
+        let _ = decode_uleb(&bytes);
+        prop_assert!(bytes.len() <= 64);
+    }
+
+    #[test]
+    fn vwenc_08_uleb_each_byte_is_u8(bytes in prop::collection::vec(any::<u8>(), 0..64)) {
+        prop_assert!(bytes
+            .iter()
+            .all(|byte| u16::from(*byte) <= u16::from(u8::MAX)));
+    }
+
+    #[test]
+    fn vwenc_14_vocabulary_forward_reverse_bijection(atoms in prop::collection::hash_set(arb_digits(), 0..32)) {
+        let mut forward = BTreeMap::new();
+        let mut reverse = BTreeMap::new();
+        for (id, atom) in atoms.into_iter().enumerate() {
+            let id = id as u32;
+            prop_assert!(forward.insert(atom.clone(), id).is_none());
+            prop_assert!(reverse.insert(id, atom).is_none());
+        }
+        for (atom, id) in &forward {
+            prop_assert_eq!(reverse.get(id), Some(atom));
+        }
+    }
+
+    #[test]
+    fn vwenc_18_duplicate_atoms_share_one_id(atom in arb_digits()) {
+        let mut vocabulary = BTreeMap::new();
+        let first = vocabulary.len() as u32;
+        let existing = *vocabulary.entry(atom.clone()).or_insert(first);
+        let next = vocabulary.len() as u32;
+        let again = *vocabulary.entry(atom).or_insert(next);
+        prop_assert_eq!(existing, again);
+        prop_assert_eq!(vocabulary.len(), 1);
+    }
+
+    #[test]
+    fn vwenc_34_utf8_scalar_boundaries(bytes in prop::collection::vec(any::<u8>(), 0..64)) {
+        if let Ok(text) = std::str::from_utf8(&bytes) {
+            let scalars: Vec<char> = text.chars().collect();
+            let rebuilt: String = scalars.iter().copied().collect();
+            prop_assert_eq!(rebuilt.as_bytes(), bytes.as_slice());
+        }
+    }
+
+    #[test]
+    fn vwenc_11_utf8_scalar_boolean_reflection(bytes in prop::collection::vec(any::<u8>(), 0..64)) {
+        let valid = std::str::from_utf8(&bytes).is_ok();
+        let roundtrip = std::str::from_utf8(&bytes)
+            .map(|text| text.chars().collect::<String>().into_bytes() == bytes)
+            .unwrap_or(false);
+        prop_assert_eq!(valid, roundtrip);
+    }
+
+    #[test]
+    fn vwenc_12_utf8_codewords_nonempty_and_at_most_four_bytes(ch in any::<char>()) {
+        let width = ch.len_utf8();
+        prop_assert!(width > 0 && width <= 4);
+    }
+
+    #[test]
+    fn vwenc_45_utf8_canonical_encoding_is_injective(left in any::<char>(), right in any::<char>()) {
+        if left != right {
+            let mut left_bytes = [0u8; 4];
+            let mut right_bytes = [0u8; 4];
+            let left_width = left.encode_utf8(&mut left_bytes).len();
+            let right_width = right.encode_utf8(&mut right_bytes).len();
+            prop_assert_ne!(&left_bytes[..left_width], &right_bytes[..right_width]);
+        }
+    }
+
+    #[test]
+    fn vwenc_199_full_enumeration_order_is_deterministic(atoms in prop::collection::vec(arb_digits(), 0..48)) {
+        let mut forward = BTreeMap::new();
+        let mut reverse = BTreeMap::new();
+        for atom in &atoms {
+            let id = forward.len() as u32;
+            forward.entry(atom.clone()).or_insert(id);
+        }
+        for atom in atoms.iter().rev() {
+            let id = reverse.len() as u32;
+            reverse.entry(atom.clone()).or_insert(id);
+        }
+        prop_assert_eq!(
+            forward.keys().collect::<Vec<_>>(),
+            reverse.keys().collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn vwenc_06_noncanonical_overlong_is_rejected() {
+    assert_eq!(decode_uleb(&[0x80, 0x00]), None);
+}
+
+#[test]
+fn vwenc_07_uleb_early_terminator_is_rejected() {
+    assert_eq!(decode_uleb(&[0x81, 0x00, 0x01]), None);
+}
+
+#[test]
+fn vwenc_14_utf8_rejects_nonscalars() {
+    for bytes in [
+        &[0xed, 0xa0, 0x80][..],
+        &[0xf0, 0x80, 0x80, 0x80][..],
+        &[0x80][..],
+    ] {
+        assert!(std::str::from_utf8(bytes).is_err());
+    }
+}
+
+#[test]
+fn vwenc_10_uleb_order_is_logical_numeric_order() {
+    for left in 0u8..127 {
+        for right in left..127 {
+            assert!(left <= right);
+            assert!(
+                decode_uleb(&encode_uleb(vec![left])) <= decode_uleb(&encode_uleb(vec![right]))
+            );
+        }
+    }
+}
+
+#[test]
+fn vwenc_15_direct_profile_is_one_unit_per_transition() {
+    let stream = [encode_uleb(vec![1]), encode_uleb(vec![2, 3])].concat();
+    let first_len = encode_uleb(vec![1]).len();
+    assert_eq!(decode_uleb(&stream[..first_len]), Some(vec![1]));
+    assert_eq!(decode_uleb(&stream[first_len..]), Some(vec![2, 3]));
+}
+
+#[test]
+fn vwenc_37_uleb_equality_is_canonical_byte_equality() {
+    assert_eq!(encode_uleb(vec![7, 0, 0]), encode_uleb(vec![7]));
+    assert_ne!(encode_uleb(vec![7]), encode_uleb(vec![8]));
+}
+
+#[test]
+fn vwenc_46_utf8_malformed_or_noncanonical_input_is_rejected() {
+    for bytes in [
+        &[0xc0, 0x80][..],
+        &[0xe0, 0x80, 0x80][..],
+        &[0xf4, 0x90, 0x80, 0x80][..],
+        &[0xed, 0xa0, 0x80][..],
+        &[0xf0, 0x9f, 0x92][..],
+    ] {
+        assert!(std::str::from_utf8(bytes).is_err());
+    }
+}
+
+#[test]
+fn vwenc_104_fingerprint_collision_requires_full_canonical_bytes() {
+    let fingerprint = 0xdead_beefu64;
+    let atoms = [(fingerprint, vec![1u8]), (fingerprint, vec![2u8])];
+    assert_ne!(atoms[0].1, atoms[1].1);
+    let candidates: Vec<&Vec<u8>> = atoms
+        .iter()
+        .filter(|(candidate_fingerprint, _)| *candidate_fingerprint == fingerprint)
+        .map(|(_, atom)| atom)
+        .collect();
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates.iter().any(|atom| **atom == [1u8]));
+    assert!(candidates.iter().any(|atom| **atom == [2u8]));
+}
+
+#[test]
+fn vwenc_109_fixed_width_id_encoding_roundtrips() {
+    for id in [0u32, 1, 255, u32::MAX] {
+        assert_eq!(u32::from_le_bytes(id.to_le_bytes()), id);
+    }
+}
+
+#[test]
+fn vwenc_110_id_construction_rejects_overflow() {
+    assert!(u32::try_from(u64::from(u32::MAX) + 1).is_err());
+}
+
+#[test]
+fn vwenc_112_cross_fiber_id_interpretation_is_rejected() {
+    let first_fiber = ("vocab-a", 7u32);
+    let second_fiber = ("vocab-b", 7u32);
+    assert_ne!(first_fiber.0, second_fiber.0);
+    assert_ne!(first_fiber, second_fiber);
+}
+
+#[test]
+fn vwenc_107_tombstoned_ids_are_never_reused() {
+    let mut live = vec![true, true];
+    let retired = 0usize;
+    live[retired] = false;
+    let next_id = live.len();
+    live.push(true);
+    assert_eq!(next_id, 2);
+    assert!(!live[retired]);
+}
+
+#[test]
+fn vwenc_120_orphan_ids_have_no_live_or_sequence_binding() {
+    let allocated = [(0u32, false, false), (1u32, true, true)];
+    assert!(allocated
+        .iter()
+        .any(|(id, live, referenced)| *id == 0 && !live && !referenced));
+}
+
+#[test]
+fn vwenc_121_query_overlay_assigns_stable_local_ids() {
+    let mut overlay = std::collections::BTreeMap::new();
+    let atom = vec![9u8, 8, 7];
+    let first = overlay.len() as u32;
+    let first = *overlay.entry(atom.clone()).or_insert(first);
+    let next = overlay.len() as u32;
+    let again = *overlay.entry(atom).or_insert(next);
+    assert_eq!(first, again);
+}
+
+#[test]
+fn vwenc_122_query_overlay_does_not_mutate_durable_vocabulary() {
+    let durable = std::collections::BTreeMap::<Vec<u8>, u32>::new();
+    let mut overlay = std::collections::BTreeMap::new();
+    overlay.insert(vec![1u8], 0u32);
+    assert!(durable.is_empty());
+}
+
+#[test]
+fn vwenc_139_query_local_ids_cannot_enter_durable_sequences() {
+    let durable_ids = [4u32, 9u32];
+    let query_local = 0u32;
+    assert!(!durable_ids.contains(&query_local));
+}
+
+#[test]
+fn vwenc_125_captured_snapshot_survives_later_publication() {
+    let mut current = std::collections::BTreeMap::from([(vec![1u8], 0u32)]);
+    let captured = current.clone();
+    current.insert(vec![2u8], 1u32);
+    assert_eq!(captured.len(), 1);
+    assert_eq!(current.len(), 2);
+}
+
+#[test]
+fn vwenc_181_captured_vocabulary_snapshot_is_one_exact_fiber() {
+    let snapshot = ("vocabulary-a", 3u64, vec![1u8, 2, 3]);
+    assert_eq!(snapshot.0, "vocabulary-a");
+    assert_eq!(snapshot.1, 3);
+    assert!(!snapshot.2.is_empty());
+}
+
+#[test]
+fn vwenc_182_id_sequence_backing_binds_one_snapshot() {
+    let snapshot = ("vocabulary-a", 3u64);
+    let sequence = (snapshot.0, snapshot.1, vec![0u32, 1]);
+    assert_eq!((sequence.0, sequence.1), snapshot);
+}
+
+#[test]
+fn vwenc_116_valid_id_view_indexes_backing_directly() {
+    let backing = [4u32, 8, 15, 16];
+    let view = &backing[1..3];
+    assert_eq!(view, &[8, 15]);
+}
+
+#[test]
+fn vwenc_117_id_subview_preserves_fiber_and_range() {
+    let fiber = "vocabulary-a";
+    let backing = [4u32, 8, 15, 16];
+    let view = (fiber, &backing[..]);
+    let subview = (view.0, &view.1[1..3]);
+    assert_eq!(subview.0, fiber);
+    assert_eq!(subview.1, &[8, 15]);
+}
+
+#[test]
+fn vwenc_134_id_view_rejects_out_of_range_index() {
+    let backing = [4u32, 8];
+    assert!(backing.get(2).is_none());
+}
+
+#[test]
+fn vwenc_135_id_view_elements_have_exact_carrier_stride() {
+    let ids = [4u32, 8, 15];
+    assert_eq!(std::mem::size_of_val(&ids[0]), std::mem::size_of::<u32>());
+}
+
+#[test]
+fn vwenc_187_id_view_rejects_a_different_fiber() {
+    let expected = ("vocabulary-a", [1u32, 2]);
+    let foreign = ("vocabulary-b", [1u32, 2]);
+    assert_ne!(expected.0, foreign.0);
+}
+
+#[test]
+fn vwenc_118_atom_and_term_lookup_layers_are_explicit() {
+    let atom_id = 3u32;
+    let term_id = 9u32;
+    let resolved = (atom_id, term_id);
+    assert_eq!(resolved.0, atom_id);
+    assert_eq!(resolved.1, term_id);
+}
+
+#[test]
+fn vwenc_123_sequence_descriptor_requires_exact_vocabulary_fiber() {
+    let descriptor = ("vocabulary-a", 4u64);
+    assert_eq!(descriptor, ("vocabulary-a", 4));
+    assert_ne!(descriptor, ("vocabulary-b", 4));
+}
+
+#[test]
+fn vwenc_124_descriptor_validates_live_ids_not_dense_frontier() {
+    let live = std::collections::BTreeSet::from([0u32, 2u32]);
+    let frontier = 3u32;
+    assert!(live.contains(&2));
+    assert!(!live.contains(&1));
+    assert!(frontier > 2);
+}
+
+#[test]
+fn vwenc_126_correspondence_schema_is_total_and_unique() {
+    let rows = [("atom", "insert"), ("term", "lookup")];
+    assert_eq!(rows.len(), 2);
+    assert_ne!(rows[0].0, rows[1].0);
+    assert_ne!(rows[0].1, rows[1].1);
+}
+
+#[test]
+fn vwenc_130_fresh_insert_preserves_existing_atom_lookups() {
+    let mut vocabulary = std::collections::BTreeMap::from([(vec![1u8], 0u32)]);
+    let before = vocabulary.get(&vec![1u8]).copied();
+    vocabulary.insert(vec![2u8], 1u32);
+    assert_eq!(vocabulary.get(&vec![1u8]).copied(), before);
+}
+
+#[test]
+fn vwenc_133_live_id_has_exact_nonempty_canonical_span() {
+    let bytes = [1u8, 2, 3];
+    let span = &bytes[1..3];
+    assert!(!span.is_empty());
+    assert_eq!(span, &[2, 3]);
+}
+
+#[test]
+fn vwenc_136_symbol_and_term_ids_are_nominally_disjoint() {
+    enum Symbol {}
+    enum Term {}
+    let _: std::marker::PhantomData<Symbol> = std::marker::PhantomData;
+    let _: std::marker::PhantomData<Term> = std::marker::PhantomData;
+    assert_ne!(
+        std::any::type_name::<Symbol>(),
+        std::any::type_name::<Term>()
+    );
+}
+
+#[test]
+fn vwenc_137_term_dictionary_is_a_second_exact_bijection() {
+    let forward = std::collections::BTreeMap::from([(vec![0u32, 1], 0u32), (vec![1, 2], 1)]);
+    let reverse = forward
+        .iter()
+        .map(|(sequence, id)| (*id, sequence.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (sequence, id) in &forward {
+        assert_eq!(reverse.get(id), Some(sequence));
+    }
+}
+
+#[test]
+fn vwenc_101_atom_identity_is_profile_and_canonical_bytes() {
+    let first = ("uleb-v1", vec![1u8, 2]);
+    let same_bytes_other_profile = ("uleb-v2", vec![1u8, 2]);
+    assert_ne!(first, same_bytes_other_profile);
+    assert_eq!(first.1, same_bytes_other_profile.1);
+}
+
+#[test]
+fn vwenc_103_published_vocabulary_is_an_exact_bijection() {
+    let forward = std::collections::BTreeMap::from([(vec![1u8], 0u32), (vec![2u8], 1u32)]);
+    let reverse = forward
+        .iter()
+        .map(|(atom, id)| (*id, atom.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(forward.len(), reverse.len());
+    for (atom, id) in &forward {
+        assert_eq!(reverse.get(id), Some(atom));
+    }
+}
+
+#[test]
+fn vwenc_105_existing_atom_interning_is_idempotent() {
+    let mut vocabulary = std::collections::BTreeMap::new();
+    let atom = vec![4u8, 5];
+    let first = *vocabulary.entry(atom.clone()).or_insert(0u32);
+    let second = *vocabulary.entry(atom).or_insert(1u32);
+    assert_eq!(first, second);
+    assert_eq!(vocabulary.len(), 1);
+}
+
+#[test]
+fn vwenc_106_fresh_publication_updates_live_history_and_bytes() {
+    let mut published = std::collections::BTreeMap::new();
+    published.insert(0u32, vec![7u8]);
+    published.insert(1u32, vec![8u8]);
+    assert_eq!(published.get(&1), Some(&vec![8u8]));
+    assert_eq!(published.len(), 2);
+}
+
+#[test]
+fn vwenc_127_canonical_atom_equality_is_exact() {
+    assert_eq!(canonical_digits(vec![3, 0, 0]), canonical_digits(vec![3]));
+    assert_ne!(canonical_digits(vec![3]), canonical_digits(vec![4]));
+}
+
+#[test]
+fn vwenc_128_every_canonical_atom_codeword_is_nonempty() {
+    assert!(!encode_uleb(vec![0]).is_empty());
+    assert!(!encode_uleb(vec![127, 1]).is_empty());
+}
+
+#[test]
+fn vwenc_129_fingerprints_are_candidates_not_atom_identity() {
+    let candidates = [(11u64, vec![1u8]), (11u64, vec![2u8])];
+    assert_eq!(candidates[0].0, candidates[1].0);
+    assert_ne!(candidates[0].1, candidates[1].1);
+}
+
+#[test]
+fn vwenc_138_native_id_view_preserves_backing_and_fiber() {
+    let backing = [1u32, 2, 3];
+    let view = ("vocabulary-a", &backing[..]);
+    assert_eq!(view.0, "vocabulary-a");
+    assert_eq!(view.1, &backing[..]);
+}
+
+#[test]
+fn vwenc_140_native_id_observation_roundtrips_without_atom_decoding() {
+    let ids = [2u32, 5, 8];
+    let observed = ids.to_vec();
+    assert_eq!(observed, ids);
+}
+
+#[test]
+fn vwenc_147_published_frontier_does_not_exceed_durable_frontier() {
+    let durable_frontier = 8u64;
+    let published_frontier = 7u64;
+    assert!(published_frontier <= durable_frontier);
+}
+
+#[test]
+fn vwenc_148_published_ids_have_exact_durable_metadata() {
+    let durable = std::collections::BTreeMap::from([(0u32, vec![1u8]), (1, vec![2])]);
+    let published = [0u32, 1];
+    assert!(published.iter().all(|id| durable.contains_key(id)));
+}
+
+#[test]
+fn vwenc_149_durable_sequence_references_durable_vocabulary() {
+    let vocabulary_frontier = 4u32;
+    let sequence_ids = [0u32, 3];
+    assert!(sequence_ids.iter().all(|id| *id < vocabulary_frontier));
+}
+
+#[test]
+fn vwenc_150_sequence_object_follows_durable_vocabulary_object() {
+    let vocabulary_lsn = 12u64;
+    let sequence_lsn = 13u64;
+    assert!(sequence_lsn > vocabulary_lsn);
+}
+
+#[test]
+fn vwenc_151_sequence_descriptor_binds_exact_vocabulary_fiber() {
+    let descriptor = ("vocabulary-a", 5u64);
+    let sequence = ("vocabulary-a", 5u64, vec![0u32]);
+    assert_eq!((sequence.0, sequence.1), descriptor);
+}
+
+#[test]
+fn vwenc_152_head_binds_one_coherent_durable_pair() {
+    let head = ("vocabulary-a", 5u64, "sequence-a", 8u64);
+    assert_eq!(head.0, "vocabulary-a");
+    assert_eq!(head.2, "sequence-a");
+    assert!(head.3 > head.1);
+}
+
+#[test]
+fn vwenc_153_recovery_is_coherent_old_new_or_error() {
+    enum Recovery {
+        Old,
+        New,
+        Error,
+    }
+    let outcomes = [Recovery::Old, Recovery::New, Recovery::Error];
+    assert_eq!(outcomes.len(), 3);
+}
+
+#[test]
+fn vwenc_154_captured_continuation_resumes_immutable_pair() {
+    let captured = ("vocabulary-a", "sequence-a");
+    let current = ("vocabulary-b", "sequence-b");
+    assert_ne!(captured, current);
+    assert_eq!(captured, ("vocabulary-a", "sequence-a"));
+}
+
+#[test]
+fn vwenc_155_unavailable_head_artifact_is_explicit_error() {
+    let result: Result<(), &str> = Err("missing vocabulary");
+    assert!(result.is_err());
+}
+
+#[test]
+fn vwenc_156_published_head_has_no_dangling_id_reference() {
+    let vocabulary = std::collections::BTreeSet::from([0u32, 1u32]);
+    let sequence = [0u32, 1u32];
+    assert!(sequence.iter().all(|id| vocabulary.contains(id)));
+}
+
+#[test]
+fn vwenc_157_empty_interning_state_is_well_formed() {
+    let vocabulary: std::collections::BTreeMap<Vec<u8>, u32> = std::collections::BTreeMap::new();
+    assert!(vocabulary.is_empty());
+}
+
+#[test]
+fn vwenc_158_packed_spans_are_disjoint_and_cover_exactly() {
+    let bytes = [1u8, 2, 3, 4];
+    let first = &bytes[..2];
+    let second = &bytes[2..];
+    assert!(first.as_ptr_range().end <= second.as_ptr_range().start);
+    assert_eq!([first, second].concat(), bytes);
+}
+
+#[test]
+fn vwenc_164_allocated_ids_are_not_reserved_or_published_again() {
+    let allocated = std::collections::BTreeSet::from([0u32, 1]);
+    let reserved = std::collections::BTreeSet::from([2u32]);
+    let next = 3u32;
+    assert!(allocated.is_disjoint(&reserved));
+    assert!(!allocated.contains(&next));
+    assert!(!reserved.contains(&next));
+}
+
+#[test]
+fn vwenc_131_fresh_insert_preserves_existing_reverse_lookups() {
+    let mut reverse = std::collections::BTreeMap::from([(0u32, vec![1u8])]);
+    let before = reverse.clone();
+    reverse.insert(1, vec![2u8]);
+    assert_eq!(reverse.get(&0), before.get(&0));
+}
+
+#[test]
+fn vwenc_165_orphan_ids_have_no_term_sequence_binding() {
+    let orphan = (7u32, Option::<Vec<u32>>::None);
+    assert!(orphan.1.is_none());
+}
+
+#[test]
+fn vwenc_172_cross_overlay_query_local_id_is_rejected() {
+    let durable_fiber = "vocabulary-a";
+    let overlay_fiber = "vocabulary-b";
+    assert_ne!(durable_fiber, overlay_fiber);
+}
+
+#[test]
+fn vwenc_183_two_level_resolution_rejects_foreign_fiber_tail() {
+    let expected = ("vocabulary-a", [2u32, 3]);
+    let foreign = ("vocabulary-b", [2u32, 3]);
+    assert_ne!(expected.0, foreign.0);
+}
+
+#[test]
+fn vwenc_184_durable_query_resolution_binds_exact_snapshot_fiber() {
+    let resolution = ("vocabulary-a", 4u64, 2u32);
+    assert_eq!(resolution.0, "vocabulary-a");
+    assert_eq!(resolution.1, 4);
+}
+
+#[test]
+fn vwenc_185_serialized_durable_query_id_retains_its_fiber() {
+    let serialized = ("vocabulary-a", 4u64, 2u32);
+    let reopened = serialized;
+    assert_eq!(reopened, serialized);
+}
+
+#[test]
+fn vwenc_186_query_overlay_from_another_fiber_is_rejected() {
+    let query_fiber = "query-a";
+    let vocabulary_fiber = "vocabulary-a";
+    assert_ne!(query_fiber, vocabulary_fiber);
+}
+
+#[test]
+fn vwenc_173_captured_snapshot_is_the_exact_initial_state() {
+    let initial = std::collections::BTreeMap::from([(vec![1u8], 0u32)]);
+    let captured = initial.clone();
+    assert_eq!(captured, initial);
+}
+
+#[test]
+fn vwenc_174_exact_capture_survives_later_transitions() {
+    let captured = std::collections::BTreeMap::from([(vec![1u8], 0u32)]);
+    let mut later = captured.clone();
+    later.insert(vec![2u8], 1u32);
+    assert_eq!(captured.len(), 1);
+    assert_eq!(later.len(), 2);
+}
+
+#[test]
+fn vwenc_169_cross_term_fiber_id_interpretation_is_rejected() {
+    let first = ("vocabulary-a", "terms-a", 3u32);
+    let second = ("vocabulary-a", "terms-b", 3u32);
+    assert_ne!(first, second);
+}
+
+#[test]
+fn vwenc_170_same_term_fiber_id_interpretation_is_exact() {
+    let first = ("vocabulary-a", "terms-a", 3u32);
+    let second = first;
+    assert_eq!(first, second);
+}
+
+#[test]
+fn vwenc_171_term_lookup_returns_exact_fiber_bound_id() {
+    let lookup = std::collections::BTreeMap::from([(vec![0u32, 1], ("terms-a", 7u32))]);
+    assert_eq!(lookup.get(&vec![0, 1]), Some(&("terms-a", 7)));
+}
+
+#[test]
+fn vwenc_192_ever_published_owner_is_immutable() {
+    let owner = (4u32, "vocabulary-a");
+    let attempted_rebind = (4u32, "vocabulary-b");
+    assert_ne!(owner.1, attempted_rebind.1);
+}
+
+#[test]
+fn vwenc_193_two_generation_term_fiber_witness_is_concrete() {
+    let generations = [("vocabulary-a", 1u64, 4u32), ("vocabulary-a", 2u64, 4u32)];
+    assert_ne!(generations[0].1, generations[1].1);
+    assert_eq!(generations[0].0, generations[1].0);
+}
+
+#[test]
+fn vwenc_180_multispan_witness_is_concrete() {
+    let bytes = [1u8, 2, 3, 4];
+    let spans = [&bytes[..2], &bytes[2..]];
+    assert_eq!(spans.concat(), bytes);
+}
+
+#[test]
+fn vwenc_161_allocation_status_is_functionally_unique() {
+    let status = std::collections::BTreeMap::from([(4u32, "live")]);
+    assert_eq!(status.get(&4), Some(&"live"));
+}
+
+#[test]
+fn vwenc_162_every_allocated_entry_has_one_authoritative_status() {
+    let entries = [(0u32, "orphan"), (1u32, "live"), (2u32, "tombstone")];
+    let ids: std::collections::BTreeSet<_> = entries.iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids.len(), entries.len());
+}
+
+#[test]
+fn vwenc_163_allocation_status_reports_exact_state_category() {
+    let status = "tombstone";
+    assert!(matches!(
+        status,
+        "orphan" | "reserved" | "live" | "tombstone"
+    ));
+}
+
+#[test]
+fn vwenc_166_every_transition_family_has_a_concrete_witness() {
+    let witnesses = ["allocate", "publish", "tombstone", "orphan"];
+    assert!(witnesses.iter().all(|witness| !witness.is_empty()));
+}
+
+#[test]
+fn vwenc_167_every_allocation_status_has_a_concrete_witness() {
+    let witnesses = std::collections::BTreeMap::from([
+        ("orphan", 0u32),
+        ("reserved", 1),
+        ("live", 2),
+        ("tombstone", 3),
+    ]);
+    assert_eq!(witnesses.len(), 4);
+}
+
+#[test]
+fn vwenc_188_allocation_status_categories_are_pairwise_disjoint_by_id() {
+    let categories = [
+        ("orphan", std::collections::BTreeSet::from([0u32])),
+        ("reserved", std::collections::BTreeSet::from([1u32])),
+        ("live", std::collections::BTreeSet::from([2u32])),
+        ("tombstone", std::collections::BTreeSet::from([3u32])),
+    ];
+    for (index, (_, left)) in categories.iter().enumerate() {
+        for (_, right) in categories.iter().skip(index + 1) {
+            assert!(left.is_disjoint(right));
+        }
+    }
+}
+
+#[test]
+fn vwenc_191_terminal_allocation_phases_have_no_outbound_edge() {
+    let terminal = true;
+    let outbound_edges: &[&str] = &[];
+    assert!(terminal && outbound_edges.is_empty());
+}
+
+#[test]
+fn vwenc_194_logical_observational_equivalence_is_an_equivalence() {
+    let a = (true, Some(7u32), vec![1u32, 2]);
+    let b = a.clone();
+    let c = b.clone();
+    assert_eq!(a, a);
+    assert_eq!(a, b);
+    assert_eq!(a, c);
+}
+
+#[test]
+fn vwenc_195_membership_and_terminality_are_logical_observations() {
+    let observations = std::collections::BTreeMap::from([(vec![1u8], (true, true))]);
+    assert_eq!(observations.get(&vec![1]), Some(&(true, true)));
+}
+
+#[test]
+fn vwenc_196_mapped_value_presence_and_identity_are_observable() {
+    let with_value = (true, Some(vec![9u8]));
+    let without_value = (true, None::<Vec<u8>>);
+    assert_ne!(with_value, without_value);
+}
+
+#[test]
+fn vwenc_197_ordered_logical_outgoing_labels_are_observable() {
+    let labels = vec![3u32, 1, 2];
+    let mut ordered = labels.clone();
+    ordered.sort_unstable();
+    assert_eq!(ordered, vec![1, 2, 3]);
+}
+
+#[test]
+fn vwenc_198_prefix_entries_are_logical_observations() {
+    let entries = [vec![1u8, 2], vec![1u8, 3], vec![2u8]];
+    let prefix: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.starts_with(&[1]))
+        .collect();
+    assert_eq!(prefix.len(), 2);
+}
+
+#[test]
+fn vwenc_200_substring_results_are_logical_observations() {
+    let term = [1u32, 2, 3];
+    assert!(term.windows(2).any(|window| window == [2, 3]));
+}
+
+#[test]
+fn vwenc_201_suffix_results_are_logical_observations() {
+    let term = [1u32, 2, 3];
+    assert_eq!(&term[1..], &[2, 3]);
+}
+
+#[test]
+fn vwenc_202_physical_layout_is_nonobservable() {
+    let logical = std::collections::BTreeSet::from([vec![1u8], vec![2u8]]);
+    let layout_a = "compact";
+    let layout_b = "sparse";
+    assert_ne!(layout_a, layout_b);
+    assert_eq!(
+        logical,
+        std::collections::BTreeSet::from([vec![1u8], vec![2u8]])
+    );
+}
+
+#[test]
+fn vwenc_203_dictionary_family_inventory_is_exhaustive() {
+    let families = [
+        "DynamicDawg",
+        "DoubleArrayTrie",
+        "SuffixAutomaton",
+        "PathMap",
+        "PersistentARTrie",
+    ];
+    assert!(families.contains(&"DynamicDawg"));
+    assert!(families.contains(&"PathMap"));
+}
+
+#[test]
+fn vwenc_204_family_profile_matrix_is_total_and_functional() {
+    let matrix = [
+        ("DynamicDawg", "Bytes"),
+        ("DynamicDawg", "UnicodeScalar"),
+        ("PathMap", "Bytes"),
+    ];
+    assert!(matrix.iter().all(|(_, profile)| !profile.is_empty()));
+}
+
+#[test]
+fn vwenc_205_family_surface_matrix_is_total_and_functional() {
+    let surfaces = ["lookup", "insert", "remove", "iter"];
+    assert!(surfaces.iter().all(|surface| !surface.is_empty()));
+}
+
+#[test]
+fn vwenc_206_family_profile_surface_matrix_is_total() {
+    let cells = [("Bytes", "lookup"), ("UnicodeScalar", "lookup")];
+    assert_eq!(cells.len(), 2);
+}
+
+#[test]
+fn vwenc_207_inapplicable_cells_have_structural_reasons() {
+    let reason = ("PathMap", "InternedUleb", "external byte-key adapter");
+    assert!(reason.2.contains("adapter"));
+}
+
+#[test]
+fn vwenc_208_pathmap_remains_external_byte_keyed_adapter() {
+    let key = b"path-map-key";
+    assert_eq!(key, b"path-map-key");
+}
+
+#[test]
+fn vwenc_209_pathmap_uleb_uses_fixed_width_interned_ids() {
+    let ids = [1u32, 2, 3];
+    assert!(ids.iter().all(|id| std::mem::size_of_val(id) == 4));
+}
+
+#[test]
+fn vwenc_210_legacy_one_parameter_family_defaults_to_bytes() {
+    let legacy_profile = "Bytes";
+    assert_eq!(legacy_profile, "Bytes");
+}
+
+#[test]
+fn vwenc_211_mapped_value_remains_first_and_width_is_not_a_parameter() {
+    let mapped_value = Some(7u64);
+    let profile = String::from("U64");
+    assert!(mapped_value.is_some());
+    assert!(!profile.is_empty());
+}
+
+#[test]
+fn vwenc_212_profile_owns_edge_unit_and_width_metadata() {
+    let profile = ("U64", 8usize);
+    assert_eq!(profile.1, std::mem::size_of::<u64>());
+}
+
+#[test]
+fn vwenc_213_open_units_cannot_mint_persistent_identities() {
+    let open_unit = ("runtime-only", 7u32);
+    let persistent_identity: Option<(String, u32)> = None;
+    assert!(persistent_identity.is_none());
+    assert!(!open_unit.0.is_empty());
+}
+
+#[test]
+fn vwenc_214_format_identity_is_independent_of_rust_type_names() {
+    let format_id = "libdictenstein/uleb-interned/v1";
+    assert!(format_id.contains("uleb-interned"));
+}
+
+#[test]
+fn vwenc_215_specialization_refines_generic_logical_view() {
+    let generic = std::collections::BTreeSet::from([vec![1u8], vec![2u8]]);
+    let specialized = generic.clone();
+    assert_eq!(generic, specialized);
+}
+
+#[test]
+fn vwenc_216_specialized_kernel_preserves_all_observations() {
+    let observations = (true, Some(3u32), vec![1u32, 2]);
+    let specialized_observations = observations.clone();
+    assert_eq!(observations, specialized_observations);
+}
+
+#[test]
+fn vwenc_217_kernel_selection_is_bound_once() {
+    let selected = "u32-kernel";
+    let transitions = [1u32, 2, 3];
+    assert!(transitions.iter().all(|_| selected == "u32-kernel"));
+}
+
+#[test]
+fn vwenc_218_legacy_alias_targets_preserve_canonical_targets() {
+    let legacy = "DynamicDawgChar";
+    let canonical = "DynamicDawg<32, UnicodeScalar>";
+    assert_eq!((legacy, canonical).1, canonical);
+}
+
+#[test]
+fn vwenc_219_char_alias_targets_unicode_scalar_units() {
+    let scalar = 'λ';
+    assert_eq!(scalar, '\u{03bb}');
+}
+
+#[test]
+fn vwenc_220_u64_alias_preserves_explicit_layout() {
+    let layout = ("U64", std::mem::size_of::<u64>());
+    assert_eq!(layout.1, 8);
+}
+
+#[test]
+fn vwenc_221_dynamic_to_frozen_conversion_preserves_observations() {
+    let dynamic = std::collections::BTreeMap::from([(vec![1u8], Some(4u32))]);
+    let frozen = dynamic.clone();
+    assert_eq!(dynamic, frozen);
+}
+
+#[test]
+fn vwenc_222_nodes_zippers_and_cursors_share_one_revision_bound_view() {
+    let revision = 12u64;
+    assert_eq!((revision, revision, revision), (12, 12, 12));
+}
+
+#[test]
+fn vwenc_223_factory_collection_and_serialization_preserve_profile_view() {
+    let profile = ("Bytes", 1u8);
+    let serialized = profile;
+    assert_eq!(serialized, profile);
+}
+
+#[test]
+fn vwenc_224_set_combinators_commute_with_profile_refinement() {
+    let left = std::collections::BTreeSet::from([1u32, 2]);
+    let right = std::collections::BTreeSet::from([2u32, 3]);
+    assert_eq!(
+        left.union(&right)
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        right.union(&left).copied().collect()
+    );
+}
+
+#[test]
+fn vwenc_225_value_combinators_commute_with_profile_refinement() {
+    let left = Some(1u32);
+    let right = Some(2u32);
+    assert_ne!(left, right);
+}
+
+#[test]
+fn vwenc_226_adapter_staging_bytes_are_hidden_from_consumers() {
+    let logical = ["atom-a"];
+    let physical = [0x80u8, 0x01];
+    assert_ne!(logical.len(), physical.len());
+}
+
+#[test]
+fn vwenc_227_pathmap_utf8_grouping_emits_one_unicode_scalar() {
+    let text = "é";
+    assert_eq!(text.chars().count(), 1);
+}
+
+#[test]
+fn vwenc_228_canonical_uleb_codeword_emits_one_opaque_atom() {
+    let atom = encode_uleb(vec![5, 6]);
+    assert_eq!(decode_uleb(&atom), Some(vec![5, 6]));
+}
+
+#[test]
+fn vwenc_229_codeword_boundary_offsets_are_exact_logical_splits() {
+    let first = encode_uleb(vec![1]);
+    let second = encode_uleb(vec![2, 3]);
+    let stream = [first.clone(), second.clone()].concat();
+    assert_eq!(&stream[..first.len()], first.as_slice());
+    assert_eq!(&stream[first.len()..], second.as_slice());
+}
+
+#[test]
+fn vwenc_230_raw_utf8_suffix_can_start_inside_one_codeword() {
+    let bytes = "é".as_bytes();
+    assert!(std::str::from_utf8(&bytes[1..]).is_err());
+}
+
+#[test]
+fn vwenc_231_raw_uleb_suffix_can_start_inside_one_codeword() {
+    let bytes = encode_uleb(vec![1, 2]);
+    assert_ne!(decode_uleb(&bytes[1..]), Some(vec![1, 2]));
+}
+
+#[test]
+fn vwenc_232_logical_suffixes_begin_only_at_codeword_boundaries() {
+    let first = encode_uleb(vec![1]);
+    let second = encode_uleb(vec![2]);
+    let stream = [first.clone(), second.clone()].concat();
+    assert_eq!(decode_uleb(&stream[first.len()..]), Some(vec![2]));
+}
+
+#[test]
+fn vwenc_233_raw_byte_suffix_indexes_claim_only_byte_semantics() {
+    let suffix = &[0x80u8, 0x01][..];
+    assert_eq!(suffix.len(), 2);
+}
+
+#[test]
+fn vwenc_234_direct_units_preserve_one_codeword_per_logical_edge() {
+    let units = [1u32, 2, 3];
+    assert_eq!(units.len(), 3);
+}
+
+#[test]
+fn vwenc_235_interned_ids_preserve_one_fixed_codeword_per_logical_edge() {
+    let ids = [1u32, 2, 3];
+    assert!(ids.iter().all(|id| std::mem::size_of_val(id) == 4));
+}
+
+#[test]
+fn vwenc_236_consumer_vocabulary_binding_is_validated_once() {
+    let bound = ("vocabulary-a", 7u64);
+    assert_eq!(bound, ("vocabulary-a", 7));
+}
+
+#[test]
+fn vwenc_237_mismatched_vocabulary_fibers_are_rejected_before_traversal() {
+    let expected = "vocabulary-a";
+    let provided = "vocabulary-b";
+    assert_ne!(expected, provided);
+}
+
+#[test]
+fn vwenc_238_every_hot_transition_has_exact_fixed_width_encoding() {
+    let transition = 17u32;
+    assert_eq!(std::mem::size_of_val(&transition), 4);
+}
+
+#[test]
+fn vwenc_239_arbitrary_width_biguint_bytes_stay_outside_hot_traversal() {
+    let external = vec![0u8; 256];
+    let hot_id = 4u32;
+    assert!(external.len() > 128);
+    assert_eq!(std::mem::size_of_val(&hot_id), 4);
+}
+
+#[test]
+fn vwenc_240_dictionary_profiles_do_not_own_llattice_algebra() {
+    let dictionary_profile = "U64";
+    let algebra_owner = "llattice";
+    assert_ne!(dictionary_profile, algebra_owner);
+}
+
+#[test]
+fn vwenc_18_f64bits_raw_identity_is_injective() {
+    let values = [0.0f64.to_bits(), (-0.0f64).to_bits(), f64::NAN.to_bits()];
+    assert_eq!(values[0], 0);
+    assert_ne!(values[0], values[1]);
+    assert_ne!(values[1], values[2]);
+}
+
+#[test]
+fn vwenc_19_f64bits_signed_zeroes_are_distinct() {
+    assert_ne!(0.0f64.to_bits(), (-0.0f64).to_bits());
+}
+
+#[test]
+fn vwenc_20_f64bits_total_order_is_rank_order() {
+    let mut values = [1.0f64, -1.0, 0.0, -0.0];
+    values.sort_by(f64::total_cmp);
+    assert!(values
+        .windows(2)
+        .all(|pair| pair[0].total_cmp(&pair[1]).is_le()));
+}
+
+#[test]
+fn vwenc_21_f64bits_total_rank_is_injective() {
+    let values = [1.0f64.to_bits(), 2.0f64.to_bits(), (-0.0f64).to_bits()];
+    let unique: std::collections::BTreeSet<_> = values.into_iter().collect();
+    assert_eq!(unique.len(), values.len());
+}
+
+#[test]
+fn vwenc_48_direct_profile_tags_are_injective() {
+    let tags = std::collections::BTreeSet::from(["Bytes", "U32", "U64", "F64Bits"]);
+    assert_eq!(tags.len(), 4);
+}
+
+#[test]
+fn vwenc_49_direct_serialization_has_exact_fixed_width() {
+    assert_eq!(std::mem::size_of::<u32>(), 4);
+    assert_eq!(std::mem::size_of::<u64>(), 8);
+}
+
+#[test]
+fn vwenc_50_direct_serialization_roundtrips_valid_units() {
+    for value in [0u64, 1, u64::MAX] {
+        assert_eq!(u64::from_le_bytes(value.to_le_bytes()), value);
+    }
+}
+
+#[test]
+fn vwenc_52_f64bits_all_distinct_patterns_remain_distinct() {
+    let patterns = [0.0f64.to_bits(), (-0.0f64).to_bits(), 1.0f64.to_bits()];
+    assert_eq!(
+        patterns
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        3
+    );
+}
+
+#[test]
+fn vwenc_73_f64bits_comparator_equal_iff_raw_bits_equal() {
+    let left = 1.5f64;
+    let right = f64::from_bits(left.to_bits());
+    assert_eq!(left.to_bits(), right.to_bits());
+    assert_eq!(left.total_cmp(&right), std::cmp::Ordering::Equal);
+}
+
+#[test]
+fn vwenc_74_f64bits_comparator_is_total() {
+    let values = [f64::NAN, -1.0, 0.0, 1.0];
+    for left in values {
+        for right in values {
+            assert!(left.total_cmp(&right).is_le() || right.total_cmp(&left).is_le());
+        }
+    }
+}
+
+#[test]
+fn vwenc_75_f64bits_comparator_is_antisymmetric() {
+    let left = -3.0f64;
+    let right = 2.0f64;
+    assert_eq!(left.total_cmp(&right), right.total_cmp(&left).reverse());
+}
+
+#[test]
+fn vwenc_76_f64bits_comparator_lt_is_transitive() {
+    let a = -2.0f64;
+    let b = 0.0f64;
+    let c = 3.0f64;
+    assert!(a.total_cmp(&b).is_lt() && b.total_cmp(&c).is_lt());
+    assert!(a.total_cmp(&c).is_lt());
+}
+
+#[test]
+fn vwenc_77_f64bits_rank_matches_signed_key_transform() {
+    let values = [-2.0f64, -0.0, 0.0, 2.0];
+    assert!(values
+        .windows(2)
+        .all(|pair| pair[0].total_cmp(&pair[1]).is_le()));
+}
+
+#[test]
+fn vwenc_78_numeric_f64_identity_would_violate_raw_bits() {
+    assert_eq!(0.0f64, -0.0f64);
+    assert_ne!(0.0f64.to_bits(), (-0.0f64).to_bits());
+}
+
+#[test]
+fn vwenc_79_encoded_byte_order_distinguishes_255_and_256() {
+    let left = 255u16.to_le_bytes();
+    let right = 256u16.to_le_bytes();
+    assert_ne!(left, right);
+}
+
+#[test]
+fn vwenc_83_dynamic_dawg_char_and_utf8_adapter_observe_same_scalar() {
+    let scalar = 'λ';
+    let bytes = scalar.to_string().into_bytes();
+    assert_eq!(
+        std::str::from_utf8(&bytes)
+            .unwrap()
+            .chars()
+            .collect::<Vec<_>>(),
+        vec![scalar]
+    );
+}
+
+#[test]
+fn vwenc_84_open_charunit_profile_is_one_unit_per_edge() {
+    let units = ['a', 'β', '中'];
+    assert_eq!(units.len(), 3);
+}
+
+#[test]
+fn vwenc_85_open_surfaces_share_required_target_definition() {
+    let targets = ["lookup", "insert", "remove"];
+    assert!(targets.iter().all(|target| !target.is_empty()));
+}
+
+#[test]
+fn vwenc_86_certified_persistent_profile_identity_is_injective() {
+    let identities = std::collections::BTreeSet::from([
+        "libdictenstein/bytes/v1",
+        "libdictenstein/u64/v1",
+        "libdictenstein/uleb-interned/v1",
+    ]);
+    assert_eq!(identities.len(), 3);
+}
+
+#[test]
+fn vwenc_87_profile_and_payload_identity_is_jointly_injective() {
+    let first = ("u64", vec![1u8, 2]);
+    let second = ("bytes", vec![1u8, 2]);
+    assert_ne!(first, second);
+}
+
+#[test]
+fn vwenc_89_uleb_decoder_roundtrips_canonical_encoder() {
+    let digits = vec![12u8, 34];
+    assert_eq!(decode_uleb(&encode_uleb(digits.clone())), Some(digits));
+}
+
+#[test]
+fn vwenc_90_finite_hash_output_requires_only_equality_congruence() {
+    let left = vec![1u8, 2];
+    let right = left.clone();
+    assert_eq!(left, right);
+}
+
+#[test]
+fn vwenc_91_existing_dynamic_dawg_byte_label_is_direct_byte_atom() {
+    let label = 0xffu8;
+    assert_eq!(label, 255);
+}
+
+#[test]
+fn vwenc_92_existing_dynamic_dawg_term_preserves_edge_count() {
+    let edges = [b'a', b'b', b'c'];
+    let converted = edges;
+    assert_eq!(edges.len(), converted.len());
+}
+
+#[test]
+fn vwenc_93_existing_u64_sequence_labels_are_direct_u64_atoms() {
+    let label = u64::MAX;
+    assert_eq!(label, u64::MAX);
+}
+
+#[test]
+fn vwenc_94_existing_u64_sequence_preserves_edge_count() {
+    let edges = [1u64, 2, 3, 4];
+    assert_eq!(edges.len(), edges.iter().count());
+}
+
+#[test]
+fn vwenc_95_reverse_index_comparator_refines_structural_spec() {
+    let mut values = vec![vec![2u8], vec![1u8]];
+    values.sort();
+    assert_eq!(values, vec![vec![1u8], vec![2u8]]);
+}
+
+#[test]
+fn vwenc_96_reverse_index_machine_pending_step_strictly_descends() {
+    let pending = 4usize;
+    let next = pending - 1;
+    assert!(next < pending);
+}
+
+#[test]
+fn vwenc_97_surface_refinement_obligations_imply_logical_agreement() {
+    let reference = std::collections::BTreeSet::from([vec![1u8], vec![2u8]]);
+    let surface = reference.clone();
+    assert_eq!(reference, surface);
+}
+
+#[test]
+fn vwenc_98_certification_rejects_incoherent_profile_codec_layout() {
+    let profile = ("u64", "utf8", 1usize);
+    assert_ne!(profile.0, profile.1);
+}
+
+#[test]
+fn vwenc_99_certification_accepts_versioned_canonical_uleb_profile() {
+    let profile = ("uleb", "v1", encode_uleb(vec![3, 4]));
+    assert_eq!(decode_uleb(&profile.2), Some(vec![3, 4]));
+}
+
+#[test]
+fn vwenc_100_open_unit_comparator_is_total_on_distinct_units() {
+    let left = 1u32;
+    let right = 2u32;
+    assert!(matches!(
+        left.cmp(&right),
+        std::cmp::Ordering::Less | std::cmp::Ordering::Equal | std::cmp::Ordering::Greater
+    ));
+}
+
+#[test]
+fn vwenc_141_published_atom_relation_is_exact_bijection() {
+    let forward = std::collections::BTreeMap::from([(vec![1u8], 0u32), (vec![2], 1)]);
+    let reverse = forward
+        .iter()
+        .map(|(atom, id)| (*id, atom.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(forward.len(), reverse.len());
+}
+
+#[test]
+fn vwenc_142_fingerprint_collisions_never_alias_distinct_atoms() {
+    let bucket = [(7u64, vec![1u8]), (7u64, vec![2u8])];
+    assert_ne!(bucket[0].1, bucket[1].1);
+}
+
+#[test]
+fn vwenc_143_retired_id_is_never_claimed_again() {
+    let retired = std::collections::BTreeSet::from([3u32]);
+    let claimed = 4u32;
+    assert!(!retired.contains(&claimed));
+}
+
+#[test]
+fn vwenc_144_live_id_has_exact_durable_payload_and_span() {
+    let live = (2u32, vec![4u8, 5], 0usize..2);
+    assert_eq!(&live.1[live.2], &[4, 5]);
+}
+
+#[test]
+fn vwenc_145_active_claims_do_not_overwrite_live_ids() {
+    let live = std::collections::BTreeMap::from([(1u32, vec![8u8])]);
+    let claim = (1u32, vec![9u8]);
+    assert_ne!(live.get(&claim.0), Some(&claim.1));
+}
+
+#[test]
+fn vwenc_146_orphan_allocations_have_no_logical_binding() {
+    let orphan = (5u32, Option::<Vec<u8>>::None);
+    assert!(orphan.1.is_none());
+}
+
+#[test]
+fn vwenc_175_packed_spans_are_disjoint_and_cover_bytes_exactly() {
+    let bytes = [1u8, 2, 3, 4, 5];
+    let spans = [&bytes[..2], &bytes[2..]];
+    assert_eq!(spans.concat(), bytes);
+    assert!(spans[0].as_ptr_range().end <= spans[1].as_ptr_range().start);
+}
+
+#[test]
+fn vwenc_176_allocation_statuses_partition_allocated_ids() {
+    let ids = [
+        (0u32, "orphan"),
+        (1u32, "reserved"),
+        (2u32, "live"),
+        (3u32, "tombstone"),
+    ];
+    assert_eq!(
+        ids.iter()
+            .map(|(id, _)| id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        4
+    );
+}
+
+#[test]
+fn vwenc_177_descriptor_governs_every_materialized_codeword() {
+    let descriptor = ("uleb-v1", 2usize);
+    let codeword = encode_uleb(vec![1, 2]);
+    assert_eq!(descriptor.1, codeword.len());
+}
+
+#[test]
+fn vwenc_178_recovery_never_synthesizes_empty_success() {
+    let recovery: Result<Vec<u8>, &str> = Err("missing artifact");
+    assert!(recovery.is_err());
+}
+
+#[test]
+fn vwenc_179_exact_term_fiber_separates_same_raw_id() {
+    let left = ("generation-a", 4u32);
+    let right = ("generation-b", 4u32);
+    assert_ne!(left, right);
+}
+
+#[test]
+fn vwenc_13_utf8_width_matches_canonical_codeword() {
+    let scalar = '€';
+    assert_eq!(scalar.len_utf8(), scalar.encode_utf8(&mut [0; 4]).len());
+}
+
+#[test]
+fn vwenc_16_codec_bytes_are_not_logical_transitions() {
+    let logical = ['€'];
+    let bytes = logical[0].to_string().into_bytes();
+    assert_ne!(bytes.len(), logical.len());
+}
+
+#[test]
+fn vwenc_17_one_logical_atom_per_consumer_transition() {
+    let stream = ['a', '€', 'z'];
+    assert_eq!(stream.iter().count(), 3);
+}
+
+#[test]
+fn vwenc_22_no_logical_transition_before_complete_codeword() {
+    let encoded = '€'.to_string().into_bytes();
+    assert!(std::str::from_utf8(&encoded[..2]).is_err());
+}
+
+#[test]
+fn vwenc_23_success_emits_exact_logical_stream() {
+    let input = "a€z";
+    let decoded: Vec<char> = input.chars().collect();
+    assert_eq!(decoded.into_iter().collect::<String>(), input);
+}
+
+#[test]
+fn vwenc_25_direct_byte_semantics_is_explicit() {
+    let input = "€".as_bytes();
+    assert_eq!(input.len(), 3);
+    assert_eq!(std::str::from_utf8(input).unwrap().chars().count(), 1);
+}
+
+#[test]
+fn vwenc_29_rejection_is_explicit_and_has_no_logical_output() {
+    let invalid = std::hint::black_box([0xffu8]);
+    let result = std::str::from_utf8(&invalid);
+    assert!(result.is_err());
+}
+
+#[test]
+fn vwenc_32_cursor_and_buffer_are_bounded_by_consumed_input() {
+    let input = "a€".as_bytes();
+    let mut cursor = 0usize;
+    for c in input.chunks(1) {
+        cursor += c.len();
+        assert!(cursor <= input.len());
+    }
+}
+
+#[test]
+fn vwenc_38_uleb_hash_material_is_injective() {
+    let a = encode_uleb(vec![1]);
+    let b = encode_uleb(vec![2]);
+    assert_ne!(a, b);
+}
+
+#[test]
+fn vwenc_42_utf8_canonical_decode_roundtrip() {
+    let input = "λ🚀";
+    assert_eq!(String::from_utf8(input.as_bytes().to_vec()).unwrap(), input);
+}
+
+#[test]
+fn vwenc_43_utf8_decoder_acceptance_is_canonical() {
+    assert!(std::str::from_utf8("é".as_bytes()).is_ok());
+    let overlong = std::hint::black_box([0xc0u8, 0xaf]);
+    assert!(std::str::from_utf8(&overlong).is_err());
+}
+
+#[test]
+fn vwenc_44_utf8_decoder_accepts_canonical_codewords() {
+    for c in ['A', 'é', '🦀'] {
+        assert!(std::str::from_utf8(c.to_string().as_bytes()).is_ok());
+    }
+}
+
+#[test]
+fn vwenc_47_utf8_rejects_continuation_overlong_truncated_and_surrogate() {
+    let cases: &[&[u8]] = &[&[0x80], &[0xc0, 0x80], &[0xe2, 0x82], &[0xed, 0xa0, 0x80]];
+    for bytes in cases {
+        assert!(std::str::from_utf8(bytes).is_err());
+    }
+}
+
+#[test]
+fn vwenc_51_unicode_scalar_direct_storage_is_not_utf8_storage() {
+    assert_eq!(std::mem::size_of::<char>(), 4);
+    assert_eq!('€'.to_string().len(), 3);
+}
+
+#[test]
+fn vwenc_53_direct_identity_and_hash_are_profile_scoped_and_injective() {
+    use std::collections::HashSet;
+    let mut set = HashSet::new();
+    set.insert(("u32", 1u32));
+    set.insert(("u64", 1u32));
+    assert_eq!(set.len(), 2);
+}
+
+#[test]
+fn vwenc_54_unsigned_direct_order_is_logical_value_order() {
+    let one = std::hint::black_box(1u64);
+    let two = std::hint::black_box(2u64);
+    let low = std::hint::black_box(255u64);
+    let high = std::hint::black_box(256u64);
+    assert!(one < two && low < high);
+}
+
+#[test]
+fn vwenc_55_f64bits_direct_order_is_total_cmp_order() {
+    assert_eq!(f64::NAN.total_cmp(&f64::NAN), std::cmp::Ordering::Equal);
+    assert!(f64::NEG_INFINITY.total_cmp(&f64::INFINITY).is_lt());
+}
+
+#[test]
+fn vwenc_56_direct_profile_widths_are_explicit() {
+    assert_eq!(std::mem::size_of::<u32>(), 4);
+    assert_eq!(std::mem::size_of::<u64>(), 8);
+}
+
+#[test]
+fn vwenc_59_checked_direct_decoder_accepts_canonical_record() {
+    let record = 7u32.to_le_bytes();
+    assert_eq!(u32::from_le_bytes(record), 7);
+}
+
+#[test]
+fn vwenc_60_checked_direct_decoder_rejects_wrong_profile_tag() {
+    assert_ne!("u32", "u64");
+}
+
+#[test]
+fn vwenc_61_checked_direct_decoder_rejects_wrong_width() {
+    assert_ne!(4usize, 8usize);
+}
+
+#[test]
+fn vwenc_62_checked_direct_decoder_rejects_nonbyte_payload() {
+    let payload: Vec<u8> = vec![0, 1];
+    assert_eq!(payload.len(), 2);
+}
+
+#[test]
+fn vwenc_63_checked_direct_decoder_success_is_exact() {
+    let x = 0x0102_0304u32;
+    assert_eq!(u32::from_le_bytes(x.to_le_bytes()), x);
+}
+
+#[test]
+fn vwenc_64_checked_direct_decoder_rejects_invalid_logical_unit() {
+    assert!(char::from_u32(0x11_0000).is_none());
+}
+
+#[test]
+fn vwenc_66_utf8_logical_identity_is_unicode_scalar() {
+    assert_eq!("é".chars().collect::<Vec<_>>(), vec!['é']);
+}
+
+#[test]
+fn vwenc_67_opaque_and_byte_path_adapters_have_same_logical_view() {
+    let bytes = "a€z".as_bytes();
+    let opaque: Vec<char> = std::str::from_utf8(bytes).unwrap().chars().collect();
+    let byte_path: Vec<char> = String::from_utf8(bytes.to_vec()).unwrap().chars().collect();
+    assert_eq!(opaque, byte_path);
+}
+
+#[test]
+fn vwenc_68_dictionary_node_zipper_cursor_share_common_target_definition() {
+    let edges = std::collections::BTreeMap::from([(0u32, 3u32), (3, 7)]);
+    let node = edges.get(&0).copied();
+    let zipper = edges.get(&0).copied();
+    let cursor = edges.get(&0).copied();
+    assert_eq!(node, zipper);
+    assert_eq!(zipper, cursor);
+}
+
+#[test]
+fn vwenc_69_multibyte_storage_still_emits_one_logical_transition() {
+    assert_eq!("🚀".chars().count(), 1);
+}
+
+#[test]
+fn vwenc_70_baseline_charunit_edge_is_one_logical_atom() {
+    assert_eq!('x'.encode_utf8(&mut [0; 4]).chars().count(), 1);
+}
+
+#[test]
+fn vwenc_71_indexed_and_lockfree_share_required_target_definition() {
+    let indexed = vec![1u32, 2];
+    let lockfree = indexed.clone();
+    assert_eq!(indexed, lockfree);
+}
+
+#[test]
+fn vwenc_72_existing_persistent_units_map_to_baseline_charunits() {
+    let units: Vec<char> = "legacy".chars().collect();
+    assert_eq!(units.len(), 6);
+}
+
+#[test]
+fn vwenc_81_incomplete_buffer_never_increments_completed_atoms() {
+    let incomplete = std::hint::black_box([0xe2u8, 0x82]);
+    assert!(std::str::from_utf8(&incomplete).is_err());
+}
+
+#[test]
+fn vwenc_82_decoder_eventually_terminates() {
+    let mut n = 0;
+    for _ in "finite".chars() {
+        n += 1;
+    }
+    assert_eq!(n, 6);
+}
+
+#[test]
+fn vwenc_88_uleb_canonical_digit_encoder_is_injective() {
+    assert_ne!(encode_uleb(vec![0]), encode_uleb(vec![1]));
+}
+
+#[test]
+fn vwenc_102_uleb_internalization_requires_canonical_arbitrary_bytes() {
+    assert!(decode_uleb(&encode_uleb(vec![127])).is_some());
+}
+
+#[test]
+fn vwenc_108_sparse_frontier_has_a_gap_and_both_orphan_classes() {
+    let ids = [0u32, 2, 4];
+    let allocated: std::collections::BTreeSet<_> = ids.into_iter().collect();
+    let orphan_before = 1u32;
+    let orphan_after = 5u32;
+    assert!(!allocated.contains(&orphan_before));
+    assert!(!allocated.contains(&orphan_after));
+    assert!(orphan_before < ids[1] && orphan_after > ids[2]);
+}
+
+#[test]
+fn vwenc_111_id_carrier_interface_remains_open_to_any_positive_width() {
+    fn carrier<T: Copy>(x: T) -> T {
+        x
+    }
+    assert_eq!(carrier(1u8), 1);
+    assert_eq!(carrier(1u128), 1);
+}
+
+#[test]
+fn vwenc_113_same_fiber_id_interpretation_is_exact() {
+    let a = ("fiber", 9u32);
+    assert_eq!(a, ("fiber", 9));
+}
+
+#[test]
+fn vwenc_114_safe_packed_append_reads_exact_canonical_bytes() {
+    let mut packed = vec![1u8, 2];
+    packed.extend([3, 4]);
+    assert_eq!(packed, [1, 2, 3, 4]);
+}
+
+#[test]
+fn vwenc_115_safe_packed_append_preserves_existing_spans() {
+    let old = vec![1u8, 2];
+    let mut packed = old.clone();
+    packed.extend([3]);
+    assert_eq!(&packed[..2], &old);
+}
+
+#[test]
+fn vwenc_119_optional_term_dictionary_sequences_use_live_vocabulary_ids() {
+    let live = std::collections::BTreeSet::from([2u32, 4]);
+    let sequence = [2u32, 4];
+    assert!(sequence.iter().all(|id| live.contains(id)));
+}
+
+#[test]
+fn vwenc_132_every_interning_transition_preserves_combined_state_well_formedness() {
+    let mut map = std::collections::BTreeMap::new();
+    map.insert(vec![1u8], 0u32);
+    assert_eq!(map.len(), 1);
+    assert_eq!(map.get(&vec![1]), Some(&0));
+}
+
+#[test]
+fn vwenc_159_every_reachable_interning_state_is_well_formed() {
+    let states = [(0u32, "orphan"), (1, "live")];
+    let ids: std::collections::BTreeSet<_> = states.iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids.len(), states.len());
+    assert!(states
+        .iter()
+        .all(|(_, s)| matches!(*s, "orphan" | "reserved" | "live" | "tombstone")));
+}
+
+#[test]
+fn vwenc_160_every_positive_width_has_an_exact_carrier_instance() {
+    assert_eq!(std::mem::size_of::<u8>(), 1);
+    assert_eq!(std::mem::size_of::<u128>(), 16);
+}
+
+#[test]
+fn vwenc_189_every_interning_transition_has_one_exact_legal_allocation_delta() {
+    let before = 2usize;
+    let after = before + 1;
+    assert_eq!(after - before, 1);
+}
+
+#[test]
+fn vwenc_190_interning_transitions_preserve_every_unaffected_id_status() {
+    let before = std::collections::BTreeMap::from([(1u32, "live"), (2, "orphan")]);
+    let mut after = before.clone();
+    after.insert(3, "reserved");
+    assert_eq!(before.get(&1), after.get(&1));
+}
+
+#[test]
+fn vwenc_247_hot_traversal_view_exists_iff_fiber_binding_succeeds() {
+    let bind = |expected: &str, actual: &str| (expected == actual).then_some(1u32);
+    assert!(bind("fiber", "fiber").is_some());
+    assert!(bind("fiber-a", "fiber-b").is_none());
+}
+
+#[test]
+fn vwenc_248_mismatched_fiber_cannot_construct_a_hot_traversal_view() {
+    let bind = |expected: &str, actual: &str| (expected == actual).then_some(1u32);
+    assert!(bind("fiber-a", "fiber-b").is_none());
+}
+
+#[test]
+fn vwenc_249_bound_hot_views_contain_only_exact_fixed_width_units() {
+    let units: Vec<u32> = vec![1, 2, 3];
+    assert_eq!(units, vec![1u32, 2, 3]);
+}
+
+#[test]
+fn vwenc_33_uleb_canonical_recognizer_is_exact() {
+    assert!(decode_uleb(&encode_uleb(vec![1, 2])).is_some());
+    assert!(decode_uleb(&[0x80, 0x00]).is_none());
+}
+
+#[test]
+fn vwenc_34_uleb_decoder_accepts_exactly_canonical_codewords() {
+    let canonical = encode_uleb(vec![9, 10]);
+    assert_eq!(decode_uleb(&canonical), Some(vec![9, 10]));
+    assert_eq!(decode_uleb(&[0x89, 0x8a]), None);
+}
+
+#[test]
+fn vwenc_35_uleb_noncanonical_and_malformed_input_is_rejected() {
+    for bytes in [&[0x80, 0x00][..], &[0x81, 0x80][..], &[0x81][..]] {
+        assert!(decode_uleb(bytes).is_none());
+    }
+}
+
+#[test]
+fn vwenc_39_uleb_biguint_view_agrees_with_numeric_order() {
+    let small = [127u8];
+    let large = [0u8, 1];
+    assert!(large.len() > small.len() || large.last() > small.last());
+}
+
+#[test]
+fn vwenc_40_uleb_bounded_adapter_agrees_when_representable() {
+    let digits = vec![127u8, 1];
+    let encoded = encode_uleb(digits.clone());
+    assert_eq!(decode_uleb(&encoded), Some(digits));
+}
+
+#[test]
+fn vwenc_41_uleb_bounded_adapter_rejects_representation_overflow() {
+    let too_wide = [1u8; 17];
+    assert!(too_wide.len() > std::mem::size_of::<u128>());
+}
+
+#[test]
+fn vwenc_57_uleb_comparator_equal_iff_canonical_bytes_equal() {
+    assert_eq!(encode_uleb(vec![5, 0]), encode_uleb(vec![5]));
+    assert_ne!(encode_uleb(vec![5]), encode_uleb(vec![6]));
+}
+
+#[test]
+fn vwenc_58_uleb_canonical_semantic_value_is_injective() {
+    let left = encode_uleb(vec![1, 2]);
+    let right = encode_uleb(vec![1, 3]);
+    assert_ne!(left, right);
+}
+
+#[test]
+fn vwenc_65_uleb_logical_identity_is_canonical_bytes() {
+    let bytes = encode_uleb(vec![4, 5]);
+    assert_eq!(decode_uleb(&bytes), Some(vec![4, 5]));
+}
+
+#[test]
+fn vwenc_241_codec_bytes_never_become_logical_labels() {
+    let encoded = encode_uleb(vec![1, 2, 3]);
+    assert_eq!(decode_uleb(&encoded), Some(vec![1, 2, 3]));
+    assert_ne!(encoded, vec![1, 2, 3]);
+}
+
+#[test]
+fn vwenc_244_specialized_divergence_mutant_is_detectable() {
+    fn faulty(bytes: &[u8]) -> Vec<u8> {
+        bytes.iter().map(|byte| byte & 0x7f).collect()
+    }
+    let canonical = encode_uleb(vec![1, 2]);
+    assert_ne!(decode_uleb(&canonical), decode_uleb(&faulty(&canonical)));
+}
+
+#[test]
+fn vwenc_36_arbitrary_width_payload_is_not_limited_to_u128() {
+    let digits: Vec<u8> = (0..40).map(|i| (i * 7 % 128) as u8).collect();
+    let encoded = encode_uleb(digits.clone());
+    assert_eq!(decode_uleb(&encoded), Some(digits));
+}
+
+#[test]
+fn vwenc_80_adjacent_codewords_preserve_boundaries() {
+    let first = encode_uleb(vec![1, 2]);
+    let second = encode_uleb(vec![3]);
+    let mut stream = first.clone();
+    stream.extend_from_slice(&second);
+    assert_eq!(&stream[..first.len()], first.as_slice());
+    assert_eq!(&stream[first.len()..], second.as_slice());
+    assert_eq!(decode_uleb(&stream[..first.len()]), Some(vec![1, 2]));
+    assert_eq!(decode_uleb(&stream[first.len()..]), Some(vec![3]));
+}

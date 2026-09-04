@@ -66,7 +66,38 @@ runs:
                 "$remote" "$event_ref" >/dev/null 2>&1
             then
               selected_ref="$event_ref"
-            else
+            elif [ "$repo" = "vinary-tree-interop" ]; then
+              # Prefer the exact public version declared by this checkout's
+              # path dependency when no coordinated development branch exists.
+              # This keeps development branches flexible while preventing a
+              # stale sibling default (for example RC4) from satisfying an
+              # exact RC6 requirement.
+              required_version="$(
+                sed -nE \
+                  '/^[[:space:]]*vinary-tree-interop[[:space:]]*=/{s/.*version[[:space:]]*=[[:space:]]*"=([^" ]+)".*/\1/p;}' \
+                  "$GITHUB_WORKSPACE/Cargo.toml" | head -n 1
+              )"
+              tagged_ref="v$required_version"
+              if [ -n "$required_version" ] && \
+                git ls-remote --exit-code \
+                  "$remote" "refs/tags/$tagged_ref" >/dev/null 2>&1
+              then
+                selected_ref="$tagged_ref"
+              elif [ -n "$required_version" ] && \
+                git ls-remote --exit-code --heads \
+                  "$remote" master >/dev/null 2>&1
+              then
+                # The release branch may publish an exact version on master
+                # before creating a version tag.  Select master only as an
+                # explicit fallback; the post-checkout package-version audit
+                # below remains authoritative and rejects mismatches.
+                selected_ref=master
+              elif [ -n "$required_version" ]; then
+                echo "ERROR: $repo requires $tagged_ref from Cargo.toml, but that upstream ref is unavailable" >&2
+                exit 1
+              fi
+            fi
+            if [ -z "$selected_ref" ]; then
               selected_ref="$development_ref"
             fi
           fi
@@ -82,6 +113,28 @@ runs:
             git clone --depth 1 --branch "$selected_ref" \
               "https://github.com/vinary-tree/$repo.git" "$dest"
             echo "::endgroup::"
+          fi
+          if [ "$repo" = "vinary-tree-interop" ]; then
+            required_version="$(
+              sed -nE \
+                '/^[[:space:]]*vinary-tree-interop[[:space:]]*=/{s/.*version[[:space:]]*=[[:space:]]*"=([^" ]+)".*/\1/p;}' \
+                "$GITHUB_WORKSPACE/Cargo.toml" | head -n 1
+            )"
+            if [ -n "$required_version" ]; then
+              actual_version="$(
+                awk '
+                  /^\[package\]$/ { in_package=1; next }
+                  /^\[/ { in_package=0 }
+                  in_package && /^[[:space:]]*version[[:space:]]*=/ {
+                    gsub(/[[:space:]]*"/, "", $3); print $3; exit
+                  }
+                ' "$dest/Cargo.toml"
+              )"
+              if [ "$actual_version" != "$required_version" ]; then
+                echo "ERROR: $repo ref $selected_ref declares $actual_version, but Cargo.toml requires $required_version" >&2
+                exit 1
+              fi
+            fi
           fi
         done
         echo "Sibling crates available under $parent:"

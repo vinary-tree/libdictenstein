@@ -7,7 +7,11 @@ DocMeta.setdocmeta!(Libdictenstein, :DocTestSetup,
 makedocs(
     modules=[Libdictenstein],
     sitename="Libdictenstein.jl",
-    strict=true,
+    # Documenter 1.x removed the legacy `strict` keyword.  An empty
+    # `warnonly` list preserves fail-closed documentation diagnostics, while
+    # `checkdocs=:all` retains strict API coverage checking.
+    warnonly=Symbol[],
+    checkdocs=:all,
     doctest=true,
     pages=[
         "Guide" => "index.md",

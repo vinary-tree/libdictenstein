@@ -245,7 +245,7 @@ Proof.
   pose proof
     (@NoDup_incl_length nat (map fst frames) (seq 0 node_count)
       Hunique Hincl) as Hlength.
-  rewrite length_map, seq_length_portable in Hlength.
+  rewrite map_length, seq_length_portable in Hlength.
   exact Hlength.
 Qed.
 

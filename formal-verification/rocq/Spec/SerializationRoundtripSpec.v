@@ -1439,7 +1439,7 @@ Proof.
   intros first later pending direct resulting_pending Hscheduled.
   cbn [tail_child_schedule] in Hscheduled.
   inversion Hscheduled; subst.
-  rewrite app_length_portable, length_rev.
+  rewrite app_length_portable, rev_length.
   reflexivity.
 Qed.
 
@@ -1536,7 +1536,7 @@ Proof.
     lia.
   - unfold bounded_tail_child_schedule, counted_batch_capacity.
     simpl.
-    rewrite app_length_portable, length_rev.
+    rewrite app_length_portable, rev_length.
     apply Nat.add_le_mono_l.
     apply firstn_le_length.
 Qed.

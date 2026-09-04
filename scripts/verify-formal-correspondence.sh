@@ -5,14 +5,16 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 FORMAL_RESOURCE_CONTROL="${FORMAL_RESOURCE_CONTROL:-systemd}"
-FORMAL_MEMORY_HIGH="${FORMAL_MEMORY_HIGH:-6G}"
-FORMAL_MEMORY_MAX="${FORMAL_MEMORY_MAX:-8G}"
-FORMAL_TASKS_MAX="${FORMAL_TASKS_MAX:-384}"
-FORMAL_CPU_QUOTA="${FORMAL_CPU_QUOTA:-400%}"
+FORMAL_MEMORY_HIGH="${FORMAL_MEMORY_HIGH:-1G}"
+FORMAL_MEMORY_MAX="${FORMAL_MEMORY_MAX:-2G}"
+FORMAL_TASKS_MAX="${FORMAL_TASKS_MAX:-64}"
+FORMAL_CPU_QUOTA="${FORMAL_CPU_QUOTA:-200%}"
 FORMAL_COMMAND_TIMEOUT_SECONDS="${FORMAL_COMMAND_TIMEOUT_SECONDS:-7200}"
+TLC_JAVA_TOOL_OPTIONS="${TLC_JAVA_TOOL_OPTIONS:--Xms128m -Xmx1024m -XX:+UseParallelGC}"
 
 run_capped() {
   local -a command=("$@")
+  local unit_name
 
   if [ "$FORMAL_COMMAND_TIMEOUT_SECONDS" != "0" ]; then
     command=(
@@ -28,7 +30,9 @@ run_capped() {
         echo "ERROR: FORMAL_RESOURCE_CONTROL=systemd requires systemd-run" >&2
         return 1
       fi
-      systemd-run --user --scope --quiet --collect \
+      unit_name="libdictenstein-formal-${BASHPID}-${RANDOM}"
+      systemd-run --user --unit="$unit_name" --wait --pipe --quiet --collect \
+        --working-directory="$PWD" \
         --property="MemoryHigh=$FORMAL_MEMORY_HIGH" \
         --property="MemoryMax=$FORMAL_MEMORY_MAX" \
         --property=MemorySwapMax=0 \
@@ -46,6 +50,37 @@ run_capped() {
   esac
 }
 
+run_sany_checked() {
+  local module_file="$1"
+  local module_name="${module_file%.tla}"
+  local log_parent="$repo_root/target/sany-logs"
+  local log_file
+  local status=0
+
+  mkdir -p "$log_parent"
+  log_file="$(mktemp "$log_parent/${module_name}.XXXXXX.log")"
+  if run_capped env "JAVA_TOOL_OPTIONS=$TLC_JAVA_TOOL_OPTIONS" \
+    tla2sany "$module_file" >"$log_file" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  cat "$log_file"
+
+  if [ "$status" -ne 0 ]; then
+    echo "ERROR: SANY exited with status $status for $module_file" >&2
+    echo "SANY output retained at $log_file" >&2
+    return 1
+  fi
+  if grep -Eq '^(Semantic errors:|\*\*\* Errors:)' "$log_file"; then
+    echo "ERROR: SANY reported semantic errors for $module_file despite a zero exit status" >&2
+    echo "SANY output retained at $log_file" >&2
+    return 1
+  fi
+
+  rm -f -- "$log_file"
+}
+
 run_tlc_isolated() {
   local label="$1"
   shift
@@ -55,7 +90,8 @@ run_tlc_isolated() {
 
   mkdir -p "$state_parent"
   state_directory="$(mktemp -d "$state_parent/${label}.XXXXXX")"
-  run_capped tlc -metadir "$state_directory" "$@" || status=$?
+  run_capped env "JAVA_TOOL_OPTIONS=$TLC_JAVA_TOOL_OPTIONS" \
+    tlc -metadir "$state_directory" "$@" || status=$?
   if [ "$status" -eq 0 ]; then
     rm -rf -- "$state_directory"
   else
@@ -132,7 +168,7 @@ run_tlc_negative_control() {
   mkdir -p "$log_parent" "$state_parent"
   log_file="$(mktemp "$log_parent/${module}.XXXXXX.log")"
   state_directory="$(mktemp -d "$state_parent/${config_base}.XXXXXX")"
-  if run_capped tlc \
+  if run_capped env "JAVA_TOOL_OPTIONS=$TLC_JAVA_TOOL_OPTIONS" tlc \
     -metadir "$state_directory" \
     -workers 1 \
     -config "${config_base}.cfg" \
@@ -180,6 +216,9 @@ run_tlc_negative_control() {
 }
 
 verify_tlc_invariant_diagnostic_classifier
+
+echo "== Variable-width formal-first gate =="
+bash scripts/verify-variable-width-formal.sh
 
 assert_nonzero_cargo_filter() {
   local output
@@ -461,6 +500,14 @@ else
   echo "Skipping io_uring storage correspondence checks; set RUN_IO_URING=1 to enable them"
 fi
 
+echo "== Variable-width Rocq proof-escape source gate =="
+if grep -nE \
+  '(^|[^[:alnum:]_])(Admitted|admit|Axiom|Axioms|Parameter|Parameters|Conjecture|Abort)([^[:alnum:]_]|$)' \
+  formal-verification/rocq/Spec/VariableWidth*.v; then
+  echo "ERROR: variable-width Rocq sources contain a proof escape" >&2
+  exit 1
+fi
+
 echo "== Rocq proofs =="
 run_capped make -C formal-verification/rocq -j1
 
@@ -512,6 +559,9 @@ if command -v tla2sany >/dev/null 2>&1; then
       PersistentARTrieU64 \
       PersistentARTrieU64Iteration \
       PersistentARTrieU64WorkMachines \
+      VariableWidthCodecBoundary \
+      VariableWidthVocabularyInterning \
+      VariableWidthVocabularyPublication \
       CharNodeV2Layout \
       CharV3ArenaPublication \
       ConcurrentVocabLinearizability \
@@ -535,7 +585,7 @@ if command -v tla2sany >/dev/null 2>&1; then
       DictionaryEntryBatchLease \
       AbiSnapshotQuiescence
     do
-      run_capped tla2sany "${module}.tla"
+      run_sany_checked "${module}.tla"
     done
   )
 else
@@ -594,6 +644,9 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       PersistentARTrieU64 \
       PersistentARTrieU64Iteration \
       PersistentARTrieU64WorkMachines \
+      VariableWidthCodecBoundary \
+      VariableWidthVocabularyInterning \
+      VariableWidthVocabularyPublication \
       CharNodeV2Layout \
       CharV3ArenaPublication \
       ConcurrentVocabLinearizability \
@@ -627,6 +680,14 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
       -workers 1 \
       -config PersistentARTrieU64WorkMachines_Cycle.cfg \
       PersistentARTrieU64WorkMachines.tla
+    run_tlc_isolated VariableWidthVocabularyInterning_MultiSpan \
+      -workers 1 \
+      -config VariableWidthVocabularyInterning_MultiSpan.cfg \
+      VariableWidthVocabularyInterning.tla
+    run_tlc_isolated VariableWidthVocabularyPublication_TermFiberWitness \
+      -workers 1 \
+      -config VariableWidthVocabularyPublication_TermFiberWitness.cfg \
+      VariableWidthVocabularyPublication.tla
     run_tlc_isolated PersistentARTrieU64Iteration_Chain \
       -workers 1 \
       -config PersistentARTrieU64Iteration_Chain.cfg \
@@ -725,6 +786,13 @@ if [ "${RUN_TLC:-0}" = "1" ]; then
     #   * PersistentARTrieU64Iteration enables global node-identity suppression
     #     on the Diamond DAG. It MUST violate `CompletionIsExact`, proving trie
     #     language enumeration remains path-sensitive across shared nodes.
+    #   * VariableWidthVocabularyInterning makes fingerprints authoritative or
+    #     permits a published local ID to be rebound. The controls MUST violate
+    #     the exact-byte non-aliasing and same-fiber no-reuse invariants.
+    #   * VariableWidthVocabularyPublication independently permits a sequence
+    #     before its vocabulary, overclaims the eligibility frontier, resumes a
+    #     captured reader through another generation, or fabricates a missing
+    #     vocabulary as empty. Each control MUST violate its named VWENC law.
     while IFS='|' read -r unsafe_module assertion_kind assertion_name unsafe_config; do
       negative_config="${unsafe_config:-${unsafe_module}_Unsafe}"
       echo "== Negative control: ${negative_config}.cfg (MUST violate ${assertion_name}) =="
@@ -800,6 +868,16 @@ AbiSnapshotInitializerTakeover|invariant|SingleConstruction|AbiSnapshotInitializ
 AbiSnapshotQuiescence|temporal|SnapshotEventuallyCompletes
 PersistentARTrieU64WorkMachines|invariant|NoCyclicSnapshotAccepted
 PersistentARTrieU64Iteration|invariant|CompletionIsExact
+VariableWidthCodecBoundary|invariant|VWENC_26_OVERLONG_ULEB_IS_REJECTED|VariableWidthCodecBoundary_OverlongUnsafe
+VariableWidthCodecBoundary|invariant|VWENC_27_UNTERMINATED_ULEB_IS_REJECTED|VariableWidthCodecBoundary_UnterminatedUnsafe
+VariableWidthCodecBoundary|invariant|VWENC_28_UTF8_CONTINUATION_IS_REJECTED|VariableWidthCodecBoundary_Utf8ContinuationUnsafe
+VariableWidthCodecBoundary|invariant|VWENC_24_CODEC_BYTES_NEVER_BECOME_LOGICAL_TRANSITIONS|VariableWidthCodecBoundary_PhysicalExposureUnsafe
+VariableWidthVocabularyInterning|invariant|VWENC_142_FINGERPRINT_COLLISIONS_NEVER_ALIAS_DISTINCT_ATOMS|VariableWidthVocabularyInterning_FingerprintOnlyUnsafe
+VariableWidthVocabularyInterning|invariant|VWENC_143_RETIRED_ID_IS_NEVER_CLAIMED_OR_LIVE_AGAIN|VariableWidthVocabularyInterning_IdReuseUnsafe
+VariableWidthVocabularyPublication|invariant|VWENC_149_DURABLE_SEQUENCE_REFERENCES_DURABLE_BOUND_VOCABULARY|VariableWidthVocabularyPublication_SequenceBeforeVocabularyUnsafe
+VariableWidthVocabularyPublication|invariant|VWENC_147_PUBLISHED_FRONTIER_DOES_NOT_EXCEED_DURABLE_FRONTIER|VariableWidthVocabularyPublication_FrontierOverclaimUnsafe
+VariableWidthVocabularyPublication|invariant|VWENC_154_CAPTURED_CONTINUATION_RESUMES_IMMUTABLE_PAIR|VariableWidthVocabularyPublication_CrossGenerationResumeUnsafe
+VariableWidthVocabularyPublication|invariant|VWENC_178_RECOVERY_NEVER_SYNTHESIZES_EMPTY_SUCCESS|VariableWidthVocabularyPublication_MissingVocabularyAsEmptyUnsafe
 NEGATIVE_CONTROLS
   )
 else

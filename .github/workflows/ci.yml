@@ -199,9 +199,9 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Run coverage
         run: |
-          cargo llvm-cov --all-features --branch \
+          cargo +nightly llvm-cov --all-features --branch \
             --lcov --output-path lcov.info
-          cargo llvm-cov report --branch \
+          cargo +nightly llvm-cov report --branch \
             --cobertura --output-path cobertura.xml
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -356,6 +356,59 @@ jobs:
         run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- bash scripts/verify-formal-correspondence.sh
 
   # -----------------------------------------------------------------
+  # Variable-width family/profile gate. This is the exact preimplementation
+  # gate for the committed Rocq/TLA+ family-refinement source tuple, including
+  # safe models and every required negative control. GitHub-hosted runners do
+  # not expose a user systemd bus, so the verifier uses prlimit here while
+  # retaining systemd-run caps for local execution.
+  # -----------------------------------------------------------------
+  variable-width-formal:
+    name: Variable-width formal gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/checkout-dev-siblings
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2"
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install Rocq and TLA+ tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl ripgrep util-linux
+          # Rocq 9.1.1 is distributed in opam through the compatibility
+          # package name [coq]; pinning the version still selects the Rocq
+          # toolchain and avoids Ubuntu's older apt package.
+          opam install --yes coq.9.1.1
+          eval "$(opam env)"
+          echo "$(opam var bin)" >> "$GITHUB_PATH"
+          curl -L \
+            https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar \
+            -o tla2tools.jar
+          sudo mkdir -p /opt/tla
+          sudo mv tla2tools.jar /opt/tla/tla2tools.jar
+          sudo tee /usr/local/bin/tla2sany >/dev/null <<'EOF'
+          #!/usr/bin/env bash
+          exec java -Xmx"${TLA_JAVA_HEAP:-512m}" -cp /opt/tla/tla2tools.jar tla2sany.SANY "$@"
+          EOF
+          sudo tee /usr/local/bin/tlc >/dev/null <<'EOF'
+          #!/usr/bin/env bash
+          exec java -Xmx"${TLA_JAVA_HEAP:-512m}" -cp /opt/tla/tla2tools.jar tlc2.TLC "$@"
+          EOF
+          sudo chmod +x /usr/local/bin/tla2sany /usr/local/bin/tlc
+      - name: Run capped variable-width formal gate
+        env:
+          VARIABLE_WIDTH_FORMAL_RESOURCE_CONTROL: external
+          VARIABLE_WIDTH_FORMAL_TIMEOUT_SECONDS: "7200"
+          VARIABLE_WIDTH_TLC_JAVA_OPTIONS: "-Xms64m -Xmx512m -XX:+UseParallelGC"
+        run: bash scripts/verify-variable-width-formal.sh
+      - name: Run invariant-derived reference harness
+        run: prlimit --rss=2147483648 -- cargo test --manifest-path formal-verification/Cargo.toml --test variable_width_formal_harness
+
+  # -----------------------------------------------------------------
   # Miri unsafe-boundary checks. Runs on nightly because `cargo miri`
   # is a nightly component.
   # -----------------------------------------------------------------
@@ -394,12 +447,13 @@ jobs:
         env:
           CARGO_BUILD_JOBS: "2"
           FORMAL_MEM_LIMIT_BYTES: "8589934592"
-        run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- cargo miri setup
+        run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- cargo +nightly miri setup
       - name: Run Miri-gated correspondence harness
         env:
           CARGO_BUILD_JOBS: "2"
           FORMAL_MEM_LIMIT_BYTES: "8589934592"
           FORMAL_RESOURCE_CONTROL: external
+          FORMAL_MIRI_TOOLCHAIN: nightly
           RUN_MIRI: "1"
           TLA_JAVA_HEAP: "3g"
         run: prlimit --as="$FORMAL_MEM_LIMIT_BYTES" --rss="$FORMAL_MEM_LIMIT_BYTES" -- bash scripts/verify-formal-correspondence.sh
