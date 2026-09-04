@@ -102,6 +102,17 @@ pub enum Uleb128Backend {
     PathMap,
 }
 
+impl std::fmt::Display for Uleb128Backend {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::DynamicDawg => "DynamicDAWGUleb128",
+            Self::DoubleArrayTrie => "DoubleArrayTrieUleb128",
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap => "PathMapUleb128",
+        })
+    }
+}
+
 /// Set-like container returned by the typed ULEB128 factory.
 #[derive(Debug)]
 pub enum Uleb128DictionaryContainer {
@@ -994,5 +1005,9 @@ mod tests {
             assert_eq!(dictionary.term_count(), 1);
             assert!(dictionary.contains(&sequence), "{backend:?}");
         }
+        assert_eq!(
+            Uleb128Backend::DynamicDawg.to_string(),
+            "DynamicDAWGUleb128"
+        );
     }
 }
