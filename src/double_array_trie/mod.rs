@@ -16,10 +16,77 @@ pub use char::{DoubleArrayTrieChar, DoubleArrayTrieCharNode};
 pub use char_zipper::DoubleArrayTrieCharZipper;
 pub use zipper::DoubleArrayTrieZipper;
 
+/// Immutable DAT boundary for canonical variable-width ULEB128 sequences.
+/// Physical byte edges remain private; callers observe complete logical
+/// sequences only.
+#[derive(Clone, Debug)]
+pub struct DoubleArrayTrieUleb128<V: crate::DictionaryValue = ()> {
+    inner: DoubleArrayTrie<V>,
+}
+
+impl<V: crate::DictionaryValue> DoubleArrayTrieUleb128<V> {
+    /// Build from complete canonical ULEB128 sequences.
+    pub fn from_sequences<I>(sequences: I) -> Self
+    where
+        I: IntoIterator<Item = crate::Uleb128Sequence>,
+    {
+        Self {
+            inner: sequences
+                .into_iter()
+                .map(|sequence| sequence.to_encoded())
+                .collect(),
+        }
+    }
+
+    /// Build a value-bearing DAT from complete canonical ULEB128 sequences.
+    pub fn from_sequences_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (crate::Uleb128Sequence, V)>,
+    {
+        Self {
+            inner: entries
+                .into_iter()
+                .map(|(sequence, value)| (sequence.to_encoded(), value))
+                .collect(),
+        }
+    }
+
+    /// Test membership of one complete ULEB128 sequence.
+    #[inline]
+    pub fn contains(&self, sequence: &crate::Uleb128Sequence) -> bool {
+        self.inner.contains_bytes(&sequence.to_encoded())
+    }
+
+    /// Read a mapped value for one complete ULEB128 sequence.
+    #[inline]
+    pub fn get_value(&self, sequence: &crate::Uleb128Sequence) -> Option<V> {
+        self.inner.get_bytes_value(&sequence.to_encoded())
+    }
+
+    /// Number of visible logical sequences.
+    #[inline]
+    pub fn term_count(&self) -> usize {
+        self.inner.len().unwrap_or(0)
+    }
+}
+
 #[cfg(test)]
 mod profile_tests {
-    use super::{DoubleArrayTrie, DoubleArrayTrieChar};
+    use super::{DoubleArrayTrie, DoubleArrayTrieChar, DoubleArrayTrieUleb128};
     use crate::{AtomSequence, Bytes, Dictionary, UnicodeScalar};
+
+    #[test]
+    fn uleb_wrapper_preserves_logical_sequences() {
+        let sequence = crate::Uleb128Sequence::from_atoms([
+            crate::Uleb128::from_u64(624_485),
+            crate::Uleb128::from_u64(7),
+        ]);
+        let dictionary =
+            DoubleArrayTrieUleb128::<u16>::from_sequences_with_values([(sequence.clone(), 19)]);
+        assert!(dictionary.contains(&sequence));
+        assert_eq!(dictionary.get_value(&sequence), Some(19));
+        assert_eq!(dictionary.term_count(), 1);
+    }
 
     #[test]
     fn byte_profile_sequences_use_the_existing_dat_builder() {

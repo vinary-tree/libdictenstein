@@ -717,6 +717,27 @@ impl<U: CharUnit, V: DictionaryValue> DATCoreShared<U, V> {
         }
     }
 
+    /// Walk the trie using already-decoded logical units and report whether
+    /// the final state is terminal.
+    pub fn contains_units_from(&self, units: &[U], root_state: usize) -> bool {
+        let mut state = root_state;
+        for unit in units {
+            if state >= self.base.len() {
+                return false;
+            }
+            let base = self.base[state];
+            if base < 0 {
+                return false;
+            }
+            let next = (base as usize).wrapping_add(unit.to_dat_offset());
+            if next >= self.check.len() || self.check[next] != state as i32 {
+                return false;
+            }
+            state = next;
+        }
+        state < self.is_final.len() && self.is_final[state]
+    }
+
     /// `contains_term_from` with byte-DAT's `root_state = 1` convention.
     #[inline]
     pub fn contains_term(&self, term: &str) -> bool {

@@ -674,6 +674,12 @@ impl<V: DictionaryValue> DoubleArrayTrie<V> {
         self.shared.term_value_units_from(bytes, 1)
     }
 
+    /// Test an arbitrary byte key without UTF-8 coercion.
+    #[inline]
+    pub fn contains_bytes(&self, bytes: &[u8]) -> bool {
+        self.shared.contains_units_from(bytes, 1)
+    }
+
     /// Get a value for a byte-profile sequence without UTF-8 coercion.
     #[inline]
     pub fn get_atom_sequence_value<P>(&self, sequence: &crate::AtomSequence<P>) -> Option<V>
