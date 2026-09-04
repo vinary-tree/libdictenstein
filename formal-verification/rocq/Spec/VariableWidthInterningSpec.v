@@ -52,6 +52,15 @@ Proof.
   rewrite IH. lia.
 Qed.
 
+Lemma firstn_length_local :
+  forall (A : Type) (n : nat) (xs : list A),
+    List.length (firstn n xs) = Nat.min n (List.length xs).
+Proof.
+  intros A n. induction n as [| n IH]; intros xs; simpl; [lia|].
+  destruct xs as [| x xs]; simpl; [lia|].
+  rewrite IH. reflexivity.
+Qed.
+
 Module VariableWidthInterning.
 
 (** ** Certified atom profiles and canonical atoms *)
@@ -4989,7 +4998,7 @@ Proof.
   { unfold id_sequence_view_byte_offset. nia. }
   unfold id_sequence_view_byte_window.
   split.
-  - rewrite length_firstn, length_skipn.
+  - rewrite firstn_length_local, skipn_length_local.
     rewrite Nat.min_l; lia.
   - apply Forall_firstn_preserved.
     now apply Forall_skipn_preserved.
