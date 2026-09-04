@@ -940,7 +940,6 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
     ///
     /// A retained expected `Arc` is the CAS token, so an allocator cannot
     /// recycle its address while this attempt is live (pointer-ABA safety).
-    #[cfg(any(feature = "bindings-core", test))]
     pub(crate) fn clear(&self) -> bool {
         let mut backoff = CasBackoff::new();
         loop {
