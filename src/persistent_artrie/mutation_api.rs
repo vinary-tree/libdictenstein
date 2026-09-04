@@ -243,6 +243,19 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentARTrie<V, S> {
             })
     }
 
+    /// Fallibly remove an arbitrary byte key without UTF-8 coercion.
+    pub fn try_remove_bytes(&self, term: &[u8]) -> Result<bool> {
+        self.remove_cas_durable(term)
+    }
+
+    /// Remove an arbitrary byte key without UTF-8 coercion.
+    pub fn remove_bytes(&self, term: &[u8]) -> bool {
+        self.try_remove_bytes(term).unwrap_or_else(|error| {
+            warn!("remove byte-key overlay route failed: {:?}", error);
+            false
+        })
+    }
+
     /// Remove all terms with the given prefix (batched for memory efficiency).
     ///
     /// Returns the number of terms removed. Each removal is logged to WAL
