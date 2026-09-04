@@ -613,6 +613,18 @@ impl<V: DictionaryValue> DoubleArrayTrie<V> {
             .collect()
     }
 
+    /// Build a value-bearing DAT from byte-profile sequences without text coercion.
+    pub fn from_atom_sequences_with_values<P, I>(entries: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = u8>,
+        I: IntoIterator<Item = (crate::AtomSequence<P>, V)>,
+    {
+        entries
+            .into_iter()
+            .map(|(sequence, value)| (sequence.as_atoms().to_vec(), value))
+            .collect()
+    }
+
     /// Create a DAT from an iterator of (term, value) pairs.
     ///
     /// For optimal space efficiency, terms should be sorted.

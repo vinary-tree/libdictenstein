@@ -32,6 +32,15 @@ mod profile_tests {
     }
 
     #[test]
+    fn byte_profile_sequences_preserve_values() {
+        let dictionary = DoubleArrayTrie::<u16>::from_atom_sequences_with_values::<Bytes, _>([(
+            AtomSequence::<Bytes>::from_atoms([b'a', b'b']),
+            9,
+        )]);
+        assert_eq!(dictionary.get_value("ab"), Some(9));
+    }
+
+    #[test]
     fn unicode_profile_sequences_preserve_scalar_boundaries() {
         let dictionary: DoubleArrayTrieChar = DoubleArrayTrieChar::from_atom_sequences::<
             UnicodeScalar,
@@ -41,5 +50,14 @@ mod profile_tests {
         ]);
         assert!(dictionary.contains("λx"));
         assert!(!dictionary.contains("lx"));
+    }
+
+    #[test]
+    fn unicode_profile_sequences_preserve_values() {
+        let dictionary = DoubleArrayTrieChar::<u16>::from_atom_sequences_with_values::<
+            UnicodeScalar,
+            _,
+        >([(AtomSequence::<UnicodeScalar>::from_atoms(['λ']), 7)]);
+        assert_eq!(dictionary.get_value("λ"), Some(7));
     }
 }
