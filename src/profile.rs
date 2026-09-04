@@ -115,6 +115,12 @@ impl<P: AtomProfile> AtomSequence<P> {
         self.atoms.len()
     }
 
+    /// Whether the sequence contains no logical atoms.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.atoms.is_empty()
+    }
+
     /// Iterate over logical atoms without decoding.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = &P::Atom> {
@@ -308,5 +314,11 @@ mod tests {
             .map(|atom| atom.unwrap())
             .collect();
         assert_eq!(observed, vec![0x0102_0304, 7]);
+    }
+
+    #[test]
+    fn fixed_sequence_rejects_truncated_images() {
+        assert!(AtomSequence::<U64>::from_encoded(&[1, 2, 3]).is_err());
+        assert!(AtomSequence::<Bytes>::from_encoded(&[]).unwrap().is_empty());
     }
 }
