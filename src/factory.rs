@@ -136,6 +136,15 @@ impl Uleb128DictionaryContainer {
         }
     }
 
+    /// Return the canonical logical profile carried by this container.
+    pub const fn profile_descriptor(&self) -> BackendProfileDescriptor {
+        BackendProfileDescriptor {
+            kind: ProfileKind::Uleb128,
+            identity: ProfileKind::Uleb128.identity(),
+            width_bytes: None,
+        }
+    }
+
     /// Number of complete logical sequences.
     pub fn term_count(&self) -> usize {
         match self {
@@ -1002,6 +1011,7 @@ mod tests {
         for backend in DictionaryFactory::available_uleb128_backends() {
             let dictionary = DictionaryFactory::create_uleb128(backend, [sequence.clone()]);
             assert_eq!(dictionary.backend(), backend);
+            assert_eq!(dictionary.profile_descriptor().kind, ProfileKind::Uleb128);
             assert_eq!(dictionary.term_count(), 1);
             assert!(dictionary.contains(&sequence), "{backend:?}");
         }
