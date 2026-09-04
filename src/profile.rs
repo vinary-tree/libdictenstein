@@ -55,6 +55,12 @@ impl ProfileKind {
         }
     }
 
+    /// Resolve a profile only when both name and version match exactly.
+    pub fn from_identity(identity: VariableWidthProfile) -> Option<Self> {
+        let kind = Self::from_name(identity.name)?;
+        (kind.identity() == identity).then_some(kind)
+    }
+
     /// Stable persisted identity.
     pub const fn identity(self) -> VariableWidthProfile {
         match self {
@@ -457,5 +463,13 @@ mod tests {
             assert_eq!(ProfileKind::from_name(kind.as_str()), Some(kind));
         }
         assert_eq!(ProfileKind::from_name("DynamicDawgChar"), None);
+        assert_eq!(
+            ProfileKind::from_identity(VariableWidthProfile::new("u64", 1)),
+            Some(ProfileKind::U64)
+        );
+        assert_eq!(
+            ProfileKind::from_identity(VariableWidthProfile::new("u64", 2)),
+            None
+        );
     }
 }
