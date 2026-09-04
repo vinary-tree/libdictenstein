@@ -40,6 +40,7 @@ From Coq Require Import Logic.ProofIrrelevance.
 From Coq Require Import Strings.String.
 From Coq Require Import Sorting.Permutation.
 Require Import ARTrie.Spec.VariableWidthCodecSpec.
+Require Import ARTrie.Model.ListCompat.
 Import ListNotations.
 Import VariableWidthCodecSpec.
 
@@ -868,7 +869,7 @@ Proof.
   simpl.
   rewrite firstn_app.
   replace (count - List.length (skipn offset prefix)) with 0.
-  2: rewrite length_skipn; lia.
+  2: rewrite skipn_length_portable; lia.
   simpl. now rewrite app_nil_r.
 Qed.
 
