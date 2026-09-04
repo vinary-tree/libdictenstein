@@ -200,7 +200,8 @@ impl Uleb128 {
     }
 
     /// Encode an unsigned magnitude represented as little-endian base-256
-    /// bytes.  Leading zero bytes are ignored; an empty magnitude is zero.
+    /// bytes.  Most-significant zero bytes (the slice's trailing bytes) are
+    /// ignored; an empty magnitude is zero.
     pub fn from_le_bytes(magnitude: &[u8]) -> Self {
         let mut limbs = Vec::with_capacity(magnitude.len().saturating_mul(8) / 7 + 1);
         let mut accumulator = 0u16;
