@@ -126,7 +126,10 @@ impl<V: DictionaryValue> PersistentARTrieUleb128<V> {
     /// Whether the logical dictionary contains no complete sequences.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.term_count() == 0
+        // A legacy bool cannot carry a storage error.  Fail closed rather
+        // than turning an unavailable/corrupt image into apparent emptiness;
+        // callers requiring the distinction should use `try_is_empty`.
+        self.try_is_empty().unwrap_or(false)
     }
 
     /// Checked emptiness query; storage failures remain errors.
