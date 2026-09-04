@@ -71,6 +71,23 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
         Self::from_sorted_sequences(owned)
     }
 
+    /// Build from owned logical sequences supplied by an [`AtomProfile`].
+    ///
+    /// The profile is consumed only at the API boundary; the DAWG stores and
+    /// traverses the profile's logical units directly, so no wire decoding is
+    /// introduced into the lookup hot path.
+    pub fn from_atom_sequences<P, I>(sequences: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = U>,
+        I: IntoIterator<Item = crate::AtomSequence<P>>,
+    {
+        Self::from_sequences(
+            sequences
+                .into_iter()
+                .map(|sequence| sequence.as_atoms().to_vec()),
+        )
+    }
+
     /// Build a value-bearing DAWG from lexicographically sorted sequences.
     pub fn from_sorted_entries<I, S>(entries: I) -> Self
     where
@@ -227,6 +244,16 @@ mod generic_tests {
         assert!(dictionary.node_count() > 0);
         assert!(dictionary.clear());
         assert_eq!(dictionary.term_count(), 0);
+    }
+
+    #[test]
+    fn generic_surface_builds_from_profile_sequences() {
+        let dictionary = DynamicDawgGeneric::<u32>::from_atom_sequences::<crate::U32, _>([
+            crate::AtomSequence::<crate::U32>::from_atoms([7, 11]),
+            crate::AtomSequence::<crate::U32>::from_atoms([7, 13]),
+        ]);
+        assert!(dictionary.contains_units(&[7, 11]));
+        assert!(dictionary.contains_units(&[7, 13]));
     }
 
     #[test]
