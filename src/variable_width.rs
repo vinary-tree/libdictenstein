@@ -218,6 +218,23 @@ impl<'a> Uleb128Ref<'a> {
         Ok(Self(bytes))
     }
 
+    /// Borrow exactly the first complete atom from a byte stream.
+    ///
+    /// The returned offset is the number of bytes consumed; bytes after the
+    /// terminator are untouched and may contain the next logical atom.
+    pub fn from_prefix(bytes: &'a [u8]) -> Result<(Self, usize), Uleb128Error> {
+        let Some(end) = bytes.iter().position(|byte| byte & 0x80 == 0) else {
+            return Err(if bytes.is_empty() {
+                Uleb128Error::Empty
+            } else {
+                Uleb128Error::Unterminated
+            });
+        };
+        let consumed = end + 1;
+        let view = Self::new(&bytes[..consumed])?;
+        Ok((view, consumed))
+    }
+
     /// Return the exact borrowed wire bytes.
     #[inline]
     pub fn as_bytes(self) -> &'a [u8] {
@@ -319,5 +336,14 @@ mod tests {
             Uleb128::from_payload_digits(&[128]),
             Err(Uleb128Error::InvalidPayload)
         );
+    }
+
+    #[test]
+    fn borrowed_prefix_parser_is_bounded_and_preserves_suffix() {
+        let stream = [0x83, 0x04, 0x01];
+        let (first, consumed) = Uleb128Ref::from_prefix(&stream).unwrap();
+        assert_eq!(first.as_bytes(), &[0x83, 0x04]);
+        assert_eq!(&stream[consumed..], &[0x01]);
+        assert_eq!(Uleb128Ref::from_prefix(&[0x80]), Err(Uleb128Error::Unterminated));
     }
 }
