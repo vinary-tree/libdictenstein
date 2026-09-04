@@ -157,6 +157,9 @@ pub trait VariableWidthCodec {
     fn encode(value: &Self::Owned) -> Vec<u8>;
     /// Materialise an owned atom from canonical wire bytes.
     fn decode(bytes: &[u8]) -> Result<Self::Owned, Uleb128Error>;
+    /// Decode one atom at the front of a concatenated image and report bytes
+    /// consumed, without interpreting any following atom.
+    fn decode_prefix(bytes: &[u8]) -> Result<(Self::Owned, usize), Uleb128Error>;
 }
 
 /// ULEB128 implementation of [`VariableWidthCodec`].
@@ -184,6 +187,12 @@ impl VariableWidthCodec for Uleb128Codec {
     #[inline]
     fn decode(bytes: &[u8]) -> Result<Self::Owned, Uleb128Error> {
         Uleb128::from_bytes(bytes)
+    }
+
+    #[inline]
+    fn decode_prefix(bytes: &[u8]) -> Result<(Self::Owned, usize), Uleb128Error> {
+        let (view, consumed) = Uleb128Ref::from_prefix(bytes)?;
+        Ok((view.to_owned(), consumed))
     }
 }
 
