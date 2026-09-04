@@ -106,6 +106,19 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
         self.insert_units(sequence.as_atoms())
     }
 
+    /// Insert a profile sequence with an associated mapped value.
+    #[inline]
+    pub fn insert_atom_sequence_with_value<P>(
+        &self,
+        sequence: &crate::AtomSequence<P>,
+        value: V,
+    ) -> bool
+    where
+        P: crate::AtomProfile<Atom = U>,
+    {
+        self.insert_units_with_value(sequence.as_atoms(), value)
+    }
+
     /// Insert one sequence with an associated value.
     #[inline]
     pub fn insert_units_with_value(&self, units: &[U], value: V) -> bool {
@@ -125,6 +138,15 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
         P: crate::AtomProfile<Atom = U>,
     {
         self.contains_units(sequence.as_atoms())
+    }
+
+    /// Remove a profile sequence directly in logical-unit space.
+    #[inline]
+    pub fn remove_atom_sequence<P>(&self, sequence: &crate::AtomSequence<P>) -> bool
+    where
+        P: crate::AtomProfile<Atom = U>,
+    {
+        self.remove_units(sequence.as_atoms())
     }
 
     /// Read the value associated with a logical-unit sequence.
@@ -231,10 +253,12 @@ mod generic_tests {
 
     #[test]
     fn profile_sequences_are_consumed_without_encoded_byte_decoding() {
-        let dictionary = DynamicDawgGeneric::<u32>::new();
+        let dictionary = DynamicDawgGeneric::<u32, u32>::new();
         let sequence = crate::AtomSequence::<crate::U32>::from_atoms([7, 11, 13]);
-        assert!(dictionary.insert_atom_sequence(&sequence));
+        assert!(dictionary.insert_atom_sequence_with_value(&sequence, 41));
         assert!(dictionary.contains_atom_sequence(&sequence));
+        assert_eq!(dictionary.get_units_value(sequence.as_atoms()), Some(41));
+        assert!(dictionary.remove_atom_sequence(&sequence));
         assert!(!dictionary.contains_units(&[7, 11]));
     }
 }
