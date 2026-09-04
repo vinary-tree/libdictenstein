@@ -59,5 +59,6 @@ mod profile_tests {
             _,
         >([(AtomSequence::<UnicodeScalar>::from_atoms(['λ']), 7)]);
         assert_eq!(dictionary.get_value("λ"), Some(7));
+        assert_eq!(dictionary.get_chars_value(&['λ']), Some(7));
     }
 }

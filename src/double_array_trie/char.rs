@@ -432,6 +432,10 @@ impl<V: DictionaryValue> DoubleArrayTrieChar<V> {
         }
     }
 
+    /// Get a value using already-decoded Unicode scalar units.
+    pub fn get_chars_value(&self, units: &[char]) -> Option<V> {
+        self.shared.term_value_units_from(units, 0)
+    }
     /// Iterate over all `(term, value)` pairs as character vectors.
     ///
     /// Returns an iterator yielding `(Vec<char>, V)` tuples in depth-first order.
