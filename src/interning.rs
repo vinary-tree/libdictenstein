@@ -275,6 +275,11 @@ pub struct InternedSequenceDictionary<K: Ord + Clone, V: DictionaryValue = ()> {
 /// only generation-bound fixed-width IDs.
 pub type InternedUlebSequenceDictionary<V = ()> = InternedSequenceDictionary<Uleb128, V>;
 
+/// Arbitrary-width ULEB atoms interned to the explicit `u64` local carrier.
+/// This preserves the same capsule-local vocabulary and generation rules while
+/// allowing more than `u32::MAX` distinct symbols in one vocabulary.
+pub type InternedUlebSequenceDictionaryU64<V = ()> = InternedSequenceDictionaryU64<Uleb128, V>;
+
 /// Capability-limited read view of an interned ID-sequence backend.
 #[derive(Clone, Copy, Debug)]
 pub struct InternedIdDictionaryView<'a, U: CharUnit, V: DictionaryValue> {
@@ -682,7 +687,7 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
 mod coordinated_tests {
     use super::{
         InternedSequence, InternedSequenceDictionary, InternedSequenceDictionaryU64,
-        InternedUlebSequenceDictionary,
+        InternedUlebSequenceDictionary, InternedUlebSequenceDictionaryU64,
     };
     use crate::Uleb128;
 
@@ -746,6 +751,19 @@ mod coordinated_tests {
         );
         assert_eq!(dictionary.vocabulary().unwrap().generation(), 9);
         assert_eq!(dictionary.generation(), Ok(9));
+    }
+
+    #[test]
+    fn uleb_alias_exposes_explicit_u64_carrier() {
+        let dictionary = InternedUlebSequenceDictionaryU64::<u32>::with_generation(12);
+        let atoms = [Uleb128::from_u64(1u64 << 63), Uleb128::from_u64(624_485)];
+        assert!(dictionary.insert(atoms.iter().cloned(), Some(23)).unwrap());
+        assert_eq!(
+            dictionary.get_value(atoms.iter().cloned()).unwrap(),
+            Some(23)
+        );
+        let ids = InternedSequence::from_ids_with_generation(12, [0, 1]);
+        assert!(dictionary.contains_id_sequence(&ids).unwrap());
     }
 }
 

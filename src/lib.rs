@@ -172,8 +172,8 @@ pub use dynamic_dawg::{
 };
 pub use interning::{
     InternedId, InternedIdDictionaryView, InternedSequence, InternedSequenceDictionary,
-    InternedSequenceDictionaryU64, InternedUlebSequenceDictionary, InternedVocabulary,
-    InterningError,
+    InternedSequenceDictionaryU64, InternedUlebSequenceDictionary,
+    InternedUlebSequenceDictionaryU64, InternedVocabulary, InterningError,
 };
 pub use iterator::{DictionaryIterator, DictionaryTermIterator};
 pub use node_signature::NodeSignature;
