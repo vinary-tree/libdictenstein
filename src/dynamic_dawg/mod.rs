@@ -93,6 +93,19 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
         self.inner.insert_units(units)
     }
 
+    /// Insert a logical sequence produced by a fixed-width atom profile.
+    ///
+    /// The profile is a compile-time witness that the sequence's atoms are
+    /// the dictionary's traversal units; no encoded-byte decoding occurs in
+    /// the DAWG hot path.
+    #[inline]
+    pub fn insert_atom_sequence<P>(&self, sequence: &crate::AtomSequence<P>) -> bool
+    where
+        P: crate::AtomProfile<Atom = U>,
+    {
+        self.insert_units(sequence.as_atoms())
+    }
+
     /// Insert one sequence with an associated value.
     #[inline]
     pub fn insert_units_with_value(&self, units: &[U], value: V) -> bool {
@@ -103,6 +116,15 @@ impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
     #[inline]
     pub fn contains_units(&self, units: &[U]) -> bool {
         self.inner.contains_units(units)
+    }
+
+    /// Query a profile sequence directly in logical-unit space.
+    #[inline]
+    pub fn contains_atom_sequence<P>(&self, sequence: &crate::AtomSequence<P>) -> bool
+    where
+        P: crate::AtomProfile<Atom = U>,
+    {
+        self.contains_units(sequence.as_atoms())
     }
 
     /// Read the value associated with a logical-unit sequence.
@@ -205,6 +227,15 @@ mod generic_tests {
             valued.visible_entries(),
             vec![(vec![1, 2], Some(10)), (vec![1, 3], Some(20))]
         );
+    }
+
+    #[test]
+    fn profile_sequences_are_consumed_without_encoded_byte_decoding() {
+        let dictionary = DynamicDawgGeneric::<u32>::new();
+        let sequence = crate::AtomSequence::<crate::U32>::from_atoms([7, 11, 13]);
+        assert!(dictionary.insert_atom_sequence(&sequence));
+        assert!(dictionary.contains_atom_sequence(&sequence));
+        assert!(!dictionary.contains_units(&[7, 11]));
     }
 }
 
