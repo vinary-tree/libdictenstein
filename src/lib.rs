@@ -169,7 +169,7 @@ pub use substring::{
     BidirectionalDictionaryNode, ExtensionResult, SubstringDictionary, SubstringMatch,
 };
 pub use value::DictionaryValue;
-pub use variable_width::{Uleb128, Uleb128Error};
+pub use variable_width::{Uleb128, Uleb128Error, Uleb128Ref};
 pub use zipper::{DictZipper, ValuedDictZipper, ZipperTraversalNode};
 
 // Re-export persistent ARTrie types (only available with feature)

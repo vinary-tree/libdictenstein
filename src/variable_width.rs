@@ -39,6 +39,10 @@ impl std::error::Error for Uleb128Error {}
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct Uleb128(Vec<u8>);
 
+/// Borrowed validated view of a canonical ULEB128 atom.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Uleb128Ref<'a>(&'a [u8]);
+
 impl Default for Uleb128 {
     fn default() -> Self {
         Self(vec![0])
@@ -54,7 +58,7 @@ impl fmt::Debug for Uleb128 {
 impl Uleb128 {
     /// Validate and copy one canonical wire encoding.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Uleb128Error> {
-        validate(bytes)?;
+        Uleb128Ref::try_from(bytes)?;
         Ok(Self(bytes.to_vec()))
     }
 
@@ -135,6 +139,47 @@ impl Uleb128 {
     }
 }
 
+impl<'a> Uleb128Ref<'a> {
+    /// Validate a borrowed canonical wire encoding without allocating.
+    #[inline]
+    pub fn new(bytes: &'a [u8]) -> Result<Self, Uleb128Error> {
+        validate(bytes)?;
+        Ok(Self(bytes))
+    }
+
+    /// Return the exact borrowed wire bytes.
+    #[inline]
+    pub fn as_bytes(self) -> &'a [u8] {
+        self.0
+    }
+
+    /// Copy this view into an owned atom.
+    #[inline]
+    pub fn to_owned(self) -> Uleb128 {
+        Uleb128(self.0.to_vec())
+    }
+
+    /// Compare arbitrary-width values without decoding them.
+    #[inline]
+    pub fn numeric_cmp(self, other: Self) -> Ordering {
+        self.0.len().cmp(&other.0.len()).then_with(|| {
+            self.0
+                .iter()
+                .rev()
+                .map(|b| b & 0x7f)
+                .cmp(other.0.iter().rev().map(|b| b & 0x7f))
+        })
+    }
+}
+
+impl<'a> TryFrom<&'a [u8]> for Uleb128Ref<'a> {
+    type Error = Uleb128Error;
+
+    fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
+        Self::new(bytes)
+    }
+}
+
 impl Ord for Uleb128 {
     fn cmp(&self, other: &Self) -> Ordering {
         self.numeric_cmp(other)
@@ -184,5 +229,13 @@ mod tests {
         let one = Uleb128::from_bytes(&[1]).unwrap();
         let one_twenty_eight = Uleb128::from_bytes(&[0x80, 1]).unwrap();
         assert!(one < one_twenty_eight);
+    }
+
+    #[test]
+    fn borrowed_view_is_zero_copy_and_validated() {
+        let wire = [0x80, 0x01];
+        let view = Uleb128Ref::new(&wire).unwrap();
+        assert_eq!(view.as_bytes().as_ptr(), wire.as_ptr());
+        assert_eq!(view.to_owned().as_bytes(), &wire);
     }
 }
