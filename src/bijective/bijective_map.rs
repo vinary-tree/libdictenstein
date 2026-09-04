@@ -193,6 +193,23 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveMap<V> {
         bimap
     }
 
+    /// Build a bijection from Unicode-scalar profile sequences and values.
+    ///
+    /// Each sequence is materialized as a logical `String` only at this
+    /// user-facing boundary; the forward DAWG then traverses Unicode scalars.
+    pub fn from_atom_sequences_with_values<P, I>(entries: I) -> Self
+    where
+        P: crate::AtomProfile<Atom = char>,
+        I: IntoIterator<Item = (crate::AtomSequence<P>, V)>,
+    {
+        Self::from_pairs(entries.into_iter().map(|(sequence, value)| {
+            (
+                sequence.as_atoms().iter().copied().collect::<String>(),
+                value,
+            )
+        }))
+    }
+
     /// Insert a term-value pair.
     ///
     /// # Panics
@@ -637,6 +654,16 @@ impl<V: DictionaryValue + Eq + Hash> BijectiveDictionary for BijectiveMap<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{AtomSequence, BijectiveDictionary, UnicodeScalar};
+
+    #[test]
+    fn profile_sequence_constructor_preserves_bijection() {
+        let bimap = BijectiveMap::<u32>::from_atom_sequences_with_values::<UnicodeScalar, _>([
+            (AtomSequence::<UnicodeScalar>::from_atoms(['λ', 'x']), 7),
+        ]);
+        assert_eq!(bimap.get_value("λx"), Some(7));
+        assert_eq!(BijectiveDictionary::get_term(&bimap, &7).as_deref(), Some("λx"));
+    }
 
     #[test]
     fn test_empty_map() {
