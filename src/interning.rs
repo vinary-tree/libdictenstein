@@ -5,6 +5,13 @@ use std::collections::BTreeMap;
 /// Dense identifier assigned by an [`InternedVocabulary`].
 pub type InternedId = u64;
 
+/// Validation failures at the vocabulary boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterningError {
+    /// The ID is not present in this vocabulary generation.
+    UnknownId(InternedId),
+}
+
 /// Compact capsule-local sequence of vocabulary IDs.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub struct InternedSequence {
@@ -109,6 +116,19 @@ impl<K: Ord + Clone> InternedVocabulary<K> {
         values.map(Vec::into_iter)
     }
 
+    /// Validate that every ID belongs to this vocabulary generation.
+    pub fn validate_sequence(
+        &self,
+        sequence: &InternedSequence,
+    ) -> Result<(), InterningError> {
+        sequence
+            .ids
+            .iter()
+            .copied()
+            .find(|&id| self.value(id).is_none())
+            .map_or(Ok(()), |id| Err(InterningError::UnknownId(id)))
+    }
+
     /// Borrow each resolved value in ID order without allocating.  A `None`
     /// item denotes an unknown ID and must be treated as a vocabulary-boundary
     /// error by consumers.
@@ -178,5 +198,13 @@ mod tests {
         assert!(vocabulary.resolve_iter(&sequence).all(|value| value.is_some()));
         let unknown = InternedSequence::from_ids([99]);
         assert_eq!(vocabulary.resolve_iter(&unknown).next(), Some(None));
+        assert_eq!(
+            vocabulary.validate_sequence(&sequence),
+            Ok(())
+        );
+        assert_eq!(
+            vocabulary.validate_sequence(&unknown),
+            Err(InterningError::UnknownId(99))
+        );
     }
 }

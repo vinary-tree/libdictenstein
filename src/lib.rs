@@ -174,7 +174,7 @@ pub use value::DictionaryValue;
 pub use profile::{
     AtomProfile, AtomSequence, AtomStream, Bytes, F64Bits, ProfileError, U32, U64, UnicodeScalar,
 };
-pub use interning::{InternedId, InternedSequence, InternedVocabulary};
+pub use interning::{InternedId, InternedSequence, InternedVocabulary, InterningError};
 pub use variable_width::{
     Uleb128, Uleb128Codec, Uleb128Error, Uleb128Ref, VariableWidthCodec, VariableWidthProfile,
     Uleb128Sequence, Uleb128Stream, ULEB128_PROFILE,
