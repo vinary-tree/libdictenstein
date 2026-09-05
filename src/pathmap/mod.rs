@@ -138,6 +138,18 @@ impl<V: crate::DictionaryValue> PathMapDictionaryUleb128<V> {
         dictionary
     }
 
+    /// Build from the shared logical ULEB profile sequence representation.
+    pub fn from_atom_sequences_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (crate::AtomSequence<crate::Uleb128Atom>, V)>,
+    {
+        Self::from_sequences_with_values(
+            entries
+                .into_iter()
+                .map(|(sequence, value)| (sequence.into(), value)),
+        )
+    }
+
     /// Build an unvalued adapter from complete canonical ULEB sequences.
     pub fn from_sequences<I>(sequences: I) -> Self
     where
@@ -150,15 +162,40 @@ impl<V: crate::DictionaryValue> PathMapDictionaryUleb128<V> {
         dictionary
     }
 
+    /// Build an unvalued adapter from shared logical ULEB profile sequences.
+    pub fn from_atom_sequences<I>(sequences: I) -> Self
+    where
+        I: IntoIterator<Item = crate::AtomSequence<crate::Uleb128Atom>>,
+    {
+        Self::from_sequences(sequences.into_iter().map(Into::into))
+    }
+
     /// Insert one complete ULEB128 sequence.
     #[inline]
     pub fn insert(&self, sequence: &crate::Uleb128Sequence) -> bool {
         self.inner.insert_bytes(&sequence.to_encoded())
     }
 
+    /// Insert one shared logical ULEB profile sequence.
+    #[inline]
+    pub fn insert_atom_sequence(&self, sequence: &crate::AtomSequence<crate::Uleb128Atom>) -> bool {
+        self.inner.insert_bytes(&sequence.to_encoded())
+    }
+
     /// Insert one complete ULEB128 sequence with a mapped value.
     #[inline]
     pub fn insert_with_value(&self, sequence: &crate::Uleb128Sequence, value: V) -> bool {
+        self.inner
+            .insert_bytes_with_value(&sequence.to_encoded(), value)
+    }
+
+    /// Insert one shared logical ULEB profile sequence with a mapped value.
+    #[inline]
+    pub fn insert_atom_sequence_with_value(
+        &self,
+        sequence: &crate::AtomSequence<crate::Uleb128Atom>,
+        value: V,
+    ) -> bool {
         self.inner
             .insert_bytes_with_value(&sequence.to_encoded(), value)
     }
@@ -176,6 +213,15 @@ impl<V: crate::DictionaryValue> PathMapDictionaryUleb128<V> {
         self.inner.contains_bytes(&sequence.to_encoded())
     }
 
+    /// Test membership of one shared logical ULEB profile sequence.
+    #[inline]
+    pub fn contains_atom_sequence(
+        &self,
+        sequence: &crate::AtomSequence<crate::Uleb128Atom>,
+    ) -> bool {
+        self.inner.contains_bytes(&sequence.to_encoded())
+    }
+
     /// Test a complete canonical encoded sequence without materializing its
     /// decoded atoms.  Malformed or non-canonical images are rejected.
     pub fn contains_encoded(&self, encoded: &[u8]) -> Result<bool, crate::Uleb128Error> {
@@ -186,6 +232,15 @@ impl<V: crate::DictionaryValue> PathMapDictionaryUleb128<V> {
     /// Read a mapped value for one complete ULEB128 sequence.
     #[inline]
     pub fn get_value(&self, sequence: &crate::Uleb128Sequence) -> Option<V> {
+        self.inner.get_bytes_value(&sequence.to_encoded())
+    }
+
+    /// Read a mapped value for one shared logical ULEB profile sequence.
+    #[inline]
+    pub fn get_atom_sequence_value(
+        &self,
+        sequence: &crate::AtomSequence<crate::Uleb128Atom>,
+    ) -> Option<V> {
         self.inner.get_bytes_value(&sequence.to_encoded())
     }
 
@@ -265,6 +320,20 @@ mod profile_tests {
         assert!(dictionary.insert_encoded(&[0x80], 1).is_err());
         assert!(dictionary.remove(&sequence));
         assert!(!dictionary.contains(&sequence));
+    }
+
+    #[test]
+    fn uleb_adapter_accepts_shared_profile_sequences() {
+        let sequence = crate::AtomSequence::<crate::Uleb128Atom>::from_atoms([
+            crate::Uleb128::from_u64(624_485),
+            crate::Uleb128::from_u64(1u64 << 63),
+        ]);
+        let dictionary = PathMapDictionaryUleb128::<u16>::from_atom_sequences_with_values([(
+            sequence.clone(),
+            23,
+        )]);
+        assert!(dictionary.contains_atom_sequence(&sequence));
+        assert_eq!(dictionary.get_atom_sequence_value(&sequence), Some(23));
     }
 
     #[test]
