@@ -418,6 +418,14 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionaryU64<K, V> {
         self.vocabulary.lock()
     }
 
+    /// Capture the vocabulary boundary without retaining its mutex guard.
+    pub fn vocabulary_snapshot(&self) -> Result<InternedVocabularySnapshot<K>, InterningError> {
+        self.vocabulary
+            .lock()
+            .map(|vocabulary| vocabulary.snapshot())
+            .map_err(|_| InterningError::Poisoned)
+    }
+
     /// Read the generation identity without exposing vocabulary storage.
     pub fn generation(&self) -> Result<u64, InterningError> {
         self.vocabulary
@@ -615,6 +623,14 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
         &self,
     ) -> std::sync::LockResult<std::sync::MutexGuard<'_, InternedVocabulary<K>>> {
         self.vocabulary.lock()
+    }
+
+    /// Capture the vocabulary boundary without retaining its mutex guard.
+    pub fn vocabulary_snapshot(&self) -> Result<InternedVocabularySnapshot<K>, InterningError> {
+        self.vocabulary
+            .lock()
+            .map(|vocabulary| vocabulary.snapshot())
+            .map_err(|_| InterningError::Poisoned)
     }
 
     /// Read the generation identity without exposing vocabulary storage.
@@ -908,6 +924,9 @@ mod coordinated_tests {
         );
         assert_eq!(dictionary.vocabulary().unwrap().generation(), 9);
         assert_eq!(dictionary.generation(), Ok(9));
+        let snapshot = dictionary.vocabulary_snapshot().unwrap();
+        assert_eq!(snapshot.generation(), 9);
+        assert_eq!(snapshot.value(0), Some(&u32::MAX));
     }
 
     #[test]

@@ -1900,10 +1900,11 @@ pub mod prelude {
         DictionaryValue, DictionaryValues, ExactSnapshotEntryIterator, InsertError,
         InternedEntries, InternedId, InternedIdDictionaryView, InternedSequence,
         InternedSequenceDictionary, InternedSequenceDictionaryU64, InternedUlebSequenceDictionary,
-        InternedUlebSequenceDictionaryU64, InternedVocabulary, MappedDictionary,
-        MappedDictionaryNode, MutableDictionary, MutableMappedDictionary, SnapshotEntryIterator,
-        SnapshotTermIterator, SyncStrategy, Uleb128Atom, Utf8, ValuedDictZipper,
-        ValuedZipperCollection, ZipperCollection, ZipperEntryIterator, ZipperTermIterator,
+        InternedUlebSequenceDictionaryU64, InternedVocabulary, InternedVocabularySnapshot,
+        MappedDictionary, MappedDictionaryNode, MutableDictionary, MutableMappedDictionary,
+        SnapshotEntryIterator, SnapshotTermIterator, SyncStrategy, Uleb128Atom, Utf8,
+        ValuedDictZipper, ValuedZipperCollection, ZipperCollection, ZipperEntryIterator,
+        ZipperTermIterator,
     };
 
     // Re-export common dictionary types
