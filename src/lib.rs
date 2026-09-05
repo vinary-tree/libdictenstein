@@ -1898,9 +1898,9 @@ pub trait MutableMappedDictionary: MappedDictionary {
 /// Prelude module for convenient imports.
 pub mod prelude {
     pub use crate::factory::{
-        DictionaryDescriptor, DictionaryDescriptorError, DictionaryFamily, DictionarySpec,
-        ProfiledDictionaryContainer, ProfiledFactoryError, Uleb128Backend,
-        Uleb128DictionaryContainer,
+        BackendProfileDescriptor, DictionaryBackend, DictionaryDescriptor,
+        DictionaryDescriptorError, DictionaryFamily, DictionarySpec, ProfiledDictionaryContainer,
+        ProfiledFactoryError, Uleb128Backend, Uleb128DictionaryContainer,
     };
     pub use crate::ProfiledZipper;
     pub use crate::{
@@ -1923,13 +1923,17 @@ pub mod prelude {
         DoubleArrayTrie, DoubleArrayTrieChar, DoubleArrayTrieUleb128, DoubleArrayTrieUtf8,
     };
     pub use crate::dynamic_dawg::{
-        DynamicDawg, DynamicDawgChar, DynamicDawgF64Bits, DynamicDawgU64, DynamicDawgUleb128,
-        DynamicDawgUtf8,
+        DynamicDawg, DynamicDawgByteProfile, DynamicDawgChar, DynamicDawgCharProfile,
+        DynamicDawgF64Bits, DynamicDawgGeneric, DynamicDawgProfile, DynamicDawgU32, DynamicDawgU64,
+        DynamicDawgU64Profile, DynamicDawgUleb128, DynamicDawgUtf8,
     };
     #[cfg(feature = "pathmap-backend")]
     pub use crate::pathmap::{PathMapDictionaryUleb128, PathMapDictionaryUtf8};
     pub use crate::scdawg::{Scdawg, ScdawgChar, ScdawgUtf8};
     pub use crate::suffix_automaton::{SuffixAutomaton, SuffixAutomatonChar, SuffixAutomatonUtf8};
+    pub use crate::{
+        AtomProfile, Bytes, F64Bits, ProfileKind, UnicodeScalar, VariableWidthProfile, U32, U64,
+    };
 
     #[cfg(feature = "persistent-artrie")]
     pub use crate::persistent_artrie::{
