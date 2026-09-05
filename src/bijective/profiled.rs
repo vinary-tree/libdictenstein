@@ -287,6 +287,7 @@ impl<U: CharUnit, V: DictionaryValue + Eq + Hash> ProfiledBijectiveMap<U, V> {
 mod tests {
     use super::ProfiledBijectiveMap;
     use crate::{AtomSequence, U32};
+    use proptest::{prop_assert, prop_assert_eq};
 
     #[test]
     fn preserves_numeric_units_in_both_directions() {
@@ -356,5 +357,29 @@ mod tests {
         assert_eq!(map.get_units_value(b"ab"), None);
         assert_eq!(snapshot.get_units_value(b"ab"), Some(1));
         assert_eq!(snapshot.len(), 1);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn generated_unit_sequences_round_trip(
+            sequences in proptest::collection::vec(
+                proptest::collection::vec(0u8..=7, 0..=5),
+                0..=32
+            )
+        ) {
+            use std::collections::BTreeSet;
+
+            let unique: BTreeSet<Vec<u8>> = sequences.into_iter().collect();
+            let map = ProfiledBijectiveMap::<u8, u32>::new();
+            let entries: Vec<_> = unique.into_iter().enumerate().collect();
+            for (value, units) in &entries {
+                prop_assert!(map.try_insert_units(units, *value as u32).is_ok());
+            }
+            prop_assert_eq!(map.len(), entries.len());
+            for (value, units) in entries {
+                prop_assert_eq!(map.get_units_value(&units), Some(value as u32));
+                prop_assert_eq!(map.get_units(&((value) as u32)), Some(units));
+            }
+        }
     }
 }
