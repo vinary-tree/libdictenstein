@@ -39,6 +39,22 @@ mod tests {
         assert!(dictionary.remove(&first));
         assert!(!dictionary.contains(&first));
     }
+
+    #[test]
+    fn accepts_shared_profile_sequences() {
+        let sequence = crate::AtomSequence::<crate::Uleb128Atom>::from_atoms([
+            Uleb128::from_u64(624_485),
+            Uleb128::from_u64(1u64 << 63),
+        ]);
+        let dictionary = PersistentARTrieUleb128::<u16>::from_atom_sequences_with_values([(
+            sequence.clone(),
+            23,
+        )]);
+        assert!(dictionary.contains_atom_sequence(&sequence));
+        assert_eq!(dictionary.get_atom_sequence_value(&sequence), Some(23));
+        assert!(dictionary.try_remove_atom_sequence(&sequence).unwrap());
+        assert!(!dictionary.contains_atom_sequence(&sequence));
+    }
 }
 
 impl<V: DictionaryValue> Default for PersistentARTrieUleb128<V> {
@@ -60,6 +76,14 @@ impl<V: DictionaryValue> PersistentARTrieUleb128<V> {
         dictionary
     }
 
+    /// Construct from the shared logical ULEB profile sequence representation.
+    pub fn from_atom_sequences<I>(sequences: I) -> Self
+    where
+        I: IntoIterator<Item = crate::AtomSequence<crate::Uleb128Atom>>,
+    {
+        Self::from_sequences(sequences.into_iter().map(Into::into))
+    }
+
     /// Construct an in-memory adapter from complete sequences and values.
     pub fn from_sequences_with_values<I>(entries: I) -> Self
     where
@@ -70,6 +94,18 @@ impl<V: DictionaryValue> PersistentARTrieUleb128<V> {
             dictionary.insert_with_value(&sequence, value);
         }
         dictionary
+    }
+
+    /// Construct from shared logical ULEB profile sequences and values.
+    pub fn from_atom_sequences_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (crate::AtomSequence<crate::Uleb128Atom>, V)>,
+    {
+        Self::from_sequences_with_values(
+            entries
+                .into_iter()
+                .map(|(sequence, value)| (sequence.into(), value)),
+        )
     }
 
     /// Create a fresh persistent ULEB dictionary at `path`.
@@ -142,15 +178,40 @@ impl<V: DictionaryValue> PersistentARTrieUleb128<V> {
         self.inner.try_insert_bytes(&sequence.to_encoded())
     }
 
+    /// Checked insertion of one shared logical ULEB profile sequence.
+    pub fn try_insert_atom_sequence(
+        &self,
+        sequence: &crate::AtomSequence<crate::Uleb128Atom>,
+    ) -> crate::persistent_artrie::Result<bool> {
+        self.inner.try_insert_bytes(&sequence.to_encoded())
+    }
+
     /// Insert a complete canonical sequence.
     #[inline]
     pub fn insert(&self, sequence: &Uleb128Sequence) -> bool {
         self.inner.insert_bytes(&sequence.to_encoded())
     }
 
+    /// Insert one shared logical ULEB profile sequence.
+    #[inline]
+    pub fn insert_atom_sequence(&self, sequence: &crate::AtomSequence<crate::Uleb128Atom>) -> bool {
+        self.inner.insert_bytes(&sequence.to_encoded())
+    }
+
     /// Insert a complete canonical sequence with a value.
     #[inline]
     pub fn insert_with_value(&self, sequence: &Uleb128Sequence, value: V) -> bool {
+        self.inner
+            .insert_with_value_bytes(&sequence.to_encoded(), value)
+    }
+
+    /// Insert one shared logical ULEB profile sequence with a mapped value.
+    #[inline]
+    pub fn insert_atom_sequence_with_value(
+        &self,
+        sequence: &crate::AtomSequence<crate::Uleb128Atom>,
+        value: V,
+    ) -> bool {
         self.inner
             .insert_with_value_bytes(&sequence.to_encoded(), value)
     }
@@ -165,9 +226,28 @@ impl<V: DictionaryValue> PersistentARTrieUleb128<V> {
             .try_insert_with_value_bytes(&sequence.to_encoded(), value)
     }
 
+    /// Checked value insertion for one shared logical ULEB profile sequence.
+    pub fn try_insert_atom_sequence_with_value(
+        &self,
+        sequence: &crate::AtomSequence<crate::Uleb128Atom>,
+        value: V,
+    ) -> crate::persistent_artrie::Result<bool> {
+        self.inner
+            .try_insert_with_value_bytes(&sequence.to_encoded(), value)
+    }
+
     /// Test membership of a complete sequence.
     #[inline]
     pub fn contains(&self, sequence: &Uleb128Sequence) -> bool {
+        self.inner.contains_bytes(&sequence.to_encoded())
+    }
+
+    /// Test membership of one shared logical ULEB profile sequence.
+    #[inline]
+    pub fn contains_atom_sequence(
+        &self,
+        sequence: &crate::AtomSequence<crate::Uleb128Atom>,
+    ) -> bool {
         self.inner.contains_bytes(&sequence.to_encoded())
     }
 
@@ -177,14 +257,37 @@ impl<V: DictionaryValue> PersistentARTrieUleb128<V> {
         self.inner.get_value_bytes(&sequence.to_encoded())
     }
 
+    /// Read a mapped value for one shared logical ULEB profile sequence.
+    #[inline]
+    pub fn get_atom_sequence_value(
+        &self,
+        sequence: &crate::AtomSequence<crate::Uleb128Atom>,
+    ) -> Option<V> {
+        self.inner.get_value_bytes(&sequence.to_encoded())
+    }
+
     /// Remove a complete sequence.
     #[inline]
     pub fn remove(&self, sequence: &Uleb128Sequence) -> bool {
         self.inner.remove_bytes(&sequence.to_encoded())
     }
 
+    /// Remove one shared logical ULEB profile sequence.
+    #[inline]
+    pub fn remove_atom_sequence(&self, sequence: &crate::AtomSequence<crate::Uleb128Atom>) -> bool {
+        self.inner.remove_bytes(&sequence.to_encoded())
+    }
+
     /// Checked removal preserving persistence failures.
     pub fn try_remove(&self, sequence: &Uleb128Sequence) -> crate::persistent_artrie::Result<bool> {
+        self.inner.try_remove_bytes(&sequence.to_encoded())
+    }
+
+    /// Checked removal of one shared logical ULEB profile sequence.
+    pub fn try_remove_atom_sequence(
+        &self,
+        sequence: &crate::AtomSequence<crate::Uleb128Atom>,
+    ) -> crate::persistent_artrie::Result<bool> {
         self.inner.try_remove_bytes(&sequence.to_encoded())
     }
 
