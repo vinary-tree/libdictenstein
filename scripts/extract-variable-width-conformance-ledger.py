@@ -120,6 +120,16 @@ def build(root: Path) -> list[dict[str, object]]:
                     if coverage == "positive_only"
                     else None
                 ),
+                "proof_only_rationale": (
+                    (
+                        f"Universal {('Rocq proposition' if declaration['language'] == 'rocq' else 'TLA assertion')} "
+                        f"verified from {declaration['source_path']}; implementation boundary "
+                        f"is exercised by positive registration(s) {', '.join(positive)}; "
+                        "no finite mutant control is applicable to this model-level law."
+                    )
+                    if coverage == "positive_only"
+                    else None
+                ),
                 # Positive executable coverage and mutant-control coverage are
                 # independent evidence dimensions. Keep both visible instead
                 # of treating positive-only properties as untested.

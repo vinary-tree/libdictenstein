@@ -86,6 +86,25 @@ class VariableWidthConformanceLedgerTest(unittest.TestCase):
                 if row["coverage"] == "positive_only"
             )
         )
+        self.assertTrue(
+            all(
+                row["proof_only_rationale"]
+                and row["formal_artifact"] in row["proof_only_rationale"]
+                and all(
+                    registration in row["proof_only_rationale"]
+                    for registration in row["positive_tests"]
+                )
+                for row in rows
+                if row["coverage"] == "positive_only"
+            )
+        )
+        self.assertTrue(
+            all(
+                row["proof_only_rationale"] is None
+                for row in rows
+                if row["coverage"] != "positive_only"
+            )
+        )
         expected_status = {
             "positive_and_negative": "registered-with-negative-control",
             "positive_only": "registered-positive-only",
