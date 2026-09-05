@@ -832,7 +832,8 @@ Where:
 
 ### Concurrent Access
 
-PathMap supports concurrent reads via memory mapping:
+The adapter supports concurrent reads by loading immutable roots; a retained
+snapshot is independent of later publications:
 
 ```rust
 use std::sync::Arc;
@@ -966,8 +967,10 @@ On 32-bit systems, use file-based PathMap instead of mmap.
 **Issue**: Concurrent write conflicts
 
 ```
-Solution: PathMap supports concurrent reads but single writer.
-Use write locks or process-level coordination for updates.
+Solution: `PathMapDictionary` clones a persistent root and CAS-publishes the
+candidate. Competing writers retry against the winning root; callers do not add
+an outer write lock. A successful mutation is visible to later root loads,
+while retained snapshots intentionally remain on their captured revision.
 ```
 
 ---

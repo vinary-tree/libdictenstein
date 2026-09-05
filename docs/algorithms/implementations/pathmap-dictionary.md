@@ -970,19 +970,21 @@ assert_eq!(dict1.get_value("author"), Some("alice"));
 
 ### Implementation Details
 
-The union operation uses **PathMap's iterator** with lock-based synchronization:
+The union operation uses **PathMap's iterator** over an immutable source root and
+publishes the transformed target root atomically:
 
 ```rust
 // Simplified implementation
 fn union_with<F>(&self, other: &Self, merge_fn: F) -> usize {
-    let other_map = other.map.read().unwrap();
-    let mut self_map = self.map.write().unwrap();
-    let mut self_term_count = self.term_count.write().unwrap();
+    let other_state = other.state.load_full();
+    let self_state = self.state.load_full();
+    let mut candidate = self_state.map.clone();
+    let mut term_count = self_state.len;
 
     let mut processed = 0;
 
-    // Iterate over all entries in other
-    for (key_bytes, other_value) in other_map.iter() {
+    // Iterate over all entries in the captured source revision
+    for (key_bytes, other_value) in other_state.map.iter() {
         processed += 1;
 
         if let Some(self_value) = self_map.get(&key_bytes) {

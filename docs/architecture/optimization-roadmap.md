@@ -100,7 +100,7 @@ Unicode node stays sorted or sparse-indexed.
 
 | Decision | Consequence |
 |----------|-------------|
-| Volatile mutable dictionaries use internal synchronization. | Public callers do not need an outer `RwLock` for `DynamicDawg`, `PathMapDictionary`, `SuffixAutomaton`, `Scdawg`, or `BijectiveMap`. |
+| Volatile mutable dictionaries own their publication/synchronization policy. | Public callers do not need an outer `RwLock` for `DynamicDawg`, `PathMapDictionary`, `SuffixAutomaton`, `Scdawg`, or `BijectiveMap`; `PathMapDictionary` uses immutable-root ArcSwap publication. |
 | Reader handles and zippers carry stable snapshots. | Compaction and mutation cannot invalidate traversal state. |
 | Writers use CAS publication or per-node atomic edge/value replacement. | Contended writers may retry, but readers do not block behind writers. |
 | Static backends keep compact array layouts. | Lookup and traversal stay cache-local for read-heavy dictionaries. |
