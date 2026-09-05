@@ -559,7 +559,7 @@ For concurrent writes, dictionaries have different strategies:
 |-----------|----------|--------|-------|
 | DoubleArrayTrie | `Persistent` | Rebuild + atomic swap | Append-only via builder |
 | DynamicDawg | `InternalSync` | Direct mutation | Internal RwLock |
-| PathMapDictionary | `InternalSync` | Direct mutation | Internal RwLock |
+| PathMapDictionary | `ArcSwap` copy-on-write | Clone, transform, and CAS-publish an immutable root | Readers take one snapshot and never block; competing writers retry from the winning root |
 
 ## Advanced Topics
 

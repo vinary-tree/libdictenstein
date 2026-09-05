@@ -23,9 +23,9 @@
 ### Key Advantages
 
 - 🔄 **Full dynamic updates**: Insert AND remove at runtime
-- 🔒 **Thread-safe**: Safe concurrent reads, exclusive writes
+- 🔒 **Snapshot-safe concurrency**: Readers load one immutable root without blocking; writers clone, transform, and CAS-publish a replacement root
 - 📦 **Simple implementation**: Thin wrapper around PathMap
-- 💎 **Persistent semantics**: Structural sharing between versions
+- 💎 **Persistent semantics**: Structural sharing between versions; retained snapshots remain isolated from later publication
 - 🎯 **Easy to use**: Straightforward API
 
 ### Key Trade-offs
@@ -48,6 +48,32 @@
 - Unicode required → Use `PathMapDictionaryChar`
 
 ## Theory: Persistent Data Structures
+
+### Concurrency and snapshot contract
+
+`PathMapDictionary` is an adapter around a third-party byte-keyed `PathMap`; the
+adapter owns publication, not the upstream representation. Its current root is
+stored in an atomic `ArcSwap`. A read operation loads one `Arc<PathMapState<V>>`
+and observes that immutable state for the operation (and for any owned snapshot
+or zipper derived from it). A writer clones the loaded persistent root, applies
+its transformation to the clone, and publishes the candidate with compare-and-
+swap. If another writer wins first, the transformation is retried against the
+new winning root. Consequently:
+
+- readers never wait for writers and never observe a partially transformed trie;
+- each published root has one exact term-count value paired with its trie root;
+- a retained `PathMapSnapshot` or owned zipper continues to observe its captured
+  revision after later writes publish newer roots;
+- a successful mutation is linearized at its root publication; a failed CAS is
+  an implementation retry, not an externally visible revision;
+- traversal does not mix revisions because its root is captured before walking;
+- visibility is immediate after the successful publication to subsequent root
+  loads, while an already retained snapshot intentionally remains on its older
+  revision.
+
+The upstream `PathMap` is not modified or forked, and its internal byte nodes
+are not exposed as logical dictionary transitions by the adapter's character or
+profile-aware views.
 
 ### What are Persistent Data Structures?
 
