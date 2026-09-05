@@ -322,25 +322,91 @@ impl<V: crate::DictionaryValue> DynamicDawgUtf8<V> {
         }
     }
 
+    /// Build from shared logical UTF-8 scalar profile sequences.
+    pub fn from_atom_sequences<I>(sequences: I) -> Self
+    where
+        I: IntoIterator<Item = crate::AtomSequence<crate::Utf8>>,
+    {
+        Self {
+            inner: DynamicDawgGeneric::from_sequences(
+                sequences.into_iter().map(|sequence| sequence.to_encoded()),
+            ),
+        }
+    }
+
+    /// Build a value-bearing dictionary from shared logical UTF-8 scalar
+    /// profile sequences.
+    pub fn from_atom_sequences_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (crate::AtomSequence<crate::Utf8>, V)>,
+    {
+        Self {
+            inner: DynamicDawgGeneric::from_sorted_entries(
+                entries
+                    .into_iter()
+                    .map(|(sequence, value)| (sequence.to_encoded(), value)),
+            ),
+        }
+    }
+
     #[inline]
     pub fn insert(&self, term: &str) -> bool {
         self.inner.insert_units(term.as_bytes())
+    }
+
+    /// Insert one shared logical UTF-8 scalar profile sequence.
+    #[inline]
+    pub fn insert_atom_sequence(&self, sequence: &crate::AtomSequence<crate::Utf8>) -> bool {
+        self.inner.insert_units(&sequence.to_encoded())
     }
     #[inline]
     pub fn insert_with_value(&self, term: &str, value: V) -> bool {
         self.inner.insert_units_with_value(term.as_bytes(), value)
     }
+
+    /// Insert one shared logical UTF-8 scalar profile sequence with a value.
+    #[inline]
+    pub fn insert_atom_sequence_with_value(
+        &self,
+        sequence: &crate::AtomSequence<crate::Utf8>,
+        value: V,
+    ) -> bool {
+        self.inner
+            .insert_units_with_value(&sequence.to_encoded(), value)
+    }
     #[inline]
     pub fn contains(&self, term: &str) -> bool {
         self.inner.contains_units(term.as_bytes())
+    }
+
+    /// Test membership of one shared logical UTF-8 scalar profile sequence.
+    #[inline]
+    pub fn contains_atom_sequence(&self, sequence: &crate::AtomSequence<crate::Utf8>) -> bool {
+        self.inner.contains_units(&sequence.to_encoded())
     }
     #[inline]
     pub fn get_value(&self, term: &str) -> Option<V> {
         self.inner.get_units_value(term.as_bytes())
     }
+
+    /// Read a mapped value for one shared logical UTF-8 scalar profile
+    /// sequence.
+    #[inline]
+    pub fn get_atom_sequence_value(
+        &self,
+        sequence: &crate::AtomSequence<crate::Utf8>,
+    ) -> Option<V> {
+        self.inner.get_units_value(&sequence.to_encoded())
+    }
     #[inline]
     pub fn remove(&self, term: &str) -> bool {
         self.inner.remove_units(term.as_bytes())
+    }
+
+    /// Remove one shared logical UTF-8 scalar profile sequence.
+    #[inline]
+    pub fn remove_atom_sequence(&self, sequence: &crate::AtomSequence<crate::Utf8>) -> bool {
+        self.inner.remove_units(&sequence.to_encoded())
     }
     #[inline]
     pub fn term_count(&self) -> usize {
@@ -611,6 +677,19 @@ mod generic_tests {
         assert!(!dictionary.is_empty());
         assert!(dictionary.remove_encoded("λ🎉".as_bytes()).unwrap());
         assert!(!dictionary.contains("λ🎉"));
+    }
+
+    #[test]
+    fn utf8_wrapper_accepts_shared_profile_sequences() {
+        let sequence = crate::AtomSequence::<crate::Utf8>::from_atoms(['λ', '🎉']);
+        let dictionary = super::DynamicDawgUtf8::<u16>::from_atom_sequences_with_values([(
+            sequence.clone(),
+            29,
+        )]);
+        assert!(dictionary.contains_atom_sequence(&sequence));
+        assert_eq!(dictionary.get_atom_sequence_value(&sequence), Some(29));
+        assert!(dictionary.remove_atom_sequence(&sequence));
+        assert!(!dictionary.contains_atom_sequence(&sequence));
     }
 
     #[test]
