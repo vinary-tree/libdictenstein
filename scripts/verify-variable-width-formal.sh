@@ -4,7 +4,12 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 rocq_root="$repo_root/formal-verification/rocq"
 tla_root="$repo_root/formal-verification/tla+"
-artifact_root="${VARIABLE_WIDTH_FORMAL_ARTIFACT_ROOT:-/tmp/libdictenstein-variable-width-formal}"
+# Keep default verifier state on the user runtime filesystem rather than /tmp.
+# The latter is commonly a tmpfs, so large TLC state spaces could consume
+# resident memory even though the verifier itself is RSS-capped.  Callers may
+# still select an explicitly managed artifact directory through the environment.
+runtime_root="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+artifact_root="${VARIABLE_WIDTH_FORMAL_ARTIFACT_ROOT:-$runtime_root/pgmcp/libdictenstein-variable-width-formal}"
 log_root="$artifact_root/logs"
 state_root="$artifact_root/tlc-state-spaces"
 
