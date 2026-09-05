@@ -580,6 +580,7 @@ impl EvictionCoordinator {
         })
     }
 
+    #[cfg(any(test, feature = "bench-internals"))]
     pub(crate) fn start_compact<F>(self: &Arc<Self>, callback: F) -> Result<(), String>
     where
         F: Fn(CompactEvictionBatch<u8>) -> (usize, usize) + Send + Sync + 'static,
@@ -590,6 +591,7 @@ impl EvictionCoordinator {
         })
     }
 
+    #[cfg(any(test, feature = "bench-internals"))]
     pub(crate) fn start_compact_char<F>(self: &Arc<Self>, callback: F) -> Result<(), String>
     where
         F: Fn(CompactEvictionBatch<u32>) -> (usize, usize) + Send + Sync + 'static,
@@ -1768,6 +1770,7 @@ impl EvictionCoordinator {
         });
     }
 
+    #[cfg(any(test, feature = "bench-internals"))]
     fn eviction_loop_compact<F>(weak: Weak<Self>, callback: Arc<F>)
     where
         F: Fn(CompactEvictionBatch<u8>) -> (usize, usize) + Send + Sync,
@@ -1777,6 +1780,7 @@ impl EvictionCoordinator {
         });
     }
 
+    #[cfg(any(test, feature = "bench-internals"))]
     fn eviction_loop_compact_char<F>(weak: Weak<Self>, callback: Arc<F>)
     where
         F: Fn(CompactEvictionBatch<u32>) -> (usize, usize) + Send + Sync,
@@ -1880,6 +1884,7 @@ impl EvictionCoordinator {
         callback(entries)
     }
 
+    #[cfg(any(test, feature = "bench-internals"))]
     fn perform_eviction_compact<F>(&self, callback: &F, request: &EvictionRequest) -> (usize, usize)
     where
         F: Fn(CompactEvictionBatch<u8>) -> (usize, usize),
@@ -1923,6 +1928,7 @@ impl EvictionCoordinator {
         callback(entries)
     }
 
+    #[cfg(any(test, feature = "bench-internals"))]
     fn perform_eviction_compact_char<F>(
         &self,
         callback: &F,

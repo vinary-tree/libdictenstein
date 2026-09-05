@@ -5388,6 +5388,7 @@ impl DiskLocationRegistry {
     }
 
     #[inline]
+    #[cfg(any(test, feature = "bench-internals"))]
     pub(super) fn is_authoritative(&self) -> bool {
         self.authority == RegistryAuthority::Valid
     }
@@ -5530,6 +5531,7 @@ impl DiskLocationRegistry {
             .collect()
     }
 
+    #[cfg(any(test, feature = "bench-internals"))]
     pub(crate) fn select_compact_for_eviction(
         &self,
         target_bytes: usize,
@@ -5616,6 +5618,7 @@ impl DiskLocationRegistry {
         }
     }
 
+    #[cfg(any(test, feature = "bench-internals"))]
     pub(crate) fn select_compact_char_for_eviction(
         &self,
         target_bytes: usize,
