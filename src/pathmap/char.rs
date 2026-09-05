@@ -83,6 +83,16 @@ impl<V: DictionaryValue> fmt::Debug for PathMapDictionaryChar<V> {
 }
 
 impl<V: DictionaryValue> PathMapDictionaryChar<V> {
+    /// Canonical logical profile represented by this Unicode PathMap adapter.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<crate::UnicodeScalar>()
+    }
+
+    /// Topology family represented by this adapter.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::PathMap
+    }
+
     #[inline]
     fn from_state(map: PathMap<V>, len: usize) -> Self {
         Self {

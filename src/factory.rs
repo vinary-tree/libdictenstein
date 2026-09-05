@@ -1475,6 +1475,18 @@ mod tests {
     #[test]
     fn specialized_profile_wrappers_expose_direct_metadata() {
         assert_eq!(
+            DynamicDawg::<()>::profile_descriptor().kind,
+            ProfileKind::Bytes
+        );
+        assert_eq!(
+            DynamicDawgChar::<()>::profile_descriptor().kind,
+            ProfileKind::UnicodeScalar
+        );
+        assert_eq!(
+            DynamicDawgU64::<()>::profile_descriptor().kind,
+            ProfileKind::U64
+        );
+        assert_eq!(
             DynamicDawgUleb128::<()>::profile_descriptor().kind,
             ProfileKind::Uleb128
         );
@@ -1490,6 +1502,25 @@ mod tests {
             DoubleArrayTrieUtf8::<()>::dictionary_family(),
             DictionaryFamily::DoubleArrayTrie
         );
+        assert_eq!(
+            DoubleArrayTrie::<()>::profile_descriptor().kind,
+            ProfileKind::Bytes
+        );
+        assert_eq!(
+            DoubleArrayTrieChar::<()>::profile_descriptor().kind,
+            ProfileKind::UnicodeScalar
+        );
+        #[cfg(feature = "pathmap-backend")]
+        {
+            assert_eq!(
+                PathMapDictionary::<()>::profile_descriptor().kind,
+                ProfileKind::Bytes
+            );
+            assert_eq!(
+                PathMapDictionaryChar::<()>::profile_descriptor().kind,
+                ProfileKind::UnicodeScalar
+            );
+        }
         #[cfg(feature = "pathmap-backend")]
         {
             assert_eq!(

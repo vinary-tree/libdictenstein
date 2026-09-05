@@ -138,6 +138,18 @@ struct DoubleArrayTrieCharWire<V: DictionaryValue> {
     num_terms: usize,
 }
 
+impl<V: DictionaryValue> DoubleArrayTrieChar<V> {
+    /// Canonical logical profile represented by this Unicode DAT.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<crate::UnicodeScalar>()
+    }
+
+    /// Topology family represented by this dictionary.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::DoubleArrayTrie
+    }
+}
+
 #[cfg(feature = "serialization")]
 impl<V: DictionaryValue> DoubleArrayTrieChar<V> {
     fn from_untrusted_wire(

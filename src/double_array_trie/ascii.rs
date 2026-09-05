@@ -186,6 +186,18 @@ struct DoubleArrayTrieWire<V: DictionaryValue> {
     rebuild_threshold: f64,
 }
 
+impl<V: DictionaryValue> DoubleArrayTrie<V> {
+    /// Canonical logical profile represented by this byte DAT.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<crate::Bytes>()
+    }
+
+    /// Topology family represented by this dictionary.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::DoubleArrayTrie
+    }
+}
+
 #[cfg(feature = "serialization")]
 impl<V: DictionaryValue> DoubleArrayTrie<V> {
     fn from_untrusted_wire(

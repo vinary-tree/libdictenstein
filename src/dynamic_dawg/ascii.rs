@@ -60,6 +60,16 @@ pub struct DynamicDawg<V: DictionaryValue = ()> {
 pub(crate) type DynamicDawgInner<V = ()> = LockFreeDawg<u8, V>;
 
 impl<V: DictionaryValue> DynamicDawg<V> {
+    /// Canonical logical profile represented by this byte DAWG.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<crate::Bytes>()
+    }
+
+    /// Topology family represented by this dictionary.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::DynamicDawg
+    }
+
     /// Create a new empty dynamic DAWG.
     ///
     /// By default, auto-minimization is disabled. Use `with_auto_minimize_threshold()`

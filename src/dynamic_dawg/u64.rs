@@ -114,6 +114,16 @@ impl<V: DictionaryValue> Default for DynamicDawgU64<V> {
 }
 
 impl<V: DictionaryValue> DynamicDawgU64<V> {
+    /// Canonical logical profile represented by this U64 DAWG.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<crate::U64>()
+    }
+
+    /// Topology family represented by this dictionary.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::DynamicDawg
+    }
+
     /// Create a new empty dynamic DAWG.
     ///
     /// # Example
