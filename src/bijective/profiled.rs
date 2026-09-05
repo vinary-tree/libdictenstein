@@ -10,7 +10,7 @@ use crate::{AtomProfile, AtomSequence, CharUnit, DictionaryValue};
 use arc_swap::ArcSwap;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// A bidirectional map over one dictionary-unit alphabet.
 ///
@@ -21,6 +21,7 @@ use std::sync::Arc;
 pub struct ProfiledBijectiveMap<U: CharUnit, V: DictionaryValue + Eq + Hash> {
     forward: DynamicDawgGeneric<U, V>,
     reverse: Arc<ArcSwap<HashMap<V, Vec<U>>>>,
+    writers: Mutex<()>,
 }
 
 impl<U: CharUnit, V: DictionaryValue + Eq + Hash> Clone for ProfiledBijectiveMap<U, V> {
@@ -28,6 +29,7 @@ impl<U: CharUnit, V: DictionaryValue + Eq + Hash> Clone for ProfiledBijectiveMap
         Self {
             forward: self.forward.clone(),
             reverse: Arc::new(ArcSwap::from_pointee((*self.reverse.load_full()).clone())),
+            writers: Mutex::new(()),
         }
     }
 }
@@ -44,6 +46,7 @@ impl<U: CharUnit, V: DictionaryValue + Eq + Hash> ProfiledBijectiveMap<U, V> {
         Self {
             forward: DynamicDawgGeneric::new(),
             reverse: Arc::new(ArcSwap::from_pointee(HashMap::new())),
+            writers: Mutex::new(()),
         }
     }
 
@@ -52,6 +55,7 @@ impl<U: CharUnit, V: DictionaryValue + Eq + Hash> ProfiledBijectiveMap<U, V> {
         Self {
             forward: DynamicDawgGeneric::new(),
             reverse: Arc::new(ArcSwap::from_pointee(HashMap::with_capacity(capacity))),
+            writers: Mutex::new(()),
         }
     }
 
@@ -87,6 +91,10 @@ impl<U: CharUnit, V: DictionaryValue + Eq + Hash> ProfiledBijectiveMap<U, V> {
 
     /// Insert a unit sequence while preserving the bijection invariant.
     pub fn try_insert_units(&self, units: &[U], value: V) -> Result<(), super::InsertError> {
+        let _writer = self
+            .writers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.forward.get_units_value(units).is_some() {
             return Err(super::InsertError::DuplicateTerm);
         }
