@@ -1,6 +1,6 @@
 //! Shared logical-atom profiles for generic dictionary families.
 
-use crate::variable_width::{VariableWidthProfile, ULEB128_PROFILE};
+use crate::variable_width::{Uleb128, Uleb128Ref, VariableWidthProfile, ULEB128_PROFILE};
 use core::marker::PhantomData;
 
 /// Errors returned by logical-atom profile decoders.
@@ -12,6 +12,8 @@ pub enum ProfileError {
     InvalidScalar,
     /// The input is not one complete valid UTF-8 scalar encoding.
     InvalidUtf8,
+    /// The input is not one complete canonical variable-width atom.
+    InvalidEncoding,
 }
 
 /// Stable descriptor for the built-in logical alphabets.
@@ -108,7 +110,7 @@ impl ProfileKind {
 /// Codec contract for one logical dictionary edge.
 pub trait AtomProfile {
     /// Logical value represented by one edge.
-    type Atom: Copy + Eq + Ord;
+    type Atom: Eq + Ord;
 
     /// Stable persisted profile identity.
     const PROFILE: VariableWidthProfile;
@@ -118,7 +120,7 @@ pub trait AtomProfile {
     const WIDTH_BYTES: Option<usize>;
 
     /// Encode one logical atom.
-    fn encode(atom: Self::Atom) -> Vec<u8>;
+    fn encode(atom: &Self::Atom) -> Vec<u8>;
     /// Decode one atom from the beginning of `bytes`, returning the atom and
     /// the number of bytes consumed.
     fn decode(bytes: &[u8]) -> Result<(Self::Atom, usize), ProfileError>;
@@ -248,13 +250,13 @@ impl<P: AtomProfile> AtomSequence<P> {
 
     /// Number of bytes in the encoded sequence.
     pub fn encoded_len(&self) -> usize {
-        self.atoms.iter().map(|&atom| P::encode(atom).len()).sum()
+        self.atoms.iter().map(|atom| P::encode(atom).len()).sum()
     }
 
     /// Encode the sequence in logical order.
     pub fn to_encoded(&self) -> Vec<u8> {
         let mut encoded = Vec::new();
-        for &atom in &self.atoms {
+        for atom in &self.atoms {
             encoded.extend_from_slice(&P::encode(atom));
         }
         encoded
@@ -295,8 +297,8 @@ impl AtomProfile for Bytes {
     const KIND: ProfileKind = ProfileKind::Bytes;
     const WIDTH_BYTES: Option<usize> = Some(1);
 
-    fn encode(atom: u8) -> Vec<u8> {
-        vec![atom]
+    fn encode(atom: &u8) -> Vec<u8> {
+        vec![*atom]
     }
 
     fn decode(bytes: &[u8]) -> Result<(u8, usize), ProfileError> {
@@ -324,7 +326,7 @@ impl AtomProfile for Utf8 {
     const KIND: ProfileKind = ProfileKind::Utf8;
     const WIDTH_BYTES: Option<usize> = None;
 
-    fn encode(atom: char) -> Vec<u8> {
+    fn encode(atom: &char) -> Vec<u8> {
         let mut bytes = [0u8; 4];
         atom.encode_utf8(&mut bytes).as_bytes().to_vec()
     }
@@ -355,8 +357,8 @@ impl AtomProfile for UnicodeScalar {
     const KIND: ProfileKind = ProfileKind::UnicodeScalar;
     const WIDTH_BYTES: Option<usize> = Some(4);
 
-    fn encode(atom: char) -> Vec<u8> {
-        (atom as u32).to_le_bytes().to_vec()
+    fn encode(atom: &char) -> Vec<u8> {
+        (*atom as u32).to_le_bytes().to_vec()
     }
 
     fn decode(bytes: &[u8]) -> Result<(char, usize), ProfileError> {
@@ -381,7 +383,7 @@ impl AtomProfile for U32 {
     const KIND: ProfileKind = ProfileKind::U32;
     const WIDTH_BYTES: Option<usize> = Some(4);
 
-    fn encode(atom: u32) -> Vec<u8> {
+    fn encode(atom: &u32) -> Vec<u8> {
         atom.to_le_bytes().to_vec()
     }
 
@@ -405,7 +407,7 @@ impl AtomProfile for U64 {
     const KIND: ProfileKind = ProfileKind::U64;
     const WIDTH_BYTES: Option<usize> = Some(8);
 
-    fn encode(atom: u64) -> Vec<u8> {
+    fn encode(atom: &u64) -> Vec<u8> {
         atom.to_le_bytes().to_vec()
     }
 
@@ -430,7 +432,7 @@ impl AtomProfile for F64Bits {
     const KIND: ProfileKind = ProfileKind::F64Bits;
     const WIDTH_BYTES: Option<usize> = Some(8);
 
-    fn encode(atom: u64) -> Vec<u8> {
+    fn encode(atom: &u64) -> Vec<u8> {
         atom.to_le_bytes().to_vec()
     }
 
@@ -441,6 +443,41 @@ impl AtomProfile for F64Bits {
             .try_into()
             .map_err(|_| ProfileError::InvalidLength)?;
         Ok((u64::from_le_bytes(bytes), 8))
+    }
+}
+
+/// Canonical arbitrary-width ULEB128 atom profile.
+///
+/// The owned atom retains its canonical bytes and is therefore usable for
+/// values wider than any built-in integer.  Decoding reports the first
+/// complete codeword and leaves following codewords to the sequence walker.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Uleb128Atom;
+
+impl AtomProfile for Uleb128Atom {
+    type Atom = Uleb128;
+    const PROFILE: VariableWidthProfile = ULEB128_PROFILE;
+    const KIND: ProfileKind = ProfileKind::Uleb128;
+    const WIDTH_BYTES: Option<usize> = None;
+
+    fn encode(atom: &Uleb128) -> Vec<u8> {
+        atom.as_bytes().to_vec()
+    }
+
+    fn decode(bytes: &[u8]) -> Result<(Uleb128, usize), ProfileError> {
+        let (view, consumed) = Uleb128Ref::from_prefix(bytes).map_err(|error| {
+            match error {
+                crate::variable_width::Uleb128Error::Empty
+                | crate::variable_width::Uleb128Error::Unterminated => {
+                    ProfileError::InvalidLength
+                }
+                crate::variable_width::Uleb128Error::NonCanonical
+                | crate::variable_width::Uleb128Error::InvalidPayload => {
+                    ProfileError::InvalidEncoding
+                }
+            }
+        })?;
+        Ok((view.to_owned(), consumed))
     }
 }
 
@@ -462,7 +499,7 @@ mod tests {
         assert_eq!(U64::decode(&u64::MAX.to_le_bytes()).unwrap(), (u64::MAX, 8));
         let nan_bits = 0x7ff8_0000_0000_0042u64;
         assert_eq!(
-            F64Bits::decode(&F64Bits::encode(nan_bits)).unwrap().0,
+            F64Bits::decode(&F64Bits::encode(&nan_bits)).unwrap().0,
             nan_bits
         );
     }
@@ -579,5 +616,24 @@ mod tests {
             .collect();
         assert_eq!(observed, vec!['a', 'λ', '🎉']);
         assert!(AtomSequence::<Utf8>::from_encoded(&[0x80]).is_err());
+    }
+
+    #[test]
+    fn uleb_profile_preserves_arbitrary_width_atoms_and_boundaries() {
+        let wide = Uleb128::from_payload_digits(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 2]).unwrap();
+        let sequence = AtomSequence::<Uleb128Atom>::from_atoms([
+            Uleb128::from_u64(127),
+            wide.clone(),
+            Uleb128::from_u64(0),
+        ]);
+        let encoded = sequence.to_encoded();
+        assert_eq!(AtomSequence::<Uleb128Atom>::from_encoded(&encoded).unwrap(), sequence);
+        assert_eq!(
+            AtomSequence::<Uleb128Atom>::stream(&encoded)
+                .map(|atom| atom.unwrap())
+                .collect::<Vec<_>>(),
+            sequence.as_atoms()
+        );
+        assert!(wide.to_u64().is_none());
     }
 }
