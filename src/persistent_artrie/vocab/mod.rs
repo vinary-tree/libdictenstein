@@ -840,6 +840,7 @@ pub type DiskBackedVocabTrieInner = PersistentVocabARTrie;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{AtomSequence, UnicodeScalar};
     use tempfile::tempdir;
 
     #[test]
@@ -893,6 +894,24 @@ mod tests {
 
         assert_eq!(vocab.get_term(0), Some("日本語".to_string()));
         assert_eq!(vocab.get_term(4), Some("emoji😀".to_string()));
+    }
+
+    #[test]
+    fn profile_sequence_api_preserves_unicode_scalar_boundaries() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("profile-sequence.vocab");
+        let vocab = PersistentVocabARTrie::create(&path).unwrap();
+        let sequence = AtomSequence::<UnicodeScalar>::from_atoms("λ🎉".chars());
+
+        let index = vocab.insert_atom_sequence(&sequence).unwrap();
+        assert_eq!(vocab.get_atom_sequence_index(&sequence), Some(index));
+        assert_eq!(
+            vocab
+                .get_term_atom_sequence::<UnicodeScalar>(index)
+                .unwrap()
+                .as_atoms(),
+            sequence.as_atoms()
+        );
     }
 
     #[test]

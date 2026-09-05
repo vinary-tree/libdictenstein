@@ -13,6 +13,7 @@ use std::sync::atomic::Ordering;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
 use crate::persistent_artrie::error::{PersistentARTrieError, Result};
+use crate::{AtomProfile, AtomSequence};
 
 impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// Insert a term and auto-assign the next vocabulary index. Returns the assigned index.
@@ -22,6 +23,16 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// no `install_overlay` toggle, no `ConcurrentVocabARTrie` wrapper).
     pub fn insert(&self, term: &str) -> Result<u64> {
         self.insert_overlay(term)
+    }
+
+    /// Insert one profile-owned Unicode-scalar sequence using the durable
+    /// vocabulary insertion path.
+    pub fn insert_atom_sequence<P>(&self, sequence: &AtomSequence<P>) -> Result<u64>
+    where
+        P: AtomProfile<Atom = char>,
+    {
+        let term: String = sequence.as_atoms().iter().collect();
+        self.insert(&term)
     }
 
     /// Lock-free Order-A overlay insert — the write path (`&self`, concurrent-safe).

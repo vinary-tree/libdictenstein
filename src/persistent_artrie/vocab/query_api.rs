@@ -9,11 +9,22 @@
 use std::sync::atomic::Ordering;
 
 use crate::persistent_artrie::block_storage::BlockStorage;
+use crate::{AtomProfile, AtomSequence};
 
 impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
     /// Get the vocabulary index for a term (lock-free overlay lookup).
     pub fn get_index(&self, term: &str) -> Option<u64> {
         self.get_index_lockfree(term)
+    }
+
+    /// Resolve a profile-owned Unicode-scalar sequence without exposing a
+    /// string-conversion requirement at the call site.
+    pub fn get_atom_sequence_index<P>(&self, sequence: &AtomSequence<P>) -> Option<u64>
+    where
+        P: AtomProfile<Atom = char>,
+    {
+        let term: String = sequence.as_atoms().iter().collect();
+        self.get_index(&term)
     }
 
     /// Get the term for a vocabulary index via the in-memory reverse map (id → term).
@@ -24,6 +35,16 @@ impl<S: BlockStorage> super::dict_impl::PersistentVocabARTrie<S> {
         self.reverse_term_map
             .as_ref()
             .and_then(|m| m.get(&index).map(|e| e.value().clone()))
+    }
+
+    /// Resolve an index into an owned sequence of the caller's Unicode-scalar
+    /// profile.
+    pub fn get_term_atom_sequence<P>(&self, index: u64) -> Option<AtomSequence<P>>
+    where
+        P: AtomProfile<Atom = char>,
+    {
+        self.get_term(index)
+            .map(|term| AtomSequence::from_atoms(term.chars()))
     }
 
     /// Check if a term exists in the vocabulary.
