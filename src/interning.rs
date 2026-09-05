@@ -28,6 +28,11 @@ pub enum InterningError {
     IdExhausted,
 }
 
+#[inline]
+fn to_u32_id(id: InternedId) -> Result<u32, InterningError> {
+    u32::try_from(id).map_err(|_| InterningError::IdExhausted)
+}
+
 /// Compact capsule-local sequence of vocabulary IDs.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub struct InternedSequence {
@@ -699,7 +704,7 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
             .as_ids()
             .iter()
             .copied()
-            .map(|id| u32::try_from(id).map_err(|_| InterningError::UnknownId(id)))
+            .map(to_u32_id)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(self.id_dictionary.contains_units(&ids))
     }
@@ -718,7 +723,7 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
             .as_ids()
             .iter()
             .copied()
-            .map(|id| u32::try_from(id).map_err(|_| InterningError::UnknownId(id)))
+            .map(to_u32_id)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(self.id_dictionary.get_units_value(&ids))
     }
@@ -762,7 +767,7 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
             .as_ids()
             .iter()
             .copied()
-            .map(|id| u32::try_from(id).map_err(|_| InterningError::UnknownId(id)))
+            .map(to_u32_id)
             .collect::<Result<_, _>>()?;
         let inserted = match value {
             Some(value) => self.id_dictionary.insert_units_with_value(&ids, value),
@@ -796,7 +801,7 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
         let mut ids = Vec::new();
         for atom in atoms {
             let id = vocabulary.id_of(&atom).ok_or(InterningError::UnknownKey)?;
-            ids.push(u32::try_from(id).map_err(|_| InterningError::UnknownId(id))?);
+            ids.push(to_u32_id(id)?);
         }
         Ok(self.id_dictionary.contains_units(&ids))
     }
@@ -828,7 +833,7 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
                 vocabulary
                     .id_of(&atom)
                     .ok_or(InterningError::UnknownKey)
-                    .and_then(|id| u32::try_from(id).map_err(|_| InterningError::UnknownId(id)))
+                    .and_then(to_u32_id)
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(self.id_dictionary.get_units_value(&ids))
@@ -858,7 +863,7 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
         let mut ids = Vec::new();
         for atom in atoms {
             let id = vocabulary.id_of(&atom).ok_or(InterningError::UnknownKey)?;
-            ids.push(u32::try_from(id).map_err(|_| InterningError::UnknownId(id))?);
+            ids.push(to_u32_id(id)?);
         }
         Ok(self.id_dictionary.remove_units(&ids))
     }
@@ -981,6 +986,15 @@ mod coordinated_tests {
 mod tests {
     use super::*;
     use crate::Uleb128;
+
+    #[test]
+    fn u32_carrier_overflow_is_not_reported_as_unknown_id() {
+        assert_eq!(
+            super::to_u32_id(u64::from(u32::MAX) + 1),
+            Err(InterningError::IdExhausted)
+        );
+        assert_eq!(super::to_u32_id(17), Ok(17));
+    }
 
     #[test]
     fn interning_is_bijective_and_deterministic() {
