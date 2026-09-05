@@ -165,6 +165,20 @@ impl Dictionary for PersistentVocabARTrie {
 }
 
 impl<S: BlockStorage> PersistentVocabARTrie<S> {
+    /// Canonical logical profile used by vocabulary terms.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor {
+            kind: crate::ProfileKind::UnicodeScalar,
+            identity: crate::ProfileKind::UnicodeScalar.identity(),
+            width_bytes: crate::ProfileKind::UnicodeScalar.width_bytes(),
+        }
+    }
+
+    /// Persistent topology family used by this vocabulary backend.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::PersistentArTrie
+    }
+
     /// Capture a traversal root and exact cardinality from one atomic revision.
     pub(crate) fn root_with_term_count(&self) -> (VocabTrieNodeRef, usize) {
         let (root, term_count) = self
@@ -840,8 +854,20 @@ pub type DiskBackedVocabTrieInner = PersistentVocabARTrie;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistent_artrie::disk_manager::MmapDiskManager;
     use crate::{AtomSequence, UnicodeScalar};
     use tempfile::tempdir;
+
+    #[test]
+    fn vocabulary_profile_metadata_is_explicit() {
+        let descriptor = PersistentVocabARTrie::<MmapDiskManager>::profile_descriptor();
+        assert_eq!(descriptor.kind, crate::ProfileKind::UnicodeScalar);
+        assert_eq!(descriptor.width_bytes, Some(4));
+        assert_eq!(
+            PersistentVocabARTrie::<MmapDiskManager>::dictionary_family(),
+            crate::factory::DictionaryFamily::PersistentArTrie
+        );
+    }
 
     #[test]
     fn test_vocab_trie_basic() {
