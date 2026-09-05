@@ -1,6 +1,6 @@
 //! Deterministic capsule-local vocabulary interning.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use crate::dynamic_dawg::{DynamicDawgGeneric, DynamicDawgU32};
@@ -255,6 +255,28 @@ impl<K: Ord + Clone> InternedVocabulary<K> {
     where
         I: IntoIterator<Item = K>,
     {
+        // Preflight the entire operation before mutating either map.  This
+        // preserves the vocabulary boundary when the representable ID space
+        // is exhausted: a failed sequence insertion must not leave a prefix
+        // of newly interned atoms behind.
+        let keys: Vec<K> = keys.into_iter().collect();
+        let new_keys: BTreeSet<K> = keys
+            .iter()
+            .filter(|key| !self.forward.contains_key(*key))
+            .cloned()
+            .collect();
+        if let Some(last_index) = self
+            .reverse
+            .len()
+            .checked_add(new_keys.len().saturating_sub(1))
+        {
+            if InternedId::try_from(last_index).is_err() && !new_keys.is_empty() {
+                return Err(InterningError::IdExhausted);
+            }
+        } else if !new_keys.is_empty() {
+            return Err(InterningError::IdExhausted);
+        }
+
         let ids = keys
             .into_iter()
             .map(|key| self.try_intern(key))
@@ -699,13 +721,19 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
             .vocabulary
             .lock()
             .map_err(|_| InterningError::Poisoned)?;
-        vocabulary.validate_sequence(sequence)?;
+        if sequence.generation() != vocabulary.generation() {
+            return Err(InterningError::GenerationMismatch {
+                expected: vocabulary.generation(),
+                actual: sequence.generation(),
+            });
+        }
         let ids = sequence
             .as_ids()
             .iter()
             .copied()
             .map(to_u32_id)
             .collect::<Result<Vec<_>, _>>()?;
+        vocabulary.validate_sequence(sequence)?;
         Ok(self.id_dictionary.contains_units(&ids))
     }
 
@@ -718,13 +746,19 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
             .vocabulary
             .lock()
             .map_err(|_| InterningError::Poisoned)?;
-        vocabulary.validate_sequence(sequence)?;
+        if sequence.generation() != vocabulary.generation() {
+            return Err(InterningError::GenerationMismatch {
+                expected: vocabulary.generation(),
+                actual: sequence.generation(),
+            });
+        }
         let ids = sequence
             .as_ids()
             .iter()
             .copied()
             .map(to_u32_id)
             .collect::<Result<Vec<_>, _>>()?;
+        vocabulary.validate_sequence(sequence)?;
         Ok(self.id_dictionary.get_units_value(&ids))
     }
 
@@ -1082,8 +1116,9 @@ mod tests {
         assert!(dictionary.insert(atoms, Some(11)).unwrap());
         assert!(dictionary.contains(atoms).unwrap());
         assert_eq!(dictionary.get_value(atoms).unwrap(), Some(11));
-        assert!(!dictionary
-            .contains([0u64, 0x7ff8_0000_0000_0042u64])
-            .unwrap());
+        assert_eq!(
+            dictionary.contains([0u64, 0x7ff8_0000_0000_0042u64]),
+            Err(super::InterningError::UnknownKey)
+        );
     }
 }
