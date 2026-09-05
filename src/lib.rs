@@ -155,7 +155,7 @@ pub mod persistent_artrie;
 pub mod serialization;
 
 // Re-export core types at crate root
-pub use bijective::{BijectiveDictionary, BijectiveMap, InsertError};
+pub use bijective::{BijectiveDictionary, BijectiveMap, InsertError, ProfiledBijectiveMap};
 pub use bloom_filter::BloomFilter;
 pub use char_unit::CharUnit;
 pub use collection::{

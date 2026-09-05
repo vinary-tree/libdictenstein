@@ -56,8 +56,10 @@
 //! - The bijection invariant is maintained across concurrent operations.
 
 mod bijective_map;
+mod profiled;
 
 pub use bijective_map::{BijectiveMap, InsertError};
+pub use profiled::ProfiledBijectiveMap;
 
 use std::borrow::Cow;
 
