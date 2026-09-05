@@ -72,6 +72,20 @@ class VariableWidthConformanceLedgerTest(unittest.TestCase):
                 for row in rows
             )
         )
+        self.assertTrue(
+            all(
+                (row["proof_only_exception"] is not None)
+                == (row["coverage"] == "positive_only")
+                for row in rows
+            )
+        )
+        self.assertTrue(
+            all(
+                row["proof_only_exception"] == f"proof-only:{row['id']}"
+                for row in rows
+                if row["coverage"] == "positive_only"
+            )
+        )
         expected_status = {
             "positive_and_negative": "registered-with-negative-control",
             "positive_only": "registered-positive-only",

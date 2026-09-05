@@ -115,6 +115,11 @@ def build(root: Path) -> list[dict[str, object]]:
                 "acceptance_command": ACCEPTANCE_COMMAND,
                 "evidence_artifact": declaration["source_path"],
                 "coverage": coverage,
+                "proof_only_exception": (
+                    f"proof-only:{declaration['id']}"
+                    if coverage == "positive_only"
+                    else None
+                ),
                 # Positive executable coverage and mutant-control coverage are
                 # independent evidence dimensions. Keep both visible instead
                 # of treating positive-only properties as untested.
