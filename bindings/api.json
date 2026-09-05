@@ -370,6 +370,9 @@
       "SCDAWG": 3,
       "PERSISTENT_ARTRIE": 4,
       "PERSISTENT_VOCAB_ARTRIE": 5
+    },
+    "juliaAliases": {
+      "PERSISTENT_VOCABULARY": "PERSISTENT_VOCAB_ARTRIE"
     }
   },
   "capabilities": {
@@ -485,177 +488,437 @@
   "cFunctions": [
     {
       "name": "ldict_abi_version",
-      "group": "meta"
+      "group": "meta",
+      "returnType": "uint32_t",
+      "parameters": []
     },
     {
       "name": "ldict_api_revision",
-      "group": "meta"
+      "group": "meta",
+      "returnType": "uint32_t",
+      "parameters": []
     },
     {
       "name": "ldict_last_error_message",
-      "group": "meta"
+      "group": "meta",
+      "returnType": "const char*",
+      "parameters": []
     },
     {
       "name": "ldict_dynamic_dawg_new",
-      "group": "constructor"
+      "group": "constructor",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "unit_domain", "cType": "uint32_t", "direction": "input", "ownership": "value"},
+        {"name": "out_dictionary", "cType": "LdictDictionary**", "direction": "output", "ownership": "caller-owned-handle"}
+      ]
     },
     {
       "name": "ldict_double_array_trie_new",
-      "group": "constructor"
+      "group": "constructor",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "unit_domain", "cType": "uint32_t", "direction": "input", "ownership": "value"},
+        {"name": "entries", "cType": "const LdictTextEntry*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "entry_count", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_dictionary", "cType": "LdictDictionary**", "direction": "output", "ownership": "caller-owned-handle"}
+      ]
     },
     {
       "name": "ldict_scdawg_new",
-      "group": "constructor"
+      "group": "constructor",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "unit_domain", "cType": "uint32_t", "direction": "input", "ownership": "value"},
+        {"name": "out_dictionary", "cType": "LdictDictionary**", "direction": "output", "ownership": "caller-owned-handle"}
+      ]
     },
     {
       "name": "ldict_persistent_artrie_create",
       "group": "constructor",
-      "feature": "persistent-artrie"
+      "feature": "persistent-artrie",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "unit_domain", "cType": "uint32_t", "direction": "input", "ownership": "value"},
+        {"name": "path_data", "cType": "const uint8_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "path_len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_dictionary", "cType": "LdictDictionary**", "direction": "output", "ownership": "caller-owned-handle"}
+      ]
     },
     {
       "name": "ldict_persistent_artrie_open",
       "group": "constructor",
-      "feature": "persistent-artrie"
+      "feature": "persistent-artrie",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "unit_domain", "cType": "uint32_t", "direction": "input", "ownership": "value"},
+        {"name": "path_data", "cType": "const uint8_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "path_len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_dictionary", "cType": "LdictDictionary**", "direction": "output", "ownership": "caller-owned-handle"}
+      ]
     },
     {
       "name": "ldict_persistent_vocab_create",
       "group": "constructor",
-      "feature": "persistent-artrie"
+      "feature": "persistent-artrie",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "path_data", "cType": "const uint8_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "path_len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_dictionary", "cType": "LdictDictionary**", "direction": "output", "ownership": "caller-owned-handle"}
+      ]
     },
     {
       "name": "ldict_persistent_vocab_open",
       "group": "constructor",
-      "feature": "persistent-artrie"
+      "feature": "persistent-artrie",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "path_data", "cType": "const uint8_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "path_len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_dictionary", "cType": "LdictDictionary**", "direction": "output", "ownership": "caller-owned-handle"}
+      ]
     },
     {
       "name": "ldict_dictionary_kind",
-      "group": "handle"
+      "group": "handle",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "out_kind", "cType": "uint32_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_capabilities",
-      "group": "handle"
+      "group": "handle",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "out_capabilities", "cType": "uint64_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_free",
-      "group": "handle"
+      "group": "handle",
+      "returnType": "void",
+      "parameters": [
+        {"name": "dictionary", "cType": "LdictDictionary*", "direction": "input", "ownership": "consumed-handle"}
+      ]
     },
     {
       "name": "ldict_dictionary_resource",
-      "group": "handle"
+      "group": "handle",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "out_resource", "cType": "VtResource*", "direction": "output", "ownership": "borrowed-retainable-resource"}
+      ]
     },
     {
       "name": "ldict_dictionary_algebra",
-      "group": "algebra"
+      "group": "algebra",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "left", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "right", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "operation", "cType": "uint32_t", "direction": "input", "ownership": "value"},
+        {"name": "value_merge", "cType": "uint32_t", "direction": "input", "ownership": "value"},
+        {"name": "out_dictionary", "cType": "LdictDictionary**", "direction": "output", "ownership": "caller-owned-handle"}
+      ]
     },
     {
       "name": "ldict_dictionary_entries_open",
-      "group": "collection"
+      "group": "collection",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "out_cursor", "cType": "LdictEntryCursor**", "direction": "output", "ownership": "caller-owned-handle"},
+        {"name": "out_info", "cType": "LdictEntriesInfo*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_entry_cursor_next",
-      "group": "collection"
+      "group": "collection",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "cursor", "cType": "LdictEntryCursor*", "direction": "input-output", "ownership": "borrowed-handle"},
+        {"name": "limits", "cType": "const LdictEntryBatchLimits*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "out_batch", "cType": "LdictEntryBatch*", "direction": "output", "ownership": "cursor-borrowed-until-release"}
+      ]
     },
     {
       "name": "ldict_entry_cursor_release",
-      "group": "collection"
+      "group": "collection",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "cursor", "cType": "LdictEntryCursor*", "direction": "input-output", "ownership": "borrowed-handle"},
+        {"name": "generation", "cType": "uint64_t", "direction": "input", "ownership": "value"}
+      ]
     },
     {
       "name": "ldict_entry_cursor_reduce",
-      "group": "collection"
+      "group": "collection",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "cursor", "cType": "LdictEntryCursor*", "direction": "input-output", "ownership": "borrowed-handle"},
+        {"name": "limits", "cType": "const LdictEntryBatchLimits*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "reducer", "cType": "LdictEntryReducer", "direction": "input", "ownership": "call-borrowed-callback"},
+        {"name": "reducer_context", "cType": "void*", "direction": "input-output", "ownership": "call-borrowed"},
+        {"name": "out_count", "cType": "size_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_entry_cursor_cancel",
-      "group": "collection"
+      "group": "collection",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "cursor", "cType": "LdictEntryCursor*", "direction": "input-output", "ownership": "borrowed-handle"}
+      ]
     },
     {
       "name": "ldict_entry_cursor_free",
-      "group": "collection"
+      "group": "collection",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "cursor", "cType": "LdictEntryCursor*", "direction": "input-output", "ownership": "conditionally-consumed-handle"}
+      ]
     },
     {
       "name": "ldict_dictionary_len",
-      "group": "handle"
+      "group": "handle",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "out_len", "cType": "size_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_checkpoint",
       "group": "maintenance",
-      "feature": "persistent-artrie"
+      "feature": "persistent-artrie",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "LdictDictionary*", "direction": "input-output", "ownership": "borrowed-handle"}
+      ]
     },
     {
       "name": "ldict_vocab_get_term",
       "group": "vocabulary",
-      "feature": "persistent-artrie"
+      "feature": "persistent-artrie",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "index", "cType": "uint64_t", "direction": "input", "ownership": "value"},
+        {"name": "out_data", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-buffer"},
+        {"name": "capacity", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_len", "cType": "size_t*", "direction": "output", "ownership": "caller-owned-storage"},
+        {"name": "out_found", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_clear",
-      "group": "maintenance"
+      "group": "maintenance",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "LdictDictionary*", "direction": "input-output", "ownership": "borrowed-handle"}
+      ]
     },
     {
       "name": "ldict_dictionary_compact",
-      "group": "maintenance"
+      "group": "maintenance",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "LdictDictionary*", "direction": "input-output", "ownership": "borrowed-handle"},
+        {"name": "out_reclaimed", "cType": "size_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_insert_text",
-      "group": "crud-text"
+      "group": "crud-text",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "LdictDictionary*", "direction": "input-output", "ownership": "borrowed-handle"},
+        {"name": "data", "cType": "const uint8_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "value", "cType": "LdictOptionalU64", "direction": "input", "ownership": "value"},
+        {"name": "out_inserted", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_insert_text_value",
-      "group": "crud-text"
+      "group": "crud-text",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "LdictDictionary*", "direction": "input-output", "ownership": "borrowed-handle"},
+        {"name": "data", "cType": "const uint8_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "value", "cType": "uint64_t", "direction": "input", "ownership": "value"},
+        {"name": "has_value", "cType": "uint8_t", "direction": "input", "ownership": "value"},
+        {"name": "out_inserted", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_remove_text",
-      "group": "crud-text"
+      "group": "crud-text",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "LdictDictionary*", "direction": "input-output", "ownership": "borrowed-handle"},
+        {"name": "data", "cType": "const uint8_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_removed", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_contains_text",
-      "group": "crud-text"
+      "group": "crud-text",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "data", "cType": "const uint8_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_contains", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_get_text",
-      "group": "crud-text"
+      "group": "crud-text",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "data", "cType": "const uint8_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_found", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-storage"},
+        {"name": "out_value", "cType": "LdictOptionalU64*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_get_text_value",
-      "group": "crud-text"
+      "group": "crud-text",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "data", "cType": "const uint8_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_found", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-storage"},
+        {"name": "out_value", "cType": "uint64_t*", "direction": "output", "ownership": "caller-owned-storage"},
+        {"name": "out_has_value", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_insert_u64",
-      "group": "crud-u64"
+      "group": "crud-u64",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "LdictDictionary*", "direction": "input-output", "ownership": "borrowed-handle"},
+        {"name": "data", "cType": "const uint64_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "value", "cType": "LdictOptionalU64", "direction": "input", "ownership": "value"},
+        {"name": "out_inserted", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_insert_u64_value",
-      "group": "crud-u64"
+      "group": "crud-u64",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "LdictDictionary*", "direction": "input-output", "ownership": "borrowed-handle"},
+        {"name": "data", "cType": "const uint64_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "value", "cType": "uint64_t", "direction": "input", "ownership": "value"},
+        {"name": "has_value", "cType": "uint8_t", "direction": "input", "ownership": "value"},
+        {"name": "out_inserted", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_remove_u64",
-      "group": "crud-u64"
+      "group": "crud-u64",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "LdictDictionary*", "direction": "input-output", "ownership": "borrowed-handle"},
+        {"name": "data", "cType": "const uint64_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_removed", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_contains_u64",
-      "group": "crud-u64"
+      "group": "crud-u64",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "data", "cType": "const uint64_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_contains", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_get_u64",
-      "group": "crud-u64"
+      "group": "crud-u64",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "data", "cType": "const uint64_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_found", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-storage"},
+        {"name": "out_value", "cType": "LdictOptionalU64*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_get_u64_value",
-      "group": "crud-u64"
+      "group": "crud-u64",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "data", "cType": "const uint64_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_found", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-storage"},
+        {"name": "out_value", "cType": "uint64_t*", "direction": "output", "ownership": "caller-owned-storage"},
+        {"name": "out_has_value", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_scdawg_contains_substring",
-      "group": "substring"
+      "group": "substring",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "data", "cType": "const uint8_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_contains", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_scdawg_substring_frequency",
-      "group": "substring"
+      "group": "substring",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "data", "cType": "const uint8_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_frequency", "cType": "size_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_insert_text_batch",
-      "group": "batch"
+      "group": "batch",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "LdictDictionary*", "direction": "input-output", "ownership": "borrowed-handle"},
+        {"name": "entries", "cType": "const LdictTextEntry*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "entry_count", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_inserted", "cType": "size_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     },
     {
       "name": "ldict_dictionary_insert_u64_batch",
-      "group": "batch"
+      "group": "batch",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "LdictDictionary*", "direction": "input-output", "ownership": "borrowed-handle"},
+        {"name": "entries", "cType": "const LdictU64Entry*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "entry_count", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_inserted", "cType": "size_t*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
     }
   ],
   "facades": {

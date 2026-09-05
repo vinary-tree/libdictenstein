@@ -568,6 +568,10 @@ jobs:
       - uses: actions/checkout@v6
       - name: Checkout the complete development sibling graph
         uses: ./.github/actions/checkout-dev-siblings
+      - name: Verify authoritative Julia ABI generation and negative controls
+        run: |
+          python3 scripts/generate-julia-abi.py --check
+          python3 scripts/generate-julia-abi.py --self-test
       - name: Run the binding architecture gate
         run: python3 scripts/check-bindings.py
       - name: Run the binding documentation gate

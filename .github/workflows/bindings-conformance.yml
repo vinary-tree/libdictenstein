@@ -68,6 +68,10 @@ jobs:
         with: { version: "1.10" }
       - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
+      - name: Verify generated Julia ABI declarations
+        run: |
+          python3 scripts/generate-julia-abi.py --check
+          python3 scripts/generate-julia-abi.py --self-test
       - name: Run package conformance and strict API documentation
         env:
           LIBDICTENSTEIN_LIBRARY: ${{ github.workspace }}/target/release/liblibdictenstein.so

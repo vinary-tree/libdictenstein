@@ -19,8 +19,9 @@ corpus documents everything on the producing side of that boundary.
 | **Native Rust idioms** | [`rust-api-idioms.md`](rust-api-idioms.md) | Confirmed iterator/construction gaps in the pure Rust producer and the optimized, generic target for `Iterator`, `IntoIterator`, `FromIterator`, `Extend`, fallible bulk construction, folds, snapshots, and every automaton/unit domain. |
 | **FFI boundary analysis** | [`../security/ffi-boundary.md`](../security/ffi-boundary.md) | The producer-side trust analysis: what a misbehaving foreign caller can and cannot cause, and whose duty each defense is. Extends the [threat model](../security/threat-model.md). |
 | **Findings ledger** | [`FINDINGS_LEDGER.md`](FINDINGS_LEDGER.md) | The scientific ledger of binding-scrutiny findings: defects, pins, coverage gaps, and version-pin inconsistencies (`LDICT-B<N>` schema). |
-| **Machine-readable model** | [`../../bindings/api.json`](../../bindings/api.json) | The source of truth for the binding surface: symbols, enums, kinds, capabilities, marshalling and snapshot laws, facade layout, registry coordinates. |
+| **Machine-readable model** | [`../../bindings/api.json`](../../bindings/api.json) | The source of truth for the binding surface: exact C signatures and parameter lifetimes, symbols, enums, kinds, capabilities, marshalling and snapshot laws, facade layout, registry coordinates. |
 | **Contract gates** | [`../../scripts/check-bindings.py`](../../scripts/check-bindings.py), [`../../scripts/check-binding-docs.py`](../../scripts/check-binding-docs.py) | Enforce the ABI model and reject a declared facade whose guide, executable evidence, required operational topics, or local links are missing or stale. CI job `binding-contract`. |
+| **Julia ABI generator** | [`../../scripts/generate-julia-abi.py`](../../scripts/generate-julia-abi.py), [`../../bindings/generated/julia-abi-capabilities.tsv`](../../bindings/generated/julia-abi-capabilities.tsv) | Generates Julia constants, layouts, and typed calls from the model; independently proves exact header parity, freshness, and negative controls; emits the reviewable signature/direction/ownership inventory. |
 | **Diagrams** | [`../diagrams/`](../diagrams/) | `abi-producer-component` (layer map), `snapshot-capture-sequence` (the walk protocol), `owned-resource-lifecycle-state` (the retain ledger); sources under [`../diagrams/src/`](../diagrams/src/). |
 | **Language facades** | [`../../bindings/`](../../bindings/) | Sixteen governed guides over the `ldict_*` surface, including the native C contract and grouped JVM/JavaScript language families. |
 | **Guide generator** | [`../../scripts/generate-binding-guides.py`](../../scripts/generate-binding-guides.py) | Owns the uniform support, loading, ownership, error, concurrency, performance, security, compatibility, and maintainer sections while preserving each facade's handwritten tutorial. |
@@ -142,6 +143,8 @@ facade:
 
 ```sh
 python3 scripts/generate-binding-guides.py
+python3 scripts/generate-julia-abi.py --check
+python3 scripts/generate-julia-abi.py --self-test
 python3 scripts/check-binding-docs.py
 ```
 

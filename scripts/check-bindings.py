@@ -43,6 +43,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -489,6 +490,30 @@ def check_symbol_parity(report: Report, model: dict) -> None:
         )
 
 
+def check_julia_abi_generation(report: Report) -> None:
+    """Require fresh generated Julia declarations and passing negative controls."""
+    generator = ROOT / "scripts" / "generate-julia-abi.py"
+    if not generator.is_file():
+        report.fail("julia-abi", "scripts/generate-julia-abi.py is missing")
+        return
+    for mode in ("--check", "--self-test"):
+        completed = subprocess.run(
+            [sys.executable, str(generator), mode],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            diagnostic = (completed.stderr or completed.stdout).strip()
+            report.fail("julia-abi", f"{mode} failed: {diagnostic}")
+            return
+    report.ok(
+        "julia-abi",
+        "Julia constants, layouts, 42 typed calls, signature inventory, and negative controls are current",
+    )
+
+
 def compare_maps(
     report: Report, check: str, subject: str, expected: dict, actual: dict, source: str
 ) -> bool:
@@ -727,7 +752,7 @@ def check_facades(report: Report, model: dict) -> None:
     if missing_dirs:
         report.fail("facades", f"facade roots missing on disk: {missing_dirs}")
     on_disk = {path.name for path in (ROOT / "bindings").iterdir() if path.is_dir()}
-    unmodeled_dirs = sorted(on_disk - set(facades) - {"api.json"})
+    unmodeled_dirs = sorted(on_disk - set(facades) - {"generated"})
     if unmodeled_dirs:
         report.fail(
             "facades",
@@ -1415,6 +1440,7 @@ def main() -> int:
         else:
             check_symbol_parity(report, model)
             check_constant_parity(report, model)
+            check_julia_abi_generation(report)
             check_facades(report, model)
             check_identity(report)
             check_interop_header(report, model)

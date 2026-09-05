@@ -22,6 +22,8 @@ Before tagging, require a clean worktree and run:
 
 ```bash
 python3 scripts/sync-release-version.py
+python3 scripts/generate-julia-abi.py --check
+python3 scripts/generate-julia-abi.py --self-test
 python3 scripts/check-bindings.py
 python3 scripts/check-binding-docs.py
 RUST_BACKTRACE=1 cargo nextest run --release --no-fail-fast --workspace --all-features

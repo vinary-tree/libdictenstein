@@ -15,7 +15,8 @@ ownership rules, its thread-safety truth, and its complexity.
 Authoritative sources, in precedence order:
 
 1. [`bindings/api.json`](../../bindings/api.json) — the machine-readable model
-   of this surface (symbols, enums, kinds, capabilities, marshalling laws),
+   of this surface (exact return and parameter types, parameter direction and
+   ownership, symbols, enums, kinds, capabilities, and marshalling laws),
    enforced against `src/ffi.rs`, `include/libdictenstein.h`, and all 16
    language facades by [`scripts/check-bindings.py`](../../scripts/check-bindings.py)
    (CI job `binding-contract`).
@@ -23,6 +24,12 @@ Authoritative sources, in precedence order:
    whose signatures are quoted verbatim below.
 3. [`src/ffi.rs`](../../src/ffi.rs) — the implementation each claim below was
    read from.
+
+The Julia facade consumes the first source mechanically through
+[`scripts/generate-julia-abi.py`](../../scripts/generate-julia-abi.py). Its
+[`signature inventory`](../../bindings/generated/julia-abi-capabilities.tsv)
+makes all 42 generated calls and their lifetime metadata reviewable, while the
+public header remains an independent exact-signature oracle.
 
 The family layer underneath (two-word `VtResource`, retain/release,
 `query_interface`, the `vt.dictionary.v1` vtable) is specified once, in the

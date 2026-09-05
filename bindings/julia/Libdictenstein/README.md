@@ -61,3 +61,12 @@ minimal mutable DynamicDAWG. No Julia hash table or per-key FFI loop is used.
 
 See the [full guide](docs/src/index.md) for domains, snapshots, persistence,
 ownership, algebraic value policies, performance, and security boundaries.
+
+## ABI maintenance
+
+The package does not maintain a second handwritten native ABI. Its constants,
+layouts, and 42 typed call wrappers are generated from the repository's
+authoritative `bindings/api.json`, checked exactly against the public C header,
+and covered by freshness and mutation-based negative controls. Maintainers
+should follow the [full Julia binding guide](../README.md#generated-abi-boundary)
+before changing a native signature.

@@ -6,9 +6,35 @@ const LD = Libdictenstein
 @testset "ABI identity and layouts" begin
     @test LD.abi_version() == LD.ABI_VERSION == 1
     @test LD.api_revision() == LD.API_REVISION == 6
+    @test fieldnames(LD.OptionalU64) == (:value, :has_value, :reserved)
+    @test fieldnames(LD.TextEntry) == (:data, :len, :value)
+    @test fieldnames(LD.U64Entry) == (:data, :len, :value)
     @test sizeof(LD.OptionalU64) == 16
     @test sizeof(LD.TextEntry) == 32
     @test sizeof(LD.U64Entry) == 32
+    @test LD.LdictEntry === LD.VTI.VtDictionaryEntryRaw
+    @test LD.LdictEntryBatchLimits === LD.VTI.BatchLimits
+    @test LD.LdictEntryBatch === LD.VTI.VtDictionaryEntryBatchView
+    @test LD.LdictEntriesInfo === LD.VTI.VtDictionaryEntriesInfo
+    @test UInt32(LD.KIND_PERSISTENT_VOCAB_ARTRIE) == 5
+    @test LD.KIND_PERSISTENT_VOCABULARY == LD.KIND_PERSISTENT_VOCAB_ARTRIE
+
+    inventory_path = normpath(joinpath(@__DIR__, "..", "..", "..", "generated",
+        "julia-abi-capabilities.tsv"))
+    inventory = readlines(inventory_path)
+    @test length(inventory) == 43
+    @test split(first(inventory), '\t') == [
+        "symbol", "group", "feature", "return_type", "parameters", "julia_wrapper",
+        "julia_return_type", "julia_parameter_types", "abi_version", "api_revision",
+    ]
+    rows = [split(line, '\t'; keepempty=true) for line in inventory[2:end]]
+    @test all(length(row) == 10 for row in rows)
+    @test Set(row[1] for row in rows) == Set(
+        string(name)[5:end] for name in names(LD; all=true)
+        if startswith(string(name), "abi_ldict_")
+    )
+    @test all(isdefined(LD, Symbol(row[6])) for row in rows)
+    @test all(row[9] == "1" && row[10] == "6" for row in rows)
 end
 
 @testset "Unicode AbstractDict and snapshot iteration" begin

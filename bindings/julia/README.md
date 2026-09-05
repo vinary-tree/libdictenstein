@@ -36,6 +36,33 @@ The complete executable contract is
 Package-specific API pages live under
 [`bindings/julia/Libdictenstein/docs/src/`](Libdictenstein/docs/src/).
 
+## Generated ABI boundary
+
+Julia's low-level constants, enums, layouts, and 42 typed native calls are
+generated from the signature and lifetime records in
+[`bindings/api.json`](../api.json). The public C header remains an independent
+parity oracle: generation fails if a return type, parameter type, parameter
+name, symbol, ABI version, or API revision differs between the model and
+[`include/libdictenstein.h`](../../include/libdictenstein.h). The high-level
+`AbstractDict` facade calls only these generated wrappers; handwritten `ccall`
+sites outside the delimited generated region are rejected.
+
+The reviewable
+[`julia-abi-capabilities.tsv`](../generated/julia-abi-capabilities.tsv)
+records every symbol's group, feature gate, C signature, parameter direction,
+ownership rule, Julia wrapper, Julia types, ABI version, and API revision. Run
+the freshness and mutation-based negative controls with:
+
+```sh
+python3 scripts/generate-julia-abi.py --check
+python3 scripts/generate-julia-abi.py --self-test
+```
+
+After an intentional model change, regenerate with `--write`, inspect both the
+Julia diff and inventory diff, and then run the two commands above. The
+self-test proves that duplicate symbols, invalid flow directions, header
+signature drift, and an injected handwritten `ccall` are detected.
+
 ## Snapshot algebra
 
 `union`, `intersection`, `difference`, and `symmetric_difference` capture one
