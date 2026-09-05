@@ -369,6 +369,13 @@ impl<V: crate::DictionaryValue> DynamicDawgUtf8<V> {
         self.inner.insert_units_with_value(term.as_bytes(), value)
     }
 
+    /// Insert one complete UTF-8 encoded key without coercing it through a
+    /// string allocation. Invalid UTF-8 is rejected before any mutation.
+    pub fn insert_encoded(&self, encoded: &[u8], value: V) -> Result<bool, std::str::Utf8Error> {
+        std::str::from_utf8(encoded)?;
+        Ok(self.inner.insert_units_with_value(encoded, value))
+    }
+
     /// Insert one shared logical UTF-8 scalar profile sequence with a value.
     #[inline]
     pub fn insert_atom_sequence_with_value(
@@ -690,6 +697,9 @@ mod generic_tests {
         assert_eq!(dictionary.visible_entries().unwrap().len(), 2);
         assert!(dictionary.contains_encoded("λ🎉".as_bytes()).unwrap());
         assert!(dictionary.contains_encoded(&[0x80]).is_err());
+        assert!(dictionary.insert_encoded("β".as_bytes(), 8).unwrap());
+        assert_eq!(dictionary.get_value("β"), Some(8));
+        assert!(dictionary.insert_encoded(&[0x80], 1).is_err());
         assert!(!dictionary.is_empty());
         assert!(dictionary.remove_encoded("λ🎉".as_bytes()).unwrap());
         assert!(!dictionary.contains("λ🎉"));
