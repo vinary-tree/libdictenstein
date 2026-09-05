@@ -76,6 +76,20 @@ impl<V: DictionaryValue> Default for PersistentARTrieUleb128<V> {
 }
 
 impl<V: DictionaryValue> PersistentARTrieUleb128<V> {
+    /// Canonical logical profile used by this persistent adapter.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor {
+            kind: crate::ProfileKind::Uleb128,
+            identity: crate::ProfileKind::Uleb128.identity(),
+            width_bytes: crate::ProfileKind::Uleb128.width_bytes(),
+        }
+    }
+
+    /// Persistent topology family used by this adapter.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::PersistentArTrie
+    }
+
     /// Construct an in-memory adapter from complete ULEB sequences.
     pub fn from_sequences<I>(sequences: I) -> Self
     where

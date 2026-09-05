@@ -62,6 +62,20 @@ impl<V: DictionaryValue> Default for PersistentARTrieUtf8<V> {
 }
 
 impl<V: DictionaryValue> PersistentARTrieUtf8<V> {
+    /// Canonical logical profile used by this persistent adapter.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor {
+            kind: crate::ProfileKind::Utf8,
+            identity: crate::ProfileKind::Utf8.identity(),
+            width_bytes: crate::ProfileKind::Utf8.width_bytes(),
+        }
+    }
+
+    /// Persistent topology family used by this adapter.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::PersistentArTrie
+    }
+
     /// Construct an in-memory adapter from UTF-8 terms.
     pub fn from_terms<I, T>(terms: I) -> Self
     where

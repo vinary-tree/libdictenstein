@@ -1155,6 +1155,20 @@ impl<V: DictionaryValue, const PREFIX: usize> PersistentARTrieU64<V, MmapDiskMan
 }
 
 impl<V: DictionaryValue, S: BlockStorage, const PREFIX: usize> PersistentARTrieU64<V, S, PREFIX> {
+    /// Canonical logical profile used by this persistent adapter.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor {
+            kind: crate::ProfileKind::U64,
+            identity: crate::ProfileKind::U64.identity(),
+            width_bytes: crate::ProfileKind::U64.width_bytes(),
+        }
+    }
+
+    /// Persistent topology family used by this adapter.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::PersistentArTrie
+    }
+
     /// Create an in-memory persistent u64 trie.
     pub fn new() -> Self {
         Self {

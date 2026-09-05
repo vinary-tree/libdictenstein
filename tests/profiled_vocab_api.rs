@@ -1,6 +1,9 @@
 #![cfg(feature = "persistent-artrie")]
 
 use libdictenstein::persistent_artrie::vocab::PersistentVocabARTrie;
+use libdictenstein::persistent_artrie::{
+    PersistentARTrieU64, PersistentARTrieUleb128, PersistentARTrieUtf8,
+};
 use libdictenstein::{AtomSequence, UnicodeScalar};
 
 #[test]
@@ -48,5 +51,28 @@ fn persistent_profile_sequence_survives_checkpoint_reopen() {
             .expect("reverse reopened sequence")
             .as_atoms(),
         sequence.as_atoms()
+    );
+}
+
+#[test]
+fn persistent_profile_adapters_expose_canonical_metadata() {
+    assert_eq!(
+        PersistentARTrieUleb128::<()>::profile_descriptor().kind,
+        libdictenstein::ProfileKind::Uleb128
+    );
+    assert_eq!(
+        PersistentARTrieUtf8::<()>::profile_descriptor().kind,
+        libdictenstein::ProfileKind::Utf8
+    );
+    assert_eq!(
+        PersistentARTrieU64::<()>::profile_descriptor().kind,
+        libdictenstein::ProfileKind::U64
+    );
+    assert_eq!(
+        PersistentVocabARTrie::<
+            libdictenstein::persistent_artrie::disk_manager::MmapDiskManager,
+        >::profile_descriptor()
+        .kind,
+        libdictenstein::ProfileKind::UnicodeScalar
     );
 }
