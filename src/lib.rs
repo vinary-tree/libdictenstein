@@ -136,6 +136,7 @@ pub mod interning;
 #[cfg(feature = "pathmap-backend")]
 pub mod pathmap;
 pub mod profile;
+pub mod profiled_zipper;
 pub mod scdawg;
 pub mod suffix_automaton;
 pub mod variable_width;
@@ -189,6 +190,7 @@ pub use profile::{
     AtomProfile, AtomSequence, AtomStream, Bytes, F64Bits, ProfileError, ProfileKind, Uleb128Atom,
     UnicodeScalar, Utf8, U32, U64,
 };
+pub use profiled_zipper::ProfiledZipper;
 pub use substring::{
     BidirectionalDictionaryNode, ExtensionResult, SubstringDictionary, SubstringMatch,
 };
@@ -1899,6 +1901,7 @@ pub mod prelude {
         DictionaryDescriptor, DictionaryDescriptorError, DictionaryFamily, DictionarySpec,
         Uleb128Backend, Uleb128DictionaryContainer,
     };
+    pub use crate::ProfiledZipper;
     pub use crate::{
         BijectiveDictionary, BijectiveMap, CharUnit, CompactableDictionary, DictZipper, Dictionary,
         DictionaryEntries, DictionaryEntriesIter, DictionaryEntry, DictionaryKeys,
