@@ -67,6 +67,33 @@ pub enum DictionaryFamily {
     PersistentArTrie,
 }
 
+impl DictionaryFamily {
+    /// Stable topology identifier for manifests and capability negotiation.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DynamicDawg => "dynamic-dawg",
+            Self::DoubleArrayTrie => "double-array-trie",
+            Self::PathMap => "path-map",
+            Self::SuffixAutomaton => "suffix-automaton",
+            Self::Scdawg => "scdawg",
+            Self::PersistentArTrie => "persistent-artrie",
+        }
+    }
+
+    /// Parse a stable topology identifier.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "dynamic-dawg" => Some(Self::DynamicDawg),
+            "double-array-trie" => Some(Self::DoubleArrayTrie),
+            "path-map" => Some(Self::PathMap),
+            "suffix-automaton" => Some(Self::SuffixAutomaton),
+            "scdawg" => Some(Self::Scdawg),
+            "persistent-artrie" => Some(Self::PersistentArTrie),
+            _ => None,
+        }
+    }
+}
+
 /// Compile-time profile selection for topology-oriented factory code.
 ///
 /// `DictionarySpec<P>` carries no dictionary storage.  It is a zero-sized
@@ -1198,6 +1225,17 @@ mod tests {
             DictionaryBackend::SuffixAutomaton.family(),
             DictionaryFamily::SuffixAutomaton
         );
+        for family in [
+            DictionaryFamily::DynamicDawg,
+            DictionaryFamily::DoubleArrayTrie,
+            DictionaryFamily::PathMap,
+            DictionaryFamily::SuffixAutomaton,
+            DictionaryFamily::Scdawg,
+            DictionaryFamily::PersistentArTrie,
+        ] {
+            assert_eq!(DictionaryFamily::from_name(family.as_str()), Some(family));
+        }
+        assert_eq!(DictionaryFamily::from_name("legacy"), None);
     }
 
     #[test]
