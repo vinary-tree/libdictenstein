@@ -113,6 +113,52 @@ pub struct InternedVocabulary<K: Ord + Clone> {
     generation: u64,
 }
 
+/// Immutable vocabulary view captured at one generation boundary.
+///
+/// The snapshot owns the ID-to-symbol table, so readers can resolve IDs
+/// without retaining the vocabulary mutex or observing later insertions. IDs
+/// remain meaningful only with this snapshot's generation.
+#[derive(Clone, Debug)]
+pub struct InternedVocabularySnapshot<K> {
+    generation: u64,
+    reverse: Arc<[K]>,
+}
+
+impl<K> InternedVocabularySnapshot<K> {
+    /// Generation identity bound to every ID in this snapshot.
+    #[inline]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Number of symbols visible in this snapshot.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.reverse.len()
+    }
+
+    /// Whether this snapshot contains no symbols.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.reverse.is_empty()
+    }
+
+    /// Resolve an ID without allocation or locking.
+    #[inline]
+    pub fn value(&self, id: InternedId) -> Option<&K> {
+        self.reverse.get(usize::try_from(id).ok()?)
+    }
+
+    /// Iterate stable ID/value pairs in ID order.
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = (InternedId, &K)> {
+        self.reverse
+            .iter()
+            .enumerate()
+            .map(|(id, value)| (id as InternedId, value))
+    }
+}
+
 impl<K: Ord + Clone> Default for InternedVocabulary<K> {
     fn default() -> Self {
         Self {
@@ -257,6 +303,14 @@ impl<K: Ord + Clone> InternedVocabulary<K> {
             .iter()
             .enumerate()
             .map(|(id, key)| (id as InternedId, key))
+    }
+
+    /// Capture an immutable ID-to-symbol snapshot for lock-free readers.
+    pub fn snapshot(&self) -> InternedVocabularySnapshot<K> {
+        InternedVocabularySnapshot {
+            generation: self.generation,
+            reverse: self.reverse.clone().into(),
+        }
     }
 }
 
@@ -916,5 +970,18 @@ mod tests {
                 actual: 0,
             })
         );
+    }
+
+    #[test]
+    fn vocabulary_snapshot_isolated_from_later_mutation() {
+        let mut vocabulary = InternedVocabulary::with_generation(17);
+        let first = vocabulary.intern(Uleb128::from_u64(3));
+        let snapshot = vocabulary.snapshot();
+        vocabulary.intern(Uleb128::from_u64(4));
+
+        assert_eq!(snapshot.generation(), 17);
+        assert_eq!(snapshot.value(first), Some(&Uleb128::from_u64(3)));
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(vocabulary.len(), 2);
     }
 }
