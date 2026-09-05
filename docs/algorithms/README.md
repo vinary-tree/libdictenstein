@@ -8,6 +8,9 @@ The Dictionary Layer is the family of dictionary backends provided by **libdicte
 
 This layer abstracts over different data structures (tries, DAWGs, double-array tries) through common traits, allowing you to choose the best backend for your specific use case while maintaining a consistent API.
 
+For the topology/profile split, canonical UTF-8 and ULEB128 boundaries, and
+interned-ID identity rules, see [variable-width logical profiles](variable-width-profiles.md).
+
 ## Architecture
 
 <img src="../diagrams/algorithms-backend-family.svg" alt="The Dictionary Layer trait API (Dictionary, MappedDictionary, DictionaryNode) sits above three in-memory backend families - Trie, DAWG, and Suffix Automaton; the Trie family holds DoubleArrayTrie (the recommended default) and DAT-Char (UTF-8), and the DAWG family holds DynamicDawg." width="70%"/>
