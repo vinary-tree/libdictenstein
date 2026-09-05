@@ -36,6 +36,9 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert!(dictionary.contains_encoded(&first.to_encoded()).unwrap());
         assert!(dictionary.contains_encoded(&[0x80]).is_err());
+        assert!(dictionary.insert_encoded(&first.to_encoded(), 9).unwrap() == false);
+        assert_eq!(dictionary.get_value(&first), Some(9));
+        assert!(dictionary.insert_encoded(&[0x80], 1).is_err());
         assert!(dictionary.remove(&first));
         assert!(!dictionary.contains(&first));
     }
@@ -234,6 +237,23 @@ impl<V: DictionaryValue> PersistentARTrieUleb128<V> {
     ) -> crate::persistent_artrie::Result<bool> {
         self.inner
             .try_insert_with_value_bytes(&sequence.to_encoded(), value)
+    }
+
+    /// Validate and insert one complete encoded ULEB sequence without
+    /// materializing arbitrary-width atoms.
+    pub fn insert_encoded(&self, encoded: &[u8], value: V) -> Result<bool, Uleb128Error> {
+        Uleb128Sequence::from_encoded(encoded)?;
+        Ok(self.inner.insert_with_value_bytes(encoded, value))
+    }
+
+    /// Checked encoded insertion preserving persistence failures.
+    pub fn try_insert_encoded(
+        &self,
+        encoded: &[u8],
+        value: V,
+    ) -> std::result::Result<crate::persistent_artrie::Result<bool>, Uleb128Error> {
+        Uleb128Sequence::from_encoded(encoded)?;
+        Ok(self.inner.try_insert_with_value_bytes(encoded, value))
     }
 
     /// Test membership of a complete sequence.
