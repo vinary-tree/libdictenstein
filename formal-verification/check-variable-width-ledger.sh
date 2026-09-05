@@ -10,7 +10,7 @@ models="$root/formal-verification/tla+"
 
 # The first three lines are comments; the fourth is the schema header.
 header=$(sed -n '4p' "$ledger")
-[[ "$header" == $'id\tsource\tdeclaration\tcategory\tlaw\towner\tprofiles\tsurface\tpositive_test\tdifferential_oracle\tnegative_control\tstatus' ]] \
+[[ "$header" == $'id\tsource\tdeclaration\tcategory\tlaw\towner\tprofiles\tsurface\tpositive_test\tdifferential_oracle\tnegative_control\tassumptions\ttrust_boundary\tstack_safety\tperformance\tacceptance_command\tevidence_artifact\tstatus' ]] \
   || { echo "ledger header does not match the required schema" >&2; exit 1; }
 
 model_ids=$(rg --no-heading --no-filename '^VWENC_[A-Z0-9_]+' "$models" \
@@ -29,7 +29,7 @@ fi
 
 awk -F '\t' '
   NR <= 4 { next }
-  NF != 12 { printf "row %d has %d fields (expected 12)\n", NR, NF; bad=1; next }
+  NF != 18 { printf "row %d has %d fields (expected 18)\n", NR, NF; bad=1; next }
   {
     seen[$1]++
     for (i = 1; i <= NF; i++) {
