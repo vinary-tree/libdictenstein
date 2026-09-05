@@ -1,6 +1,7 @@
 //! Shared logical-atom profiles for generic dictionary families.
 
 use crate::variable_width::{Uleb128, Uleb128Ref, VariableWidthProfile, ULEB128_PROFILE};
+use core::cmp::Ordering;
 use core::marker::PhantomData;
 
 /// Errors returned by logical-atom profile decoders.
@@ -435,6 +436,29 @@ impl AtomProfile for U64 {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct F64Bits;
 
+impl F64Bits {
+    /// Encode an IEEE-754 value while preserving its exact bit pattern.
+    #[inline]
+    pub fn encode_f64(value: f64) -> Vec<u8> {
+        Self::encode(value.to_bits())
+    }
+
+    /// Decode one exact IEEE-754 value from a fixed-width atom.
+    #[inline]
+    pub fn decode_f64(bytes: &[u8]) -> Result<(f64, usize), ProfileError> {
+        Self::decode(bytes).map(|(bits, consumed)| (f64::from_bits(bits), consumed))
+    }
+
+    /// Compare raw bit patterns using Rust's total IEEE-754 ordering.
+    ///
+    /// Equality and hashing remain bitwise because callers retain the raw
+    /// bits; distinct NaN payloads and signed zero are never collapsed.
+    #[inline]
+    pub fn total_cmp(left: u64, right: u64) -> Ordering {
+        f64::from_bits(left).total_cmp(&f64::from_bits(right))
+    }
+}
+
 impl AtomProfile for F64Bits {
     type Atom = u64;
     const PROFILE: VariableWidthProfile = VariableWidthProfile::new("f64-bits", 1);
@@ -513,6 +537,19 @@ mod tests {
             F64Bits::decode(&F64Bits::encode(nan_bits)).unwrap().0,
             nan_bits
         );
+        let negative_zero = F64Bits::encode_f64(-0.0);
+        let positive_zero = F64Bits::encode_f64(0.0);
+        assert_ne!(negative_zero, positive_zero);
+        assert_eq!(
+            F64Bits::decode_f64(&negative_zero).unwrap().0.to_bits(),
+            (-0.0f64).to_bits()
+        );
+        assert_eq!(
+            F64Bits::decode_f64(&positive_zero).unwrap().0.to_bits(),
+            0.0f64.to_bits()
+        );
+        assert!(F64Bits::total_cmp((-0.0f64).to_bits(), 0.0f64.to_bits()).is_lt());
+        assert_eq!(F64Bits::total_cmp(nan_bits, nan_bits), Ordering::Equal);
     }
 
     #[test]
