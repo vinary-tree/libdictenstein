@@ -182,7 +182,7 @@ pub use pathmap::PathMapDictionaryUleb128;
 #[cfg(feature = "pathmap-backend")]
 pub use pathmap::PathMapDictionaryUtf8;
 pub use profile::{
-    AtomProfile, AtomSequence, AtomStream, Bytes, F64Bits, ProfileError, ProfileKind,
+    AtomProfile, AtomSequence, AtomStream, Bytes, F64Bits, ProfileError, ProfileKind, Uleb128Atom,
     UnicodeScalar, Utf8, U32, U64,
 };
 pub use substring::{
@@ -1901,8 +1901,8 @@ pub mod prelude {
         InternedSequenceDictionary, InternedSequenceDictionaryU64, InternedUlebSequenceDictionary,
         InternedUlebSequenceDictionaryU64, InternedVocabulary, MappedDictionary,
         MappedDictionaryNode, MutableDictionary, MutableMappedDictionary, SnapshotEntryIterator,
-        SnapshotTermIterator, SyncStrategy, Utf8, ValuedDictZipper, ValuedZipperCollection,
-        ZipperCollection, ZipperEntryIterator, ZipperTermIterator,
+        SnapshotTermIterator, SyncStrategy, Uleb128Atom, Utf8, ValuedDictZipper,
+        ValuedZipperCollection, ZipperCollection, ZipperEntryIterator, ZipperTermIterator,
     };
 
     // Re-export common dictionary types

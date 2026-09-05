@@ -465,17 +465,11 @@ impl AtomProfile for Uleb128Atom {
     }
 
     fn decode(bytes: &[u8]) -> Result<(Uleb128, usize), ProfileError> {
-        let (view, consumed) = Uleb128Ref::from_prefix(bytes).map_err(|error| {
-            match error {
-                crate::variable_width::Uleb128Error::Empty
-                | crate::variable_width::Uleb128Error::Unterminated => {
-                    ProfileError::InvalidLength
-                }
-                crate::variable_width::Uleb128Error::NonCanonical
-                | crate::variable_width::Uleb128Error::InvalidPayload => {
-                    ProfileError::InvalidEncoding
-                }
-            }
+        let (view, consumed) = Uleb128Ref::from_prefix(bytes).map_err(|error| match error {
+            crate::variable_width::Uleb128Error::Empty
+            | crate::variable_width::Uleb128Error::Unterminated => ProfileError::InvalidLength,
+            crate::variable_width::Uleb128Error::NonCanonical
+            | crate::variable_width::Uleb128Error::InvalidPayload => ProfileError::InvalidEncoding,
         })?;
         Ok((view.to_owned(), consumed))
     }
@@ -627,7 +621,10 @@ mod tests {
             Uleb128::from_u64(0),
         ]);
         let encoded = sequence.to_encoded();
-        assert_eq!(AtomSequence::<Uleb128Atom>::from_encoded(&encoded).unwrap(), sequence);
+        assert_eq!(
+            AtomSequence::<Uleb128Atom>::from_encoded(&encoded).unwrap(),
+            sequence
+        );
         assert_eq!(
             AtomSequence::<Uleb128Atom>::stream(&encoded)
                 .map(|atom| atom.unwrap())
