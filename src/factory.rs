@@ -790,6 +790,104 @@ impl DictionaryContainer {
     }
 }
 
+/// Error returned when a typed profile is incompatible with a backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfiledFactoryError {
+    /// The backend's logical profile differs from the requested profile.
+    ProfileMismatch {
+        /// Profile requested by the caller.
+        expected: ProfileKind,
+        /// Profile implemented by the selected backend.
+        actual: ProfileKind,
+    },
+}
+
+/// Profile-typed compatibility container for the legacy text factory.
+///
+/// The storage remains the existing [`DictionaryContainer`], but construction
+/// carries a compile-time [`AtomProfile`] witness and rejects a mismatched
+/// backend before any terms are materialized.  This keeps topology and
+/// representation separate without multiplying backend enum variants.
+#[derive(Debug)]
+pub struct ProfiledDictionaryContainer<P: crate::AtomProfile> {
+    inner: DictionaryContainer,
+    marker: PhantomData<P>,
+}
+
+impl<P: crate::AtomProfile> ProfiledDictionaryContainer<P> {
+    /// Construct an empty profile-checked container.
+    pub fn empty(backend: DictionaryBackend) -> Result<Self, ProfiledFactoryError> {
+        Self::check_backend(backend)?;
+        Ok(Self {
+            inner: DictionaryFactory::empty(backend),
+            marker: PhantomData,
+        })
+    }
+
+    /// Construct a profile-checked container from text terms.
+    pub fn from_terms<I, S>(
+        backend: DictionaryBackend,
+        terms: I,
+    ) -> Result<Self, ProfiledFactoryError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self::check_backend(backend)?;
+        Ok(Self {
+            inner: DictionaryFactory::create(backend, terms),
+            marker: PhantomData,
+        })
+    }
+
+    fn check_backend(backend: DictionaryBackend) -> Result<(), ProfiledFactoryError> {
+        let actual = backend.profile_descriptor().kind;
+        if actual == P::KIND {
+            Ok(())
+        } else {
+            Err(ProfiledFactoryError::ProfileMismatch {
+                expected: P::KIND,
+                actual,
+            })
+        }
+    }
+
+    /// Return the legacy backend selector.
+    pub fn backend(&self) -> DictionaryBackend {
+        self.inner.backend()
+    }
+
+    /// Return the topology family.
+    pub fn family(&self) -> DictionaryFamily {
+        self.backend().family()
+    }
+
+    /// Return the validated wire descriptor.
+    pub fn descriptor(&self) -> DictionaryDescriptor {
+        DictionaryDescriptor::from_backend(self.backend())
+    }
+
+    /// Return the number of terms, when the backend can report it.
+    pub fn len(&self) -> Option<usize> {
+        self.inner.len()
+    }
+
+    /// Return whether the container has no terms.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Test membership using the legacy text boundary.
+    pub fn contains(&self, term: &str) -> bool {
+        self.inner.contains(term)
+    }
+
+    /// Borrow the compatibility container for APIs that have not migrated.
+    pub fn as_legacy(&self) -> &DictionaryContainer {
+        &self.inner
+    }
+}
+
 /// Factory for creating dictionaries with different backends.
 pub struct DictionaryFactory;
 
@@ -1333,6 +1431,34 @@ mod tests {
             assert_eq!(restored, descriptor);
             assert_eq!(restored.validate().unwrap().1, ProfileKind::Utf8);
         }
+    }
+
+    #[test]
+    fn profiled_factory_container_checks_representation_before_construction() {
+        let dictionary = ProfiledDictionaryContainer::<crate::Bytes>::from_terms(
+            DictionaryBackend::DynamicDawg,
+            ["cat", "dog"],
+        )
+        .unwrap();
+        assert_eq!(dictionary.family(), DictionaryFamily::DynamicDawg);
+        assert_eq!(dictionary.descriptor().profile, "bytes");
+        assert!(dictionary.contains("cat"));
+
+        let error =
+            ProfiledDictionaryContainer::<crate::Utf8>::empty(DictionaryBackend::DynamicDawg)
+                .unwrap_err();
+        assert_eq!(
+            error,
+            ProfiledFactoryError::ProfileMismatch {
+                expected: ProfileKind::Utf8,
+                actual: ProfileKind::Bytes,
+            }
+        );
+
+        let utf8 =
+            ProfiledDictionaryContainer::<crate::Utf8>::empty(DictionaryBackend::DynamicDawgUtf8)
+                .unwrap();
+        assert_eq!(utf8.descriptor().profile, "utf8");
     }
 
     #[test]

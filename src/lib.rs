@@ -1899,7 +1899,8 @@ pub trait MutableMappedDictionary: MappedDictionary {
 pub mod prelude {
     pub use crate::factory::{
         DictionaryDescriptor, DictionaryDescriptorError, DictionaryFamily, DictionarySpec,
-        Uleb128Backend, Uleb128DictionaryContainer,
+        ProfiledDictionaryContainer, ProfiledFactoryError, Uleb128Backend,
+        Uleb128DictionaryContainer,
     };
     pub use crate::ProfiledZipper;
     pub use crate::{
