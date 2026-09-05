@@ -149,6 +149,22 @@ impl<K> InternedVocabularySnapshot<K> {
         self.reverse.get(usize::try_from(id).ok()?)
     }
 
+    /// Validate a generation-bound sequence against this immutable snapshot.
+    pub fn validate_sequence(&self, sequence: &InternedSequence) -> Result<(), InterningError> {
+        if sequence.generation != self.generation {
+            return Err(InterningError::GenerationMismatch {
+                expected: self.generation,
+                actual: sequence.generation,
+            });
+        }
+        sequence
+            .ids
+            .iter()
+            .copied()
+            .find(|&id| self.value(id).is_none())
+            .map_or(Ok(()), |id| Err(InterningError::UnknownId(id)))
+    }
+
     /// Iterate stable ID/value pairs in ID order.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = (InternedId, &K)> {
@@ -1002,5 +1018,14 @@ mod tests {
         assert_eq!(snapshot.value(first), Some(&Uleb128::from_u64(3)));
         assert_eq!(snapshot.len(), 1);
         assert_eq!(vocabulary.len(), 2);
+        let sequence = InternedSequence::from_ids_with_generation(17, [first]);
+        assert_eq!(snapshot.validate_sequence(&sequence), Ok(()));
+        assert_eq!(
+            snapshot.validate_sequence(&InternedSequence::from_ids_with_generation(18, [first])),
+            Err(InterningError::GenerationMismatch {
+                expected: 17,
+                actual: 18,
+            })
+        );
     }
 }
