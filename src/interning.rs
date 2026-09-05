@@ -557,10 +557,24 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionaryU64<K, V> {
     where
         I: IntoIterator<Item = K>,
     {
+        let atoms: Vec<K> = atoms.into_iter().collect();
         let mut vocabulary = self
             .vocabulary
             .lock()
             .map_err(|_| InterningError::Poisoned)?;
+        // A duplicate must be rejected before interning any new atom.  This
+        // keeps the vocabulary and its dependent ID dictionary transactional:
+        // an operation that returns `false` does not publish a new vocabulary
+        // entry as a side effect.
+        let existing_ids = atoms
+            .iter()
+            .map(|atom| vocabulary.id_of(atom))
+            .collect::<Option<Vec<_>>>();
+        if let Some(existing_ids) = existing_ids {
+            if self.id_dictionary.contains_units(&existing_ids) {
+                return Ok(false);
+            }
+        }
         let sequence = vocabulary.try_intern_sequence(atoms)?;
         let ids = sequence.as_ids().to_vec();
         Ok(match value {
@@ -792,10 +806,26 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
     where
         I: IntoIterator<Item = K>,
     {
+        let atoms: Vec<K> = atoms.into_iter().collect();
         let mut vocabulary = self
             .vocabulary
             .lock()
             .map_err(|_| InterningError::Poisoned)?;
+        // Preflight known sequences so a duplicate result cannot leave newly
+        // interned atoms behind in the shared vocabulary.
+        let existing_ids = atoms
+            .iter()
+            .map(|atom| vocabulary.id_of(atom))
+            .collect::<Option<Vec<_>>>();
+        if let Some(existing_ids) = existing_ids {
+            let existing_ids = existing_ids
+                .into_iter()
+                .map(to_u32_id)
+                .collect::<Result<Vec<_>, _>>()?;
+            if self.id_dictionary.contains_units(&existing_ids) {
+                return Ok(false);
+            }
+        }
         let sequence = vocabulary.try_intern_sequence(atoms)?;
         let ids: Vec<u32> = sequence
             .as_ids()
@@ -933,6 +963,38 @@ mod coordinated_tests {
         );
         assert!(dictionary.remove([10, 20]).unwrap());
         assert!(!dictionary.contains([10, 20]).unwrap());
+    }
+
+    #[test]
+    fn duplicate_insert_does_not_mutate_vocabulary() {
+        let dictionary = InternedSequenceDictionary::<u32, u32>::new();
+        assert!(dictionary.insert([10, 20], Some(1)).unwrap());
+        let before: Vec<_> = dictionary
+            .vocabulary()
+            .unwrap()
+            .iter()
+            .map(|(id, value)| (id, *value))
+            .collect();
+
+        assert!(!dictionary.insert([10, 20], Some(2)).unwrap());
+        assert_eq!(dictionary.vocabulary().unwrap().len(), before.len());
+        assert_eq!(
+            dictionary
+                .vocabulary()
+                .unwrap()
+                .iter()
+                .map(|(id, value)| (id, *value))
+                .collect::<Vec<_>>(),
+            before
+        );
+        assert_eq!(dictionary.get_value([10, 20]).unwrap(), Some(1));
+
+        let wide = InternedSequenceDictionaryU64::<u32, u32>::new();
+        assert!(wide.insert([10, 20], Some(3)).unwrap());
+        let wide_len = wide.vocabulary().unwrap().len();
+        assert!(!wide.insert([10, 20], Some(4)).unwrap());
+        assert_eq!(wide.vocabulary().unwrap().len(), wide_len);
+        assert_eq!(wide.get_value([10, 20]).unwrap(), Some(3));
     }
 
     #[test]
