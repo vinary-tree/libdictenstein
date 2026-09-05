@@ -160,6 +160,40 @@ impl<U: CharUnit, V: DictionaryValue + Eq + Hash> ProfiledBijectiveMap<U, V> {
         self.reverse_snapshot().contains_key(value)
     }
 
+    /// Remove a unit sequence and its reverse entry.
+    ///
+    /// Removal is serialized with insertion and never changes any other
+    /// vocabulary/value association.  The returned flag reports whether the
+    /// forward sequence was present.
+    pub fn remove_units(&self, units: &[U]) -> bool {
+        let _writer = self
+            .writers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(value) = self.forward.get_units_value(units) else {
+            return false;
+        };
+        if !self.forward.remove_units(units) {
+            return false;
+        }
+        self.mutate_reverse(|reverse| {
+            let remove = reverse
+                .get(&value)
+                .is_some_and(|existing| existing == units);
+            if remove {
+                reverse.remove(&value);
+            }
+            ((), remove)
+        });
+        true
+    }
+
+    /// Remove and return the unit sequence associated with a value.
+    pub fn remove_value(&self, value: &V) -> Option<Vec<U>> {
+        let units = self.get_units(value)?;
+        self.remove_units(&units).then_some(units)
+    }
+
     /// Number of bijective entries.
     #[inline]
     pub fn len(&self) -> usize {
@@ -217,5 +251,8 @@ mod tests {
             Err(crate::bijective::InsertError::DuplicateValue)
         );
         assert_eq!(map.get_units(&1), Some(b"ab".to_vec()));
+        assert_eq!(map.remove_value(&1), Some(b"ab".to_vec()));
+        assert!(!map.contains_units(b"ab"));
+        assert!(!map.contains_value(&1));
     }
 }
