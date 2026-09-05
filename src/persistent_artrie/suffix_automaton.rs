@@ -1424,6 +1424,17 @@ impl<V: DictionaryValue> fmt::Debug for PersistentSuffixAutomatonCharNode<V> {
 }
 
 impl<V: DictionaryValue> PersistentSuffixAutomaton<V> {
+    /// Canonical metadata for a selected byte-oriented logical profile.
+    pub const fn profile_descriptor<P: crate::AtomProfile<Atom = u8>>(
+    ) -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<P>()
+    }
+
+    /// Persistent topology family used by this adapter.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::PersistentArTrie
+    }
+
     pub fn new() -> Self {
         Self {
             index: NativeSuffixIndex::new_in_memory(),
@@ -1604,6 +1615,17 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomaton<V, S> {
 }
 
 impl<V: DictionaryValue> PersistentSuffixAutomatonChar<V> {
+    /// Canonical metadata for a selected character-oriented logical profile.
+    pub const fn profile_descriptor<P: crate::AtomProfile<Atom = char>>(
+    ) -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<P>()
+    }
+
+    /// Persistent topology family used by this adapter.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::PersistentArTrie
+    }
+
     pub fn new() -> Self {
         Self {
             index: NativeSuffixIndex::new_in_memory(),

@@ -477,6 +477,17 @@ pub struct BackendProfileDescriptor {
     pub width_bytes: Option<usize>,
 }
 
+impl BackendProfileDescriptor {
+    /// Construct canonical metadata from a compile-time atom profile.
+    pub const fn from_profile<P: crate::AtomProfile>() -> Self {
+        Self {
+            kind: P::KIND,
+            identity: P::PROFILE,
+            width_bytes: P::WIDTH_BYTES,
+        }
+    }
+}
+
 impl BackendCapabilities {
     /// Returns true for Unicode scalar-value backends.
     pub fn is_unicode(self) -> bool {

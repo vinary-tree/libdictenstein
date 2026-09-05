@@ -1075,6 +1075,17 @@ fn node<U: PersistentScdawgUnit, V: DictionaryValue>(
 }
 
 impl<V: DictionaryValue> PersistentScdawg<V> {
+    /// Canonical metadata for a selected byte-oriented logical profile.
+    pub const fn profile_descriptor<P: crate::AtomProfile<Atom = u8>>(
+    ) -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<P>()
+    }
+
+    /// Persistent topology family used by this adapter.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::PersistentArTrie
+    }
+
     pub fn new() -> Self {
         Self {
             index: NativeScdawgIndex::new_in_memory(),
@@ -1295,6 +1306,17 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentScdawg<V, S> {
 }
 
 impl<V: DictionaryValue> PersistentScdawgChar<V> {
+    /// Canonical metadata for a selected character-oriented logical profile.
+    pub const fn profile_descriptor<P: crate::AtomProfile<Atom = char>>(
+    ) -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<P>()
+    }
+
+    /// Persistent topology family used by this adapter.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::PersistentArTrie
+    }
+
     pub fn new() -> Self {
         Self {
             index: NativeScdawgIndex::new_in_memory(),

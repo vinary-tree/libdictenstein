@@ -1587,6 +1587,17 @@ impl<V: DictionaryValue> fmt::Debug for PersistentSuffixTreeCharNode<V> {
 }
 
 impl<V: DictionaryValue> PersistentSuffixTree<V> {
+    /// Canonical metadata for a selected byte-oriented logical profile.
+    pub const fn profile_descriptor<P: crate::AtomProfile<Atom = u8>>(
+    ) -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<P>()
+    }
+
+    /// Persistent topology family used by this adapter.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::PersistentArTrie
+    }
+
     /// Create an in-memory persistent suffix tree.
     pub fn new() -> Self {
         Self {
@@ -1819,6 +1830,17 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixTree<V, S> {
 }
 
 impl<V: DictionaryValue> PersistentSuffixTreeChar<V> {
+    /// Canonical metadata for a selected character-oriented logical profile.
+    pub const fn profile_descriptor<P: crate::AtomProfile<Atom = char>>(
+    ) -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<P>()
+    }
+
+    /// Persistent topology family used by this adapter.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::PersistentArTrie
+    }
+
     pub fn new() -> Self {
         Self {
             index: NativeSuffixTreeIndex::new_in_memory(),

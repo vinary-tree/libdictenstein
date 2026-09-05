@@ -2,7 +2,9 @@
 
 use libdictenstein::persistent_artrie::vocab::PersistentVocabARTrie;
 use libdictenstein::persistent_artrie::{
-    PersistentARTrieU64, PersistentARTrieUleb128, PersistentARTrieUtf8,
+    PersistentARTrieU64, PersistentARTrieUleb128, PersistentARTrieUtf8, PersistentScdawg,
+    PersistentScdawgChar, PersistentSuffixAutomaton, PersistentSuffixAutomatonChar,
+    PersistentSuffixTree, PersistentSuffixTreeChar,
 };
 use libdictenstein::{AtomSequence, UnicodeScalar};
 
@@ -74,5 +76,29 @@ fn persistent_profile_adapters_expose_canonical_metadata() {
         >::profile_descriptor()
         .kind,
         libdictenstein::ProfileKind::UnicodeScalar
+    );
+    assert_eq!(
+        PersistentSuffixAutomaton::<()>::profile_descriptor::<libdictenstein::Bytes>().kind,
+        libdictenstein::ProfileKind::Bytes
+    );
+    assert_eq!(
+        PersistentSuffixAutomatonChar::<()>::profile_descriptor::<libdictenstein::Utf8>().kind,
+        libdictenstein::ProfileKind::Utf8
+    );
+    assert_eq!(
+        PersistentSuffixTree::<()>::profile_descriptor::<libdictenstein::Bytes>().kind,
+        libdictenstein::ProfileKind::Bytes
+    );
+    assert_eq!(
+        PersistentSuffixTreeChar::<()>::profile_descriptor::<libdictenstein::UnicodeScalar>().kind,
+        libdictenstein::ProfileKind::UnicodeScalar
+    );
+    assert_eq!(
+        PersistentScdawg::<()>::profile_descriptor::<libdictenstein::Bytes>().kind,
+        libdictenstein::ProfileKind::Bytes
+    );
+    assert_eq!(
+        PersistentScdawgChar::<()>::profile_descriptor::<libdictenstein::Utf8>().kind,
+        libdictenstein::ProfileKind::Utf8
     );
 }
