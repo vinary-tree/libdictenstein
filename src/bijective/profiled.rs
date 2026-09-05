@@ -255,4 +255,31 @@ mod tests {
         assert!(!map.contains_units(b"ab"));
         assert!(!map.contains_value(&1));
     }
+
+    #[test]
+    fn concurrent_writers_preserve_forward_reverse_identity() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let map = Arc::new(ProfiledBijectiveMap::<u32, u32>::new());
+        let handles = (0..16)
+            .map(|index| {
+                let map = Arc::clone(&map);
+                thread::spawn(move || {
+                    let units = [index, index + 1000];
+                    map.try_insert_units(&units, index).unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        assert_eq!(map.len(), 16);
+        for index in 0..16 {
+            let units = vec![index, index + 1000];
+            assert_eq!(map.get_units_value(&units), Some(index));
+            assert_eq!(map.get_units(&index), Some(units));
+        }
+    }
 }
