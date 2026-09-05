@@ -170,6 +170,19 @@ impl Uleb128DictionaryContainer {
         }
     }
 
+    /// Test membership using the shared logical ULEB profile sequence type.
+    pub fn contains_atom_sequence(
+        &self,
+        sequence: &crate::AtomSequence<crate::Uleb128Atom>,
+    ) -> bool {
+        match self {
+            Self::DynamicDawg(dictionary) => dictionary.contains_atom_sequence(sequence),
+            Self::DoubleArrayTrie(dictionary) => dictionary.contains_atom_sequence(sequence),
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(dictionary) => dictionary.contains_atom_sequence(sequence),
+        }
+    }
+
     /// Test a complete canonical encoded sequence without materializing its
     /// decoded atoms.  Validation ensures malformed or non-canonical bytes do
     /// not become observable backend transitions.
@@ -598,6 +611,30 @@ impl DictionaryFactory {
         }
     }
 
+    /// Create a typed ULEB128 dictionary from shared logical profile
+    /// sequences.  The factory retains the same backend/profile descriptor
+    /// while avoiding an intermediate representation at the call site.
+    pub fn create_uleb128_atoms<I>(
+        backend: Uleb128Backend,
+        sequences: I,
+    ) -> Uleb128DictionaryContainer
+    where
+        I: IntoIterator<Item = crate::AtomSequence<crate::Uleb128Atom>>,
+    {
+        match backend {
+            Uleb128Backend::DynamicDawg => Uleb128DictionaryContainer::DynamicDawg(
+                DynamicDawgUleb128::from_atom_sequences(sequences),
+            ),
+            Uleb128Backend::DoubleArrayTrie => Uleb128DictionaryContainer::DoubleArrayTrie(
+                DoubleArrayTrieUleb128::from_atom_sequences(sequences),
+            ),
+            #[cfg(feature = "pathmap-backend")]
+            Uleb128Backend::PathMap => Uleb128DictionaryContainer::PathMap(
+                PathMapDictionaryUleb128::from_atom_sequences(sequences),
+            ),
+        }
+    }
+
     /// Create an empty typed ULEB128 dictionary.
     pub fn empty_uleb128(backend: Uleb128Backend) -> Uleb128DictionaryContainer {
         match backend {
@@ -1012,6 +1049,19 @@ mod tests {
             DictionaryBackend::PathMapUtf8.profile_descriptor().kind,
             ProfileKind::Utf8
         );
+    }
+
+    #[test]
+    fn factory_accepts_shared_uleb_profile_sequences() {
+        let sequence = crate::AtomSequence::<crate::Uleb128Atom>::from_atoms([
+            crate::Uleb128::from_u64(624_485),
+            crate::Uleb128::from_u64(1u64 << 63),
+        ]);
+        for backend in DictionaryFactory::available_uleb128_backends() {
+            let dictionary = DictionaryFactory::create_uleb128_atoms(backend, [sequence.clone()]);
+            assert!(dictionary.contains_atom_sequence(&sequence));
+            assert_eq!(dictionary.profile_descriptor().kind, ProfileKind::Uleb128);
+        }
     }
 
     #[test]
