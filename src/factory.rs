@@ -1238,6 +1238,7 @@ impl DictionaryFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Bytes, DynamicDawgGeneric, Utf8};
 
     #[test]
     #[cfg(feature = "pathmap-backend")]
@@ -1485,6 +1486,14 @@ mod tests {
         assert_eq!(
             DynamicDawgU64::<()>::profile_descriptor().kind,
             ProfileKind::U64
+        );
+        assert_eq!(
+            DynamicDawgGeneric::<u8, ()>::profile_descriptor::<Bytes>().kind,
+            ProfileKind::Bytes
+        );
+        assert_eq!(
+            DynamicDawgGeneric::<char, ()>::profile_descriptor::<Utf8>().kind,
+            ProfileKind::Utf8
         );
         assert_eq!(
             DynamicDawgUleb128::<()>::profile_descriptor().kind,

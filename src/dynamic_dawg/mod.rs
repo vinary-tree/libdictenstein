@@ -35,6 +35,20 @@ pub struct DynamicDawgGeneric<U: crate::CharUnit, V: crate::DictionaryValue = ()
 }
 
 impl<U: crate::CharUnit, V: crate::DictionaryValue> DynamicDawgGeneric<U, V> {
+    /// Return the canonical profile descriptor for a profile whose logical
+    /// atom type is this dictionary's unit type.
+    pub const fn profile_descriptor<P>() -> crate::factory::BackendProfileDescriptor
+    where
+        P: crate::AtomProfile<Atom = U>,
+    {
+        crate::factory::BackendProfileDescriptor::from_profile::<P>()
+    }
+
+    /// Topology family represented by this generic core.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::DynamicDawg
+    }
+
     /// Construct an empty generic DAWG.
     pub fn new() -> Self {
         Self {
