@@ -72,16 +72,14 @@ class VariableWidthConformanceLedgerTest(unittest.TestCase):
                 for row in rows
             )
         )
+        expected_status = {
+            "positive_and_negative": "registered-with-negative-control",
+            "positive_only": "registered-positive-only",
+            "negative_only": "negative-control-only",
+            "uncovered": "uncovered",
+        }
         self.assertTrue(
-            all(
-                row["status"]
-                == (
-                    "registered"
-                    if row["coverage"] == "positive_and_negative"
-                    else "declared-awaiting-conformance"
-                )
-                for row in rows
-            )
+            all(row["status"] == expected_status[row["coverage"]] for row in rows)
         )
         self.assertTrue(
             all((ROOT / row["acceptance_command"]).is_file() for row in rows)

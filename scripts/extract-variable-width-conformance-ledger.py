@@ -115,7 +115,18 @@ def build(root: Path) -> list[dict[str, object]]:
                 "acceptance_command": ACCEPTANCE_COMMAND,
                 "evidence_artifact": declaration["source_path"],
                 "coverage": coverage,
-                "status": "registered" if coverage == "positive_and_negative" else "declared-awaiting-conformance",
+                # Positive executable coverage and mutant-control coverage are
+                # independent evidence dimensions. Keep both visible instead
+                # of treating positive-only properties as untested.
+                "status": (
+                    "registered-with-negative-control"
+                    if coverage == "positive_and_negative"
+                    else "registered-positive-only"
+                    if coverage == "positive_only"
+                    else "negative-control-only"
+                    if coverage == "negative_only"
+                    else "uncovered"
+                ),
             }
         )
     return rows
