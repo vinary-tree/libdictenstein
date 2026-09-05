@@ -912,6 +912,16 @@ mod coordinated_tests {
     }
 
     #[test]
+    fn u32_id_sequence_rejects_unrepresentable_ids_as_exhaustion() {
+        let dictionary = InternedSequenceDictionary::<u32>::new();
+        let sequence = InternedSequence::from_ids_with_generation(0, [u64::from(u32::MAX) + 1]);
+        assert_eq!(
+            dictionary.contains_id_sequence(&sequence),
+            Err(super::InterningError::IdExhausted)
+        );
+    }
+
+    #[test]
     fn canonical_uleb_atoms_use_the_same_composite_boundary() {
         let dictionary = InternedUlebSequenceDictionary::<u32>::with_generation(3);
         let atoms = [Uleb128::from_u64(624_485), Uleb128::from_u64(1u64 << 63)];
