@@ -25,6 +25,9 @@ mod tests {
         assert_eq!(dictionary.try_term_count().unwrap(), 1);
         assert!(!dictionary.try_is_empty().unwrap());
         assert!(dictionary.contains_encoded(&[0x80]).is_err());
+        assert!(!dictionary.insert_encoded("λ🎉".as_bytes(), 10).unwrap());
+        assert_eq!(dictionary.get_value("λ🎉"), Some(10));
+        assert!(dictionary.insert_encoded(&[0x80], 1).is_err());
         assert_eq!(dictionary.visible_entries().unwrap().len(), 1);
         assert!(dictionary.remove_encoded("λ🎉".as_bytes()).unwrap());
         assert!(dictionary.is_empty());
@@ -227,6 +230,23 @@ impl<V: DictionaryValue> PersistentARTrieUtf8<V> {
     ) -> bool {
         self.inner
             .insert_with_value_bytes(&sequence.to_encoded(), value)
+    }
+
+    /// Validate and insert one complete UTF-8 encoded key without allocating
+    /// an intermediate `str`.
+    pub fn insert_encoded(&self, encoded: &[u8], value: V) -> Result<bool, std::str::Utf8Error> {
+        std::str::from_utf8(encoded)?;
+        Ok(self.inner.insert_with_value_bytes(encoded, value))
+    }
+
+    /// Checked encoded insertion preserving persistence failures.
+    pub fn try_insert_encoded(
+        &self,
+        encoded: &[u8],
+        value: V,
+    ) -> std::result::Result<crate::persistent_artrie::Result<bool>, std::str::Utf8Error> {
+        std::str::from_utf8(encoded)?;
+        Ok(self.inner.try_insert_with_value_bytes(encoded, value))
     }
 
     /// Test membership of a UTF-8 term.
