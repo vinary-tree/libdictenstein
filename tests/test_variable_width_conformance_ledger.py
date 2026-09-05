@@ -48,7 +48,27 @@ class VariableWidthConformanceLedgerTest(unittest.TestCase):
                 and row["performance"]
                 and row["acceptance_command"]
                 and row["evidence_artifact"]
+                and row["plain_language_law"]
+                and row["current_target_public_surface"]
+                and "differential_oracle_ids" in row
+                and "required_mutant_control_ids" in row
                 and row["status"]
+                for row in rows
+            )
+        )
+        registered = {
+            test["registration"]
+            for test in self._test_inventory()
+        }
+        joined = {
+            test
+            for row in rows
+            for test in row["positive_tests"]
+        }
+        self.assertEqual(joined, registered)
+        self.assertTrue(
+            all(
+                row["required_mutant_control_ids"] == row["negative_controls"]
                 for row in rows
             )
         )
@@ -85,6 +105,16 @@ class VariableWidthConformanceLedgerTest(unittest.TestCase):
 
     def test_joined_ledger_is_deterministic(self) -> None:
         self.assertEqual(self.extract(), self.extract())
+
+    def _test_inventory(self) -> list[dict]:
+        extractor = ROOT / "scripts" / "extract-variable-width-test-inventory.py"
+        result = subprocess.run(
+            [sys.executable, str(extractor), "--root", str(ROOT)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(result.stdout)
 
 
 if __name__ == "__main__":

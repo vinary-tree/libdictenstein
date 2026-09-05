@@ -27,6 +27,27 @@ PERFORMANCE = {
     "family_refinement": "linear in logical units plus visited result structure",
 }
 ACCEPTANCE_COMMAND = "scripts/verify-variable-width-formal.sh"
+PUBLIC_SURFACE = {
+    "codec": "src/variable_width.rs; src/profile.rs; src/factory.rs",
+    "interning": "src/interning.rs; src/variable_width.rs",
+    "family_refinement": (
+        "src/dynamic_dawg; src/double_array_trie; src/pathmap; "
+        "src/persistent_artrie; src/scdawg; src/suffix_automaton; src/factory.rs"
+    ),
+}
+
+
+def plain_language_law(identifier: str) -> str:
+    """Provide a lossless, deterministic human-readable law label.
+
+    The formal declaration remains authoritative for semantics.  This label is
+    deliberately mechanical so the ledger never invents prose that could
+    diverge from the checked theorem or assertion.
+    """
+
+    parts = identifier.split("_", 2)
+    suffix = parts[2] if len(parts) == 3 else identifier
+    return suffix.replace("_", " ").lower()
 
 
 def load_module(path: Path, name: str):
@@ -81,8 +102,12 @@ def build(root: Path) -> list[dict[str, object]]:
                 "formal_artifact": declaration["source_path"],
                 "proof_kind": "Rocq_proposition" if declaration["language"] == "rocq" else "TLA_assertion",
                 "declaration": declaration["declaration"],
+                "plain_language_law": plain_language_law(declaration["id"]),
+                "current_target_public_surface": PUBLIC_SURFACE[declaration["semantic_area"]],
                 "positive_tests": positive,
+                "differential_oracle_ids": [],
                 "negative_controls": controls,
+                "required_mutant_control_ids": controls,
                 "assumptions": "finite input; explicit profile metadata",
                 "trust_boundary": f"{declaration['semantic_area']}: formal model to implementation boundary",
                 "stack_safety": STACK_SAFETY,
