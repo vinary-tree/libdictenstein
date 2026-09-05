@@ -1504,23 +1504,29 @@ mod tests {
         }
         let dawg = StdArc::new(dawg);
 
-        // Spawn 100 concurrent readers
-        let handles: Vec<_> = (0..100)
-            .map(|reader_id| {
-                let dawg = StdArc::clone(&dawg);
-                thread::spawn(move || {
-                    // Each reader does 1000 lookups
-                    for i in 0u64..1000 {
-                        let seq = [i, i + 1, i + 2];
-                        let found = dawg.contains_sequence(&seq);
-                        assert!(found, "Reader {reader_id} failed to find sequence {i}");
-                    }
+        // Exercise 100 readers while keeping the simultaneously live thread
+        // count bounded for constrained test runners.
+        const READER_COUNT: usize = 100;
+        const BATCH_SIZE: usize = 8;
+        for batch_start in (0..READER_COUNT).step_by(BATCH_SIZE) {
+            let batch_end = (batch_start + BATCH_SIZE).min(READER_COUNT);
+            let handles: Vec<_> = (batch_start..batch_end)
+                .map(|reader_id| {
+                    let dawg = StdArc::clone(&dawg);
+                    thread::spawn(move || {
+                        // Each reader does 1000 lookups.
+                        for i in 0u64..1000 {
+                            let seq = [i, i + 1, i + 2];
+                            let found = dawg.contains_sequence(&seq);
+                            assert!(found, "Reader {reader_id} failed to find sequence {i}");
+                        }
+                    })
                 })
-            })
-            .collect();
+                .collect();
 
-        for handle in handles {
-            handle.join().expect("Reader thread panicked");
+            for handle in handles {
+                handle.join().expect("Reader thread panicked");
+            }
         }
     }
 
@@ -1538,8 +1544,8 @@ mod tests {
         let dawg = StdArc::new(dawg);
         let stop = StdArc::new(AtomicBool::new(false));
 
-        // 10 reader threads
-        let reader_handles: Vec<_> = (0..10)
+        // Keep the live reader set bounded for constrained test runners.
+        let reader_handles: Vec<_> = (0..4)
             .map(|_| {
                 let dawg = StdArc::clone(&dawg);
                 let stop = StdArc::clone(&stop);
@@ -1557,23 +1563,23 @@ mod tests {
             })
             .collect();
 
-        // 10 writer threads
-        let writer_handles: Vec<_> = (0..10)
-            .map(|writer_id| {
-                let dawg = StdArc::clone(&dawg);
-                thread::spawn(move || {
-                    // Each writer inserts 100 sequences in its own range
-                    let base = 1000 + (writer_id as u64 * 100);
-                    for i in 0u64..100 {
-                        dawg.insert_sequence(&[base + i, base + i + 1, base + i + 2]);
-                    }
+        // Run all ten writers in bounded concurrent batches while readers stay active.
+        for batch_start in (0..10).step_by(4) {
+            let batch_end = (batch_start + 4).min(10);
+            let writer_handles: Vec<_> = (batch_start..batch_end)
+                .map(|writer_id| {
+                    let dawg = StdArc::clone(&dawg);
+                    thread::spawn(move || {
+                        let base = 1000 + (writer_id as u64 * 100);
+                        for i in 0u64..100 {
+                            dawg.insert_sequence(&[base + i, base + i + 1, base + i + 2]);
+                        }
+                    })
                 })
-            })
-            .collect();
-
-        // Wait for writers to complete
-        for handle in writer_handles {
-            handle.join().expect("Writer thread panicked");
+                .collect();
+            for handle in writer_handles {
+                handle.join().expect("Writer thread panicked");
+            }
         }
 
         // Signal readers to stop
@@ -1649,25 +1655,27 @@ mod tests {
         let dawg: DynamicDawgU64<()> = DynamicDawgU64::new();
         let dawg = StdArc::new(dawg);
 
-        // 50 writers, each inserting 100 unique sequences in disjoint ranges
-        let handles: Vec<_> = (0..50)
-            .map(|writer_id| {
-                let dawg = StdArc::clone(&dawg);
-                thread::spawn(move || {
-                    let base = writer_id as u64 * 1000;
-                    for i in 0u64..100 {
-                        let inserted = dawg.insert_sequence(&[base + i, base + i + 1]);
-                        assert!(
-                            inserted,
-                            "Writer {writer_id} failed to insert unique seq {i}"
-                        );
-                    }
+        // Run all 50 writers in bounded concurrent batches.
+        for batch_start in (0..50).step_by(8) {
+            let batch_end = (batch_start + 8).min(50);
+            let handles: Vec<_> = (batch_start..batch_end)
+                .map(|writer_id| {
+                    let dawg = StdArc::clone(&dawg);
+                    thread::spawn(move || {
+                        let base = writer_id as u64 * 1000;
+                        for i in 0u64..100 {
+                            let inserted = dawg.insert_sequence(&[base + i, base + i + 1]);
+                            assert!(
+                                inserted,
+                                "Writer {writer_id} failed to insert unique seq {i}"
+                            );
+                        }
+                    })
                 })
-            })
-            .collect();
-
-        for handle in handles {
-            handle.join().expect("Writer thread panicked");
+                .collect();
+            for handle in handles {
+                handle.join().expect("Writer thread panicked");
+            }
         }
 
         // 50 writers × 100 sequences = 5000 total

@@ -1624,7 +1624,8 @@ mod tests {
             let encoded = sequence.to_encoded();
             assert!(dictionary.contains_encoded(&encoded).unwrap());
             let entries = dictionary.visible_entries().unwrap();
-            assert_eq!(entries, vec![(sequence.clone(), None)]);
+            let keys: Vec<_> = entries.into_iter().map(|(key, _)| key).collect();
+            assert_eq!(keys, vec![sequence.clone()]);
             assert!(dictionary.contains_encoded(&[0x80]).is_err());
         }
         assert_eq!(

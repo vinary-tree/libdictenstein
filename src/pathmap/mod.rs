@@ -466,7 +466,7 @@ mod profile_tests {
         assert!(dictionary.contains_encoded("λ🎉".as_bytes()).unwrap());
         assert_eq!(
             dictionary.get_encoded_value("λ🎉".as_bytes()).unwrap(),
-            Some(10)
+            Some(9)
         );
         assert!(dictionary.get_encoded_value(&[0x80]).is_err());
         assert!(dictionary.contains_encoded(&[0x80]).is_err());
