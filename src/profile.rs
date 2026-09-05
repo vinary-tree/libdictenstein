@@ -110,7 +110,7 @@ impl ProfileKind {
 /// Codec contract for one logical dictionary edge.
 pub trait AtomProfile {
     /// Logical value represented by one edge.
-    type Atom: Eq + Ord;
+    type Atom: Clone + Eq + Ord;
 
     /// Stable persisted profile identity.
     const PROFILE: VariableWidthProfile;
@@ -120,7 +120,7 @@ pub trait AtomProfile {
     const WIDTH_BYTES: Option<usize>;
 
     /// Encode one logical atom.
-    fn encode(atom: &Self::Atom) -> Vec<u8>;
+    fn encode(atom: Self::Atom) -> Vec<u8>;
     /// Decode one atom from the beginning of `bytes`, returning the atom and
     /// the number of bytes consumed.
     fn decode(bytes: &[u8]) -> Result<(Self::Atom, usize), ProfileError>;
@@ -250,14 +250,17 @@ impl<P: AtomProfile> AtomSequence<P> {
 
     /// Number of bytes in the encoded sequence.
     pub fn encoded_len(&self) -> usize {
-        self.atoms.iter().map(|atom| P::encode(atom).len()).sum()
+        self.atoms
+            .iter()
+            .map(|atom| P::encode(atom.clone()).len())
+            .sum()
     }
 
     /// Encode the sequence in logical order.
     pub fn to_encoded(&self) -> Vec<u8> {
         let mut encoded = Vec::new();
         for atom in &self.atoms {
-            encoded.extend_from_slice(&P::encode(atom));
+            encoded.extend_from_slice(&P::encode(atom.clone()));
         }
         encoded
     }
@@ -297,8 +300,8 @@ impl AtomProfile for Bytes {
     const KIND: ProfileKind = ProfileKind::Bytes;
     const WIDTH_BYTES: Option<usize> = Some(1);
 
-    fn encode(atom: &u8) -> Vec<u8> {
-        vec![*atom]
+    fn encode(atom: u8) -> Vec<u8> {
+        vec![atom]
     }
 
     fn decode(bytes: &[u8]) -> Result<(u8, usize), ProfileError> {
@@ -326,7 +329,7 @@ impl AtomProfile for Utf8 {
     const KIND: ProfileKind = ProfileKind::Utf8;
     const WIDTH_BYTES: Option<usize> = None;
 
-    fn encode(atom: &char) -> Vec<u8> {
+    fn encode(atom: char) -> Vec<u8> {
         let mut bytes = [0u8; 4];
         atom.encode_utf8(&mut bytes).as_bytes().to_vec()
     }
@@ -357,8 +360,8 @@ impl AtomProfile for UnicodeScalar {
     const KIND: ProfileKind = ProfileKind::UnicodeScalar;
     const WIDTH_BYTES: Option<usize> = Some(4);
 
-    fn encode(atom: &char) -> Vec<u8> {
-        (*atom as u32).to_le_bytes().to_vec()
+    fn encode(atom: char) -> Vec<u8> {
+        (atom as u32).to_le_bytes().to_vec()
     }
 
     fn decode(bytes: &[u8]) -> Result<(char, usize), ProfileError> {
@@ -383,7 +386,7 @@ impl AtomProfile for U32 {
     const KIND: ProfileKind = ProfileKind::U32;
     const WIDTH_BYTES: Option<usize> = Some(4);
 
-    fn encode(atom: &u32) -> Vec<u8> {
+    fn encode(atom: u32) -> Vec<u8> {
         atom.to_le_bytes().to_vec()
     }
 
@@ -407,7 +410,7 @@ impl AtomProfile for U64 {
     const KIND: ProfileKind = ProfileKind::U64;
     const WIDTH_BYTES: Option<usize> = Some(8);
 
-    fn encode(atom: &u64) -> Vec<u8> {
+    fn encode(atom: u64) -> Vec<u8> {
         atom.to_le_bytes().to_vec()
     }
 
@@ -432,7 +435,7 @@ impl AtomProfile for F64Bits {
     const KIND: ProfileKind = ProfileKind::F64Bits;
     const WIDTH_BYTES: Option<usize> = Some(8);
 
-    fn encode(atom: &u64) -> Vec<u8> {
+    fn encode(atom: u64) -> Vec<u8> {
         atom.to_le_bytes().to_vec()
     }
 
@@ -460,7 +463,7 @@ impl AtomProfile for Uleb128Atom {
     const KIND: ProfileKind = ProfileKind::Uleb128;
     const WIDTH_BYTES: Option<usize> = None;
 
-    fn encode(atom: &Uleb128) -> Vec<u8> {
+    fn encode(atom: Uleb128) -> Vec<u8> {
         atom.as_bytes().to_vec()
     }
 
@@ -493,7 +496,7 @@ mod tests {
         assert_eq!(U64::decode(&u64::MAX.to_le_bytes()).unwrap(), (u64::MAX, 8));
         let nan_bits = 0x7ff8_0000_0000_0042u64;
         assert_eq!(
-            F64Bits::decode(&F64Bits::encode(&nan_bits)).unwrap().0,
+            F64Bits::decode(&F64Bits::encode(nan_bits)).unwrap().0,
             nan_bits
         );
     }
