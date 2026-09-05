@@ -35,9 +35,18 @@ mod tests {
         let entries = dictionary.visible_entries().unwrap();
         assert_eq!(entries.len(), 2);
         assert!(dictionary.contains_encoded(&first.to_encoded()).unwrap());
+        assert_eq!(
+            dictionary.get_encoded_value(&first.to_encoded()).unwrap(),
+            Some(7)
+        );
         assert!(dictionary.contains_encoded(&[0x80]).is_err());
         assert!(dictionary.insert_encoded(&first.to_encoded(), 9).unwrap() == false);
         assert_eq!(dictionary.get_value(&first), Some(9));
+        assert_eq!(
+            dictionary.get_encoded_value(&first.to_encoded()).unwrap(),
+            Some(9)
+        );
+        assert!(dictionary.get_encoded_value(&[0x80]).is_err());
         assert!(dictionary.insert_encoded(&[0x80], 1).is_err());
         assert!(dictionary.remove(&first));
         assert!(!dictionary.contains(&first));
@@ -315,6 +324,13 @@ impl<V: DictionaryValue> PersistentARTrieUleb128<V> {
     pub fn contains_encoded(&self, encoded: &[u8]) -> Result<bool, Uleb128Error> {
         Uleb128Sequence::from_encoded(encoded)?;
         Ok(self.inner.contains_bytes(encoded))
+    }
+
+    /// Validate and read a mapped value for one encoded sequence without
+    /// allocating or decoding its arbitrary-width atoms.
+    pub fn get_encoded_value(&self, encoded: &[u8]) -> Result<Option<V>, Uleb128Error> {
+        Uleb128Sequence::from_encoded(encoded)?;
+        Ok(self.inner.get_value_bytes(encoded))
     }
 
     /// Validate and remove an already encoded sequence without decoding it.

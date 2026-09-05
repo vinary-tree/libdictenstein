@@ -22,11 +22,20 @@ mod tests {
         assert!(dictionary.contains("λ🎉"));
         assert_eq!(dictionary.get_value("λ🎉"), Some(9));
         assert!(dictionary.contains_encoded("λ🎉".as_bytes()).unwrap());
+        assert_eq!(
+            dictionary.get_encoded_value("λ🎉".as_bytes()).unwrap(),
+            Some(9)
+        );
         assert_eq!(dictionary.try_term_count().unwrap(), 1);
         assert!(!dictionary.try_is_empty().unwrap());
         assert!(dictionary.contains_encoded(&[0x80]).is_err());
         assert!(!dictionary.insert_encoded("λ🎉".as_bytes(), 10).unwrap());
         assert_eq!(dictionary.get_value("λ🎉"), Some(10));
+        assert_eq!(
+            dictionary.get_encoded_value("λ🎉".as_bytes()).unwrap(),
+            Some(10)
+        );
+        assert!(dictionary.get_encoded_value(&[0x80]).is_err());
         assert!(dictionary.insert_encoded(&[0x80], 1).is_err());
         assert_eq!(dictionary.visible_entries().unwrap().len(), 1);
         assert!(dictionary.remove_encoded("λ🎉".as_bytes()).unwrap());
@@ -306,6 +315,13 @@ impl<V: DictionaryValue> PersistentARTrieUtf8<V> {
     pub fn contains_encoded(&self, encoded: &[u8]) -> Result<bool, std::str::Utf8Error> {
         std::str::from_utf8(encoded)?;
         Ok(self.inner.contains_bytes(encoded))
+    }
+
+    /// Validate and read a mapped value for one encoded UTF-8 term without
+    /// allocating or decoding its scalar sequence.
+    pub fn get_encoded_value(&self, encoded: &[u8]) -> Result<Option<V>, std::str::Utf8Error> {
+        std::str::from_utf8(encoded)?;
+        Ok(self.inner.get_value_bytes(encoded))
     }
 
     /// Validate and remove an already encoded UTF-8 term.
