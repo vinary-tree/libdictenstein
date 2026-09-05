@@ -432,7 +432,8 @@ impl AtomProfile for U64 {
 }
 
 /// Raw-bit IEEE-754 binary64 profile; the logical atom is its `u64` bit
-/// pattern so ordering and equality remain total and NaN payloads are exact.
+/// pattern so equality and hashing preserve every payload. Use
+/// [`F64Bits::total_cmp`] when ordering values by IEEE-754 total order.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct F64Bits;
 
