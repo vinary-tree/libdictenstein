@@ -519,10 +519,24 @@ impl<C: VariableWidthCodec> VariableAtomSequence<C> {
     pub fn iter(&self) -> impl Iterator<Item = &C::Owned> {
         self.atoms.iter()
     }
+
+    /// Consume the sequence and return its owned logical atoms.
+    #[inline]
+    pub fn into_atoms(self) -> Vec<C::Owned> {
+        self.atoms
+    }
 }
 
 /// Backwards-compatible name for the ULEB128 specialization.
 pub type Uleb128Sequence = VariableAtomSequence<Uleb128Codec>;
+
+/// Convert the established dictionary sequence representation into the
+/// generic profile sequence without changing any canonical atom bytes.
+impl From<crate::profile::AtomSequence<crate::profile::Uleb128Atom>> for Uleb128Sequence {
+    fn from(sequence: crate::profile::AtomSequence<crate::profile::Uleb128Atom>) -> Self {
+        Self::from_atoms(sequence.into_atoms())
+    }
+}
 
 #[cfg(test)]
 mod tests {

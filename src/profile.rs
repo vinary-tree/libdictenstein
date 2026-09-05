@@ -248,6 +248,12 @@ impl<P: AtomProfile> AtomSequence<P> {
         &self.atoms
     }
 
+    /// Consume the sequence and return its owned logical atoms.
+    #[inline]
+    pub fn into_atoms(self) -> Vec<P::Atom> {
+        self.atoms
+    }
+
     /// Number of bytes in the encoded sequence.
     pub fn encoded_len(&self) -> usize {
         self.atoms
@@ -478,6 +484,14 @@ impl AtomProfile for Uleb128Atom {
     }
 }
 
+/// Convert the generic ULEB profile sequence into the established dictionary
+/// sequence representation without re-encoding or decoding any atom.
+impl From<crate::Uleb128Sequence> for AtomSequence<Uleb128Atom> {
+    fn from(sequence: crate::Uleb128Sequence) -> Self {
+        Self::from_atoms(sequence.into_atoms())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,5 +649,9 @@ mod tests {
             sequence.as_atoms()
         );
         assert!(wide.to_u64().is_none());
+
+        let dictionary_sequence: crate::Uleb128Sequence = sequence.clone().into();
+        let round_trip: AtomSequence<Uleb128Atom> = dictionary_sequence.into();
+        assert_eq!(round_trip, sequence);
     }
 }
