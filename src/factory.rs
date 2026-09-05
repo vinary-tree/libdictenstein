@@ -115,17 +115,17 @@ impl std::fmt::Display for Uleb128Backend {
 
 /// Set-like container returned by the typed ULEB128 factory.
 #[derive(Debug)]
-pub enum Uleb128DictionaryContainer {
+pub enum Uleb128DictionaryContainer<V: crate::DictionaryValue = ()> {
     /// Dynamic DAWG specialization.
-    DynamicDawg(DynamicDawgUleb128),
+    DynamicDawg(DynamicDawgUleb128<V>),
     /// Double-array trie specialization.
-    DoubleArrayTrie(DoubleArrayTrieUleb128),
+    DoubleArrayTrie(DoubleArrayTrieUleb128<V>),
     /// PathMap adapter specialization.
     #[cfg(feature = "pathmap-backend")]
-    PathMap(PathMapDictionaryUleb128),
+    PathMap(PathMapDictionaryUleb128<V>),
 }
 
-impl Uleb128DictionaryContainer {
+impl<V: crate::DictionaryValue> Uleb128DictionaryContainer<V> {
     /// Return the selected typed backend.
     pub const fn backend(&self) -> Uleb128Backend {
         match self {
@@ -170,6 +170,29 @@ impl Uleb128DictionaryContainer {
         }
     }
 
+    /// Return the mapped value for a complete logical ULEB128 sequence.
+    pub fn get_value(&self, sequence: &Uleb128Sequence) -> Option<V> {
+        match self {
+            Self::DynamicDawg(dictionary) => dictionary.get_value(sequence),
+            Self::DoubleArrayTrie(dictionary) => dictionary.get_value(sequence),
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(dictionary) => dictionary.get_value(sequence),
+        }
+    }
+
+    /// Return the mapped value for a shared logical profile sequence.
+    pub fn get_atom_sequence_value(
+        &self,
+        sequence: &crate::AtomSequence<crate::Uleb128Atom>,
+    ) -> Option<V> {
+        match self {
+            Self::DynamicDawg(dictionary) => dictionary.get_atom_sequence_value(sequence),
+            Self::DoubleArrayTrie(dictionary) => dictionary.get_atom_sequence_value(sequence),
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(dictionary) => dictionary.get_atom_sequence_value(sequence),
+        }
+    }
+
     /// Test membership using the shared logical ULEB profile sequence type.
     pub fn contains_atom_sequence(
         &self,
@@ -198,7 +221,7 @@ impl Uleb128DictionaryContainer {
     /// Export complete logical sequences while keeping physical codec bytes
     /// private to each backend.  Decoding occurs only at this explicit logical
     /// boundary and malformed images are reported as errors.
-    pub fn visible_entries(&self) -> Result<Vec<(Uleb128Sequence, Option<()>)>, Uleb128Error> {
+    pub fn visible_entries(&self) -> Result<Vec<(Uleb128Sequence, Option<V>)>, Uleb128Error> {
         match self {
             Self::DynamicDawg(dictionary) => dictionary.visible_entries(),
             Self::DoubleArrayTrie(dictionary) => dictionary.visible_entries(),
@@ -631,6 +654,57 @@ impl DictionaryFactory {
             #[cfg(feature = "pathmap-backend")]
             Uleb128Backend::PathMap => Uleb128DictionaryContainer::PathMap(
                 PathMapDictionaryUleb128::from_atom_sequences(sequences),
+            ),
+        }
+    }
+
+    /// Create a value-bearing typed ULEB128 dictionary from logical sequences.
+    ///
+    /// The value type is preserved through the container rather than erased to
+    /// the set-like default `()`, allowing callers to select a backend without
+    /// giving up mapped results.
+    pub fn create_uleb128_with_values<I, V>(
+        backend: Uleb128Backend,
+        entries: I,
+    ) -> Uleb128DictionaryContainer<V>
+    where
+        I: IntoIterator<Item = (Uleb128Sequence, V)>,
+        V: crate::DictionaryValue,
+    {
+        match backend {
+            Uleb128Backend::DynamicDawg => Uleb128DictionaryContainer::DynamicDawg(
+                DynamicDawgUleb128::from_sequences_with_values(entries),
+            ),
+            Uleb128Backend::DoubleArrayTrie => Uleb128DictionaryContainer::DoubleArrayTrie(
+                DoubleArrayTrieUleb128::from_sequences_with_values(entries),
+            ),
+            #[cfg(feature = "pathmap-backend")]
+            Uleb128Backend::PathMap => Uleb128DictionaryContainer::PathMap(
+                PathMapDictionaryUleb128::from_sequences_with_values(entries),
+            ),
+        }
+    }
+
+    /// Create a value-bearing typed ULEB128 dictionary from shared profile
+    /// sequences without converting through an encoded intermediary.
+    pub fn create_uleb128_atoms_with_values<I, V>(
+        backend: Uleb128Backend,
+        entries: I,
+    ) -> Uleb128DictionaryContainer<V>
+    where
+        I: IntoIterator<Item = (crate::AtomSequence<crate::Uleb128Atom>, V)>,
+        V: crate::DictionaryValue,
+    {
+        match backend {
+            Uleb128Backend::DynamicDawg => Uleb128DictionaryContainer::DynamicDawg(
+                DynamicDawgUleb128::from_atom_sequences_with_values(entries),
+            ),
+            Uleb128Backend::DoubleArrayTrie => Uleb128DictionaryContainer::DoubleArrayTrie(
+                DoubleArrayTrieUleb128::from_atom_sequences_with_values(entries),
+            ),
+            #[cfg(feature = "pathmap-backend")]
+            Uleb128Backend::PathMap => Uleb128DictionaryContainer::PathMap(
+                PathMapDictionaryUleb128::from_atom_sequences_with_values(entries),
             ),
         }
     }
@@ -1098,5 +1172,28 @@ mod tests {
             Uleb128Backend::DynamicDawg.to_string(),
             "DynamicDAWGUleb128"
         );
+    }
+
+    #[test]
+    fn typed_uleb_factory_preserves_mapped_values() {
+        let sequence = Uleb128Sequence::from_atoms([crate::Uleb128::from_u64(42)]);
+        for backend in DictionaryFactory::available_uleb128_backends() {
+            let dictionary = DictionaryFactory::create_uleb128_with_values::<_, u16>(
+                backend,
+                [(sequence.clone(), 7)],
+            );
+            assert_eq!(dictionary.get_value(&sequence), Some(7), "{backend:?}");
+            assert_eq!(
+                dictionary.visible_entries().unwrap(),
+                vec![(sequence.clone(), Some(7))]
+            );
+        }
+        let atoms =
+            crate::AtomSequence::<crate::Uleb128Atom>::from_atoms([crate::Uleb128::from_u64(42)]);
+        let dictionary = DictionaryFactory::create_uleb128_atoms_with_values::<_, u16>(
+            Uleb128Backend::DynamicDawg,
+            [(atoms.clone(), 11)],
+        );
+        assert_eq!(dictionary.get_atom_sequence_value(&atoms), Some(11));
     }
 }
