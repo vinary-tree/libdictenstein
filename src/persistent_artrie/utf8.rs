@@ -30,6 +30,17 @@ mod tests {
         assert!(dictionary.is_empty());
         assert!(dictionary.try_is_empty().unwrap());
     }
+
+    #[test]
+    fn accepts_shared_utf8_profile_sequences() {
+        let sequence = crate::AtomSequence::<crate::Utf8>::from_atoms(['λ', '🎉']);
+        let dictionary =
+            PersistentARTrieUtf8::<u16>::from_atom_sequences_with_values([(sequence.clone(), 29)]);
+        assert!(dictionary.contains_atom_sequence(&sequence));
+        assert_eq!(dictionary.get_atom_sequence_value(&sequence), Some(29));
+        assert!(dictionary.try_remove_atom_sequence(&sequence).unwrap());
+        assert!(!dictionary.contains_atom_sequence(&sequence));
+    }
 }
 
 impl<V: DictionaryValue> Default for PersistentARTrieUtf8<V> {
@@ -63,6 +74,32 @@ impl<V: DictionaryValue> PersistentARTrieUtf8<V> {
             dictionary.insert_with_value(term.as_ref(), value);
         }
         dictionary
+    }
+
+    /// Construct from shared logical UTF-8 scalar profile sequences.
+    pub fn from_atom_sequences<I>(sequences: I) -> Self
+    where
+        I: IntoIterator<Item = crate::AtomSequence<crate::Utf8>>,
+    {
+        Self::from_terms(
+            sequences
+                .into_iter()
+                .map(|sequence| sequence.as_atoms().iter().copied().collect::<String>()),
+        )
+    }
+
+    /// Construct from shared logical UTF-8 scalar profile sequences and
+    /// mapped values.
+    pub fn from_atom_sequences_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (crate::AtomSequence<crate::Utf8>, V)>,
+    {
+        Self::from_terms_with_values(entries.into_iter().map(|(sequence, value)| {
+            (
+                sequence.as_atoms().iter().copied().collect::<String>(),
+                value,
+            )
+        }))
     }
 
     /// Create a fresh persistent UTF-8 dictionary at `path`.
@@ -135,10 +172,24 @@ impl<V: DictionaryValue> PersistentARTrieUtf8<V> {
         self.inner.try_insert(term)
     }
 
+    /// Checked insertion of one shared logical UTF-8 scalar profile sequence.
+    pub fn try_insert_atom_sequence(
+        &self,
+        sequence: &crate::AtomSequence<crate::Utf8>,
+    ) -> crate::persistent_artrie::Result<bool> {
+        self.inner.try_insert_bytes(&sequence.to_encoded())
+    }
+
     /// Insert a term, reporting only whether it was newly added.
     #[inline]
     pub fn insert(&self, term: &str) -> bool {
         self.inner.insert(term)
+    }
+
+    /// Insert one shared logical UTF-8 scalar profile sequence.
+    #[inline]
+    pub fn insert_atom_sequence(&self, sequence: &crate::AtomSequence<crate::Utf8>) -> bool {
+        self.inner.insert_bytes(&sequence.to_encoded())
     }
 
     /// Checked value insertion preserving persistence failures.
@@ -150,10 +201,32 @@ impl<V: DictionaryValue> PersistentARTrieUtf8<V> {
         self.inner.try_insert_with_value(term, value)
     }
 
+    /// Checked value insertion for one shared logical UTF-8 scalar profile
+    /// sequence.
+    pub fn try_insert_atom_sequence_with_value(
+        &self,
+        sequence: &crate::AtomSequence<crate::Utf8>,
+        value: V,
+    ) -> crate::persistent_artrie::Result<bool> {
+        self.inner
+            .try_insert_with_value_bytes(&sequence.to_encoded(), value)
+    }
+
     /// Insert or update a term with a mapped value.
     #[inline]
     pub fn insert_with_value(&self, term: &str, value: V) -> bool {
         self.inner.insert_with_value(term, value)
+    }
+
+    /// Insert one shared logical UTF-8 scalar profile sequence with a value.
+    #[inline]
+    pub fn insert_atom_sequence_with_value(
+        &self,
+        sequence: &crate::AtomSequence<crate::Utf8>,
+        value: V,
+    ) -> bool {
+        self.inner
+            .insert_with_value_bytes(&sequence.to_encoded(), value)
     }
 
     /// Test membership of a UTF-8 term.
@@ -162,10 +235,26 @@ impl<V: DictionaryValue> PersistentARTrieUtf8<V> {
         self.inner.contains_bytes(term.as_bytes())
     }
 
+    /// Test membership of one shared logical UTF-8 scalar profile sequence.
+    #[inline]
+    pub fn contains_atom_sequence(&self, sequence: &crate::AtomSequence<crate::Utf8>) -> bool {
+        self.inner.contains_bytes(&sequence.to_encoded())
+    }
+
     /// Read a mapped value for a UTF-8 term.
     #[inline]
     pub fn get_value(&self, term: &str) -> Option<V> {
         self.inner.get_value_bytes(term.as_bytes())
+    }
+
+    /// Read a mapped value for one shared logical UTF-8 scalar profile
+    /// sequence.
+    #[inline]
+    pub fn get_atom_sequence_value(
+        &self,
+        sequence: &crate::AtomSequence<crate::Utf8>,
+    ) -> Option<V> {
+        self.inner.get_value_bytes(&sequence.to_encoded())
     }
 
     /// Checked removal preserving persistence failures.
@@ -173,10 +262,24 @@ impl<V: DictionaryValue> PersistentARTrieUtf8<V> {
         self.inner.try_remove_bytes(term.as_bytes())
     }
 
+    /// Checked removal of one shared logical UTF-8 scalar profile sequence.
+    pub fn try_remove_atom_sequence(
+        &self,
+        sequence: &crate::AtomSequence<crate::Utf8>,
+    ) -> crate::persistent_artrie::Result<bool> {
+        self.inner.try_remove_bytes(&sequence.to_encoded())
+    }
+
     /// Remove a UTF-8 term.
     #[inline]
     pub fn remove(&self, term: &str) -> bool {
         self.inner.remove_bytes(term.as_bytes())
+    }
+
+    /// Remove one shared logical UTF-8 scalar profile sequence.
+    #[inline]
+    pub fn remove_atom_sequence(&self, sequence: &crate::AtomSequence<crate::Utf8>) -> bool {
+        self.inner.remove_bytes(&sequence.to_encoded())
     }
 
     /// Validate and query an already encoded UTF-8 term.
