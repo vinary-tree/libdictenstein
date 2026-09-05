@@ -275,7 +275,7 @@ fn pathmap_mutation_and_union_refine_reference_maps() {
 #[test]
 fn factory_preserves_requested_backend_and_feature_gated_availability() {
     let backends = DictionaryFactory::available_backends();
-    assert_eq!(backends.len(), 11);
+    assert_eq!(backends.len(), 14);
     assert!(backends.contains(&DictionaryBackend::PathMap));
     assert!(backends.contains(&DictionaryBackend::PathMapChar));
 
