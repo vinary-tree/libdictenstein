@@ -155,7 +155,9 @@ pub mod persistent_artrie;
 pub mod serialization;
 
 // Re-export core types at crate root
-pub use bijective::{BijectiveDictionary, BijectiveMap, InsertError, ProfiledBijectiveMap};
+pub use bijective::{
+    BijectiveDictionary, BijectiveMap, InsertError, ProfiledBijectiveMap, ProfiledBijectiveSnapshot,
+};
 pub use bloom_filter::BloomFilter;
 pub use char_unit::CharUnit;
 pub use collection::{
@@ -1904,9 +1906,9 @@ pub mod prelude {
         InternedSequenceDictionaryU64, InternedUlebSequenceDictionary,
         InternedUlebSequenceDictionaryU64, InternedVocabulary, InternedVocabularySnapshot,
         MappedDictionary, MappedDictionaryNode, MutableDictionary, MutableMappedDictionary,
-        ProfiledBijectiveMap, SnapshotEntryIterator, SnapshotTermIterator, SyncStrategy,
-        Uleb128Atom, Utf8, ValuedDictZipper, ValuedZipperCollection, ZipperCollection,
-        ZipperEntryIterator, ZipperTermIterator,
+        ProfiledBijectiveMap, ProfiledBijectiveSnapshot, SnapshotEntryIterator,
+        SnapshotTermIterator, SyncStrategy, Uleb128Atom, Utf8, ValuedDictZipper,
+        ValuedZipperCollection, ZipperCollection, ZipperEntryIterator, ZipperTermIterator,
     };
 
     // Re-export common dictionary types

@@ -59,7 +59,7 @@ mod bijective_map;
 mod profiled;
 
 pub use bijective_map::{BijectiveMap, InsertError};
-pub use profiled::ProfiledBijectiveMap;
+pub use profiled::{ProfiledBijectiveMap, ProfiledBijectiveSnapshot};
 
 use std::borrow::Cow;
 

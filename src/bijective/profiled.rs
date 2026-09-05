@@ -24,6 +24,48 @@ pub struct ProfiledBijectiveMap<U: CharUnit, V: DictionaryValue + Eq + Hash> {
     writers: Mutex<()>,
 }
 
+/// Immutable, coherent forward/reverse view of a [`ProfiledBijectiveMap`].
+#[derive(Clone, Debug)]
+pub struct ProfiledBijectiveSnapshot<U: CharUnit, V: DictionaryValue + Eq + Hash> {
+    forward: Arc<HashMap<Vec<U>, V>>,
+    reverse: Arc<HashMap<V, Vec<U>>>,
+}
+
+impl<U: CharUnit, V: DictionaryValue + Eq + Hash> ProfiledBijectiveSnapshot<U, V> {
+    /// Number of entries captured by this snapshot.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.reverse.len()
+    }
+
+    /// Whether this snapshot contains no entries.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.reverse.is_empty()
+    }
+
+    /// Look up a value in the captured forward index.
+    #[inline]
+    pub fn get_units_value(&self, units: &[U]) -> Option<V> {
+        self.forward.get(units).cloned()
+    }
+
+    /// Look up native units in the captured reverse index.
+    #[inline]
+    pub fn get_units(&self, value: &V) -> Option<Vec<U>> {
+        self.reverse.get(value).cloned()
+    }
+
+    /// Iterate the captured entries without observing later writes.
+    pub fn iter_units(&self) -> impl Iterator<Item = (Vec<U>, V)> {
+        self.reverse
+            .iter()
+            .map(|(value, units)| (units.clone(), value.clone()))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
+
 impl<U: CharUnit, V: DictionaryValue + Eq + Hash> Clone for ProfiledBijectiveMap<U, V> {
     fn clone(&self) -> Self {
         Self {
@@ -206,6 +248,25 @@ impl<U: CharUnit, V: DictionaryValue + Eq + Hash> ProfiledBijectiveMap<U, V> {
         self.len() == 0
     }
 
+    /// Capture one coherent immutable forward/reverse snapshot.
+    pub fn snapshot(&self) -> ProfiledBijectiveSnapshot<U, V> {
+        let _writer = self
+            .writers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let reverse = self.reverse_snapshot();
+        let forward = self
+            .forward
+            .visible_entries()
+            .into_iter()
+            .filter_map(|(units, value)| value.map(|value| (units, value)))
+            .collect::<HashMap<_, _>>();
+        ProfiledBijectiveSnapshot {
+            forward: Arc::new(forward),
+            reverse,
+        }
+    }
+
     /// Iterate owned unit/value pairs in reverse-index order.
     pub fn iter_units(&self) -> impl Iterator<Item = (Vec<U>, V)> {
         self.reverse_snapshot()
@@ -281,5 +342,19 @@ mod tests {
             assert_eq!(map.get_units_value(&units), Some(index));
             assert_eq!(map.get_units(&index), Some(units));
         }
+    }
+
+    #[test]
+    fn snapshot_is_immutable_and_coherent() {
+        let map = ProfiledBijectiveMap::<u8, u16>::new();
+        map.insert_units(b"ab", 1);
+        let snapshot = map.snapshot();
+        assert_eq!(snapshot.get_units_value(b"ab"), Some(1));
+        assert_eq!(snapshot.get_units(&1), Some(b"ab".to_vec()));
+
+        map.remove_value(&1);
+        assert_eq!(map.get_units_value(b"ab"), None);
+        assert_eq!(snapshot.get_units_value(b"ab"), Some(1));
+        assert_eq!(snapshot.len(), 1);
     }
 }
