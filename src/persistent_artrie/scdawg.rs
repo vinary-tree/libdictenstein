@@ -968,6 +968,9 @@ pub struct PersistentScdawgChar<V: DictionaryValue = (), S: BlockStorage = MmapD
     _storage: PhantomData<S>,
 }
 
+/// UTF-8-profile spelling for the persistent Unicode-scalar SCDAWG.
+pub type PersistentScdawgUtf8<V = (), S = MmapDiskManager> = PersistentScdawgChar<V, S>;
+
 /// Snapshot iterator over stored byte-SCDAWG term records.
 pub struct PersistentScdawgEntryIterator<V: DictionaryValue = ()> {
     graph: Arc<NativeScdawgGraph<u8, V>>,

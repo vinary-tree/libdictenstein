@@ -216,11 +216,11 @@ pub use persistent_artrie::wal::Lsn;
 pub use persistent_artrie::{
     PersistentARTrie, PersistentARTrieU64, PersistentARTrieU64Node, PersistentARTrieUleb128,
     PersistentARTrieUtf8, PersistentARTrieZipper, PersistentScdawg, PersistentScdawgChar,
-    PersistentScdawgCharNode, PersistentScdawgNode, PersistentSuffixAutomaton,
-    PersistentSuffixAutomatonChar, PersistentSuffixAutomatonCharNode,
-    PersistentSuffixAutomatonNode, PersistentSuffixTree, PersistentSuffixTreeChar,
-    PersistentSuffixTreeCharNode, PersistentSuffixTreeNode, RecoveryMode, RecoveryReport,
-    WalConfig,
+    PersistentScdawgCharNode, PersistentScdawgNode, PersistentScdawgUtf8,
+    PersistentSuffixAutomaton, PersistentSuffixAutomatonChar, PersistentSuffixAutomatonCharNode,
+    PersistentSuffixAutomatonNode, PersistentSuffixAutomatonUtf8, PersistentSuffixTree,
+    PersistentSuffixTreeChar, PersistentSuffixTreeCharNode, PersistentSuffixTreeNode,
+    PersistentSuffixTreeUtf8, RecoveryMode, RecoveryReport, WalConfig,
 };
 
 /// Synchronization strategy for dictionary operations.

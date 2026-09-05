@@ -1341,6 +1341,10 @@ pub struct PersistentSuffixAutomatonChar<V: DictionaryValue = (), S: BlockStorag
     _storage: PhantomData<S>,
 }
 
+/// UTF-8-profile spelling for the persistent Unicode-scalar suffix automaton.
+pub type PersistentSuffixAutomatonUtf8<V = (), S = MmapDiskManager> =
+    PersistentSuffixAutomatonChar<V, S>;
+
 /// Snapshot iterator over stored byte-suffix source records.
 pub struct PersistentSuffixAutomatonEntryIterator<V: DictionaryValue = ()> {
     graph: Arc<NativeSuffixGraph<u8, V>>,

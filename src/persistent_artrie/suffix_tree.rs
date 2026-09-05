@@ -1504,6 +1504,9 @@ pub struct PersistentSuffixTreeChar<V: DictionaryValue = (), S: BlockStorage = M
     _storage: PhantomData<S>,
 }
 
+/// UTF-8-profile spelling for the persistent Unicode-scalar suffix tree.
+pub type PersistentSuffixTreeUtf8<V = (), S = MmapDiskManager> = PersistentSuffixTreeChar<V, S>;
+
 /// Snapshot iterator over stored byte suffix-tree source records.
 pub struct PersistentSuffixTreeEntryIterator<V: DictionaryValue = ()> {
     graph: Arc<NativeSuffixTreeGraph<u8, V>>,

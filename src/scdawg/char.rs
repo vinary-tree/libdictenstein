@@ -94,6 +94,13 @@ pub struct ScdawgChar<V: DictionaryValue = ()> {
     inner: LockFreeScdawg<char, V>,
 }
 
+/// UTF-8-profile spelling for the scalar-unit SCDAWG.
+///
+/// The storage and traversal unit is a Unicode scalar (`char`); the shared
+/// [`crate::Utf8`] profile is accepted by the atom-sequence constructors and
+/// is not expanded into byte transitions.
+pub type ScdawgUtf8<V = ()> = ScdawgChar<V>;
+
 /// Snapshot-owning iterator over exact SCDAWG terms and optional values.
 ///
 /// The iterator retains one atomically published SCDAWG revision and clones

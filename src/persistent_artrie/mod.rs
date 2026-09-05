@@ -456,16 +456,17 @@ pub use zipper::PersistentARTrieZipper;
 
 pub use suffix_automaton::{
     PersistentSuffixAutomaton, PersistentSuffixAutomatonChar, PersistentSuffixAutomatonCharNode,
-    PersistentSuffixAutomatonNode,
+    PersistentSuffixAutomatonNode, PersistentSuffixAutomatonUtf8,
 };
 
 pub use scdawg::{
     PersistentScdawg, PersistentScdawgChar, PersistentScdawgCharNode, PersistentScdawgNode,
+    PersistentScdawgUtf8,
 };
 
 pub use suffix_tree::{
     PersistentSuffixTree, PersistentSuffixTreeChar, PersistentSuffixTreeCharNode,
-    PersistentSuffixTreeNode,
+    PersistentSuffixTreeNode, PersistentSuffixTreeUtf8,
 };
 
 pub use u64::{
