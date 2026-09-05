@@ -438,6 +438,14 @@ impl<V: crate::DictionaryValue> DynamicDawgUtf8<V> {
         Ok(self.inner.contains_units(encoded))
     }
 
+    /// Validate and read a mapped value for one encoded UTF-8 term without
+    /// allocating or decoding its scalar sequence.
+    #[inline]
+    pub fn get_encoded_value(&self, encoded: &[u8]) -> Result<Option<V>, std::str::Utf8Error> {
+        std::str::from_utf8(encoded)?;
+        Ok(self.inner.get_units_value(encoded))
+    }
+
     pub fn remove_encoded(&self, encoded: &[u8]) -> Result<bool, std::str::Utf8Error> {
         std::str::from_utf8(encoded)?;
         Ok(self.inner.remove_units(encoded))
@@ -696,7 +704,12 @@ mod generic_tests {
         assert_eq!(dictionary.get_value("λ🎉"), Some(4));
         assert_eq!(dictionary.visible_entries().unwrap().len(), 2);
         assert!(dictionary.contains_encoded("λ🎉".as_bytes()).unwrap());
+        assert_eq!(
+            dictionary.get_encoded_value("λ🎉".as_bytes()).unwrap(),
+            Some(4)
+        );
         assert!(dictionary.contains_encoded(&[0x80]).is_err());
+        assert!(dictionary.get_encoded_value(&[0x80]).is_err());
         assert!(dictionary.insert_encoded("β".as_bytes(), 8).unwrap());
         assert_eq!(dictionary.get_value("β"), Some(8));
         assert!(dictionary.insert_encoded(&[0x80], 1).is_err());
