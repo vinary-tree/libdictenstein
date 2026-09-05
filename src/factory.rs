@@ -94,6 +94,79 @@ impl DictionaryFamily {
     }
 }
 
+/// Stable, wire-facing topology/profile descriptor for manifests.
+///
+/// The descriptor deliberately stores canonical strings and the profile
+/// version rather than Rust enum or type names.  It can therefore be carried
+/// through JSON/bincode and validated before a persisted image is opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+pub struct DictionaryDescriptor {
+    /// Canonical topology identifier (for example, `dynamic-dawg`).
+    pub topology: String,
+    /// Canonical logical profile identifier (for example, `uleb128`).
+    pub profile: String,
+    /// Version of the logical profile codec.
+    pub profile_version: u16,
+    /// Fixed atom width, or `None` for variable-width profiles.
+    pub width_bytes: Option<usize>,
+}
+
+/// Validation failures for a persisted [`DictionaryDescriptor`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DictionaryDescriptorError {
+    /// The topology identifier is not recognized.
+    UnknownTopology,
+    /// The profile identifier is not recognized.
+    UnknownProfile,
+    /// The profile version does not match the canonical implementation.
+    ProfileVersionMismatch,
+    /// The declared width does not match the canonical profile.
+    WidthMismatch,
+}
+
+impl DictionaryDescriptor {
+    /// Build a descriptor from a compatibility backend selector.
+    pub fn from_backend(backend: DictionaryBackend) -> Self {
+        let profile = backend.profile_descriptor();
+        Self {
+            topology: backend.family().as_str().to_owned(),
+            profile: profile.identity.name.to_owned(),
+            profile_version: profile.identity.version,
+            width_bytes: profile.width_bytes,
+        }
+    }
+
+    /// Build a descriptor directly from a topology/profile specification.
+    pub fn from_spec<P: crate::AtomProfile>(spec: DictionarySpec<P>) -> Self {
+        Self {
+            topology: spec.family().as_str().to_owned(),
+            profile: P::PROFILE.name.to_owned(),
+            profile_version: P::PROFILE.version,
+            width_bytes: P::WIDTH_BYTES,
+        }
+    }
+
+    /// Validate all persisted identifiers and profile metadata.
+    pub fn validate(&self) -> Result<(DictionaryFamily, ProfileKind), DictionaryDescriptorError> {
+        let family = DictionaryFamily::from_name(&self.topology)
+            .ok_or(DictionaryDescriptorError::UnknownTopology)?;
+        let kind = ProfileKind::from_name(&self.profile)
+            .ok_or(DictionaryDescriptorError::UnknownProfile)?;
+        let identity = kind.identity();
+        if identity.version != self.profile_version {
+            return Err(DictionaryDescriptorError::ProfileVersionMismatch);
+        }
+        if kind.width_bytes() != self.width_bytes {
+            return Err(DictionaryDescriptorError::WidthMismatch);
+        }
+        Ok((family, kind))
+    }
+}
+
 /// Compile-time profile selection for topology-oriented factory code.
 ///
 /// `DictionarySpec<P>` carries no dictionary storage.  It is a zero-sized
@@ -1236,6 +1309,30 @@ mod tests {
             assert_eq!(DictionaryFamily::from_name(family.as_str()), Some(family));
         }
         assert_eq!(DictionaryFamily::from_name("legacy"), None);
+
+        let descriptor = DictionaryDescriptor::from_backend(DictionaryBackend::DynamicDawgUtf8);
+        assert_eq!(descriptor.topology, "dynamic-dawg");
+        assert_eq!(descriptor.profile, "utf8");
+        assert_eq!(descriptor.validate().unwrap().1, ProfileKind::Utf8);
+        let spec_descriptor = DictionaryDescriptor::from_spec(
+            DictionarySpec::<crate::Uleb128Atom>::new(DictionaryFamily::DynamicDawg),
+        );
+        assert_eq!(spec_descriptor.validate().unwrap().1, ProfileKind::Uleb128);
+        let mut invalid = descriptor.clone();
+        invalid.profile_version += 1;
+        assert_eq!(
+            invalid.validate(),
+            Err(DictionaryDescriptorError::ProfileVersionMismatch)
+        );
+
+        #[cfg(feature = "serialization")]
+        {
+            let bytes = crate::serialization::bincode_compat::serialize(&descriptor).unwrap();
+            let restored: DictionaryDescriptor =
+                crate::serialization::bincode_compat::deserialize(&bytes).unwrap();
+            assert_eq!(restored, descriptor);
+            assert_eq!(restored.validate().unwrap().1, ProfileKind::Utf8);
+        }
     }
 
     #[test]
