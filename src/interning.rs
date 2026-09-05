@@ -446,6 +446,19 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionaryU64<K, V> {
         })
     }
 
+    /// Intern and insert one shared logical profile sequence while retaining
+    /// the vocabulary's generation and ID validation boundary.
+    pub fn insert_atom_sequence<P>(
+        &self,
+        sequence: &crate::AtomSequence<P>,
+        value: Option<V>,
+    ) -> Result<bool, InterningError>
+    where
+        P: crate::AtomProfile<Atom = K>,
+    {
+        self.insert(sequence.as_atoms().iter().cloned(), value)
+    }
+
     /// Test an atom sequence without mutating the vocabulary.
     pub fn contains<I>(&self, atoms: I) -> Result<bool, InterningError>
     where
@@ -462,6 +475,18 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionaryU64<K, V> {
         Ok(self.id_dictionary.contains_units(&ids))
     }
 
+    /// Test one shared logical profile sequence without mutating the
+    /// vocabulary.
+    pub fn contains_atom_sequence<P>(
+        &self,
+        sequence: &crate::AtomSequence<P>,
+    ) -> Result<bool, InterningError>
+    where
+        P: crate::AtomProfile<Atom = K>,
+    {
+        self.contains(sequence.as_atoms().iter().cloned())
+    }
+
     /// Read a mapped value for an already-interned atom sequence.
     pub fn get_value<I>(&self, atoms: I) -> Result<Option<V>, InterningError>
     where
@@ -476,6 +501,18 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionaryU64<K, V> {
             .map(|atom| vocabulary.id_of(&atom).ok_or(InterningError::UnknownKey))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(self.id_dictionary.get_units_value(&ids))
+    }
+
+    /// Read a mapped value for one already-interned shared logical profile
+    /// sequence.
+    pub fn get_atom_sequence_value<P>(
+        &self,
+        sequence: &crate::AtomSequence<P>,
+    ) -> Result<Option<V>, InterningError>
+    where
+        P: crate::AtomProfile<Atom = K>,
+    {
+        self.get_value(sequence.as_atoms().iter().cloned())
     }
 
     /// Remove an atom sequence without changing vocabulary assignments.
@@ -630,6 +667,19 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
         Ok(inserted)
     }
 
+    /// Intern and insert one shared logical profile sequence while retaining
+    /// the vocabulary's generation and ID validation boundary.
+    pub fn insert_atom_sequence<P>(
+        &self,
+        sequence: &crate::AtomSequence<P>,
+        value: Option<V>,
+    ) -> Result<bool, InterningError>
+    where
+        P: crate::AtomProfile<Atom = K>,
+    {
+        self.insert(sequence.as_atoms().iter().cloned(), value)
+    }
+
     /// Test an atom sequence without changing the vocabulary.
     pub fn contains<I>(&self, atoms: I) -> Result<bool, InterningError>
     where
@@ -645,6 +695,18 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
             ids.push(u32::try_from(id).map_err(|_| InterningError::UnknownId(id))?);
         }
         Ok(self.id_dictionary.contains_units(&ids))
+    }
+
+    /// Test one shared logical profile sequence without mutating the
+    /// vocabulary.
+    pub fn contains_atom_sequence<P>(
+        &self,
+        sequence: &crate::AtomSequence<P>,
+    ) -> Result<bool, InterningError>
+    where
+        P: crate::AtomProfile<Atom = K>,
+    {
+        self.contains(sequence.as_atoms().iter().cloned())
     }
 
     /// Read a mapped value for an already-interned atom sequence.
@@ -666,6 +728,18 @@ impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(self.id_dictionary.get_units_value(&ids))
+    }
+
+    /// Read a mapped value for one already-interned shared logical profile
+    /// sequence.
+    pub fn get_atom_sequence_value<P>(
+        &self,
+        sequence: &crate::AtomSequence<P>,
+    ) -> Result<Option<V>, InterningError>
+    where
+        P: crate::AtomProfile<Atom = K>,
+    {
+        self.get_value(sequence.as_atoms().iter().cloned())
     }
 
     /// Remove an atom sequence without changing vocabulary assignments.
@@ -737,6 +811,32 @@ mod coordinated_tests {
         let vocabulary = dictionary.vocabulary().unwrap();
         assert_eq!(vocabulary.len(), 2);
         assert_eq!(vocabulary.generation(), 3);
+    }
+
+    #[test]
+    fn profile_sequences_use_the_same_interning_boundary() {
+        let sequence = crate::AtomSequence::<crate::Uleb128Atom>::from_atoms([
+            Uleb128::from_u64(624_485),
+            Uleb128::from_u64(1u64 << 63),
+        ]);
+        let dictionary = InternedUlebSequenceDictionary::<u32>::with_generation(4);
+        assert!(dictionary
+            .insert_atom_sequence(&sequence, Some(31))
+            .unwrap());
+        assert!(dictionary.contains_atom_sequence(&sequence).unwrap());
+        assert_eq!(
+            dictionary.get_atom_sequence_value(&sequence).unwrap(),
+            Some(31)
+        );
+
+        let wide_dictionary = InternedUlebSequenceDictionaryU64::<u32>::new();
+        assert!(wide_dictionary
+            .insert_atom_sequence(&sequence, Some(37))
+            .unwrap());
+        assert_eq!(
+            wide_dictionary.get_atom_sequence_value(&sequence).unwrap(),
+            Some(37)
+        );
     }
 
     #[test]
