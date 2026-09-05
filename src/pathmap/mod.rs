@@ -172,6 +172,14 @@ impl<V: crate::DictionaryValue> PathMapDictionaryUtf8<V> {
         Ok(self.inner.contains_bytes(encoded))
     }
 
+    /// Read a mapped value for one complete UTF-8 encoded key without
+    /// allocating or decoding its scalar sequence. Invalid UTF-8 is rejected
+    /// before the third-party byte map is consulted.
+    pub fn get_encoded_value(&self, encoded: &[u8]) -> Result<Option<V>, std::str::Utf8Error> {
+        std::str::from_utf8(encoded)?;
+        Ok(self.inner.get_bytes_value(encoded))
+    }
+
     pub fn remove_encoded(&self, encoded: &[u8]) -> Result<bool, std::str::Utf8Error> {
         std::str::from_utf8(encoded)?;
         Ok(self.inner.remove_bytes(encoded))
@@ -436,6 +444,11 @@ mod profile_tests {
         assert_eq!(dictionary.get_value("λ🎉"), Some(9));
         assert_eq!(dictionary.visible_entries().unwrap().len(), 2);
         assert!(dictionary.contains_encoded("λ🎉".as_bytes()).unwrap());
+        assert_eq!(
+            dictionary.get_encoded_value("λ🎉".as_bytes()).unwrap(),
+            Some(10)
+        );
+        assert!(dictionary.get_encoded_value(&[0x80]).is_err());
         assert!(dictionary.contains_encoded(&[0x80]).is_err());
         assert!(!dictionary.insert_encoded("λ🎉".as_bytes(), 10).unwrap());
         assert_eq!(dictionary.get_value("λ🎉"), Some(10));
