@@ -117,6 +117,14 @@ impl<V: crate::DictionaryValue> DoubleArrayTrieUleb128<V> {
         }
     }
 
+    /// Build from the shared logical ULEB profile sequence representation.
+    pub fn from_atom_sequences<I>(sequences: I) -> Self
+    where
+        I: IntoIterator<Item = crate::AtomSequence<crate::Uleb128Atom>>,
+    {
+        Self::from_sequences(sequences.into_iter().map(Into::into))
+    }
+
     /// Build a value-bearing DAT from complete canonical ULEB128 sequences.
     pub fn from_sequences_with_values<I>(entries: I) -> Self
     where
@@ -130,9 +138,30 @@ impl<V: crate::DictionaryValue> DoubleArrayTrieUleb128<V> {
         }
     }
 
+    /// Build a value-bearing DAT from shared logical ULEB profile sequences.
+    pub fn from_atom_sequences_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (crate::AtomSequence<crate::Uleb128Atom>, V)>,
+    {
+        Self::from_sequences_with_values(
+            entries
+                .into_iter()
+                .map(|(sequence, value)| (sequence.into(), value)),
+        )
+    }
+
     /// Test membership of one complete ULEB128 sequence.
     #[inline]
     pub fn contains(&self, sequence: &crate::Uleb128Sequence) -> bool {
+        self.inner.contains_bytes(&sequence.to_encoded())
+    }
+
+    /// Test membership of one shared logical ULEB profile sequence.
+    #[inline]
+    pub fn contains_atom_sequence(
+        &self,
+        sequence: &crate::AtomSequence<crate::Uleb128Atom>,
+    ) -> bool {
         self.inner.contains_bytes(&sequence.to_encoded())
     }
 
@@ -146,6 +175,15 @@ impl<V: crate::DictionaryValue> DoubleArrayTrieUleb128<V> {
     /// Read a mapped value for one complete ULEB128 sequence.
     #[inline]
     pub fn get_value(&self, sequence: &crate::Uleb128Sequence) -> Option<V> {
+        self.inner.get_bytes_value(&sequence.to_encoded())
+    }
+
+    /// Read a mapped value for one shared logical ULEB profile sequence.
+    #[inline]
+    pub fn get_atom_sequence_value(
+        &self,
+        sequence: &crate::AtomSequence<crate::Uleb128Atom>,
+    ) -> Option<V> {
         self.inner.get_bytes_value(&sequence.to_encoded())
     }
 
@@ -215,6 +253,20 @@ mod profile_tests {
         );
         assert!(dictionary.get_encoded_value(&[0x80]).is_err());
         assert_eq!(dictionary.visible_entries().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn uleb_wrapper_accepts_shared_profile_sequences() {
+        let sequence = crate::AtomSequence::<crate::Uleb128Atom>::from_atoms([
+            crate::Uleb128::from_u64(624_485),
+            crate::Uleb128::from_u64(1u64 << 63),
+        ]);
+        let dictionary = DoubleArrayTrieUleb128::<u16>::from_atom_sequences_with_values([(
+            sequence.clone(),
+            23,
+        )]);
+        assert!(dictionary.contains_atom_sequence(&sequence));
+        assert_eq!(dictionary.get_atom_sequence_value(&sequence), Some(23));
     }
 
     #[test]
