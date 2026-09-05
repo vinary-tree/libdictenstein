@@ -167,8 +167,8 @@ pub use collection::{
 pub use double_array_trie::{DoubleArrayTrieUleb128, DoubleArrayTrieUtf8};
 pub use dynamic_dawg::core::{DawgCore, DawgNode};
 pub use dynamic_dawg::{
-    DynamicDawgByteProfile, DynamicDawgCharProfile, DynamicDawgGeneric, DynamicDawgProfile,
-    DynamicDawgU32, DynamicDawgU64Profile, DynamicDawgUleb128, DynamicDawgUtf8,
+    DynamicDawgByteProfile, DynamicDawgCharProfile, DynamicDawgF64Bits, DynamicDawgGeneric,
+    DynamicDawgProfile, DynamicDawgU32, DynamicDawgU64Profile, DynamicDawgUleb128, DynamicDawgUtf8,
 };
 pub use interning::{
     InternedEntries, InternedF64BitsSequenceDictionary, InternedF64BitsSequenceDictionaryU64,
