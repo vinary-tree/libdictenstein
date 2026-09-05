@@ -54,6 +54,23 @@ class VariableWidthConformanceLedgerTest(unittest.TestCase):
         )
         self.assertTrue(
             all(
+                row["status"]
+                == (
+                    "registered"
+                    if row["coverage"] == "positive_and_negative"
+                    else "declared-awaiting-conformance"
+                )
+                for row in rows
+            )
+        )
+        self.assertTrue(
+            all((ROOT / row["acceptance_command"]).is_file() for row in rows)
+        )
+        self.assertTrue(
+            all((ROOT / row["evidence_artifact"]).is_file() for row in rows)
+        )
+        self.assertTrue(
+            all(
                 row["owner_layer"] == row["semantic_area"] and row["applicability"]
                 for row in rows
             )
