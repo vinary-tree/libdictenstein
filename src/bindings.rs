@@ -76,7 +76,7 @@ impl BindingValue {
 }
 
 /// Concrete unit domain selected for a binding-owned dictionary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 #[repr(u32)]
 pub enum BindingUnitDomain {
     /// Arbitrary byte sequences.
@@ -99,18 +99,59 @@ pub struct BindingProfileDescriptor {
 }
 
 impl BindingUnitDomain {
+    /// Stable ABI-independent domain identifier.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Byte => "bytes",
+            Self::UnicodeScalar => "unicode-scalar",
+            Self::U64 => "u64",
+        }
+    }
+
+    /// Map a logical profile to an ABI domain when the binding supports it.
+    ///
+    /// Variable-width UTF-8 and ULEB128 profiles intentionally return `None`:
+    /// the current ABI has no lossless term variant for those logical atoms.
+    pub const fn from_profile_kind(kind: crate::ProfileKind) -> Option<Self> {
+        match kind {
+            crate::ProfileKind::Bytes => Some(Self::Byte),
+            crate::ProfileKind::UnicodeScalar => Some(Self::UnicodeScalar),
+            crate::ProfileKind::U64 => Some(Self::U64),
+            crate::ProfileKind::Utf8
+            | crate::ProfileKind::U32
+            | crate::ProfileKind::F64Bits
+            | crate::ProfileKind::Uleb128 => None,
+        }
+    }
+
     /// Return stable profile metadata without relying on ABI or Rust names.
     pub const fn profile_descriptor(self) -> BindingProfileDescriptor {
-        let kind = match self {
+        BindingProfileDescriptor::for_kind(match self {
             Self::Byte => crate::ProfileKind::Bytes,
             Self::UnicodeScalar => crate::ProfileKind::UnicodeScalar,
             Self::U64 => crate::ProfileKind::U64,
-        };
-        BindingProfileDescriptor {
+        })
+    }
+}
+
+impl BindingProfileDescriptor {
+    /// Construct canonical metadata for any built-in logical profile.
+    pub const fn for_kind(kind: crate::ProfileKind) -> Self {
+        Self {
             kind,
             identity: kind.identity(),
             width_bytes: kind.width_bytes(),
         }
+    }
+
+    /// Construct canonical metadata from a compile-time atom profile.
+    pub const fn for_profile<P: crate::AtomProfile>() -> Self {
+        Self::for_kind(P::KIND)
+    }
+
+    /// Return the ABI domain when this profile can be represented losslessly.
+    pub const fn binding_domain(self) -> Option<BindingUnitDomain> {
+        BindingUnitDomain::from_profile_kind(self.kind)
     }
 }
 
@@ -3457,6 +3498,29 @@ mod tests {
                 (entry.term, entry.value)
             })
             .collect()
+    }
+
+    #[test]
+    fn binding_profile_metadata_is_canonical_and_fail_closed() {
+        assert_eq!(BindingUnitDomain::Byte.as_str(), "bytes");
+        assert_eq!(BindingUnitDomain::UnicodeScalar.as_str(), "unicode-scalar");
+        assert_eq!(BindingUnitDomain::U64.as_str(), "u64");
+        assert_eq!(
+            BindingProfileDescriptor::for_profile::<crate::Utf8>().kind,
+            crate::ProfileKind::Utf8
+        );
+        assert_eq!(
+            BindingProfileDescriptor::for_profile::<crate::Utf8>().binding_domain(),
+            None
+        );
+        assert_eq!(
+            BindingProfileDescriptor::for_profile::<crate::U64>().binding_domain(),
+            Some(BindingUnitDomain::U64)
+        );
+        assert_eq!(
+            BindingUnitDomain::from_profile_kind(crate::ProfileKind::Uleb128),
+            None
+        );
     }
 
     #[test]
