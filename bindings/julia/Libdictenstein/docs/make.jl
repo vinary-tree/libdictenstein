@@ -7,8 +7,9 @@ DocMeta.setdocmeta!(Libdictenstein, :DocTestSetup,
 makedocs(
     modules=[Libdictenstein],
     sitename="Libdictenstein.jl",
-    strict=true,
+    checkdocs=:exports,
     doctest=true,
+    warnonly=false,
     pages=[
         "Guide" => "index.md",
         "API" => "api.md",

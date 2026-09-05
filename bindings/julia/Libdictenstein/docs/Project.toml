@@ -1,6 +1,7 @@
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 Libdictenstein = "bafc558c-9074-40dc-b084-d73291979eb7"
+VinaryTreeInterop = "8d6503e5-4d65-4bd8-a8ee-293a0149584e"
 
 [compat]
 Documenter = "1"
