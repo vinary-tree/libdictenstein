@@ -357,10 +357,19 @@ pub struct InternedSequenceDictionary<K: Ord + Clone, V: DictionaryValue = ()> {
 /// only generation-bound fixed-width IDs.
 pub type InternedUlebSequenceDictionary<V = ()> = InternedSequenceDictionary<Uleb128, V>;
 
+/// Raw IEEE-754 binary64 bit patterns interned into the default `u32` ID
+/// carrier. Equality and identity remain bit-preserving, including signed
+/// zero and distinct NaN payloads.
+pub type InternedF64BitsSequenceDictionary<V = ()> = InternedSequenceDictionary<u64, V>;
+
 /// Arbitrary-width ULEB atoms interned to the explicit `u64` local carrier.
 /// This preserves the same capsule-local vocabulary and generation rules while
 /// allowing more than `u32::MAX` distinct symbols in one vocabulary.
 pub type InternedUlebSequenceDictionaryU64<V = ()> = InternedSequenceDictionaryU64<Uleb128, V>;
+
+/// Raw IEEE-754 binary64 bit patterns interned into the explicit `u64` ID
+/// carrier.
+pub type InternedF64BitsSequenceDictionaryU64<V = ()> = InternedSequenceDictionaryU64<u64, V>;
 
 /// Capability-limited read view of an interned ID-sequence backend.
 #[derive(Clone, Copy, Debug)]
@@ -1040,5 +1049,17 @@ mod tests {
                 actual: 18,
             })
         );
+    }
+
+    #[test]
+    fn f64_bits_alias_preserves_raw_identity() {
+        let dictionary = InternedF64BitsSequenceDictionary::<u16>::with_generation(3);
+        let atoms = [(-0.0f64).to_bits(), 0x7ff8_0000_0000_0042u64];
+        assert!(dictionary.insert(atoms, Some(11)).unwrap());
+        assert!(dictionary.contains(atoms).unwrap());
+        assert_eq!(dictionary.get_value(atoms).unwrap(), Some(11));
+        assert!(!dictionary
+            .contains([0u64, 0x7ff8_0000_0000_0042u64])
+            .unwrap());
     }
 }

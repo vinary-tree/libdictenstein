@@ -171,8 +171,9 @@ pub use dynamic_dawg::{
     DynamicDawgU32, DynamicDawgU64Profile, DynamicDawgUleb128, DynamicDawgUtf8,
 };
 pub use interning::{
-    InternedEntries, InternedId, InternedIdDictionaryView, InternedSequence,
-    InternedSequenceDictionary, InternedSequenceDictionaryU64, InternedUlebSequenceDictionary,
+    InternedEntries, InternedF64BitsSequenceDictionary, InternedF64BitsSequenceDictionaryU64,
+    InternedId, InternedIdDictionaryView, InternedSequence, InternedSequenceDictionary,
+    InternedSequenceDictionaryU64, InternedUlebSequenceDictionary,
     InternedUlebSequenceDictionaryU64, InternedVocabulary, InternedVocabularySnapshot,
     InterningError,
 };
@@ -1898,8 +1899,9 @@ pub mod prelude {
         DictionaryEntries, DictionaryEntriesIter, DictionaryEntry, DictionaryKeys,
         DictionaryLanguageEntries, DictionaryLanguageTerms, DictionaryNode, DictionaryTerms,
         DictionaryValue, DictionaryValues, ExactSnapshotEntryIterator, InsertError,
-        InternedEntries, InternedId, InternedIdDictionaryView, InternedSequence,
-        InternedSequenceDictionary, InternedSequenceDictionaryU64, InternedUlebSequenceDictionary,
+        InternedEntries, InternedF64BitsSequenceDictionary, InternedF64BitsSequenceDictionaryU64,
+        InternedId, InternedIdDictionaryView, InternedSequence, InternedSequenceDictionary,
+        InternedSequenceDictionaryU64, InternedUlebSequenceDictionary,
         InternedUlebSequenceDictionaryU64, InternedVocabulary, InternedVocabularySnapshot,
         MappedDictionary, MappedDictionaryNode, MutableDictionary, MutableMappedDictionary,
         SnapshotEntryIterator, SnapshotTermIterator, SyncStrategy, Uleb128Atom, Utf8,
