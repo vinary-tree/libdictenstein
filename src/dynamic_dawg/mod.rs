@@ -259,6 +259,11 @@ pub type DynamicDawgCharProfile<V = ()> = DynamicDawgGeneric<char, V>;
 /// Source-compatible alias for native 32-bit logical units.
 pub type DynamicDawgU32<V = ()> = DynamicDawgGeneric<u32, V>;
 
+/// Raw-bit IEEE-754 binary64 specialization. Values are supplied as `u64`
+/// bit patterns; use [`crate::F64Bits::total_cmp`] when semantic ordering is
+/// required rather than the storage order of the unsigned carrier.
+pub type DynamicDawgF64Bits<V = ()> = DynamicDawgGeneric<u64, V>;
+
 /// Source-compatible alias for native 64-bit logical units.
 pub type DynamicDawgU64Profile<V = ()> = DynamicDawgGeneric<u64, V>;
 
@@ -770,6 +775,19 @@ mod generic_tests {
         assert_eq!(dictionary.get_units_value(sequence.as_atoms()), Some(41));
         assert!(dictionary.remove_atom_sequence(&sequence));
         assert!(!dictionary.contains_units(&[7, 11]));
+    }
+
+    #[test]
+    fn f64_bits_alias_preserves_exact_payloads() {
+        let negative_zero = (-0.0f64).to_bits();
+        let nan_payload = 0x7ff8_0000_0000_0042u64;
+        let dictionary = super::DynamicDawgF64Bits::<u16>::new();
+        assert!(dictionary.insert_units_with_value(&[negative_zero, nan_payload], 7));
+        assert_eq!(
+            dictionary.get_units_value(&[negative_zero, nan_payload]),
+            Some(7)
+        );
+        assert!(!dictionary.contains_units(&[0, nan_payload]));
     }
 }
 

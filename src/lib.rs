@@ -1912,7 +1912,8 @@ pub mod prelude {
         DoubleArrayTrie, DoubleArrayTrieChar, DoubleArrayTrieUleb128, DoubleArrayTrieUtf8,
     };
     pub use crate::dynamic_dawg::{
-        DynamicDawg, DynamicDawgChar, DynamicDawgU64, DynamicDawgUleb128, DynamicDawgUtf8,
+        DynamicDawg, DynamicDawgChar, DynamicDawgF64Bits, DynamicDawgU64, DynamicDawgUleb128,
+        DynamicDawgUtf8,
     };
     #[cfg(feature = "pathmap-backend")]
     pub use crate::pathmap::{PathMapDictionaryUleb128, PathMapDictionaryUtf8};
