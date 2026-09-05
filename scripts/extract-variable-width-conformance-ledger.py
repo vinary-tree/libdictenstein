@@ -20,6 +20,14 @@ APPLICABILITY = {
     "family_refinement": "all dictionary families and applicable profile specializations",
 }
 
+STACK_SAFETY = "iterative-or-heap-backed traversal; no library workload budget"
+PERFORMANCE = {
+    "codec": "linear in consumed input",
+    "interning": "linear in atoms plus vocabulary/index operations",
+    "family_refinement": "linear in logical units plus visited result structure",
+}
+ACCEPTANCE_COMMAND = "scripts/verify-variable-width-formal.sh"
+
 
 def load_module(path: Path, name: str):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -75,7 +83,14 @@ def build(root: Path) -> list[dict[str, object]]:
                 "declaration": declaration["declaration"],
                 "positive_tests": positive,
                 "negative_controls": controls,
+                "assumptions": "finite input; explicit profile metadata",
+                "trust_boundary": f"{declaration['semantic_area']}: formal model to implementation boundary",
+                "stack_safety": STACK_SAFETY,
+                "performance": PERFORMANCE[declaration["semantic_area"]],
+                "acceptance_command": ACCEPTANCE_COMMAND,
+                "evidence_artifact": declaration["source_path"],
                 "coverage": coverage,
+                "status": "registered" if coverage == "positive_and_negative" else "declared-awaiting-conformance",
             }
         )
     return rows
