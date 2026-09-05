@@ -39,6 +39,16 @@ impl<V: crate::DictionaryValue> Default for DoubleArrayTrieUtf8<V> {
 }
 
 impl<V: crate::DictionaryValue> DoubleArrayTrieUtf8<V> {
+    /// Canonical logical profile represented by this boundary.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<crate::Utf8>()
+    }
+
+    /// Topology family represented by this boundary.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::DoubleArrayTrie
+    }
+
     pub fn new() -> Self {
         Self {
             inner: DoubleArrayTrie::new(),
@@ -149,6 +159,16 @@ impl<V: crate::DictionaryValue> DoubleArrayTrieUtf8<V> {
 }
 
 impl<V: crate::DictionaryValue> DoubleArrayTrieUleb128<V> {
+    /// Canonical logical profile represented by this boundary.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<crate::Uleb128Atom>()
+    }
+
+    /// Topology family represented by this boundary.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::DoubleArrayTrie
+    }
+
     /// Construct an empty ULEB128 DAT.
     pub fn new() -> Self {
         Self {

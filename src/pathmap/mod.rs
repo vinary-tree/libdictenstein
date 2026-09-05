@@ -46,6 +46,16 @@ impl<V: crate::DictionaryValue> Default for PathMapDictionaryUtf8<V> {
 }
 
 impl<V: crate::DictionaryValue> PathMapDictionaryUtf8<V> {
+    /// Canonical logical profile represented by this boundary.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<crate::Utf8>()
+    }
+
+    /// Topology family represented by this boundary.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::PathMap
+    }
+
     pub fn new() -> Self {
         Self {
             inner: PathMapDictionary::new(),
@@ -193,6 +203,16 @@ impl<V: crate::DictionaryValue> PathMapDictionaryUtf8<V> {
 }
 
 impl<V: crate::DictionaryValue> PathMapDictionaryUleb128<V> {
+    /// Canonical logical profile represented by this boundary.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<crate::Uleb128Atom>()
+    }
+
+    /// Topology family represented by this boundary.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::PathMap
+    }
+
     /// Construct an empty ULEB128 PathMap adapter.
     pub fn new() -> Self {
         Self {

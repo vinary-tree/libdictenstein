@@ -1473,6 +1473,37 @@ mod tests {
     }
 
     #[test]
+    fn specialized_profile_wrappers_expose_direct_metadata() {
+        assert_eq!(
+            DynamicDawgUleb128::<()>::profile_descriptor().kind,
+            ProfileKind::Uleb128
+        );
+        assert_eq!(
+            DynamicDawgUtf8::<()>::dictionary_family(),
+            DictionaryFamily::DynamicDawg
+        );
+        assert_eq!(
+            DoubleArrayTrieUleb128::<()>::profile_descriptor().kind,
+            ProfileKind::Uleb128
+        );
+        assert_eq!(
+            DoubleArrayTrieUtf8::<()>::dictionary_family(),
+            DictionaryFamily::DoubleArrayTrie
+        );
+        #[cfg(feature = "pathmap-backend")]
+        {
+            assert_eq!(
+                PathMapDictionaryUleb128::<()>::profile_descriptor().kind,
+                ProfileKind::Uleb128
+            );
+            assert_eq!(
+                PathMapDictionaryUtf8::<()>::dictionary_family(),
+                DictionaryFamily::PathMap
+            );
+        }
+    }
+
+    #[test]
     fn backend_profile_descriptor_uses_canonical_identity() {
         let bytes = DictionaryBackend::DynamicDawg.profile_descriptor();
         assert_eq!(bytes.kind, ProfileKind::Bytes);
