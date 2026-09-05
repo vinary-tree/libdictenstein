@@ -12,6 +12,7 @@ runtime_root="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 artifact_root="${VARIABLE_WIDTH_FORMAL_ARTIFACT_ROOT:-$runtime_root/pgmcp/libdictenstein-variable-width-formal}"
 log_root="$artifact_root/logs"
 state_root="$artifact_root/tlc-state-spaces"
+tmp_root="${VARIABLE_WIDTH_FORMAL_TMPDIR:-$artifact_root/tmp}"
 
 command_timeout_seconds="${VARIABLE_WIDTH_FORMAL_TIMEOUT_SECONDS:-7200}"
 tlc_java_options="${VARIABLE_WIDTH_TLC_JAVA_OPTIONS:--Xms64m -Xmx512m -XX:+UseParallelGC}"
@@ -23,6 +24,10 @@ run_number=0
 last_log=""
 
 mkdir -p "$log_root" "$state_root"
+mkdir -p "$tmp_root"
+# TLC and its standard modules honor TMPDIR.  Keep their generated files on
+# the managed runtime filesystem as well, rather than allowing /tmp tmpfs use.
+export TMPDIR="$tmp_root"
 
 if [[ -z "$coqc_bin" || -z "$coqchk_bin" ]]; then
   echo 'ERROR: coqc and coqchk must be available before running the formal gate' >&2
