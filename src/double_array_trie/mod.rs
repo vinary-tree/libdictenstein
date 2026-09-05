@@ -68,13 +68,56 @@ impl<V: crate::DictionaryValue> DoubleArrayTrieUtf8<V> {
                 .collect(),
         }
     }
+
+    /// Build from shared logical UTF-8 scalar profile sequences.
+    pub fn from_atom_sequences<I>(sequences: I) -> Self
+    where
+        I: IntoIterator<Item = crate::AtomSequence<crate::Utf8>>,
+    {
+        Self {
+            inner: sequences
+                .into_iter()
+                .map(|sequence| sequence.to_encoded())
+                .collect(),
+        }
+    }
+
+    /// Build a value-bearing DAT from shared logical UTF-8 scalar profile
+    /// sequences.
+    pub fn from_atom_sequences_with_values<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (crate::AtomSequence<crate::Utf8>, V)>,
+    {
+        Self {
+            inner: entries
+                .into_iter()
+                .map(|(sequence, value)| (sequence.to_encoded(), value))
+                .collect(),
+        }
+    }
     #[inline]
     pub fn contains(&self, term: &str) -> bool {
         self.inner.contains_bytes(term.as_bytes())
     }
+
+    /// Test membership of one shared logical UTF-8 scalar profile sequence.
+    #[inline]
+    pub fn contains_atom_sequence(&self, sequence: &crate::AtomSequence<crate::Utf8>) -> bool {
+        self.inner.contains_bytes(&sequence.to_encoded())
+    }
     #[inline]
     pub fn get_value(&self, term: &str) -> Option<V> {
         self.inner.get_bytes_value(term.as_bytes())
+    }
+
+    /// Read a mapped value for one shared logical UTF-8 scalar profile
+    /// sequence.
+    #[inline]
+    pub fn get_atom_sequence_value(
+        &self,
+        sequence: &crate::AtomSequence<crate::Utf8>,
+    ) -> Option<V> {
+        self.inner.get_bytes_value(&sequence.to_encoded())
     }
     #[inline]
     pub fn term_count(&self) -> usize {
@@ -267,6 +310,15 @@ mod profile_tests {
         )]);
         assert!(dictionary.contains_atom_sequence(&sequence));
         assert_eq!(dictionary.get_atom_sequence_value(&sequence), Some(23));
+    }
+
+    #[test]
+    fn utf8_wrapper_accepts_shared_profile_sequences() {
+        let sequence = crate::AtomSequence::<crate::Utf8>::from_atoms(['λ', '🎉']);
+        let dictionary =
+            DoubleArrayTrieUtf8::<u16>::from_atom_sequences_with_values([(sequence.clone(), 29)]);
+        assert!(dictionary.contains_atom_sequence(&sequence));
+        assert_eq!(dictionary.get_atom_sequence_value(&sequence), Some(29));
     }
 
     #[test]
