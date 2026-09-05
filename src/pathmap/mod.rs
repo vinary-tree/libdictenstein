@@ -123,6 +123,14 @@ impl<V: crate::DictionaryValue> PathMapDictionaryUtf8<V> {
         self.inner
             .insert_bytes_with_value(&sequence.to_encoded(), value)
     }
+
+    /// Validate and insert one complete UTF-8 encoded key without coercing it
+    /// through an intermediate string allocation.
+    pub fn insert_encoded(&self, encoded: &[u8], value: V) -> Result<bool, std::str::Utf8Error> {
+        std::str::from_utf8(encoded)?;
+        Ok(self.inner.insert_bytes_with_value(encoded, value))
+    }
+
     #[inline]
     pub fn contains(&self, term: &str) -> bool {
         self.inner.contains_bytes(term.as_bytes())
@@ -429,6 +437,9 @@ mod profile_tests {
         assert_eq!(dictionary.visible_entries().unwrap().len(), 2);
         assert!(dictionary.contains_encoded("λ🎉".as_bytes()).unwrap());
         assert!(dictionary.contains_encoded(&[0x80]).is_err());
+        assert!(!dictionary.insert_encoded("λ🎉".as_bytes(), 10).unwrap());
+        assert_eq!(dictionary.get_value("λ🎉"), Some(10));
+        assert!(dictionary.insert_encoded(&[0x80], 1).is_err());
         assert!(!dictionary.is_empty());
         assert!(dictionary.remove_encoded("λ🎉".as_bytes()).unwrap());
         assert!(!dictionary.contains("λ🎉"));
