@@ -264,7 +264,7 @@ impl<P: AtomProfile> AtomSequence<P> {
 
     /// Encode the sequence in logical order.
     pub fn to_encoded(&self) -> Vec<u8> {
-        let mut encoded = Vec::new();
+        let mut encoded = Vec::with_capacity(self.encoded_len());
         for atom in &self.atoms {
             encoded.extend_from_slice(&P::encode(atom.clone()));
         }
