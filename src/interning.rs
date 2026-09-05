@@ -130,6 +130,13 @@ pub struct InternedVocabularySnapshot<K> {
 }
 
 impl<K> InternedVocabularySnapshot<K> {
+    /// Canonical profile metadata for the symbols captured by this snapshot.
+    pub const fn profile_descriptor<P: crate::AtomProfile<Atom = K>>(
+        &self,
+    ) -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<P>()
+    }
+
     /// Generation identity bound to every ID in this snapshot.
     #[inline]
     pub const fn generation(&self) -> u64 {
@@ -200,6 +207,13 @@ impl<K: Ord + Clone> Default for InternedVocabulary<K> {
 }
 
 impl<K: Ord + Clone> InternedVocabulary<K> {
+    /// Canonical profile metadata for this vocabulary's symbol domain.
+    pub const fn profile_descriptor<P: crate::AtomProfile<Atom = K>>(
+        &self,
+    ) -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<P>()
+    }
+
     /// Construct an empty vocabulary.
     #[inline]
     pub fn new() -> Self {
@@ -459,6 +473,13 @@ impl<K: Ord + Clone, V: DictionaryValue> Default for InternedSequenceDictionaryU
 }
 
 impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionaryU64<K, V> {
+    /// Canonical profile metadata for the external symbol domain.
+    pub const fn profile_descriptor<P: crate::AtomProfile<Atom = K>>(
+        &self,
+    ) -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<P>()
+    }
+
     /// Construct an empty coordinated dictionary with generation zero.
     pub fn new() -> Self {
         Self::with_generation(0)
@@ -676,6 +697,13 @@ impl<K: Ord + Clone, V: DictionaryValue> Default for InternedSequenceDictionary<
 }
 
 impl<K: Ord + Clone, V: DictionaryValue> InternedSequenceDictionary<K, V> {
+    /// Canonical profile metadata for the external symbol domain.
+    pub const fn profile_descriptor<P: crate::AtomProfile<Atom = K>>(
+        &self,
+    ) -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<P>()
+    }
+
     /// Construct an empty coordinated dictionary with generation zero.
     pub fn new() -> Self {
         Self::with_generation(0)
@@ -940,6 +968,39 @@ mod coordinated_tests {
         InternedUlebSequenceDictionary, InternedUlebSequenceDictionaryU64,
     };
     use crate::Uleb128;
+
+    #[test]
+    fn profile_metadata_is_shared_by_vocabulary_and_id_dictionaries() {
+        let vocabulary = super::InternedVocabulary::<Uleb128>::with_generation(11);
+        let snapshot = vocabulary.snapshot();
+        let dictionary = InternedUlebSequenceDictionary::<()>::with_generation(11);
+        let wide_dictionary = InternedUlebSequenceDictionaryU64::<()>::with_generation(11);
+
+        assert_eq!(
+            vocabulary.profile_descriptor::<crate::Uleb128Atom>().kind,
+            crate::ProfileKind::Uleb128
+        );
+        assert_eq!(
+            snapshot
+                .profile_descriptor::<crate::Uleb128Atom>()
+                .width_bytes,
+            None
+        );
+        assert_eq!(
+            dictionary
+                .profile_descriptor::<crate::Uleb128Atom>()
+                .identity,
+            crate::ProfileKind::Uleb128.identity()
+        );
+        assert_eq!(
+            wide_dictionary
+                .profile_descriptor::<crate::Uleb128Atom>()
+                .kind,
+            crate::ProfileKind::Uleb128
+        );
+        assert_eq!(dictionary.generation(), Ok(11));
+        assert_eq!(wide_dictionary.generation(), Ok(11));
+    }
 
     #[test]
     fn coordinates_atoms_and_id_sequences() {
