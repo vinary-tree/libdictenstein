@@ -1510,6 +1510,19 @@ mod tests {
             DoubleArrayTrieChar::<()>::profile_descriptor().kind,
             ProfileKind::UnicodeScalar
         );
+        assert_eq!(
+            SuffixAutomaton::<()>::profile_descriptor().kind,
+            ProfileKind::Bytes
+        );
+        assert_eq!(
+            SuffixAutomatonChar::<()>::profile_descriptor().kind,
+            ProfileKind::UnicodeScalar
+        );
+        assert_eq!(Scdawg::<()>::profile_descriptor().kind, ProfileKind::Bytes);
+        assert_eq!(
+            ScdawgChar::<()>::profile_descriptor().kind,
+            ProfileKind::UnicodeScalar
+        );
         #[cfg(feature = "pathmap-backend")]
         {
             assert_eq!(

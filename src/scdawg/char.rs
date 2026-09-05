@@ -207,6 +207,16 @@ impl<V: DictionaryValue> Default for ScdawgChar<V> {
 }
 
 impl<V: DictionaryValue> ScdawgChar<V> {
+    /// Canonical logical profile represented by this Unicode SCDAWG.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<crate::UnicodeScalar>()
+    }
+
+    /// Topology family represented by this dictionary.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::Scdawg
+    }
+
     #[inline]
     fn from_inner(inner: ScdawgCharInner<V>) -> Self {
         Self {

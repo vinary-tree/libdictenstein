@@ -313,6 +313,16 @@ impl<V: DictionaryValue> ExactSizeIterator for SuffixAutomatonCharEntryIterator<
 impl<V: DictionaryValue> FusedIterator for SuffixAutomatonCharEntryIterator<V> {}
 
 impl<V: DictionaryValue> SuffixAutomatonChar<V> {
+    /// Canonical logical profile represented by this Unicode suffix automaton.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<crate::UnicodeScalar>()
+    }
+
+    /// Topology family represented by this dictionary.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::SuffixAutomaton
+    }
+
     #[inline]
     fn from_inner(inner: SuffixAutomatonCharInner<V>) -> Self {
         Self {

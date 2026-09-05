@@ -146,6 +146,16 @@ impl<V: DictionaryValue> Default for Scdawg<V> {
 }
 
 impl<V: DictionaryValue> Scdawg<V> {
+    /// Canonical logical profile represented by this byte SCDAWG.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<crate::Bytes>()
+    }
+
+    /// Topology family represented by this dictionary.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::Scdawg
+    }
+
     #[inline]
     fn from_inner(inner: ScdawgInner<V>) -> Self {
         Self {

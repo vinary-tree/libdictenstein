@@ -273,6 +273,16 @@ impl<V: DictionaryValue> ExactSizeIterator for SuffixAutomatonEntryIterator<V> {
 impl<V: DictionaryValue> FusedIterator for SuffixAutomatonEntryIterator<V> {}
 
 impl<V: DictionaryValue> SuffixAutomaton<V> {
+    /// Canonical logical profile represented by this byte suffix automaton.
+    pub const fn profile_descriptor() -> crate::factory::BackendProfileDescriptor {
+        crate::factory::BackendProfileDescriptor::from_profile::<crate::Bytes>()
+    }
+
+    /// Topology family represented by this dictionary.
+    pub const fn dictionary_family() -> crate::factory::DictionaryFamily {
+        crate::factory::DictionaryFamily::SuffixAutomaton
+    }
+
     #[inline]
     fn from_inner(inner: SuffixAutomatonInner<V>) -> Self {
         Self {
