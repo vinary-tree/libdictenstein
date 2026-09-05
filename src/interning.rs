@@ -165,6 +165,15 @@ impl<K> InternedVocabularySnapshot<K> {
             .map_or(Ok(()), |id| Err(InterningError::UnknownId(id)))
     }
 
+    /// Resolve IDs without allocating; an unknown ID is represented as
+    /// `None` and can be handled by the caller's fail-closed policy.
+    pub fn resolve_iter<'a>(
+        &'a self,
+        sequence: &'a InternedSequence,
+    ) -> impl Iterator<Item = Option<&'a K>> {
+        sequence.ids.iter().map(|&id| self.value(id))
+    }
+
     /// Iterate stable ID/value pairs in ID order.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = (InternedId, &K)> {
@@ -1020,6 +1029,10 @@ mod tests {
         assert_eq!(vocabulary.len(), 2);
         let sequence = InternedSequence::from_ids_with_generation(17, [first]);
         assert_eq!(snapshot.validate_sequence(&sequence), Ok(()));
+        assert_eq!(
+            snapshot.resolve_iter(&sequence).collect::<Vec<_>>(),
+            vec![Some(&Uleb128::from_u64(3))]
+        );
         assert_eq!(
             snapshot.validate_sequence(&InternedSequence::from_ids_with_generation(18, [first])),
             Err(InterningError::GenerationMismatch {
