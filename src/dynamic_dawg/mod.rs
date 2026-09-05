@@ -582,6 +582,13 @@ impl<V: crate::DictionaryValue> DynamicDawgUleb128<V> {
         Ok(self.inner.get_units_value(encoded))
     }
 
+    /// Remove one complete canonical encoded ULEB128 sequence without
+    /// materializing its arbitrary-width atoms.
+    pub fn remove_encoded(&self, encoded: &[u8]) -> Result<bool, crate::Uleb128Error> {
+        crate::validate_uleb128_sequence(encoded)?;
+        Ok(self.inner.remove_units(encoded))
+    }
+
     /// Remove one complete ULEB128 sequence.
     #[inline]
     pub fn remove(&self, sequence: &crate::Uleb128Sequence) -> bool {
@@ -631,6 +638,10 @@ mod generic_tests {
         assert!(dictionary.insert_encoded(&encoded, 10).is_ok());
         assert_eq!(dictionary.get_encoded_value(&encoded).unwrap(), Some(10));
         assert!(dictionary.insert_encoded(&[0x80], 1).is_err());
+        assert!(dictionary.remove_encoded(&encoded).unwrap());
+        assert!(!dictionary.contains_encoded(&encoded).unwrap());
+        assert!(!dictionary.remove_encoded(&encoded).unwrap());
+        assert!(dictionary.insert_encoded(&encoded, 10).unwrap());
         let entries = dictionary.visible_entries().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].0, sequence);
