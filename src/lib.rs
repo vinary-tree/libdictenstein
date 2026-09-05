@@ -1895,7 +1895,9 @@ pub trait MutableMappedDictionary: MappedDictionary {
 
 /// Prelude module for convenient imports.
 pub mod prelude {
-    pub use crate::factory::{Uleb128Backend, Uleb128DictionaryContainer};
+    pub use crate::factory::{
+        DictionaryFamily, DictionarySpec, Uleb128Backend, Uleb128DictionaryContainer,
+    };
     pub use crate::{
         BijectiveDictionary, BijectiveMap, CharUnit, CompactableDictionary, DictZipper, Dictionary,
         DictionaryEntries, DictionaryEntriesIter, DictionaryEntry, DictionaryKeys,

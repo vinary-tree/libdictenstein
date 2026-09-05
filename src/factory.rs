@@ -44,6 +44,70 @@ use super::suffix_automaton::SuffixAutomaton;
 use super::{Dictionary, SyncStrategy};
 use crate::{ProfileKind, VariableWidthProfile};
 use crate::{Uleb128Error, Uleb128Sequence};
+use core::marker::PhantomData;
+
+/// Dictionary topology independent of the logical atom representation.
+///
+/// This is deliberately smaller than [`DictionaryBackend`]: the latter keeps
+/// legacy backend/profile spellings for source compatibility, while this type
+/// describes the storage family that can be paired with a profile descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DictionaryFamily {
+    /// Mutable directed acyclic word graph.
+    DynamicDawg,
+    /// Immutable double-array trie.
+    DoubleArrayTrie,
+    /// Third-party PathMap adapter.
+    PathMap,
+    /// Dynamic suffix automaton.
+    SuffixAutomaton,
+    /// Batch-built compact suffix DAWG.
+    Scdawg,
+    /// Persistent adaptive radix trie.
+    PersistentArTrie,
+}
+
+/// Compile-time profile selection for topology-oriented factory code.
+///
+/// `DictionarySpec<P>` carries no dictionary storage.  It is a zero-sized
+/// declaration that keeps the topology and logical profile as separate axes,
+/// allowing callers to validate or dispatch a construction request before
+/// allocating a concrete backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DictionarySpec<P: crate::AtomProfile> {
+    family: DictionaryFamily,
+    marker: PhantomData<P>,
+}
+
+impl<P: crate::AtomProfile> DictionarySpec<P> {
+    /// Declare a dictionary family using profile `P`.
+    pub const fn new(family: DictionaryFamily) -> Self {
+        Self {
+            family,
+            marker: PhantomData,
+        }
+    }
+
+    /// Return the selected topology family.
+    pub const fn family(self) -> DictionaryFamily {
+        self.family
+    }
+
+    /// Return the stable logical profile identity carried by `P`.
+    pub const fn profile(self) -> VariableWidthProfile {
+        P::PROFILE
+    }
+
+    /// Return the built-in profile kind carried by `P`.
+    pub const fn profile_kind(self) -> ProfileKind {
+        P::KIND
+    }
+
+    /// Return the fixed atom width, or `None` for variable-width profiles.
+    pub const fn width_bytes(self) -> Option<usize> {
+        P::WIDTH_BYTES
+    }
+}
 
 /// Dictionary backend types.
 ///
@@ -84,6 +148,25 @@ pub enum DictionaryBackend {
     Scdawg,
     /// Compact Suffix DAWG, character (Unicode) variant.
     ScdawgChar,
+}
+
+impl DictionaryBackend {
+    /// Return the topology family represented by this compatibility selector.
+    pub const fn family(self) -> DictionaryFamily {
+        match self {
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap | Self::PathMapChar | Self::PathMapUtf8 => DictionaryFamily::PathMap,
+            Self::DoubleArrayTrie | Self::DoubleArrayTrieChar | Self::DoubleArrayTrieUtf8 => {
+                DictionaryFamily::DoubleArrayTrie
+            }
+            Self::DynamicDawg
+            | Self::DynamicDawgChar
+            | Self::DynamicDawgUtf8
+            | Self::DynamicDawgU64 => DictionaryFamily::DynamicDawg,
+            Self::SuffixAutomaton | Self::SuffixAutomatonChar => DictionaryFamily::SuffixAutomaton,
+            Self::Scdawg | Self::ScdawgChar => DictionaryFamily::Scdawg,
+        }
+    }
 }
 
 /// Typed factory selectors for canonical ULEB128 sequence dictionaries.
@@ -1094,6 +1177,26 @@ mod tests {
         assert_eq!(
             DictionaryBackend::DynamicDawgU64.capabilities().key_unit,
             BackendKeyUnit::U64
+        );
+    }
+
+    #[test]
+    fn topology_and_profile_are_independent_factory_axes() {
+        let spec = DictionarySpec::<crate::Uleb128Atom>::new(DictionaryFamily::DynamicDawg);
+        assert_eq!(spec.family(), DictionaryFamily::DynamicDawg);
+        assert_eq!(spec.profile_kind(), ProfileKind::Uleb128);
+        assert_eq!(spec.width_bytes(), None);
+        assert_eq!(
+            DictionaryBackend::DynamicDawgChar.family(),
+            DictionaryFamily::DynamicDawg
+        );
+        assert_eq!(
+            DictionaryBackend::DoubleArrayTrieUtf8.family(),
+            DictionaryFamily::DoubleArrayTrie
+        );
+        assert_eq!(
+            DictionaryBackend::SuffixAutomaton.family(),
+            DictionaryFamily::SuffixAutomaton
         );
     }
 
