@@ -269,6 +269,9 @@ pub struct SuffixAutomatonChar<V: DictionaryValue = ()> {
     pub(crate) inner: LockFreeSuffixAutomaton<char, V>,
 }
 
+/// UTF-8-profile spelling for the in-memory Unicode-scalar suffix automaton.
+pub type SuffixAutomatonUtf8<V = ()> = SuffixAutomatonChar<V>;
+
 /// Snapshot iterator over explicitly inserted Unicode source records.
 pub struct SuffixAutomatonCharEntryIterator<V: DictionaryValue = ()> {
     inner: Arc<SuffixAutomatonCharInner<V>>,

@@ -1914,13 +1914,14 @@ pub mod prelude {
     };
     #[cfg(feature = "pathmap-backend")]
     pub use crate::pathmap::{PathMapDictionaryUleb128, PathMapDictionaryUtf8};
-    pub use crate::scdawg::{Scdawg, ScdawgChar};
-    pub use crate::suffix_automaton::{SuffixAutomaton, SuffixAutomatonChar};
+    pub use crate::scdawg::{Scdawg, ScdawgChar, ScdawgUtf8};
+    pub use crate::suffix_automaton::{SuffixAutomaton, SuffixAutomatonChar, SuffixAutomatonUtf8};
 
     #[cfg(feature = "persistent-artrie")]
     pub use crate::persistent_artrie::{
         PersistentARTrieU64, PersistentARTrieUleb128, PersistentARTrieUtf8, PersistentScdawg,
-        PersistentScdawgChar, PersistentSuffixAutomaton, PersistentSuffixAutomatonChar,
-        PersistentSuffixTree, PersistentSuffixTreeChar,
+        PersistentScdawgChar, PersistentScdawgUtf8, PersistentSuffixAutomaton,
+        PersistentSuffixAutomatonChar, PersistentSuffixAutomatonUtf8, PersistentSuffixTree,
+        PersistentSuffixTreeChar, PersistentSuffixTreeUtf8,
     };
 }

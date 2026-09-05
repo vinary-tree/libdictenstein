@@ -13,7 +13,7 @@ pub(crate) mod lockfree;
 pub mod zipper;
 
 pub use ascii::{SuffixAutomaton, SuffixNodeHandle};
-pub use char::{SuffixAutomatonChar, SuffixNodeCharHandle};
+pub use char::{SuffixAutomatonChar, SuffixAutomatonUtf8, SuffixNodeCharHandle};
 pub use char_zipper::SuffixAutomatonCharZipper;
 pub use zipper::SuffixAutomatonZipper;
 
