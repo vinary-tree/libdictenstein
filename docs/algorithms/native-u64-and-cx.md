@@ -380,6 +380,91 @@ value clone and output-path allocation occur only when `next()` yields that term
 so allocation or user-defined `V::clone` failure timing is lazy rather than
 constructor-time.
 
+### 5.3 Shared-prefix mutation measurements
+
+The `persistent_artrie_u64_shared_prefix_mutation` Criterion group measures new
+sibling insertion and existing-key value replacement separately. For shared-prefix
+depth `d`, both keys contain the same first `d` units and one distinct final label;
+the benchmark identifier records both depth and total key length. Cases cover
+depths 0, 1, 8, 15, 16, 17, 64, 256, 1,024, and 50,000. These are measurement
+points, not limits on admitted keys. The 15/16/17 cases exercise the transition
+around the insertion zipper's sixteen inline parent slots.
+
+Each sample uses a fresh populated trie. `iter_batched_ref` with
+`BatchSize::PerIteration` excludes initial population and final trie destruction
+from timing. An insertion adds the missing sibling with value 2; an upsert changes
+that sibling's value from 1 to 2. Separate untimed assertions check the return
+value, both stored values, and the two-term count. Report elapsed time per
+operation; the throughput annotation counts key units, not operations. The
+measurement includes path copying and any reclamation inside the mutation, so it
+does **not** isolate explicit-frame overhead or measure frame allocation bytes.
+
+With `PART_U64_FIXED_SAMPLES` unset, smoke-test all twenty cases without collecting
+performance samples:
+
+```bash
+cargo test --locked --offline --features persistent-artrie \
+  --bench persistent_artrie_u64_native_benchmarks -- \
+  persistent_artrie_u64_shared_prefix_mutation --test
+```
+
+For measurements, use `cargo bench` with the same target and filter, omitting
+`--test`. Use a disk-backed `TMPDIR` and `CARGO_TARGET_DIR`, CPU affinity, identical
+source-bound harnesses and active dependency versions, and independent baseline /
+treatment processes in both orders. Retain raw samples and confidence intervals;
+within-process samples are not independent experimental repetitions. Results for
+the new cases are reported separately in section 5.4. A
+historical implementation that cannot admit a depth on its ordinary stack has no
+valid timing at that depth: report that limitation and treatment-only timing,
+without a fabricated ratio or stack-size override. Criterion filters skip the
+new cases' setup, although older groups still perform some population before
+filtering their individual cases.
+
+### 5.4 September 10 qualification
+
+The 2026-09-10 comparison used historical source
+`6a1b267a60fe9c445a0c8c7c8136e6dd40aedbf5` and current source
+`0c8b1da62c97b4b478c27c3ab552b6694cfbf226`, with identical benchmark source
+SHA-256 `4a540973d26d3a516ed8acc2ae4e2d9877919a9da9a85879637fa1ea76a265d4`.
+Both isolated snapshots used explicit Rust 1.95.0, release/LTO settings,
+`--no-default-features --features persistent-artrie,parking_lot`, and Criterion
+0.8.2. Only the staged historical lockfile changed: lru 0.18.1 was aligned to
+0.18.2. Original working-tree manifests and lockfiles were preserved. Rustix's
+normal-versus-dev dependency role still differs between source versions; this is
+a whole-tree comparison, not attribution solely to the stack-safety repair.
+
+Processes ran on CPU 2 of the Threadripper PRO 5975WX, with the performance
+governor, an 8 GiB memory cap, and the ordinary 8 MiB main-thread stack. The
+configured maximum CPU frequency was 4,561,833 kHz; actual frequency was not
+locked. No compilation ran concurrently with the admitted measurements. Each
+case used 51 within-process samples, a one-second warmup and a two-second target
+measurement time, extended by Criterion when necessary. Pair A ran historical
+then current; pair B reversed that order.
+
+| Workload | Historical A | Current A | Historical B | Current B |
+|---|---:|---:|---:|---:|
+| Insert batch of 8,192 twelve-unit keys | 399.59 ms | 214.77 ms | 398.17 ms | 215.56 ms |
+
+The short-key batch improved by 46.25% and 45.86% in the two orders. Across all
+nineteen paired cases, current point estimates were 13.38%–46.25% lower; no
+regression was observed. The treatment-only 50,000-unit shared-prefix cases
+(50,001-unit keys) measured **8.819 ms per insertion**, with a 95% within-process
+interval of 8.751–8.888 ms, and **11.905 ms per upsert**, with an interval of
+11.761–12.066 ms. There is no historical timing or ratio at that depth. These
+intervals do not describe uncertainty across independent processes and do not
+establish a universal performance bound or isolate frame allocation cost.
+
+The retained `performance-summary.json` contains all 78 admitted datasets and
+the hashes of their raw samples, estimates and case identities; its SHA-256 is
+`b6c13a6f85e03d7390bd702f0c4c88f30759a0e2b7ac3d6e1f70af1e39bf5790`.
+The source-bound execution log has SHA-256
+`1e1ef0963984e49992af3a52dbb9f592940406b18a28cd348c8e4ba9961deec5`.
+Both are recorded with pgmcp item
+`libdictenstein-native-u64-deep-path-stack-safety`, criterion 849. Only the five
+`pinned_*` process labels are admitted; an earlier interrupted compiler-mismatched
+run is explicitly excluded. Local execution evidence is not itself trusted
+tracker acceptance.
+
 ---
 
 ## 6. Usage

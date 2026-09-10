@@ -651,6 +651,68 @@ fn bench_insert(c: &mut Criterion) {
     group.finish();
 }
 
+/// Measure complete mutations, including path copying and reclamation inside
+/// the operation, but excluding initial population and final trie destruction.
+/// Depth is the shared-prefix length; each key contains one additional label.
+/// The 15/16/17 cases straddle the borrowed zipper's inline-parent capacity.
+fn bench_shared_prefix_mutation(c: &mut Criterion) {
+    const DEPTHS: &[usize] = &[0, 1, 8, 15, 16, 17, 64, 256, 1_024, 50_000];
+    let mut group = c.benchmark_group("persistent_artrie_u64_shared_prefix_mutation");
+    group.sample_size(FIXED_SAMPLES);
+
+    for &depth in DEPTHS {
+        let mut existing = Vec::with_capacity(depth + 1);
+        existing
+            .extend((0..depth).map(|index| {
+                u64::try_from(index).expect("shared-prefix benchmark index fits u64")
+            }));
+        existing.push(0);
+        let mut target = existing.clone();
+        target[depth] = 1;
+        let case = format!("depth_{depth}_key_len_{}", depth + 1);
+        group.throughput(Throughput::Elements(
+            u64::try_from(depth + 1).expect("shared-prefix benchmark length fits u64"),
+        ));
+
+        for upsert in [false, true] {
+            let operation = if upsert {
+                "upsert_existing"
+            } else {
+                "insert_new"
+            };
+            group.bench_function(BenchmarkId::new(operation, &case), |b| {
+                let setup = || {
+                    let trie = PersistentARTrieU64Compact::<u64>::new();
+                    assert!(trie.insert_sequence_with_value(&existing, 7));
+                    if upsert {
+                        assert!(trie.insert_sequence_with_value(&target, 1));
+                    }
+                    trie
+                };
+
+                // Validate the case outside measurement, and only after the
+                // Criterion filter selects it. Historical recursive controls
+                // must not execute unsupported depths merely to list cases.
+                let check = setup();
+                assert_eq!(check.insert_sequence_with_value(&target, 2), !upsert);
+                assert_eq!(check.get_sequence_value(&target), Some(2));
+                assert_eq!(check.get_sequence_value(&existing), Some(7));
+                assert_eq!(check.term_count(), 2);
+                drop(check);
+
+                b.iter_batched_ref(
+                    setup,
+                    |trie| {
+                        black_box(trie.insert_sequence_with_value(black_box(&target), black_box(2)))
+                    },
+                    BatchSize::PerIteration,
+                );
+            });
+        }
+    }
+    group.finish();
+}
+
 fn bench_update_remove(c: &mut Criterion) {
     let sequences = generate_sequences(MUTATION_SIZE, LOOKUP_LEN);
     let mut group = c.benchmark_group("persistent_artrie_u64_update_remove");
@@ -890,6 +952,7 @@ fn run_criterion() {
     bench_lookup(&mut criterion);
     bench_iteration(&mut criterion);
     bench_insert(&mut criterion);
+    bench_shared_prefix_mutation(&mut criterion);
     bench_update_remove(&mut criterion);
     bench_checkpoint_reopen(&mut criterion);
     bench_checkpoint_disk_bytes(&mut criterion);
