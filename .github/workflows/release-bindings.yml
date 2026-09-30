@@ -737,39 +737,31 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           IMMUTABLE_RELEASES_READ_TOKEN: ${{ secrets.IMMUTABLE_RELEASES_READ_TOKEN }}
-        run: scripts/publish-immutable-release.sh --preflight "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$GITHUB_SHA"
+        run: scripts/publish-immutable-release.sh --preflight "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$(git rev-parse HEAD)"
       - run: scripts/test-immutable-release-assets.sh "$RUNNER_TEMP/immutable-contract"
+      - run: bash scripts/test-flatten-release-assets.sh "$RUNNER_TEMP/flatten-assets-contract"
       - uses: actions/download-artifact@v7
-        with: { pattern: native-*, path: assets, merge-multiple: true }
+        with: { pattern: native-*, path: staged-assets/native, merge-multiple: false }
       - uses: actions/download-artifact@v7
-        with: { pattern: python-wheel-*, path: assets, merge-multiple: true }
+        with: { pattern: python-wheel-*, path: staged-assets/python, merge-multiple: false }
       - uses: actions/download-artifact@v7
-        with: { name: npm-package, path: assets }
+        with: { name: npm-package, path: staged-assets/npm }
       - uses: actions/download-artifact@v7
-        with: { name: nuget-package, path: assets }
+        with: { name: nuget-package, path: staged-assets/nuget }
       - uses: actions/download-artifact@v7
-        with: { name: rubygems-package, path: assets }
+        with: { name: rubygems-package, path: staged-assets/rubygems }
       - uses: actions/download-artifact@v7
-        with: { name: hackage-package, path: assets }
+        with: { name: hackage-package, path: staged-assets/hackage }
       - uses: actions/download-artifact@v7
-        with: { name: luarocks-package, path: assets }
+        with: { name: luarocks-package, path: staged-assets/luarocks }
       - uses: actions/download-artifact@v7
-        with: { name: opam-package, path: assets }
+        with: { name: opam-package, path: staged-assets/opam }
       - uses: actions/download-artifact@v7
-        with: { name: clojure-package, path: assets/clojure }
+        with: { name: clojure-package, path: staged-assets/clojure }
       - uses: actions/download-artifact@v7
-        with: { name: maven-staging, path: assets/maven }
-      - name: Flatten publishable Maven files and hash every asset
-        run: |
-          mkdir -p flattened-assets
-          find assets/maven -type f \( -name '*.jar' -o -name '*.pom' \) -exec cp {} flattened-assets/ \;
-          find assets/clojure -type f \( -name '*.jar' -o -name '*.pom' \) -exec cp {} flattened-assets/ \;
-          find flattened-assets -type f -exec cp {} assets/ \;
-          rm -rf assets/maven
-          rm -rf assets/clojure
-          cd assets
-          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > ../SHA256SUMS
-          mv ../SHA256SUMS SHA256SUMS
+        with: { name: maven-staging, path: staged-assets/maven }
+      - name: Flatten release assets without basename collisions
+        run: bash scripts/flatten-release-assets.sh staged-assets assets clojure maven
       - uses: softprops/action-gh-release@v3
         with:
           files: "assets/*"
@@ -782,7 +774,7 @@ jobs:
         run: |
           scripts/publish-immutable-release.sh --publish \
             "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" assets \
-            "$GITHUB_SHA" "$RUNNER_TEMP/immutable-readback"
+            "$(git rev-parse HEAD)" "$RUNNER_TEMP/immutable-readback"
 
   opam:
     name: Submit package to opam-repository
