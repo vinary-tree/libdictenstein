@@ -101,7 +101,9 @@ final class ConformanceTest {
     @Test
     void c1_identityConstants() {
         assertEquals(1, Dictionary.abiVersion());
-        assertEquals(6, Dictionary.apiRevision());
+        // API revisions are additive; accept a newer native producer, but not one
+        // older than the revision-7 contract under test.
+        assertTrue(Dictionary.apiRevision() >= 7);
     }
 
     @Test
