@@ -33,6 +33,37 @@ say $words.list;
 The complete executable contract is
 [`bindings/raku/t/01-conformance.rakutest`](t/01-conformance.rakutest).
 
+## Generated NativeCall boundary
+
+The public C header defines the binary interface (ABI); `bindings/api.json`
+models its symbols, numeric constants, layouts, and the Raku facade's
+intentional coverage. `scripts/generate-raku-abi.py` compares the two
+independently maintained sources and generates three delimited regions of
+[`Libdictenstein.rakumod`](lib/Libdictenstein.rakumod): constants and enums,
+the three local C-compatible layouts, and all 53 revision-7 NativeCall
+declarations. The [reviewable inventory](../generated/raku-abi-capabilities.tsv)
+records each C and Raku signature, the package mapping, and whether the
+idiomatic facade calls it. Run this after changing the model or C header:
+
+```sh
+python3 scripts/generate-raku-abi.py --write
+python3 scripts/generate-raku-abi.py --check
+python3 scripts/generate-raku-abi.py --self-test
+python3 scripts/check-bindings.py
+```
+
+Generation never edits the handwritten collection, ownership, or error-handling
+methods. Every modeled C symbol has a low-level declaration, but a declaration
+does not by itself imply an idiomatic public Raku method. The model currently
+explains 21 exact raw-only symbols: the optional byte-value producer and
+byte-entry stream await a separate Raku facade parity task; project-owned
+entry cursors are unnecessary for the retained `Vinary-Tree-Interop` iterator;
+and legacy scalar insert/get variants are superseded by the facade's explicit
+optional-value paths. In particular, absent byte values and present empty
+byte strings must not be conflated or reinterpreted as unsigned 64-bit values.
+The generator fails if a facade use or omission is added, removed, or left
+unexplained.
+
 ## Snapshots, iteration, and algebra
 
 Ordinary full traversal creates one immutable revision and closes its bounded

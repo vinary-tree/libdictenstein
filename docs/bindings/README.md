@@ -22,6 +22,7 @@ corpus documents everything on the producing side of that boundary.
 | **Machine-readable model** | [`../../bindings/api.json`](../../bindings/api.json) | The source of truth for the binding surface: exact C signatures and parameter lifetimes, symbols, enums, kinds, capabilities, marshalling and snapshot laws, facade layout, registry coordinates. |
 | **Contract gates** | [`../../scripts/check-bindings.py`](../../scripts/check-bindings.py), [`../../scripts/check-binding-docs.py`](../../scripts/check-binding-docs.py) | Enforce the ABI model and reject a declared facade whose guide, executable evidence, required operational topics, or local links are missing or stale. CI job `binding-contract`. |
 | **Julia ABI generator** | [`../../scripts/generate-julia-abi.py`](../../scripts/generate-julia-abi.py), [`../../bindings/generated/julia-abi-capabilities.tsv`](../../bindings/generated/julia-abi-capabilities.tsv) | Generates Julia constants, layouts, and typed calls from the model; independently proves exact header parity, freshness, and negative controls; emits the reviewable signature/direction/ownership inventory. |
+| **Raku ABI generator** | [`../../scripts/generate-raku-abi.py`](../../scripts/generate-raku-abi.py), [`../../bindings/generated/raku-abi-capabilities.tsv`](../../bindings/generated/raku-abi-capabilities.tsv) | Generates all revision-7 NativeCall declarations and local layouts from the same model, checks the independent C header, and requires exact reasons for low-level symbols not wrapped by the idiomatic facade. |
 | **Diagrams** | [`../diagrams/`](../diagrams/) | `abi-producer-component` (layer map), `snapshot-capture-sequence` (the walk protocol), `owned-resource-lifecycle-state` (the retain ledger); sources under [`../diagrams/src/`](../diagrams/src/). |
 | **Language facades** | [`../../bindings/`](../../bindings/) | Sixteen governed guides over the `ldict_*` surface, including the native C contract and grouped JVM/JavaScript language families. |
 | **Guide generator** | [`../../scripts/generate-binding-guides.py`](../../scripts/generate-binding-guides.py) | Owns the uniform support, loading, ownership, error, concurrency, performance, security, compatibility, and maintainer sections while preserving each facade's handwritten tutorial. |
@@ -145,6 +146,8 @@ facade:
 python3 scripts/generate-binding-guides.py
 python3 scripts/generate-julia-abi.py --check
 python3 scripts/generate-julia-abi.py --self-test
+python3 scripts/generate-raku-abi.py --check
+python3 scripts/generate-raku-abi.py --self-test
 python3 scripts/check-binding-docs.py
 ```
 

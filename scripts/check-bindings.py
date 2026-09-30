@@ -491,11 +491,12 @@ def check_symbol_parity(report: Report, model: dict) -> None:
         )
 
 
-def check_julia_abi_generation(report: Report) -> None:
-    """Require fresh generated Julia declarations and passing negative controls."""
-    generator = ROOT / "scripts" / "generate-julia-abi.py"
+def check_generated_abi(report: Report, language: str) -> None:
+    """Require fresh generated declarations and negative drift controls."""
+    slug = language.lower()
+    generator = ROOT / "scripts" / f"generate-{slug}-abi.py"
     if not generator.is_file():
-        report.fail("julia-abi", "scripts/generate-julia-abi.py is missing")
+        report.fail(f"{slug}-abi", f"scripts/generate-{slug}-abi.py is missing")
         return
     for mode in ("--check", "--self-test"):
         completed = subprocess.run(
@@ -507,11 +508,11 @@ def check_julia_abi_generation(report: Report) -> None:
         )
         if completed.returncode != 0:
             diagnostic = (completed.stderr or completed.stdout).strip()
-            report.fail("julia-abi", f"{mode} failed: {diagnostic}")
+            report.fail(f"{slug}-abi", f"{mode} failed: {diagnostic}")
             return
     report.ok(
-        "julia-abi",
-        "Julia constants, layouts, modeled typed calls, signature inventory, and negative controls are current",
+        f"{slug}-abi",
+        f"{language} constants, layouts, modeled calls, signature inventory, and negative controls are current",
     )
 
 
@@ -1441,7 +1442,8 @@ def main() -> int:
         else:
             check_symbol_parity(report, model)
             check_constant_parity(report, model)
-            check_julia_abi_generation(report)
+            check_generated_abi(report, "Julia")
+            check_generated_abi(report, "Raku")
             check_facades(report, model)
             check_identity(report)
             check_interop_header(report, model)

@@ -572,6 +572,10 @@ jobs:
         run: |
           python3 scripts/generate-julia-abi.py --check
           python3 scripts/generate-julia-abi.py --self-test
+      - name: Verify authoritative Raku ABI generation and negative controls
+        run: |
+          python3 scripts/generate-raku-abi.py --check
+          python3 scripts/generate-raku-abi.py --self-test
       - name: Run the binding architecture gate
         run: python3 scripts/check-bindings.py
       - name: Run the binding documentation gate

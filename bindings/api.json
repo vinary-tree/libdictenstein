@@ -323,6 +323,21 @@
       ],
       "valueDomain": "OPTIONAL_U64",
       "order": "LEXICOGRAPHIC"
+    },
+    "LdictByteEntry": {
+      "alias": "VtDictionaryByteEntry",
+      "valueSemantics": "has_value-distinguishes-absent-from-present-empty"
+    },
+    "LdictByteEntryBatchLimits": {
+      "alias": "VtDictionaryByteBatchLimits"
+    },
+    "LdictByteEntryBatch": {
+      "alias": "VtDictionaryByteBatchView",
+      "ownership": "cursor-owned-borrowed-until-generation-release"
+    },
+    "LdictByteEntriesInfo": {
+      "alias": "VtDictionaryEntriesInfo",
+      "valueDomain": "BYTES"
     }
   },
   "enums": {
@@ -375,7 +390,7 @@
       "PERSISTENT_ARTRIE": 4,
       "PERSISTENT_VOCAB_ARTRIE": 5
     },
-    "juliaAliases": {
+    "compatibilityAliases": {
       "PERSISTENT_VOCABULARY": "PERSISTENT_VOCAB_ARTRIE"
     }
   },
@@ -1176,7 +1191,38 @@
       "importLayers": [
         "bindings/raku/lib/Libdictenstein.rakumod"
       ],
-      "package": "raku"
+      "package": "raku",
+      "generator": "scripts/generate-raku-abi.py",
+      "abiInventory": "bindings/generated/raku-abi-capabilities.tsv",
+      "rawOnlyReasons": {
+        "byte-values": "The revision-7 byte-value C ABI is declared, but the idiomatic Raku byte-value dictionary and cursor facade is a separate parity task; no u64 reinterpretation is allowed.",
+        "entry-cursor": "The idiomatic facade traverses retained Vinary-Tree-Interop snapshots; the project-owned cursor ABI remains available only as a low-level declaration.",
+        "legacy-optional-insert": "The facade uses the explicit scalar-value insertion call to preserve valueless versus zero semantics.",
+        "legacy-scalar-getter": "The facade uses the optional-value output struct and membership flag instead of the older scalar getter."
+      },
+      "rawOnly": {
+        "ldict_dynamic_dawg_new_byte_values": "byte-values",
+        "ldict_dictionary_insert_text_bytes": "byte-values",
+        "ldict_dictionary_insert_u64_bytes": "byte-values",
+        "ldict_dictionary_get_text_bytes": "byte-values",
+        "ldict_dictionary_get_u64_bytes": "byte-values",
+        "ldict_dictionary_byte_entries_open": "byte-values",
+        "ldict_byte_entry_cursor_next": "byte-values",
+        "ldict_byte_entry_cursor_release": "byte-values",
+        "ldict_byte_entry_cursor_reduce": "byte-values",
+        "ldict_byte_entry_cursor_cancel": "byte-values",
+        "ldict_byte_entry_cursor_free": "byte-values",
+        "ldict_dictionary_entries_open": "entry-cursor",
+        "ldict_entry_cursor_next": "entry-cursor",
+        "ldict_entry_cursor_release": "entry-cursor",
+        "ldict_entry_cursor_reduce": "entry-cursor",
+        "ldict_entry_cursor_cancel": "entry-cursor",
+        "ldict_entry_cursor_free": "entry-cursor",
+        "ldict_dictionary_insert_text": "legacy-optional-insert",
+        "ldict_dictionary_insert_u64": "legacy-optional-insert",
+        "ldict_dictionary_get_text_value": "legacy-scalar-getter",
+        "ldict_dictionary_get_u64_value": "legacy-scalar-getter"
+      }
     },
     "ruby": {
       "root": "bindings/ruby",

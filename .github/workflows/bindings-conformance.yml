@@ -115,6 +115,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/checkout-dev-siblings
+      - name: Verify generated Raku ABI declarations and omissions
+        run: |
+          python3 scripts/generate-raku-abi.py --check
+          python3 scripts/generate-raku-abi.py --self-test
       # yamllint disable-line rule:line-length
       - uses: Raku/setup-raku@b8b1a4ebe85ef112edfc65e9edc8c57735367e3f  # v1
       - uses: actions/download-artifact@v7
