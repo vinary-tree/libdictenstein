@@ -7,7 +7,11 @@
 //! node identity preserve graph sharing in a lock-free lazy arena; other
 //! backends retain the sequential ABI-local identifier fallback.
 
+mod byte_values;
 mod entries;
+mod entries_bytes;
+
+pub use byte_values::ByteValueDawgBinding;
 
 use crate::concurrent_slots::HybridOnceBoxSlots;
 use crate::double_array_trie::char::DoubleArrayTrieChar;
@@ -32,10 +36,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::sync::{Arc, OnceLock};
 use vinary_tree_interop::{
-    dictionary_flags, VtDictionaryEdge, VtDictionaryGraphEdge, VtDictionaryGraphNode,
-    VtDictionaryGraphVTable, VtDictionaryGraphView, VtDictionaryVTable, VtDictionaryVisitVTable,
-    VtInterfaceId, VtOptionalU64, VtResource, VtResourceVTable, VtSnapshotIdentity,
-    VtSnapshotIdentityVTable, VtStatus, VtUnitDomain, VtValueDomain, VT_ABI_VERSION,
+    dictionary_flags, VtDictionaryBytesVTable, VtDictionaryEdge, VtDictionaryGraphEdge,
+    VtDictionaryGraphNode, VtDictionaryGraphVTable, VtDictionaryGraphView, VtDictionaryVTable,
+    VtDictionaryVisitVTable, VtInterfaceId, VtOptionalU64, VtResource, VtResourceVTable,
+    VtSnapshotIdentity, VtSnapshotIdentityVTable, VtStatus, VtUnitDomain, VtValueDomain,
+    VT_ABI_VERSION, VT_DICTIONARY_BYTES_INTERFACE_ID, VT_DICTIONARY_BYTES_INTERFACE_VERSION,
+    VT_DICTIONARY_BYTE_ENTRIES_INTERFACE_ID, VT_DICTIONARY_BYTE_ENTRIES_INTERFACE_VERSION,
     VT_DICTIONARY_ENTRIES_INTERFACE_ID, VT_DICTIONARY_ENTRIES_INTERFACE_VERSION,
     VT_DICTIONARY_GRAPH_INTERFACE_ID, VT_DICTIONARY_GRAPH_INTERFACE_VERSION,
     VT_DICTIONARY_INTERFACE_ID, VT_DICTIONARY_INTERFACE_VERSION, VT_DICTIONARY_VISIT_INTERFACE_ID,
@@ -1854,17 +1860,43 @@ trait AbiUnit: Copy + Send + Sync + 'static {
 }
 
 trait AbiValue: crate::DictionaryValue {
+    const DOMAIN: VtValueDomain;
     fn into_abi_value(self) -> Option<u64>;
+    fn into_abi_bytes(self) -> Option<Vec<u8>>;
 }
 
 impl AbiValue for BindingValue {
+    const DOMAIN: VtValueDomain = VtValueDomain::OptionalU64;
+
     fn into_abi_value(self) -> Option<u64> {
         self.into_option()
+    }
+
+    fn into_abi_bytes(self) -> Option<Vec<u8>> {
+        None
     }
 }
 
 impl AbiValue for u64 {
+    const DOMAIN: VtValueDomain = VtValueDomain::OptionalU64;
+
     fn into_abi_value(self) -> Option<u64> {
+        Some(self)
+    }
+
+    fn into_abi_bytes(self) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+impl AbiValue for Vec<u8> {
+    const DOMAIN: VtValueDomain = VtValueDomain::Bytes;
+
+    fn into_abi_value(self) -> Option<u64> {
+        None
+    }
+
+    fn into_abi_bytes(self) -> Option<Vec<u8>> {
         Some(self)
     }
 }
@@ -2027,12 +2059,13 @@ impl<N> Drop for NodeArena<N> {
 
 struct TraversalSnapshot<N: DictionaryNode> {
     native_graph: OnceLock<Option<SnapshotTraversalProjection<N>>>,
-    abi_graph: OnceLock<AbiTraversalGraph>,
+    abi_graph: OnceLock<Option<AbiTraversalGraph>>,
     len: Option<usize>,
     domain: VtUnitDomain,
     suffix: bool,
     identity: SnapshotIdentity,
     entry_factory: Option<SnapshotEntryFactory>,
+    byte_entry_factory: Option<SnapshotByteEntryFactory>,
     // Keep the immutable owner last so native provenance handles are dropped
     // before the revision that makes them valid.
     arena: NodeArena<N>,
@@ -2056,15 +2089,34 @@ struct AbiTraversalGraph {
     nodes: Box<[VtDictionaryGraphNode]>,
     edges: Box<[VtDictionaryGraphEdge]>,
     root: u64,
+    token_base: u64,
+}
+
+// Byte-valued graph cursors are process-unique within this producer. A token
+// range is never reused, including after its originating snapshot is freed.
+static NEXT_BYTE_GRAPH_CURSOR: AtomicU64 = AtomicU64::new(1);
+
+fn reserve_byte_graph_tokens(counter: &AtomicU64, count: u64) -> Option<u64> {
+    counter
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |next| {
+            next.checked_add(count)
+        })
+        .ok()
 }
 
 impl AbiTraversalGraph {
-    fn from_native<U, H>(graph: &SnapshotTraversalGraph<U, H>) -> Self
+    fn from_native<U, H>(graph: &SnapshotTraversalGraph<U, H>, byte_values: bool) -> Option<Self>
     where
         U: AbiUnit + crate::CharUnit,
         H: Copy,
     {
         crate::causal_perf::record_resource_graph_projections(1);
+        let token_base = if byte_values {
+            let count = u64::try_from(graph.node_count()).ok()?;
+            reserve_byte_graph_tokens(&NEXT_BYTE_GRAPH_CURSOR, count)?
+        } else {
+            1
+        };
         let nodes = (0..graph.node_count())
             .map(|index| {
                 let node = graph
@@ -2076,8 +2128,9 @@ impl AbiTraversalGraph {
                     // Keep backend pointer cursors behind the producer trust
                     // boundary. The ABI token is the checked one-based dense
                     // graph index and is translated only by `graph_value`.
-                    value_cursor: u64::try_from(index + 1)
-                        .expect("snapshot graph node index fits u64"),
+                    value_cursor: token_base
+                        .checked_add(u64::try_from(index).expect("graph index fits u64"))
+                        .expect("reserved graph token range fits u64"),
                     is_final: u8::from(node.is_final()),
                     reserved: [0; 7],
                 }
@@ -2094,11 +2147,12 @@ impl AbiTraversalGraph {
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
-        Self {
+        Some(Self {
             nodes,
             edges,
             root: u64::from(graph.root_index()),
-        }
+            token_base,
+        })
     }
 
     fn view(&self) -> VtDictionaryGraphView {
@@ -2143,6 +2197,7 @@ impl<N: DictionaryNode> TraversalSnapshot<N> {
             suffix,
             identity,
             entry_factory: None,
+            byte_entry_factory: None,
             arena: NodeArena::new(root, root_identity),
         }
     }
@@ -2153,6 +2208,15 @@ impl<N: DictionaryNode> TraversalSnapshot<N> {
         I: Iterator<Item = (Vec<u64>, Option<u64>)> + Send + 'static,
     {
         self.entry_factory = Some(Arc::new(move || Box::new(factory())));
+        self
+    }
+
+    fn with_byte_entry_factory<F, I>(mut self, factory: F) -> Self
+    where
+        F: Fn() -> I + Send + Sync + 'static,
+        I: Iterator<Item = (Vec<u64>, Option<Vec<u8>>)> + Send + 'static,
+    {
+        self.byte_entry_factory = Some(Arc::new(move || Box::new(factory())));
         self
     }
 }
@@ -2180,37 +2244,63 @@ where
     N::Value: AbiValue,
 {
     let entry_root = root.clone();
-    Arc::new(
-        TraversalSnapshot::new(root, Some(len), domain, suffix, identity).with_entry_factory(
-            move || {
-                crate::collection::ExactSnapshotEntryIterator::from_node(entry_root.clone(), len)
-                    .map(|entry| {
-                        (
-                            entry.key.into_iter().map(AbiUnit::to_abi).collect(),
-                            entry.value.and_then(AbiValue::into_abi_value),
-                        )
-                    })
-            },
-        ),
-    )
+    let snapshot = TraversalSnapshot::new(root, Some(len), domain, suffix, identity);
+    if N::Value::DOMAIN == VtValueDomain::Bytes {
+        Arc::new(snapshot.with_byte_entry_factory(move || {
+            crate::collection::ExactSnapshotEntryIterator::from_node(entry_root.clone(), len).map(
+                |entry| {
+                    (
+                        entry.key.into_iter().map(AbiUnit::to_abi).collect(),
+                        entry.value.and_then(AbiValue::into_abi_bytes),
+                    )
+                },
+            )
+        }))
+    } else {
+        Arc::new(snapshot.with_entry_factory(move || {
+            crate::collection::ExactSnapshotEntryIterator::from_node(entry_root.clone(), len).map(
+                |entry| {
+                    (
+                        entry.key.into_iter().map(AbiUnit::to_abi).collect(),
+                        entry.value.and_then(AbiValue::into_abi_value),
+                    )
+                },
+            )
+        }))
+    }
 }
 
 type SnapshotEntryStream = Box<dyn Iterator<Item = (Vec<u64>, Option<u64>)> + Send>;
 type SnapshotEntryFactory = Arc<dyn Fn() -> SnapshotEntryStream + Send + Sync>;
+type SnapshotByteEntryStream = Box<dyn Iterator<Item = (Vec<u64>, Option<Vec<u8>>)> + Send>;
+type SnapshotByteEntryFactory = Arc<dyn Fn() -> SnapshotByteEntryStream + Send + Sync>;
 
 trait SnapshotOps: Send + Sync {
     fn root(&self) -> u64;
     fn domain(&self) -> VtUnitDomain;
+    fn value_domain(&self) -> VtValueDomain;
     fn suffix(&self) -> bool;
     fn len(&self) -> Option<usize>;
     fn identity(&self) -> SnapshotIdentity;
     fn entries(&self) -> Option<SnapshotEntryStream> {
         None
     }
+    fn byte_entries(&self) -> Option<SnapshotByteEntryStream> {
+        None
+    }
     fn graph(&self) -> Option<VtDictionaryGraphView>;
+    fn graph_status(&self) -> Result<VtDictionaryGraphView, VtStatus> {
+        self.graph().ok_or(VtStatus::Unsupported)
+    }
     fn graph_value(&self, value_cursor: u64) -> Result<Option<u64>, VtStatus>;
+    fn graph_value_bytes(&self, _value_cursor: u64) -> Result<Option<Vec<u8>>, VtStatus> {
+        Err(VtStatus::Unsupported)
+    }
     fn is_final(&self, node: u64) -> Result<bool, VtStatus>;
     fn value(&self, node: u64) -> Result<Option<u64>, VtStatus>;
+    fn value_bytes(&self, _node: u64) -> Result<Option<Vec<u8>>, VtStatus> {
+        Err(VtStatus::Unsupported)
+    }
     fn transition(&self, node: u64, label: u64) -> Result<Option<u64>, VtStatus>;
     fn copy_edges(
         &self,
@@ -2320,6 +2410,10 @@ where
         self.domain
     }
 
+    fn value_domain(&self) -> VtValueDomain {
+        N::Value::DOMAIN
+    }
+
     fn suffix(&self) -> bool {
         self.suffix
     }
@@ -2354,6 +2448,17 @@ where
         let value =
             unsafe { self.root.snapshot_cursor_value(cursor) }.ok_or(VtStatus::Unsupported)?;
         Ok(value.and_then(AbiValue::into_abi_value))
+    }
+
+    fn value_bytes(&self, node: u64) -> Result<Option<Vec<u8>>, VtStatus> {
+        if N::Value::DOMAIN != VtValueDomain::Bytes {
+            return Err(VtStatus::Unsupported);
+        }
+        let cursor = self.native_cursor(node)?;
+        // SAFETY: the cursor belongs to this retained immutable revision.
+        let value =
+            unsafe { self.root.snapshot_cursor_value(cursor) }.ok_or(VtStatus::Unsupported)?;
+        Ok(value.and_then(AbiValue::into_abi_bytes))
     }
 
     fn transition(&self, node: u64, label: u64) -> Result<Option<u64>, VtStatus> {
@@ -2444,6 +2549,10 @@ where
         self.domain
     }
 
+    fn value_domain(&self) -> VtValueDomain {
+        N::Value::DOMAIN
+    }
+
     fn suffix(&self) -> bool {
         self.suffix
     }
@@ -2460,6 +2569,10 @@ where
         self.entry_factory.as_ref().map(|factory| factory())
     }
 
+    fn byte_entries(&self) -> Option<SnapshotByteEntryStream> {
+        self.byte_entry_factory.as_ref().map(|factory| factory())
+    }
+
     fn graph(&self) -> Option<VtDictionaryGraphView> {
         let root = &self.arena.slot(0).ok()?.node;
         if !root.supports_snapshot_graph_values() {
@@ -2469,11 +2582,25 @@ where
             .native_graph
             .get_or_init(|| root.snapshot_traversal_graph())
             .as_deref()?;
-        Some(
-            self.abi_graph
-                .get_or_init(|| AbiTraversalGraph::from_native::<N::Unit, _>(native))
-                .view(),
-        )
+        self.abi_graph
+            .get_or_init(|| {
+                AbiTraversalGraph::from_native::<N::Unit, _>(
+                    native,
+                    N::Value::DOMAIN == VtValueDomain::Bytes,
+                )
+            })
+            .as_ref()
+            .map(AbiTraversalGraph::view)
+    }
+
+    fn graph_status(&self) -> Result<VtDictionaryGraphView, VtStatus> {
+        match self.graph() {
+            Some(graph) => Ok(graph),
+            None if self.abi_graph.get().is_some_and(Option::is_none) => {
+                Err(VtStatus::LimitExceeded)
+            }
+            None => Err(VtStatus::Unsupported),
+        }
     }
 
     fn graph_value(&self, value_cursor: u64) -> Result<Option<u64>, VtStatus> {
@@ -2500,6 +2627,43 @@ where
         Ok(value.and_then(AbiValue::into_abi_value))
     }
 
+    fn graph_value_bytes(&self, value_cursor: u64) -> Result<Option<Vec<u8>>, VtStatus> {
+        if N::Value::DOMAIN != VtValueDomain::Bytes {
+            return Err(VtStatus::Unsupported);
+        }
+        let root = &self.arena.slot(0)?.node;
+        let graph = self
+            .native_graph
+            .get_or_init(|| root.snapshot_traversal_graph())
+            .as_deref()
+            .ok_or(VtStatus::Unsupported)?;
+        let abi_graph = self
+            .abi_graph
+            .get_or_init(|| AbiTraversalGraph::from_native::<N::Unit, _>(graph, true))
+            .as_ref()
+            .ok_or(VtStatus::Unsupported)?;
+        let relative = value_cursor
+            .checked_sub(abi_graph.token_base)
+            .ok_or(VtStatus::InvalidArgument)?;
+        let index = usize::try_from(relative).map_err(|_| VtStatus::InvalidArgument)?;
+        if abi_graph
+            .nodes
+            .get(index)
+            .is_none_or(|node| node.is_final != 1)
+        {
+            return Err(VtStatus::InvalidArgument);
+        }
+        let cursor = usize::try_from(relative.checked_add(1).ok_or(VtStatus::InvalidArgument)?)
+            .ok()
+            .and_then(SnapshotTraversalCursor::new)
+            .filter(|cursor| cursor.get() <= graph.node_count())
+            .ok_or(VtStatus::InvalidArgument)?;
+        // SAFETY: the checked graph cursor is interpreted only by this root.
+        let value = unsafe { root.snapshot_graph_cursor_value(graph, cursor) }
+            .ok_or(VtStatus::InvalidArgument)?;
+        Ok(value.and_then(AbiValue::into_abi_bytes))
+    }
+
     fn is_final(&self, node: u64) -> Result<bool, VtStatus> {
         crate::causal_perf::record_resource_is_final_calls(1);
         let slot = self.arena.slot(node)?;
@@ -2510,6 +2674,17 @@ where
         crate::causal_perf::record_resource_value_calls(1);
         let slot = self.arena.slot(node)?;
         Ok(slot.node.value().and_then(AbiValue::into_abi_value))
+    }
+
+    fn value_bytes(&self, node: u64) -> Result<Option<Vec<u8>>, VtStatus> {
+        if N::Value::DOMAIN != VtValueDomain::Bytes {
+            return Err(VtStatus::Unsupported);
+        }
+        let slot = self.arena.slot(node)?;
+        if !slot.node.is_final() {
+            return Err(VtStatus::InvalidArgument);
+        }
+        Ok(slot.node.value().and_then(AbiValue::into_abi_bytes))
     }
 
     fn transition(&self, node: u64, label: u64) -> Result<Option<u64>, VtStatus> {
@@ -2581,6 +2756,7 @@ where
 
 enum ResourcePayload {
     Live(Arc<SharedDictionary>),
+    LiveBytes(Arc<byte_values::SharedByteValueDictionary>),
     Secondary(Arc<SnapshotSource<SecondaryBackend>>),
     #[cfg(feature = "persistent-artrie")]
     Persistent(Arc<SnapshotSource<PersistentBackend>>),
@@ -2595,6 +2771,7 @@ impl ResourceContext {
     fn domain(&self) -> VtUnitDomain {
         match &self.payload {
             ResourcePayload::Live(dictionary) => dictionary.backend.domain().into(),
+            ResourcePayload::LiveBytes(dictionary) => dictionary.domain().into(),
             ResourcePayload::Secondary(dictionary) => dictionary.backend.domain().into(),
             #[cfg(feature = "persistent-artrie")]
             ResourcePayload::Persistent(dictionary) => dictionary.backend.domain().into(),
@@ -2602,10 +2779,19 @@ impl ResourceContext {
         }
     }
 
+    fn value_domain(&self) -> VtValueDomain {
+        match &self.payload {
+            ResourcePayload::LiveBytes(_) => VtValueDomain::Bytes,
+            ResourcePayload::Snapshot(snapshot) => snapshot.value_domain(),
+            _ => VtValueDomain::OptionalU64,
+        }
+    }
+
     fn flags(&self) -> u64 {
         dictionary_flags::PARALLEL_REENTRANT
             | match &self.payload {
                 ResourcePayload::Live(_) => 0,
+                ResourcePayload::LiveBytes(_) => 0,
                 ResourcePayload::Secondary(dictionary) => {
                     if dictionary.backend.suffix() {
                         dictionary_flags::SUFFIX_BASED
@@ -2634,6 +2820,7 @@ impl ResourceContext {
                     .snapshots
                     .get_or_create_at(capture.revision(), |identity| capture.snapshot(identity))
             }
+            ResourcePayload::LiveBytes(dictionary) => dictionary.snapshot(),
             ResourcePayload::Secondary(dictionary) => dictionary
                 .snapshots
                 .get_or_create(|identity| dictionary.backend.snapshot(identity)),
@@ -2648,9 +2835,9 @@ impl ResourceContext {
     fn immutable(&self) -> Result<&dyn SnapshotOps, VtStatus> {
         match &self.payload {
             ResourcePayload::Snapshot(snapshot) => Ok(snapshot.as_ref()),
-            ResourcePayload::Live(_) | ResourcePayload::Secondary(_) => {
-                Err(VtStatus::InvalidArgument)
-            }
+            ResourcePayload::Live(_)
+            | ResourcePayload::LiveBytes(_)
+            | ResourcePayload::Secondary(_) => Err(VtStatus::InvalidArgument),
             #[cfg(feature = "persistent-artrie")]
             ResourcePayload::Persistent(_) => Err(VtStatus::InvalidArgument),
         }
@@ -2878,7 +3065,9 @@ unsafe fn query_interface_status(
     if (*interface_id).bytes == VT_DICTIONARY_INTERFACE_ID.bytes
         && minimum_version <= VT_DICTIONARY_INTERFACE_VERSION
     {
-        out_vtable.write(dictionary_vtable(context.domain(), context.flags()).cast());
+        out_vtable.write(
+            dictionary_vtable(context.domain(), context.value_domain(), context.flags()).cast(),
+        );
         VtStatus::Ok
     } else if (*interface_id).bytes == VT_DICTIONARY_VISIT_INTERFACE_ID.bytes
         && minimum_version <= VT_DICTIONARY_VISIT_INTERFACE_VERSION
@@ -2887,6 +3076,7 @@ unsafe fn query_interface_status(
         VtStatus::Ok
     } else if (*interface_id).bytes == VT_DICTIONARY_ENTRIES_INTERFACE_ID.bytes
         && minimum_version <= VT_DICTIONARY_ENTRIES_INTERFACE_VERSION
+        && context.value_domain() != VtValueDomain::Bytes
     {
         out_vtable.write(
             (&entries::DICTIONARY_ENTRIES_VTABLE
@@ -2894,14 +3084,51 @@ unsafe fn query_interface_status(
                 .cast(),
         );
         VtStatus::Ok
-    } else if (*interface_id).bytes == VT_DICTIONARY_GRAPH_INTERFACE_ID.bytes
-        && minimum_version <= VT_DICTIONARY_GRAPH_INTERFACE_VERSION
-        && context
+    } else if (*interface_id).bytes == VT_DICTIONARY_BYTES_INTERFACE_ID.bytes
+        && minimum_version <= VT_DICTIONARY_BYTES_INTERFACE_VERSION
+        && context.value_domain() == VtValueDomain::Bytes
+        && matches!(context.payload, ResourcePayload::Snapshot(_))
+    {
+        let vtable = if context
             .immutable()
             .is_ok_and(|snapshot| snapshot.graph().is_some())
-    {
-        out_vtable.write((&DICTIONARY_GRAPH_VTABLE as *const VtDictionaryGraphVTable).cast());
+        {
+            &DICTIONARY_BYTES_GRAPH_VTABLE
+        } else {
+            &DICTIONARY_BYTES_VTABLE
+        };
+        out_vtable.write((vtable as *const VtDictionaryBytesVTable).cast());
         VtStatus::Ok
+    } else if (*interface_id).bytes == VT_DICTIONARY_BYTE_ENTRIES_INTERFACE_ID.bytes
+        && minimum_version <= VT_DICTIONARY_BYTE_ENTRIES_INTERFACE_VERSION
+        && context.value_domain() == VtValueDomain::Bytes
+        && matches!(context.payload, ResourcePayload::Snapshot(_))
+    {
+        out_vtable.write(
+            (&entries_bytes::DICTIONARY_BYTE_ENTRIES_VTABLE
+                as *const vinary_tree_interop::VtDictionaryByteEntriesVTable)
+                .cast(),
+        );
+        VtStatus::Ok
+    } else if (*interface_id).bytes == VT_DICTIONARY_GRAPH_INTERFACE_ID.bytes
+        && minimum_version <= VT_DICTIONARY_GRAPH_INTERFACE_VERSION
+    {
+        match context
+            .immutable()
+            .map_err(|_| VtStatus::Unsupported)
+            .and_then(|snapshot| snapshot.graph_status())
+        {
+            Ok(_) => {
+                let vtable = if context.value_domain() == VtValueDomain::Bytes {
+                    &DICTIONARY_BYTES_GRAPH_V1_VTABLE
+                } else {
+                    &DICTIONARY_GRAPH_VTABLE
+                };
+                out_vtable.write((vtable as *const VtDictionaryGraphVTable).cast());
+                VtStatus::Ok
+            }
+            Err(status) => status,
+        }
     } else if (*interface_id).bytes == VT_SNAPSHOT_IDENTITY_INTERFACE_ID.bytes
         && minimum_version <= VT_SNAPSHOT_IDENTITY_INTERFACE_VERSION
         && matches!(context.payload, ResourcePayload::Snapshot(_))
@@ -2950,7 +3177,7 @@ unsafe extern "C" fn dictionary_graph(
     crate::causal_perf::record_resource_graph_calls(1);
     let graph = match context
         .immutable()
-        .and_then(|snapshot| snapshot.graph().ok_or(VtStatus::Unsupported))
+        .and_then(|snapshot| snapshot.graph_status())
     {
         Ok(graph) => graph,
         Err(status) => return status.to_raw(),
@@ -2982,6 +3209,116 @@ unsafe extern "C" fn dictionary_graph_value(
         }
         Err(status) => status.to_raw(),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn copy_byte_value(
+    context: *mut c_void,
+    token: u64,
+    out_bytes: *mut u8,
+    capacity: usize,
+    out_written: *mut usize,
+    out_required: *mut usize,
+    out_has_value: *mut u8,
+    graph: bool,
+) -> VtStatus {
+    if context.is_null()
+        || out_written.is_null()
+        || out_required.is_null()
+        || out_has_value.is_null()
+        || (capacity != 0 && out_bytes.is_null())
+    {
+        return VtStatus::NullPointer;
+    }
+    // SAFETY: the resource owns this context for the duration of the call.
+    let context = unsafe { &*context.cast::<ResourceContext>() };
+    let snapshot = match context.immutable() {
+        Ok(snapshot) if snapshot.value_domain() == VtValueDomain::Bytes => snapshot,
+        Ok(_) => return VtStatus::Unsupported,
+        Err(status) => return status,
+    };
+    let value = if graph {
+        snapshot.graph_value_bytes(token)
+    } else {
+        match snapshot.is_final(token) {
+            Ok(true) => {}
+            Ok(false) => return VtStatus::InvalidArgument,
+            Err(status) => return status,
+        }
+        snapshot.value_bytes(token)
+    };
+    let value = match value {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let bytes = value.as_deref().unwrap_or_default();
+    // SAFETY: output pointers are caller-owned writable objects, as required
+    // by the C ABI. No output is written before validation completes.
+    unsafe {
+        out_required.write(bytes.len());
+        out_has_value.write(u8::from(value.is_some()));
+        if capacity < bytes.len() {
+            out_written.write(0);
+            return VtStatus::LimitExceeded;
+        }
+        if !bytes.is_empty() {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_bytes, bytes.len());
+        }
+        out_written.write(bytes.len());
+    }
+    VtStatus::Ok
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe extern "C" fn dictionary_node_value_bytes(
+    context: *mut c_void,
+    node: u64,
+    out_bytes: *mut u8,
+    capacity: usize,
+    out_written: *mut usize,
+    out_required: *mut usize,
+    out_has_value: *mut u8,
+) -> u32 {
+    // SAFETY: forwarded under the exact optional byte-value ABI contract.
+    unsafe {
+        copy_byte_value(
+            context,
+            node,
+            out_bytes,
+            capacity,
+            out_written,
+            out_required,
+            out_has_value,
+            false,
+        )
+    }
+    .to_raw()
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe extern "C" fn dictionary_graph_value_bytes(
+    context: *mut c_void,
+    cursor: u64,
+    out_bytes: *mut u8,
+    capacity: usize,
+    out_written: *mut usize,
+    out_required: *mut usize,
+    out_has_value: *mut u8,
+) -> u32 {
+    // SAFETY: forwarded under the exact optional byte-value ABI contract.
+    unsafe {
+        copy_byte_value(
+            context,
+            cursor,
+            out_bytes,
+            capacity,
+            out_written,
+            out_required,
+            out_has_value,
+            true,
+        )
+    }
+    .to_raw()
 }
 
 unsafe fn dictionary_snapshot_status(
@@ -3294,6 +3631,30 @@ static DICTIONARY_GRAPH_VTABLE: VtDictionaryGraphVTable = VtDictionaryGraphVTabl
     node_value_u64: Some(dictionary_graph_value),
 };
 
+static DICTIONARY_BYTES_GRAPH_V1_VTABLE: VtDictionaryGraphVTable = VtDictionaryGraphVTable {
+    struct_size: std::mem::size_of::<VtDictionaryGraphVTable>(),
+    interface_version: VT_DICTIONARY_GRAPH_INTERFACE_VERSION,
+    reserved: 0,
+    graph: Some(dictionary_graph),
+    node_value_u64: None,
+};
+
+static DICTIONARY_BYTES_VTABLE: VtDictionaryBytesVTable = VtDictionaryBytesVTable {
+    struct_size: std::mem::size_of::<VtDictionaryBytesVTable>(),
+    interface_version: VT_DICTIONARY_BYTES_INTERFACE_VERSION,
+    reserved: 0,
+    node_value_bytes: Some(dictionary_node_value_bytes),
+    graph_value_bytes: None,
+};
+
+static DICTIONARY_BYTES_GRAPH_VTABLE: VtDictionaryBytesVTable = VtDictionaryBytesVTable {
+    struct_size: std::mem::size_of::<VtDictionaryBytesVTable>(),
+    interface_version: VT_DICTIONARY_BYTES_INTERFACE_VERSION,
+    reserved: 0,
+    node_value_bytes: Some(dictionary_node_value_bytes),
+    graph_value_bytes: Some(dictionary_graph_value_bytes),
+};
+
 static SNAPSHOT_IDENTITY_VTABLE: VtSnapshotIdentityVTable = VtSnapshotIdentityVTable {
     struct_size: std::mem::size_of::<VtSnapshotIdentityVTable>(),
     interface_version: VT_SNAPSHOT_IDENTITY_INTERFACE_VERSION,
@@ -3314,6 +3675,25 @@ macro_rules! dictionary_vtable {
             len: Some(dictionary_len),
             node_is_final: Some(dictionary_is_final),
             node_value_u64: Some(dictionary_value),
+            node_transition: Some(dictionary_transition),
+            node_edges: Some(dictionary_edges),
+        };
+    };
+}
+
+macro_rules! byte_dictionary_vtable {
+    ($name:ident, $domain:expr, $flags:expr) => {
+        static $name: VtDictionaryVTable = VtDictionaryVTable {
+            struct_size: std::mem::size_of::<VtDictionaryVTable>(),
+            interface_version: VT_DICTIONARY_INTERFACE_VERSION,
+            unit_domain: $domain,
+            value_domain: VtValueDomain::Bytes,
+            flags: $flags,
+            snapshot: Some(dictionary_snapshot),
+            root: Some(dictionary_root),
+            len: Some(dictionary_len),
+            node_is_final: Some(dictionary_is_final),
+            node_value_u64: None,
             node_transition: Some(dictionary_transition),
             node_edges: Some(dictionary_edges),
         };
@@ -3375,9 +3755,54 @@ dictionary_vtable!(
         | dictionary_flags::SUFFIX_BASED
 );
 
-fn dictionary_vtable(domain: VtUnitDomain, flags: u64) -> *const VtDictionaryVTable {
+byte_dictionary_vtable!(
+    BYTE_VALUES_LIVE,
+    VtUnitDomain::Byte,
+    dictionary_flags::PARALLEL_REENTRANT
+);
+byte_dictionary_vtable!(
+    UNICODE_VALUES_LIVE,
+    VtUnitDomain::UnicodeScalar,
+    dictionary_flags::PARALLEL_REENTRANT
+);
+byte_dictionary_vtable!(
+    U64_VALUES_LIVE,
+    VtUnitDomain::U64,
+    dictionary_flags::PARALLEL_REENTRANT
+);
+byte_dictionary_vtable!(
+    BYTE_VALUES_SNAPSHOT,
+    VtUnitDomain::Byte,
+    dictionary_flags::PARALLEL_REENTRANT | dictionary_flags::IMMUTABLE
+);
+byte_dictionary_vtable!(
+    UNICODE_VALUES_SNAPSHOT,
+    VtUnitDomain::UnicodeScalar,
+    dictionary_flags::PARALLEL_REENTRANT | dictionary_flags::IMMUTABLE
+);
+byte_dictionary_vtable!(
+    U64_VALUES_SNAPSHOT,
+    VtUnitDomain::U64,
+    dictionary_flags::PARALLEL_REENTRANT | dictionary_flags::IMMUTABLE
+);
+
+fn dictionary_vtable(
+    domain: VtUnitDomain,
+    value_domain: VtValueDomain,
+    flags: u64,
+) -> *const VtDictionaryVTable {
     let immutable = flags & dictionary_flags::IMMUTABLE != 0;
     let suffix = flags & dictionary_flags::SUFFIX_BASED != 0;
+    if value_domain == VtValueDomain::Bytes {
+        return match (domain, immutable) {
+            (VtUnitDomain::Byte, false) => &BYTE_VALUES_LIVE,
+            (VtUnitDomain::UnicodeScalar, false) => &UNICODE_VALUES_LIVE,
+            (VtUnitDomain::U64, false) => &U64_VALUES_LIVE,
+            (VtUnitDomain::Byte, true) => &BYTE_VALUES_SNAPSHOT,
+            (VtUnitDomain::UnicodeScalar, true) => &UNICODE_VALUES_SNAPSHOT,
+            (VtUnitDomain::U64, true) => &U64_VALUES_SNAPSHOT,
+        };
+    }
     match (domain, immutable, suffix) {
         (VtUnitDomain::Byte, false, false) => &BYTE_LIVE,
         (VtUnitDomain::UnicodeScalar, false, false) => &UNICODE_LIVE,
@@ -3398,6 +3823,16 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn byte_graph_token_reservation_never_wraps_or_reuses_a_range() {
+        let counter = AtomicU64::new(u64::MAX - 3);
+        assert_eq!(reserve_byte_graph_tokens(&counter, 2), Some(u64::MAX - 3));
+        assert_eq!(reserve_byte_graph_tokens(&counter, 2), None);
+        assert_eq!(counter.load(Ordering::Acquire), u64::MAX - 1);
+        assert_eq!(reserve_byte_graph_tokens(&counter, 1), Some(u64::MAX - 1));
+        assert_eq!(reserve_byte_graph_tokens(&counter, 1), None);
+    }
 
     fn snapshot_edges(snapshot: &dyn SnapshotOps, node: u64) -> Result<Vec<(u64, u64)>, VtStatus> {
         let (_, total) = snapshot.copy_edges(node, 0, &mut [])?;
@@ -4167,7 +4602,7 @@ mod tests {
                     | dictionary_flags::SUFFIX_BASED,
             ),
         ] {
-            let vtable = unsafe { &*dictionary_vtable(domain, flags) };
+            let vtable = unsafe { &*dictionary_vtable(domain, VtValueDomain::OptionalU64, flags) };
             assert_ne!(
                 vtable.flags & dictionary_flags::PARALLEL_REENTRANT,
                 0,
@@ -4696,7 +5131,8 @@ mod tests {
             if suffix {
                 requested |= SUF;
             }
-            let vtable = unsafe { &*dictionary_vtable(domain, requested) };
+            let vtable =
+                unsafe { &*dictionary_vtable(domain, VtValueDomain::OptionalU64, requested) };
             assert_eq!(
                 vtable.struct_size,
                 std::mem::size_of::<VtDictionaryVTable>(),
@@ -4731,12 +5167,16 @@ mod tests {
         // The U64 aliasing is pointer-level: suffix requests reuse the
         // non-suffix statics rather than minting lookalike tables.
         assert!(std::ptr::eq(
-            dictionary_vtable(VtUnitDomain::U64, PR | SUF),
-            dictionary_vtable(VtUnitDomain::U64, PR)
+            dictionary_vtable(VtUnitDomain::U64, VtValueDomain::OptionalU64, PR | SUF),
+            dictionary_vtable(VtUnitDomain::U64, VtValueDomain::OptionalU64, PR)
         ));
         assert!(std::ptr::eq(
-            dictionary_vtable(VtUnitDomain::U64, PR | IMM | SUF),
-            dictionary_vtable(VtUnitDomain::U64, PR | IMM)
+            dictionary_vtable(
+                VtUnitDomain::U64,
+                VtValueDomain::OptionalU64,
+                PR | IMM | SUF
+            ),
+            dictionary_vtable(VtUnitDomain::U64, VtValueDomain::OptionalU64, PR | IMM)
         ));
     }
 }

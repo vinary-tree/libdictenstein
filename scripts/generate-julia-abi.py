@@ -141,9 +141,9 @@ def julia_parameter_type(parameter: dict) -> str:
     c_type = canonical_c_type(parameter["cType"])
     direction = parameter["direction"]
     name = parameter["name"]
-    if c_type in {"LdictDictionary*", "const LdictDictionary*", "LdictEntryCursor*"}:
+    if c_type in {"LdictDictionary*", "const LdictDictionary*", "LdictEntryCursor*", "LdictByteEntryCursor*"}:
         return "Ptr{Cvoid}"
-    if c_type in {"LdictDictionary**", "LdictEntryCursor**"}:
+    if c_type in {"LdictDictionary**", "LdictEntryCursor**", "LdictByteEntryCursor**"}:
         return "Ref{Ptr{Cvoid}}"
     if c_type == "uint32_t":
         return "UInt32"
@@ -158,7 +158,7 @@ def julia_parameter_type(parameter: dict) -> str:
     if c_type == "const uint64_t*":
         return "Ptr{UInt64}"
     if c_type == "uint8_t*":
-        return "Ptr{UInt8}" if name == "out_data" else "Ref{UInt8}"
+        return "Ptr{UInt8}" if name in {"out_data", "out_bytes"} else "Ref{UInt8}"
     if c_type == "uint32_t*":
         return "Ref{UInt32}"
     if c_type == "uint64_t*":
@@ -181,6 +181,10 @@ def julia_parameter_type(parameter: dict) -> str:
         return "Ref{VTI.VtDictionaryEntryBatchView}"
     if c_type == "LdictEntriesInfo*":
         return "Ref{VTI.VtDictionaryEntriesInfo}"
+    if c_type in {"const LdictByteEntryBatchLimits*", "LdictByteEntryBatch*", "LdictByteEntriesInfo*"}:
+        return "Ptr{Cvoid}"
+    if c_type == "LdictByteEntryReducer":
+        return "Ptr{Cvoid}"
     if c_type in {"LdictEntryReducer", "void*"}:
         return "Ptr{Cvoid}"
     raise ModelError(

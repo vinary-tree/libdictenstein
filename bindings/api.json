@@ -30,6 +30,10 @@
     "dictionaryInterfaceVersion": 1,
     "dictionaryEntriesInterfaceId": "vt.dict.entry.v1",
     "dictionaryEntriesInterfaceVersion": 1,
+    "dictionaryBytesInterfaceId": "vt.dict.bytes.v2",
+    "dictionaryBytesInterfaceVersion": 2,
+    "dictionaryByteEntriesInterfaceId": "vt.dict.entry.v2",
+    "dictionaryByteEntriesInterfaceVersion": 2,
     "recommendedEdgeBatch": 256
   },
   "packages": {
@@ -212,7 +216,7 @@
     "_source": "release pins in .github/workflows/release-bindings.yml; dev facade pins in bindings/go/go.mod, Package.swift, bindings/jvm/build.gradle.kts (test scope), bindings/clojure/project.clj (:test profile), and bindings/javascript/package.json (@vinary-tree/javascript-runtime). Recorded verbatim; tag existence is a release concern tracked in docs/bindings/FINDINGS_LEDGER.md (LDICT-B1)."
   },
   "abiVersion": 1,
-  "apiRevision": 6,
+  "apiRevision": 7,
   "cPrefix": "ldict_",
   "cHeader": "include/libdictenstein.h",
   "featureGates": {
@@ -464,6 +468,12 @@
       "module": "src/bindings.rs",
       "kind": "DYNAMIC_DAWG"
     },
+    "ByteValueDawgBinding": {
+      "module": "src/bindings/byte_values.rs",
+      "kind": "DYNAMIC_DAWG",
+      "valueDomain": "BYTES",
+      "unitDomains": ["BYTE", "UNICODE_SCALAR", "U64"]
+    },
     "DoubleArrayTrieBinding": {
       "module": "src/bindings.rs",
       "kind": "DOUBLE_ARRAY_TRIE"
@@ -486,6 +496,106 @@
     }
   },
   "cFunctions": [
+    {
+      "name": "ldict_dynamic_dawg_new_byte_values", "group": "constructor", "returnType": "LdictStatus",
+      "parameters": [
+        {"name":"unit_domain","cType":"uint32_t","direction":"input","ownership":"value"},
+        {"name":"out_dictionary","cType":"LdictDictionary**","direction":"output","ownership":"caller-owned-handle"}
+      ]
+    },
+    {
+      "name":"ldict_dictionary_insert_text_bytes","group":"crud-text","returnType":"LdictStatus",
+      "parameters":[
+        {"name":"dictionary","cType":"LdictDictionary*","direction":"input-output","ownership":"borrowed-handle"},
+        {"name":"key","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},
+        {"name":"key_len","cType":"size_t","direction":"input","ownership":"value"},
+        {"name":"value","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},
+        {"name":"value_len","cType":"size_t","direction":"input","ownership":"value"},
+        {"name":"has_value","cType":"uint8_t","direction":"input","ownership":"value"},
+        {"name":"out_inserted","cType":"uint8_t*","direction":"output","ownership":"caller-owned-storage"}
+      ]
+    },
+    {
+      "name":"ldict_dictionary_insert_u64_bytes","group":"crud-u64","returnType":"LdictStatus",
+      "parameters":[
+        {"name":"dictionary","cType":"LdictDictionary*","direction":"input-output","ownership":"borrowed-handle"},
+        {"name":"key","cType":"const uint64_t*","direction":"input","ownership":"call-borrowed"},
+        {"name":"key_len","cType":"size_t","direction":"input","ownership":"value"},
+        {"name":"value","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},
+        {"name":"value_len","cType":"size_t","direction":"input","ownership":"value"},
+        {"name":"has_value","cType":"uint8_t","direction":"input","ownership":"value"},
+        {"name":"out_inserted","cType":"uint8_t*","direction":"output","ownership":"caller-owned-storage"}
+      ]
+    },
+    {
+      "name":"ldict_dictionary_get_text_bytes","group":"crud-text","returnType":"LdictStatus",
+      "parameters":[
+        {"name":"dictionary","cType":"const LdictDictionary*","direction":"input","ownership":"borrowed-handle"},
+        {"name":"key","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},
+        {"name":"key_len","cType":"size_t","direction":"input","ownership":"value"},
+        {"name":"out_found","cType":"uint8_t*","direction":"output","ownership":"caller-owned-storage"},
+        {"name":"out_bytes","cType":"uint8_t*","direction":"output","ownership":"caller-owned-buffer"},
+        {"name":"capacity","cType":"size_t","direction":"input","ownership":"value"},
+        {"name":"out_written","cType":"size_t*","direction":"output","ownership":"caller-owned-storage"},
+        {"name":"out_required","cType":"size_t*","direction":"output","ownership":"caller-owned-storage"},
+        {"name":"out_has_value","cType":"uint8_t*","direction":"output","ownership":"caller-owned-storage"}
+      ]
+    },
+    {
+      "name":"ldict_dictionary_get_u64_bytes","group":"crud-u64","returnType":"LdictStatus",
+      "parameters":[
+        {"name":"dictionary","cType":"const LdictDictionary*","direction":"input","ownership":"borrowed-handle"},
+        {"name":"key","cType":"const uint64_t*","direction":"input","ownership":"call-borrowed"},
+        {"name":"key_len","cType":"size_t","direction":"input","ownership":"value"},
+        {"name":"out_found","cType":"uint8_t*","direction":"output","ownership":"caller-owned-storage"},
+        {"name":"out_bytes","cType":"uint8_t*","direction":"output","ownership":"caller-owned-buffer"},
+        {"name":"capacity","cType":"size_t","direction":"input","ownership":"value"},
+        {"name":"out_written","cType":"size_t*","direction":"output","ownership":"caller-owned-storage"},
+        {"name":"out_required","cType":"size_t*","direction":"output","ownership":"caller-owned-storage"},
+        {"name":"out_has_value","cType":"uint8_t*","direction":"output","ownership":"caller-owned-storage"}
+      ]
+    },
+    {
+      "name":"ldict_dictionary_byte_entries_open","group":"collection","returnType":"LdictStatus",
+      "parameters":[
+        {"name":"dictionary","cType":"const LdictDictionary*","direction":"input","ownership":"borrowed-handle"},
+        {"name":"out_cursor","cType":"LdictByteEntryCursor**","direction":"output","ownership":"caller-owned-handle"},
+        {"name":"out_info","cType":"LdictByteEntriesInfo*","direction":"output","ownership":"caller-owned-storage"}
+      ]
+    },
+    {
+      "name":"ldict_byte_entry_cursor_next","group":"collection","returnType":"LdictStatus",
+      "parameters":[
+        {"name":"cursor","cType":"LdictByteEntryCursor*","direction":"input-output","ownership":"borrowed-handle"},
+        {"name":"limits","cType":"const LdictByteEntryBatchLimits*","direction":"input","ownership":"call-borrowed"},
+        {"name":"out_batch","cType":"LdictByteEntryBatch*","direction":"output","ownership":"cursor-borrowed-until-release"}
+      ]
+    },
+    {
+      "name":"ldict_byte_entry_cursor_release","group":"collection","returnType":"LdictStatus",
+      "parameters":[
+        {"name":"cursor","cType":"LdictByteEntryCursor*","direction":"input-output","ownership":"borrowed-handle"},
+        {"name":"generation","cType":"uint64_t","direction":"input","ownership":"value"}
+      ]
+    },
+    {
+      "name":"ldict_byte_entry_cursor_reduce","group":"collection","returnType":"LdictStatus",
+      "parameters":[
+        {"name":"cursor","cType":"LdictByteEntryCursor*","direction":"input-output","ownership":"borrowed-handle"},
+        {"name":"limits","cType":"const LdictByteEntryBatchLimits*","direction":"input","ownership":"call-borrowed"},
+        {"name":"reducer","cType":"LdictByteEntryReducer","direction":"input","ownership":"call-borrowed-callback"},
+        {"name":"reducer_context","cType":"void*","direction":"input-output","ownership":"call-borrowed"},
+        {"name":"out_count","cType":"size_t*","direction":"output","ownership":"caller-owned-storage"}
+      ]
+    },
+    {
+      "name":"ldict_byte_entry_cursor_cancel","group":"collection","returnType":"LdictStatus",
+      "parameters":[{"name":"cursor","cType":"LdictByteEntryCursor*","direction":"input-output","ownership":"borrowed-handle"}]
+    },
+    {
+      "name":"ldict_byte_entry_cursor_free","group":"collection","returnType":"LdictStatus",
+      "parameters":[{"name":"cursor","cType":"LdictByteEntryCursor*","direction":"input-output","ownership":"conditionally-consumed-handle"}]
+    },
     {
       "name": "ldict_abi_version",
       "group": "meta",

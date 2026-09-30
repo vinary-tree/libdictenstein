@@ -5,7 +5,7 @@ Cross-checks the machine-readable binding model (bindings/api.json) against the
 three sources it mirrors and the sixteen language facades that consume it:
 
   A. Symbol parity      - api.json cFunctions == `pub extern "C" fn ldict_*` in
-                          src/ffi.rs == declarations in include/libdictenstein.h,
+                          src/ffi.rs plus src/ffi/bytes.rs == declarations in include/libdictenstein.h,
                           including persistent-artrie feature attribution.
   B. Constant parity    - LDICT_ABI_VERSION / LDICT_API_REVISION, LdictStatus
                           numeric values, LDICT_KIND_* and LDICT_CAP_* constants,
@@ -446,10 +446,11 @@ def javascript_check(report: Report, model: dict) -> dict[str, object]:
 def check_symbol_parity(report: Report, model: dict) -> None:
     modeled = {entry["name"]: entry.get("feature") for entry in model["cFunctions"]}
     ffi_source = read_text(report, "symbols", ROOT / "src" / "ffi.rs")
+    byte_ffi_source = read_text(report, "symbols", ROOT / "src" / "ffi" / "bytes.rs")
     header_source = read_text(report, "symbols", ROOT / model["cHeader"])
-    if ffi_source is None or header_source is None:
+    if ffi_source is None or byte_ffi_source is None or header_source is None:
         return
-    exported = parse_ffi_exports(ffi_source)
+    exported = parse_ffi_exports(ffi_source) | parse_ffi_exports(byte_ffi_source)
     declared = parse_header_declarations(header_source)
 
     for label, missing in (
@@ -510,7 +511,7 @@ def check_julia_abi_generation(report: Report) -> None:
             return
     report.ok(
         "julia-abi",
-        "Julia constants, layouts, 42 typed calls, signature inventory, and negative controls are current",
+        "Julia constants, layouts, modeled typed calls, signature inventory, and negative controls are current",
     )
 
 

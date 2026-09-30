@@ -5,11 +5,12 @@
 [FFI boundary analysis](../security/ffi-boundary.md) ·
 [Findings ledger](FINDINGS_LEDGER.md)
 
-This is the normative reference for the **42-function `ldict_*` C ABI** exported
+This is the normative reference for the **53-function `ldict_*` C ABI** exported
 by the libdictenstein cdylib — the project-owned surface above the family
 resource ABI. Every function is documented with its exact header signature, its
 preconditions, the **exact** set of statuses it can return (derived from the
-function bodies in [`src/ffi.rs`](../../src/ffi.rs), not from convention), its
+function bodies in [`src/ffi.rs`](../../src/ffi.rs) and
+[`src/ffi/bytes.rs`](../../src/ffi/bytes.rs), not from convention), its
 ownership rules, its thread-safety truth, and its complexity.
 
 Authoritative sources, in precedence order:
@@ -17,18 +18,19 @@ Authoritative sources, in precedence order:
 1. [`bindings/api.json`](../../bindings/api.json) — the machine-readable model
    of this surface (exact return and parameter types, parameter direction and
    ownership, symbols, enums, kinds, capabilities, and marshalling laws),
-   enforced against `src/ffi.rs`, `include/libdictenstein.h`, and all 16
+   enforced against `src/ffi.rs` and `src/ffi/bytes.rs`,
+   `include/libdictenstein.h`, and all 16
    language facades by [`scripts/check-bindings.py`](../../scripts/check-bindings.py)
    (CI job `binding-contract`).
 2. [`include/libdictenstein.h`](../../include/libdictenstein.h) — the C header
    whose signatures are quoted verbatim below.
 3. [`src/ffi.rs`](../../src/ffi.rs) — the implementation each claim below was
-   read from.
+   read from (plus [`src/ffi/bytes.rs`](../../src/ffi/bytes.rs) for revision 7).
 
 The Julia facade consumes the first source mechanically through
 [`scripts/generate-julia-abi.py`](../../scripts/generate-julia-abi.py). Its
 [`signature inventory`](../../bindings/generated/julia-abi-capabilities.tsv)
-makes all 42 generated calls and their lifetime metadata reviewable, while the
+makes all 53 generated calls and their lifetime metadata reviewable, while the
 public header remains an independent exact-signature oracle.
 
 The family layer underneath (two-word `VtResource`, retain/release,
@@ -63,7 +65,7 @@ evolution model (see the canonical
 | Constant | Value | Meaning | Caller check |
 |---|---|---|---|
 | `LDICT_ABI_VERSION` | 1 | Breaking-change counter for the `ldict_*` surface: layouts, ownership rules, status meanings. | **Exact equality** — refuse any other value. |
-| `LDICT_API_REVISION` | 6 | Additive counter: revision 5 added the bounded entry cursor/reducer surface; revision 6 adds snapshot-consistent native dictionary algebra. | **At least** — a facade built against revision $`n`$ refuses a library reporting less than $`n`$. |
+| `LDICT_API_REVISION` | 7 | Additive counter: revision 5 added bounded entries; revision 6 added native dictionary algebra; revision 7 adds optional opaque byte values and byte-valued finite entries. | **At least** — a facade built against revision $`n`$ refuses a library reporting less than $`n`$. |
 
 Every fallible function reports failure twice: as an `LdictStatus` return value
 (the machine channel) and as a human-readable message retrievable through
@@ -91,7 +93,7 @@ Returns `LDICT_ABI_VERSION` (currently `1`).
 LDICT_API uint32_t ldict_api_revision(void);
 ```
 
-Returns `LDICT_API_REVISION` (currently `6`).
+Returns `LDICT_API_REVISION` (currently `7`).
 
 - **Preconditions**: none.
 - **Statuses**: none — cannot fail.
@@ -1157,6 +1159,116 @@ does not invalidate a current lease. `free(NULL)` is a successful no-op.
 Otherwise `free` consumes the opaque cursor only on `OK`, so a caller receiving
 `BATCH_IN_USE` must release and retry. Independent cursors are reentrant, but
 operations and close must not race on the same cursor.
+
+### 13.1 Optional byte values (API revision 7)
+
+```c
+LDICT_API LdictStatus ldict_dynamic_dawg_new_byte_values(
+    uint32_t unit_domain, LdictDictionary** out_dictionary);
+LDICT_API LdictStatus ldict_dictionary_insert_text_bytes(
+    LdictDictionary* dictionary, const uint8_t* key, size_t key_len,
+    const uint8_t* value, size_t value_len, uint8_t has_value,
+    uint8_t* out_inserted);
+LDICT_API LdictStatus ldict_dictionary_insert_u64_bytes(
+    LdictDictionary* dictionary, const uint64_t* key, size_t key_len,
+    const uint8_t* value, size_t value_len, uint8_t has_value,
+    uint8_t* out_inserted);
+LDICT_API LdictStatus ldict_dictionary_get_text_bytes(
+    const LdictDictionary* dictionary, const uint8_t* key, size_t key_len,
+    uint8_t* out_found, uint8_t* out_bytes, size_t capacity,
+    size_t* out_written, size_t* out_required, uint8_t* out_has_value);
+LDICT_API LdictStatus ldict_dictionary_get_u64_bytes(
+    const LdictDictionary* dictionary, const uint64_t* key, size_t key_len,
+    uint8_t* out_found, uint8_t* out_bytes, size_t capacity,
+    size_t* out_written, size_t* out_required, uint8_t* out_has_value);
+LDICT_API LdictStatus ldict_dictionary_byte_entries_open(
+    const LdictDictionary* dictionary, LdictByteEntryCursor** out_cursor,
+    LdictByteEntriesInfo* out_info);
+LDICT_API LdictStatus ldict_byte_entry_cursor_next(
+    LdictByteEntryCursor* cursor, const LdictByteEntryBatchLimits* limits,
+    LdictByteEntryBatch* out_batch);
+LDICT_API LdictStatus ldict_byte_entry_cursor_release(
+    LdictByteEntryCursor* cursor, uint64_t generation);
+LDICT_API LdictStatus ldict_byte_entry_cursor_reduce(
+    LdictByteEntryCursor* cursor, const LdictByteEntryBatchLimits* limits,
+    LdictByteEntryReducer reducer, void* reducer_context, size_t* out_count);
+LDICT_API LdictStatus ldict_byte_entry_cursor_cancel(LdictByteEntryCursor* cursor);
+LDICT_API LdictStatus ldict_byte_entry_cursor_free(LdictByteEntryCursor* cursor);
+```
+
+`ldict_dynamic_dawg_new_byte_values(unit_domain, out_dictionary)` creates a
+separate native DynamicDAWG for each of the existing byte, Unicode-scalar, and
+`u64` key domains. It is the first concrete producer of the optional family
+`vt.dict.bytes.v2` and `vt.dict.entry.v2` interfaces; those interfaces
+remain provider-neutral. Other backends do **not** acquire byte values by this
+revision. Existing `u64`-valued constructors, v1 interfaces, and hot paths are
+unchanged. A byte-valued resource retains the `vt.dictionary.v1` shape and
+reports `value_domain=Bytes`, but its `node_value_u64` callback is NULL; it
+never lies about the value type. Its v1 finite-entry interface is absent.
+
+`ldict_dictionary_insert_text_bytes` and `ldict_dictionary_insert_u64_bytes`
+accept `has_value` in `{0,1}`. Zero means no value and **requires**
+`value_len=0`; one with zero length means a present empty byte value. NULL is
+allowed for any zero-length buffer. Byte-domain text keys are arbitrary bytes;
+Unicode-domain text keys must be valid UTF-8 and transition by scalar value;
+the `u64` variant accepts exact token sequences including zero and
+`UINT64_MAX`. Wrong key representation is `DOMAIN_MISMATCH`; malformed UTF-8
+is `INVALID_UTF8`; malformed presence or unknown domains are
+`INVALID_ARGUMENT`. `out_inserted` is written only on `OK`. The old term-only
+insert, remove, contains, clear, compact, and length calls remain valid on a
+byte-valued handle. Old calls that accept or return optional `u64` values and
+the v1 `ldict_dictionary_entries_open` reject it with `UNSUPPORTED`.
+
+The `ldict_dictionary_get_{text,u64}_bytes` calls distinguish three outcomes
+without a sentinel:
+
+| Key | `out_found` | `out_has_value` | `out_required` |
+|---|---:|---:|---:|
+| missing | 0 | 0 | 0 |
+| present, valueless | 1 | 0 | 0 |
+| present, empty bytes | 1 | 1 | 0 |
+| present, nonempty bytes | 1 | 1 | byte length |
+
+The getters copy the **whole** value or none of it. With insufficient
+`capacity`, they return `LIMIT_EXCEEDED`, set `out_written=0` and publish
+`out_found`, `out_has_value`, and `out_required`; they do not write `out_bytes`.
+For stable two-phase retries, use the v2 point callback on a pinned family
+snapshot; an independent live getter may legitimately observe a newer
+revision. On `OK`, all four metadata outputs are set and exactly
+`out_written=out_required` bytes are copied. Other errors leave outputs
+untouched. Required output pointers and a positive-capacity buffer must be
+non-NULL. All copied bytes are caller-owned. Each fallible call is panic-
+contained and reports a thread-local diagnostic.
+
+`ldict_dictionary_byte_entries_open` captures one immutable revision and
+returns a finite lexicographic stream plus exact unit/value domains, count,
+and identity. Its cursor owns the snapshot independently of the dictionary
+handle. `ldict_byte_entry_cursor_next` uses three **hard** per-page bounds:
+descriptor count, typed unit **elements**, and raw value **bytes**. The unit
+arena is aligned for `uint8_t`, `uint32_t`, or `uint64_t` according to the
+reported domain; descriptor offsets use those elements, and value offsets use
+bytes. `has_value` remains independent of `value_len`. An oversized first
+entry yields `LIMIT_EXCEEDED`, leaves the output batch untouched, and stays
+pending for a larger retry. A complete prefix may be returned as `OK` when
+the following entry would exceed a bound; no partial entry is published.
+`END` writes a canonical empty batch. One exact-generation lease is live at a
+time; `next`, `reduce`, and `free` report `BATCH_IN_USE` until release. Wrong
+or duplicate releases are `INVALID_ARGUMENT`. `cancel` is sticky but does not
+invalidate a current lease. `reduce` makes one foreign callback per batch,
+settles each lease before interpreting `OK`/`END`/error, and forbids
+same-cursor reentry. Independent cursors are reentrant; concurrent operations
+on the **same** cursor are not supported. The facade validates provider
+metadata, arena bounds/alignment, packed descriptors, Unicode scalars, and
+strict key ordering; malformed provider output is `PROVIDER_ERROR`, with no
+batch published to its caller. A zero `max_entries` or nonzero reserved limit
+field is `INVALID_ARGUMENT`. NULL required pointers are `NULL_POINTER`.
+
+Byte-valued compact graph cursors are unique across this producer's snapshots
+for the process lifetime, so a cursor from a different snapshot is
+`INVALID_ARGUMENT` even if both graphs use the same dense node index. Token
+space exhaustion is `LIMIT_EXCEEDED` without a partial graph publication.
+The byte-graph value callback is present only when that immutable snapshot
+also exposes the graph; ordinary node byte lookup remains available otherwise.
 
 ---
 

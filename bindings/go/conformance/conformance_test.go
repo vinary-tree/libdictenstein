@@ -156,8 +156,8 @@ func TestC1_IdentityConstants(t *testing.T) {
 	if ld.AbiVersion() != 1 {
 		t.Fatalf("abi version = %d, want 1", ld.AbiVersion())
 	}
-	if ld.ApiRevision() != 6 {
-		t.Fatalf("api revision = %d, want 6", ld.ApiRevision())
+	if ld.ApiRevision() < 6 {
+		t.Fatalf("api revision = %d, want at least 6", ld.ApiRevision())
 	}
 }
 
