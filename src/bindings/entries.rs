@@ -41,14 +41,14 @@ pub(super) struct PendingEntry {
     pub(super) value: Option<u64>,
 }
 
-enum UnitArena {
+pub(super) enum UnitArena {
     Byte(Vec<u8>),
     Unicode(Vec<u32>),
     U64(Vec<u64>),
 }
 
 impl UnitArena {
-    fn new(domain: VtUnitDomain) -> Self {
+    pub(super) fn new(domain: VtUnitDomain) -> Self {
         match domain {
             VtUnitDomain::Byte => Self::Byte(Vec::new()),
             VtUnitDomain::UnicodeScalar => Self::Unicode(Vec::new()),
@@ -56,7 +56,7 @@ impl UnitArena {
         }
     }
 
-    fn clear(&mut self) {
+    pub(super) fn clear(&mut self) {
         match self {
             Self::Byte(units) => units.clear(),
             Self::Unicode(units) => units.clear(),
@@ -64,7 +64,7 @@ impl UnitArena {
         }
     }
 
-    fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         match self {
             Self::Byte(units) => units.len(),
             Self::Unicode(units) => units.len(),
@@ -72,7 +72,7 @@ impl UnitArena {
         }
     }
 
-    fn extend(&mut self, units: &[u64]) -> Result<(), VtStatus> {
+    pub(super) fn extend(&mut self, units: &[u64]) -> Result<(), VtStatus> {
         match self {
             Self::Byte(output) => {
                 output.reserve(units.len());
@@ -95,7 +95,7 @@ impl UnitArena {
         Ok(())
     }
 
-    fn as_void_ptr(&self) -> *const c_void {
+    pub(super) fn as_void_ptr(&self) -> *const c_void {
         match self {
             Self::Byte(units) => slice_ptr(units).cast(),
             Self::Unicode(units) => slice_ptr(units).cast(),
@@ -104,7 +104,7 @@ impl UnitArena {
     }
 }
 
-fn slice_ptr<T>(slice: &[T]) -> *const T {
+pub(super) fn slice_ptr<T>(slice: &[T]) -> *const T {
     if slice.is_empty() {
         ptr::null()
     } else {

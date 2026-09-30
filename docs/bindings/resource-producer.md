@@ -6,7 +6,7 @@
 
 This document explains the **producer half** of the family dictionary
 contract: how the module behind the `bindings-core` feature
-([`src/bindings.rs`](../../src/bindings.rs)) turns four very different
+([`src/bindings.rs`](../../src/bindings.rs)) turns several different
 dictionary engines into one uniform, retained, snapshot-capable two-word
 resource that independently compiled consumers can walk. The consumer half —
 cursors, leases, query semantics — lives in liblevenshtein and is documented
@@ -26,8 +26,8 @@ graph for the whole revision on first request.
 
 | Term | Definition |
 |---|---|
-| binding | A cheaply clonable `Arc`-shared wrapper (`DynamicDawgBinding`, `DoubleArrayTrieBinding`, `ScdawgBinding`, `PersistentARTrieBinding`) exposing one engine's CRUD to `src/ffi.rs` and producing resources. |
-| payload | The `ResourcePayload` variant a resource context carries: `Live` (mutable DynamicDAWG), `Secondary` (DAT or SCDAWG), `Persistent` (ARTrie family), or `Snapshot` (a captured revision). |
+| binding | A cheaply clonable `Arc`-shared wrapper (`DynamicDawgBinding`, `ByteValueDawgBinding`, `DoubleArrayTrieBinding`, `ScdawgBinding`, `PersistentARTrieBinding`) exposing one engine's CRUD to `src/ffi.rs` and producing resources. |
+| payload | The `ResourcePayload` variant a resource context carries: `Live` (optional-`u64` DynamicDAWG), `LiveBytes` (byte-valued DynamicDAWG), `Secondary` (DAT or SCDAWG), `Persistent` (ARTrie family), or `Snapshot` (a captured revision). |
 | revision | One immutable logical value of a dictionary. Mutable backends *publish* successor revisions; they never edit a published one in place. |
 | capture | Producing a `Snapshot` payload from any other payload: reuse the source revision's memoized snapshot or clone its current root handle and allocate a one-slot fallback arena plus empty graph publication cells — no traversal, no dictionary copy. |
 | identity | The optional `(producer, revision)` token exposed only by immutable snapshots. Equal tokens mean equal pinned revisions and permit consumers to share derived caches. |
@@ -54,7 +54,7 @@ Five layers, from the metal up:
    `SecondaryBackend` (DAT + SCDAWG in both text domains), and
    `PersistentBackend` (byte/Unicode/u64/vocabulary ARTrie) erase the
    per-domain generics behind one `snapshot()`/`len()`/`domain()` seam.
-3. **Bindings** — the four public structs `src/ffi.rs` dispatches into; each
+3. **Bindings** — the public structs `src/ffi.rs` dispatches into; each
    is `Clone` (an `Arc` bump) and each has `resource() → OwnedDictionaryResource`.
 4. **Resource machinery** — `ResourceContext` (payload + domain + flags),
    `SnapshotMemo` (one warmed snapshot per source revision plus lock-free
@@ -64,6 +64,20 @@ Five layers, from the metal up:
    base/dictionary/visit/graph/identity vtables.
 5. **The exported words** — a `VtResource { context, vtable }` whose vtable
    pointers live in the producer's read-only data for the process lifetime.
+
+API revision 7 adds a **separate** `ByteValueDawgBinding` over the same
+unit-generic DynamicDAWG engine, instantiated with `Vec<u8>` values for each
+of the byte, Unicode-scalar, and `u64` key domains. It does not route existing
+optional-`u64` dictionaries through byte allocation or dynamic value dispatch.
+Its immutable snapshots advertise optional `vt.dict.bytes.v2` point
+lookup and `vt.dict.entry.v2` finite byte-entry streaming; other backends keep
+their v1 capabilities unchanged. Present-empty bytes are distinct from an
+absent value in the graph, exact lookup, and entry descriptor paths. The
+byte-graph cursor allocator reserves process-unique ranges, including across
+released snapshots, before graph publication. Range exhaustion rejects the
+graph with `LimitExceeded` without reusing authority. See
+[the revision-7 C surface](c-abi-reference.md#131-optional-byte-values-api-revision-7)
+for the bounded copy, lease, and status rules.
 
 ### 2.1 Why the DynamicDAWG binding needs no outer lock
 

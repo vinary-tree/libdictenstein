@@ -3,7 +3,7 @@ use NativeCall;
 use Libdictenstein;
 
 is abi-version, ABI-VERSION, 'ABI version matches the package contract';
-is api-revision, API-REVISION, 'API revision includes native algebra';
+is api-revision, API-REVISION, 'API revision includes byte-valued native DAWG';
 is nativesizeof(OptionalValue), 16, 'optional u64 layout matches C';
 is nativesizeof(TextEntry), 32, 'text descriptor layout matches C';
 is nativesizeof(U64Entry), 32, 'u64 descriptor layout matches C';

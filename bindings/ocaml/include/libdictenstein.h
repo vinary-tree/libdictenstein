@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 #define LDICT_ABI_VERSION 1u
-#define LDICT_API_REVISION 6u
+#define LDICT_API_REVISION 7u
 
 #define LDICT_KIND_DYNAMIC_DAWG 1u
 #define LDICT_KIND_DOUBLE_ARRAY_TRIE 2u
@@ -102,6 +102,13 @@ typedef VtDictionaryEntryBatchLimits LdictEntryBatchLimits;
 typedef VtDictionaryEntryBatchView LdictEntryBatch;
 typedef VtDictionaryEntriesInfo LdictEntriesInfo;
 
+/* Optional v2 byte-value stream. has_value is independent of value_len:
+ * absent and present-empty are distinct even though both have zero bytes. */
+typedef VtDictionaryByteEntry LdictByteEntry;
+typedef VtDictionaryByteBatchLimits LdictByteEntryBatchLimits;
+typedef VtDictionaryByteBatchView LdictByteEntryBatch;
+typedef VtDictionaryEntriesInfo LdictByteEntriesInfo;
+
 #define LDICT_ENTRY_ORDER_LEXICOGRAPHIC VT_DICTIONARY_ENTRY_ORDER_LEXICOGRAPHIC
 #define LDICT_ENTRIES_INFO_FLAG_EXACT_LEN VT_DICTIONARY_ENTRIES_INFO_FLAG_EXACT_LEN
 #define LDICT_ENTRIES_INFO_FLAG_SNAPSHOT_IDENTITY \
@@ -111,6 +118,9 @@ typedef struct LdictEntryCursor LdictEntryCursor;
 typedef LdictStatus (*LdictEntryReducer)(
     void* reducer_context,
     const LdictEntryBatch* batch);
+typedef struct LdictByteEntryCursor LdictByteEntryCursor;
+typedef LdictStatus (*LdictByteEntryReducer)(
+    void* reducer_context, const LdictByteEntryBatch* batch);
 
 typedef struct LdictDictionary LdictDictionary;
 
@@ -119,6 +129,11 @@ LDICT_API uint32_t ldict_api_revision(void);
 LDICT_API const char* ldict_last_error_message(void);
 
 LDICT_API LdictStatus ldict_dynamic_dawg_new(
+    uint32_t unit_domain,
+    LdictDictionary** out_dictionary);
+/* Same three unit domains as the u64-valued constructor, with optional
+ * opaque byte values. The returned handle uses ordinary ldict_dictionary_free. */
+LDICT_API LdictStatus ldict_dynamic_dawg_new_byte_values(
     uint32_t unit_domain,
     LdictDictionary** out_dictionary);
 LDICT_API LdictStatus ldict_double_array_trie_new(
@@ -198,6 +213,26 @@ LDICT_API LdictStatus ldict_entry_cursor_cancel(LdictEntryCursor* cursor);
  * cursor; release the lease and retry. */
 LDICT_API LdictStatus ldict_entry_cursor_free(LdictEntryCursor* cursor);
 
+/* Byte-valued finite lexicographic stream. All three page limits are hard;
+ * LIMIT_EXCEEDED publishes no partial batch or cursor advance. */
+LDICT_API LdictStatus ldict_dictionary_byte_entries_open(
+    const LdictDictionary* dictionary,
+    LdictByteEntryCursor** out_cursor,
+    LdictByteEntriesInfo* out_info);
+LDICT_API LdictStatus ldict_byte_entry_cursor_next(
+    LdictByteEntryCursor* cursor,
+    const LdictByteEntryBatchLimits* limits,
+    LdictByteEntryBatch* out_batch);
+LDICT_API LdictStatus ldict_byte_entry_cursor_release(
+    LdictByteEntryCursor* cursor, uint64_t generation);
+LDICT_API LdictStatus ldict_byte_entry_cursor_reduce(
+    LdictByteEntryCursor* cursor,
+    const LdictByteEntryBatchLimits* limits,
+    LdictByteEntryReducer reducer,
+    void* reducer_context, size_t* out_count);
+LDICT_API LdictStatus ldict_byte_entry_cursor_cancel(LdictByteEntryCursor* cursor);
+LDICT_API LdictStatus ldict_byte_entry_cursor_free(LdictByteEntryCursor* cursor);
+
 LDICT_API LdictStatus ldict_dictionary_len(
     const LdictDictionary* dictionary,
     size_t* out_len);
@@ -251,6 +286,19 @@ LDICT_API LdictStatus ldict_dictionary_get_text_value(
     uint64_t* out_value,
     uint8_t* out_has_value);
 
+/* Byte-valued CRUD. Missing key: found=0; present key without value:
+ * found=1, has_value=0; present-empty: found=has_value=1, required=0.
+ * Short output returns LIMIT_EXCEEDED, writes presence/required/written=0,
+ * and copies no bytes. Other failures leave output slots unchanged. */
+LDICT_API LdictStatus ldict_dictionary_insert_text_bytes(
+    LdictDictionary* dictionary, const uint8_t* key, size_t key_len,
+    const uint8_t* value, size_t value_len, uint8_t has_value,
+    uint8_t* out_inserted);
+LDICT_API LdictStatus ldict_dictionary_get_text_bytes(
+    const LdictDictionary* dictionary, const uint8_t* key, size_t key_len,
+    uint8_t* out_found, uint8_t* out_bytes, size_t capacity,
+    size_t* out_written, size_t* out_required, uint8_t* out_has_value);
+
 LDICT_API LdictStatus ldict_dictionary_insert_u64(
     LdictDictionary* dictionary,
     const uint64_t* data,
@@ -287,6 +335,15 @@ LDICT_API LdictStatus ldict_dictionary_get_u64_value(
     uint8_t* out_found,
     uint64_t* out_value,
     uint8_t* out_has_value);
+
+LDICT_API LdictStatus ldict_dictionary_insert_u64_bytes(
+    LdictDictionary* dictionary, const uint64_t* key, size_t key_len,
+    const uint8_t* value, size_t value_len, uint8_t has_value,
+    uint8_t* out_inserted);
+LDICT_API LdictStatus ldict_dictionary_get_u64_bytes(
+    const LdictDictionary* dictionary, const uint64_t* key, size_t key_len,
+    uint8_t* out_found, uint8_t* out_bytes, size_t capacity,
+    size_t* out_written, size_t* out_required, uint8_t* out_has_value);
 
 LDICT_API LdictStatus ldict_dictionary_insert_text_batch(
     LdictDictionary* dictionary,

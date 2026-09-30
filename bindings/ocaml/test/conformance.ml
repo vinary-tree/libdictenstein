@@ -94,7 +94,7 @@ let assert_fixture_reads dictionary =
 
 let c1 () =
   check (D.abi_version () = 1) "abi version == 1";
-  check (D.api_revision () = 6) "api revision == 6";
+  check (D.api_revision () >= 6) "api revision >= 6";
   let dawg = D.dynamic_dawg () in
   check (D.kind dawg = 1) "dawg kind";
   let caps = D.capabilities dawg in

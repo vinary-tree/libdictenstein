@@ -33,7 +33,7 @@ our constant U64 is export = InteropAccess::U64Domain;
 my constant RawResource = InteropAccess::RawResourceType;
 
 our constant ABI-VERSION is export = 1;
-our constant API-REVISION is export = 6;
+our constant API-REVISION is export = 7;
 
 our enum DictionaryKind is export (
     DYNAMIC-DAWG => 1,

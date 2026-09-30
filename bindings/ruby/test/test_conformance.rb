@@ -56,7 +56,7 @@ class ConformanceTest < Minitest::Test
 
   def test_c1_identity_constants
     assert_equal 1, LD.abi_version
-    assert_equal 6, LD.api_revision
+    assert_operator LD.api_revision, :>=, 6
   end
 
   def test_c1_kind_and_capabilities

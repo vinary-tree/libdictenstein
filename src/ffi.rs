@@ -1,11 +1,14 @@
 //! Stable C ABI for libdictenstein-owned dictionaries and CRUD.
 
+mod bytes;
+pub use bytes::*;
+
 #[cfg(feature = "persistent-artrie")]
 use crate::bindings::PersistentARTrieBinding;
 use crate::bindings::{
     dictionary_algebra, BindingAlgebraError, BindingAlgebraOperation, BindingError,
-    BindingUnitDomain, BindingValueMerge, DoubleArrayTrieBinding, DynamicDawgBinding,
-    OwnedDictionaryResource, ScdawgBinding,
+    BindingUnitDomain, BindingValueMerge, ByteValueDawgBinding, DoubleArrayTrieBinding,
+    DynamicDawgBinding, OwnedDictionaryResource, ScdawgBinding,
 };
 use std::cell::RefCell;
 use std::ffi::{c_char, CString};
@@ -21,7 +24,7 @@ use vinary_tree_interop::{
 /// ABI version for the libdictenstein project API.
 pub const LDICT_ABI_VERSION: u32 = 1;
 /// Additive project API revision.
-pub const LDICT_API_REVISION: u32 = 6;
+pub const LDICT_API_REVISION: u32 = 7;
 
 /// DynamicDAWG backend identifier.
 pub const LDICT_KIND_DYNAMIC_DAWG: u32 = 1;
@@ -214,6 +217,7 @@ impl LdictDictionary {
 
 enum LdictBinding {
     Dynamic(DynamicDawgBinding),
+    DynamicBytes(ByteValueDawgBinding),
     DoubleArray(DoubleArrayTrieBinding),
     Scdawg(ScdawgBinding),
     #[cfg(feature = "persistent-artrie")]
@@ -223,7 +227,7 @@ enum LdictBinding {
 impl LdictBinding {
     fn kind(&self) -> u32 {
         match self {
-            Self::Dynamic(_) => LDICT_KIND_DYNAMIC_DAWG,
+            Self::Dynamic(_) | Self::DynamicBytes(_) => LDICT_KIND_DYNAMIC_DAWG,
             Self::DoubleArray(_) => LDICT_KIND_DOUBLE_ARRAY_TRIE,
             Self::Scdawg(_) => LDICT_KIND_SCDAWG,
             #[cfg(feature = "persistent-artrie")]
@@ -239,7 +243,7 @@ impl LdictBinding {
 
     fn capabilities(&self) -> u64 {
         match self {
-            Self::Dynamic(_) => {
+            Self::Dynamic(_) | Self::DynamicBytes(_) => {
                 LDICT_CAP_READ
                     | LDICT_CAP_INSERT
                     | LDICT_CAP_REMOVE
@@ -262,6 +266,7 @@ impl LdictBinding {
     fn domain(&self) -> BindingUnitDomain {
         match self {
             Self::Dynamic(binding) => binding.domain(),
+            Self::DynamicBytes(binding) => binding.domain(),
             Self::DoubleArray(binding) => binding.domain(),
             Self::Scdawg(binding) => binding.domain(),
             #[cfg(feature = "persistent-artrie")]
@@ -272,6 +277,7 @@ impl LdictBinding {
     fn len(&self) -> usize {
         match self {
             Self::Dynamic(binding) => binding.len(),
+            Self::DynamicBytes(binding) => binding.len(),
             Self::DoubleArray(binding) => binding.len(),
             Self::Scdawg(binding) => binding.len(),
             #[cfg(feature = "persistent-artrie")]
@@ -282,6 +288,7 @@ impl LdictBinding {
     fn resource(&self) -> OwnedDictionaryResource {
         match self {
             Self::Dynamic(binding) => binding.resource(),
+            Self::DynamicBytes(binding) => binding.resource(),
             Self::DoubleArray(binding) => binding.resource(),
             Self::Scdawg(binding) => binding.resource(),
             #[cfg(feature = "persistent-artrie")]
@@ -295,6 +302,10 @@ impl LdictBinding {
                 binding.clear();
                 Ok(())
             }
+            Self::DynamicBytes(binding) => {
+                binding.clear();
+                Ok(())
+            }
             _ => Err(BindingError::Unsupported),
         }
     }
@@ -302,6 +313,7 @@ impl LdictBinding {
     fn compact(&self) -> Result<usize, BindingError> {
         match self {
             Self::Dynamic(binding) => Ok(binding.compact()),
+            Self::DynamicBytes(binding) => Ok(binding.compact()),
             _ => Err(BindingError::Unsupported),
         }
     }
@@ -309,6 +321,13 @@ impl LdictBinding {
     fn insert_text(&self, term: &[u8], value: Option<u64>) -> Result<bool, BindingError> {
         match self {
             Self::Dynamic(binding) => binding.insert_text(term, value),
+            Self::DynamicBytes(binding) => {
+                if value.is_some() {
+                    Err(BindingError::Unsupported)
+                } else {
+                    binding.insert_text(term, None)
+                }
+            }
             Self::DoubleArray(_) => Err(BindingError::Unsupported),
             Self::Scdawg(binding) => {
                 let term = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
@@ -322,6 +341,7 @@ impl LdictBinding {
     fn remove_text(&self, term: &[u8]) -> Result<bool, BindingError> {
         match self {
             Self::Dynamic(binding) => binding.remove_text(term),
+            Self::DynamicBytes(binding) => binding.remove_text(term),
             #[cfg(feature = "persistent-artrie")]
             Self::Persistent(binding) => binding.remove_text(term),
             _ => Err(BindingError::Unsupported),
@@ -331,6 +351,7 @@ impl LdictBinding {
     fn contains_text(&self, term: &[u8]) -> Result<bool, BindingError> {
         match self {
             Self::Dynamic(binding) => binding.contains_text(term),
+            Self::DynamicBytes(binding) => binding.contains_text(term),
             Self::DoubleArray(binding) => {
                 let term = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
                 Ok(binding.contains(term))
@@ -347,6 +368,7 @@ impl LdictBinding {
     fn value_text(&self, term: &[u8]) -> Result<Option<Option<u64>>, BindingError> {
         match self {
             Self::Dynamic(binding) => binding.value_text(term),
+            Self::DynamicBytes(_) => Err(BindingError::Unsupported),
             Self::DoubleArray(binding) => {
                 let term = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
                 Ok(binding.value(term))
@@ -363,6 +385,13 @@ impl LdictBinding {
     fn insert_u64(&self, term: &[u64], value: Option<u64>) -> Result<bool, BindingError> {
         match self {
             Self::Dynamic(binding) => binding.insert_u64(term, value),
+            Self::DynamicBytes(binding) => {
+                if value.is_some() {
+                    Err(BindingError::Unsupported)
+                } else {
+                    binding.insert_u64(term, None)
+                }
+            }
             #[cfg(feature = "persistent-artrie")]
             Self::Persistent(binding) => binding.insert_u64(term, value),
             _ => Err(BindingError::DomainMismatch),
@@ -372,6 +401,7 @@ impl LdictBinding {
     fn remove_u64(&self, term: &[u64]) -> Result<bool, BindingError> {
         match self {
             Self::Dynamic(binding) => binding.remove_u64(term),
+            Self::DynamicBytes(binding) => binding.remove_u64(term),
             #[cfg(feature = "persistent-artrie")]
             Self::Persistent(binding) => binding.remove_u64(term),
             _ => Err(BindingError::DomainMismatch),
@@ -381,6 +411,7 @@ impl LdictBinding {
     fn contains_u64(&self, term: &[u64]) -> Result<bool, BindingError> {
         match self {
             Self::Dynamic(binding) => binding.contains_u64(term),
+            Self::DynamicBytes(binding) => binding.contains_u64(term),
             #[cfg(feature = "persistent-artrie")]
             Self::Persistent(binding) => binding.contains_u64(term),
             _ => Err(BindingError::DomainMismatch),
@@ -390,6 +421,7 @@ impl LdictBinding {
     fn value_u64(&self, term: &[u64]) -> Result<Option<Option<u64>>, BindingError> {
         match self {
             Self::Dynamic(binding) => binding.value_u64(term),
+            Self::DynamicBytes(_) => Err(BindingError::Unsupported),
             #[cfg(feature = "persistent-artrie")]
             Self::Persistent(binding) => binding.value_u64(term),
             _ => Err(BindingError::DomainMismatch),
