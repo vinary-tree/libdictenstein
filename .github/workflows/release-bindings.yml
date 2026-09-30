@@ -731,6 +731,14 @@ jobs:
     environment: github-release
     permissions: { contents: write }
     steps:
+      - uses: actions/checkout@v6
+        with: { persist-credentials: false }
+      - name: Require immutable-release setting and unused source tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMMUTABLE_RELEASES_READ_TOKEN: ${{ secrets.IMMUTABLE_RELEASES_READ_TOKEN }}
+        run: scripts/publish-immutable-release.sh --preflight "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$GITHUB_SHA"
+      - run: scripts/test-immutable-release-assets.sh "$RUNNER_TEMP/immutable-contract"
       - uses: actions/download-artifact@v7
         with: { pattern: native-*, path: assets, merge-multiple: true }
       - uses: actions/download-artifact@v7
@@ -762,11 +770,19 @@ jobs:
           cd assets
           find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > ../SHA256SUMS
           mv ../SHA256SUMS SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: "assets/*"
+          draft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
+      - name: Verify every draft asset, publish, and read back immutable bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/publish-immutable-release.sh --publish \
+            "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" assets \
+            "$GITHUB_SHA" "$RUNNER_TEMP/immutable-readback"
 
   opam:
     name: Submit package to opam-repository
