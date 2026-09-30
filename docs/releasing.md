@@ -172,7 +172,9 @@ using disk-backed scratch. For RC.6, enable GitHub [release immutability](https:
 for this repository before `validate-only`. Supply
 `IMMUTABLE_RELEASES_READ_TOKEN` with repository Administration:read to the
 protected `github-release` job; the publishing token remains the job-scoped
-Contents:write `GITHUB_TOKEN`. Preflight rejects a disabled setting or an
+Contents:write `GITHUB_TOKEN`. The organization-level secret must grant this
+repository access. Rotate its one-year fine-grained token before expiration;
+never print or commit its value. Preflight rejects a disabled setting or an
 already existing release. The job uploads every asset and `SHA256SUMS` to a
 draft, checks exact asset names and API digests, publishes the complete draft,
 and reads back every immutable public byte. The opam job rejects any release
@@ -180,8 +182,9 @@ whose API `immutable` field is not `true`.
 
 The `validate-only` graph does not mutate a package registry, but its terminal
 job writes the checksummed GitHub prerelease. Protect that job with the
-`github-release` environment and a required reviewer. It needs no stored
-secret; approval gates the job-scoped `GITHUB_TOKEN` used for the release.
+`github-release` environment and a required reviewer. It needs only the
+read-only immutable-setting preflight secret above; approval gates the
+job-scoped `GITHUB_TOKEN` used for the release.
 
 The renamed global-distribution metadata first appeared in append-only source
 `v4.0.0-rc.6-release.1`. Its validate-only graph passed every package lane
