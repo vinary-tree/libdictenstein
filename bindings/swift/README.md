@@ -7,14 +7,20 @@ declares the distributable `Libdictenstein` package and product.
 
 ## Native library
 
-The facade links the shared library `libdictenstein`. Build it and expose it to
-the linker and loader:
+The facade links the shared library `libdictenstein`. Build it, pass the
+native directory explicitly to SwiftPM's linker, and expose it to the runtime
+loader:
 
 ```sh
 cargo build --release --no-default-features --features ffi
-export LIBRARY_PATH="$PWD/target/release:$LIBRARY_PATH"
 export LD_LIBRARY_PATH="$PWD/target/release:$LD_LIBRARY_PATH"
+swift build --package-path bindings/swift/libdictenstein \
+  -Xlinker "-L$PWD/target/release"
 ```
+
+Use the same `-Xlinker` argument for `swift test`. On hosted Linux,
+`LIBRARY_PATH` alone may not reach SwiftPM's `ld.gold` invocation, even when
+the shared library has been downloaded successfully.
 
 ## Quickstart
 

@@ -318,13 +318,16 @@ jobs:
           VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/../vinary-tree-interop
         run: |
           rel="$GITHUB_WORKSPACE/target/release"
-          LIBRARY_PATH="$rel" LD_LIBRARY_PATH="$rel" \
+          test -f "$rel/liblibdictenstein.so"
+          # SwiftPM does not reliably forward LIBRARY_PATH to ld.gold on hosted Linux.
+          LD_LIBRARY_PATH="$rel" \
             swift build --package-path bindings/swift/libdictenstein \
-              --product libdictenstein-collection-profile
-          LIBRARY_PATH="$rel" LD_LIBRARY_PATH="$rel" \
+              --product libdictenstein-collection-profile -Xlinker "-L$rel"
+          LD_LIBRARY_PATH="$rel" \
             LDICT_FIXTURE="$GITHUB_WORKSPACE/bindings/canonical_fixture.json" \
-            swift test --package-path bindings/swift/libdictenstein
-          LIBRARY_PATH="$rel" LD_LIBRARY_PATH="$rel" \
+            swift test --package-path bindings/swift/libdictenstein \
+              -Xlinker "-L$rel"
+          LD_LIBRARY_PATH="$rel" \
             swift run --package-path bindings/swift/libdictenstein --skip-build \
               libdictenstein-collection-profile --arm stream-cancel \
               --entries 16 --batch-size 4 --early-cancel 5
