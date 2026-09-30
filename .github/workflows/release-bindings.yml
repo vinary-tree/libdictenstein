@@ -667,6 +667,11 @@ jobs:
         run: |
           set -euo pipefail
           version=$(jq -er '.registries.goTag' release/version.json)
+          source_tag=$(jq -er '.publication.sourceTag // .registries.goTag' release/version.json)
+          test "$GITHUB_REF_NAME" = "$source_tag"
+          git fetch --no-tags origin "refs/tags/$source_tag"
+          source_commit=$(git rev-parse 'HEAD^{commit}')
+          test "$source_commit" = "$(git rev-parse 'FETCH_HEAD^{commit}')"
           for path in \
             github.com/vinary-tree/vinary-tree-interop/bindings/go/v4 \
             github.com/vinary-tree/liblevenshtein-rust/bindings/go/v4; do
@@ -675,8 +680,8 @@ jobs:
                 'any(.Require[]?; .Path == $path and .Version == $version)'
           done
           GOWORK=off GOPROXY=https://proxy.golang.org go -C bindings/go mod download
-          bash scripts/go-module-release.sh verify bindings/go "$version" "$GITHUB_SHA"
-          bash scripts/go-module-release.sh proxy bindings/go "$version" "$GITHUB_SHA"
+          bash scripts/go-module-release.sh verify bindings/go "$version" "$source_commit"
+          bash scripts/go-module-release.sh proxy bindings/go "$version" "$source_commit"
 
   swiftpm:
     name: Verify SwiftPM tag

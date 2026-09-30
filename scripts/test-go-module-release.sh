@@ -21,6 +21,27 @@ git -C "$fixture/client" commit -qm source
 source_sha=$(git -C "$fixture/client" rev-parse HEAD)
 git -C "$fixture/client" push -q origin HEAD:refs/heads/main
 git -C "$fixture/origin.git" symbolic-ref HEAD refs/heads/main
+fixture_source_tag=v4.0.0-rc.6
+git -C "$fixture/client" tag -a "$fixture_source_tag" "$source_sha" -m source
+git -C "$fixture/client" push -q origin "refs/tags/$fixture_source_tag"
+
+# Mirror the workflow's checkout/ref/peeled-source comparison, including its
+# rejection of another dispatch ref or a checkout at a different commit.
+source_tag_matches_checkout() {
+  local dispatch_ref=$1 checkout_commit
+  (
+    cd "$fixture/client"
+    test "$dispatch_ref" = "$fixture_source_tag" || exit 1
+    git fetch --no-tags origin "refs/tags/$fixture_source_tag" >/dev/null || exit 1
+    checkout_commit=$(git rev-parse 'HEAD^{commit}') || exit 1
+    test "$checkout_commit" = "$(git rev-parse 'FETCH_HEAD^{commit}')"
+  )
+}
+source_tag_matches_checkout "$fixture_source_tag"
+if source_tag_matches_checkout another-tag >/dev/null 2>&1; then
+  echo "wrong dispatch source ref was accepted" >&2
+  exit 1
+fi
 
 check() {
   (cd "$fixture/client" && bash "$helper" "$@" "$source_sha")
@@ -64,6 +85,10 @@ fi
 # Reject a correctly named annotated tag that points to a different commit.
 git -C "$fixture/client" commit --allow-empty -qm other-source
 other_sha=$(git -C "$fixture/client" rev-parse HEAD)
+if source_tag_matches_checkout "$fixture_source_tag" >/dev/null 2>&1; then
+  echo "checkout at wrong source commit was accepted" >&2
+  exit 1
+fi
 git -C "$fixture/client" tag -a bindings/go/v4.0.0-rc.7 "$other_sha" -m wrong-target
 git -C "$fixture/client" push -q origin refs/tags/bindings/go/v4.0.0-rc.7
 expect_failure verify bindings/go v4.0.0-rc.7
