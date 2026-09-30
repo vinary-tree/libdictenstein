@@ -32,7 +32,16 @@ cp README.md "$source/README.md"
 cp LICENSE "$source/LICENSE"
 
 archive="$output/$package.tbz"
-tar -cjf "$archive" -C "$output/source" "$package"
+# A source archive is a function of the immutable source commit, not of the
+# runner's clock, uid, umask, directory enumeration order, or locale.
+source_date_epoch=$(git log -1 --format=%ct HEAD)
+[[ "$source_date_epoch" =~ ^[0-9]+$ ]] || {
+  echo "could not determine source commit timestamp" >&2
+  exit 1
+}
+LC_ALL=C TZ=UTC tar --sort=name --format=ustar \
+  --mtime="@$source_date_epoch" --owner=0 --group=0 --numeric-owner \
+  --mode='u=rwX,go=rX' -cjf "$archive" -C "$output/source" "$package"
 cp bindings/ocaml/libdictenstein.opam.template "$output/opam"
 read -r checksum _ < <(sha256sum "$archive")
 printf '\nurl {\n  src: "https://github.com/vinary-tree/libdictenstein/releases/download/%s/%s.tbz"\n  checksum: "sha256=%s"\n}\n' \
