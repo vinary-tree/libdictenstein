@@ -647,41 +647,41 @@ jobs:
       - run: gem push dist/*.gem
 
   go-module:
-    name: Publish Go module tag
+    name: Verify immutable Go module tag and public proxy
     needs: contract
     if: github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' && inputs.registry == 'go-module'
     runs-on: ubuntu-24.04
     environment: go-module
-    permissions: { contents: write }
+    permissions: { contents: read }
     steps:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
       - uses: actions/setup-go@v6
         with: { go-version: "1.26.x", cache: false }
-      - name: Create immutable subdirectory module tag
+      - name: Exercise offline immutable Go tag state machine
+        run: bash scripts/test-go-module-release.sh
+      - name: Verify annotated module tag and public proxy readback
         shell: bash
-        env: { GH_TOKEN: "${{ github.token }}" }
+        env:
+          GO_MODULE_READBACK_CACHE: ${{ github.workspace }}/.go-proxy-readback-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          for module in \
-            github.com/vinary-tree/vinary-tree-interop/bindings/go/v4@v4.0.0-rc.6 \
-            github.com/vinary-tree/liblevenshtein-rust/bindings/go@v4.0.0-rc.6; do
-            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-              if GOWORK=off GOPROXY=https://proxy.golang.org go list -m "$module" >/dev/null; then
-                break
-              fi
-              if [ "$attempt" -eq 12 ]; then exit 1; fi
-              sleep 10
-            done
+          set -euo pipefail
+          version=$(jq -er '.registries.goTag' release/version.json)
+          source_tag=$(jq -er '.publication.sourceTag // .registries.goTag' release/version.json)
+          test "$GITHUB_REF_NAME" = "$source_tag"
+          git fetch --no-tags origin "refs/tags/$source_tag"
+          source_commit=$(git rev-parse 'HEAD^{commit}')
+          test "$source_commit" = "$(git rev-parse 'FETCH_HEAD^{commit}')"
+          for path in \
+            github.com/vinary-tree/vinary-tree-interop/bindings/go/v4 \
+            github.com/vinary-tree/liblevenshtein-rust/bindings/go/v4; do
+            GOWORK=off go -C bindings/go mod edit -json |
+              jq -e --arg path "$path" --arg version "$version" \
+                'any(.Require[]?; .Path == $path and .Version == $version)'
           done
-          GOWORK=off go -C bindings/go mod verify
-          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
-          module_tag="bindings/go/v$version"
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$module_tag" >/dev/null 2>&1; then
-            echo "tag already exists: $module_tag" >&2
-            exit 1
-          fi
-          gh api "repos/$GITHUB_REPOSITORY/git/refs" --method POST \
-            -f "ref=refs/tags/$module_tag" -f "sha=$GITHUB_SHA"
+          GOWORK=off GOPROXY=https://proxy.golang.org go -C bindings/go mod download
+          bash scripts/go-module-release.sh verify bindings/go "$version" "$source_commit"
+          bash scripts/go-module-release.sh proxy bindings/go "$version" "$source_commit"
 
   swiftpm:
     name: Verify SwiftPM tag
