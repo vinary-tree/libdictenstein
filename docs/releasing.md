@@ -158,6 +158,26 @@ after that upstream package is merged and publicly resolvable should this job
 submit `libdictenstein.4.0.0~rc6`. Revoke the release token after the complete
 three-package submission sequence.
 
+The `opam` dispatch requires a prior `validate-only` dispatch at the same
+source tag: its protected GitHub-release job publishes the exact `.tbz` source
+asset and `SHA256SUMS`. Staging normalizes tar order, timestamp, ownership,
+permissions, and locale across runs. Before the upstream pull request, the
+opam job checks the public tag against the checked-out source commit and
+downloads the release archive and manifest. It checks the release API SHA-256,
+the unique manifest entry, and byte identity with the staged archive, then
+derives the submitted opam checksum from the downloaded public bytes. Missing,
+duplicate, or divergent evidence fails closed. Reproduce the positive and
+negative checks with `scripts/test-opam-archive-contract.sh target/opam-contract vinary-tree/libdictenstein v4.0.0-rc.6`
+using disk-backed scratch. For RC.6, enable GitHub [release immutability](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
+for this repository before `validate-only`. Supply
+`IMMUTABLE_RELEASES_READ_TOKEN` with repository Administration:read to the
+protected `github-release` job; the publishing token remains the job-scoped
+Contents:write `GITHUB_TOKEN`. Preflight rejects a disabled setting or an
+already existing release. The job uploads every asset and `SHA256SUMS` to a
+draft, checks exact asset names and API digests, publishes the complete draft,
+and reads back every immutable public byte. The opam job rejects any release
+whose API `immutable` field is not `true`.
+
 The `validate-only` graph does not mutate a package registry, but its terminal
 job writes the checksummed GitHub prerelease. Protect that job with the
 `github-release` environment and a required reviewer. It needs no stored
