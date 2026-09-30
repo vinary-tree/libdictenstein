@@ -62,6 +62,36 @@ gh workflow run release-bindings.yml \
 `go-module`, `luarocks`, and `opam`—each authorize only their matching
 protected job. There is deliberately no publish-all option.
 
+### Immutable Go module tag
+
+The Go v4 coordinate is
+`github.com/vinary-tree/libdictenstein/bindings/go/v4@v4.0.0-rc.6`.
+Its protected subdirectory tag `bindings/go/v4.0.0-rc.6` must be an annotated
+object directly naming the approved source-tag commit. For this corrective
+RC6 release, `publication.sourceTag` is `v4.0.0-rc.6-release.1`; do not
+assume the earlier canonical tag points to the same commit. After validation
+and separate approval for the exact protected remote ref, an authorized
+maintainer runs:
+
+```bash
+export GITHUB_REPOSITORY=vinary-tree/libdictenstein
+version=$(jq -er '.registries.goTag' release/version.json)
+source_tag=$(jq -er '.publication.sourceTag' release/version.json)
+source_commit=$(git rev-parse "$source_tag^{commit}")
+bash scripts/test-go-module-release.sh
+# Only after explicit approval to create this exact protected remote ref:
+bash scripts/go-module-release.sh create bindings/go "$version" "$source_commit"
+bash scripts/go-module-release.sh verify bindings/go "$version" "$source_commit"
+```
+
+`create` never force-updates a ref; correct reruns and concurrent identical
+creates converge by re-verification. Wrong targets, lightweight tags, and
+wrongly named annotated objects fail. The `go-module` workflow has read-only
+repository permission. It checks the exact source commit and a fresh public
+Go proxy resolution; it does not create or mutate tags. The dependency probe
+uses both exact `/bindings/go/v4` module paths. Save the tag object, peeled
+commit, and proxy evidence in the release ledger.
+
 ## Keyless registry authentication
 
 The crates.io job uses OpenID Connect (OIDC) trusted publishing rather than a
