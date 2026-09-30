@@ -23,19 +23,21 @@ const LD = Libdictenstein
     inventory_path = normpath(joinpath(@__DIR__, "..", "..", "..", "generated",
         "julia-abi-capabilities.tsv"))
     inventory = readlines(inventory_path)
-    @test length(inventory) == 43
     @test split(first(inventory), '\t') == [
         "symbol", "group", "feature", "return_type", "parameters", "julia_wrapper",
         "julia_return_type", "julia_parameter_types", "abi_version", "api_revision",
     ]
     rows = [split(line, '\t'; keepempty=true) for line in inventory[2:end]]
+    @test !isempty(rows)
     @test all(length(row) == 10 for row in rows)
+    @test length(rows) == length(Set(row[1] for row in rows))
     @test Set(row[1] for row in rows) == Set(
         string(name)[5:end] for name in names(LD; all=true)
         if startswith(string(name), "abi_ldict_")
     )
     @test all(isdefined(LD, Symbol(row[6])) for row in rows)
-    @test all(row[9] == "1" && row[10] == "6" for row in rows)
+    @test all(row[9] == string(LD.ABI_VERSION) &&
+              row[10] == string(LD.API_REVISION) for row in rows)
 end
 
 @testset "Unicode AbstractDict and snapshot iteration" begin
