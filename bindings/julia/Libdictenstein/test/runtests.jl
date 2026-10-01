@@ -13,6 +13,8 @@ const LD = Libdictenstein
     @test sizeof(LD.OptionalU64) == 16
     @test sizeof(LD.TextEntry) == 32
     @test sizeof(LD.U64Entry) == 32
+    @test sizeof(LD.SuffixSourceRecord) == 40
+    @test fieldnames(LD.SuffixSourceRecord) == (:source_id, :data, :len, :value)
     @test LD.LdictEntry === LD.VTI.VtDictionaryEntryRaw
     @test LD.LdictEntryBatchLimits === LD.VTI.BatchLimits
     @test LD.LdictEntryBatch === LD.VTI.VtDictionaryEntryBatchView
@@ -38,6 +40,107 @@ const LD = Libdictenstein
     @test all(isdefined(LD, Symbol(row[6])) for row in rows)
     @test all(row[9] == string(LD.ABI_VERSION) &&
               row[10] == string(LD.API_REVISION) for row in rows)
+end
+
+@testset "revision-8 PathMap dictionary" begin
+    raw = LD.PathMap(LD.UNIT_BYTE)
+    unicode = LD.PathMap()
+    try
+        @test LD.kind(raw) == LD.KIND_PATHMAP
+        @test LD.capabilities(raw) ==
+            LD.CAP_READ | LD.CAP_INSERT | LD.CAP_REMOVE | LD.CAP_CLEAR
+        raw[UInt8[0x00, 0xff, 0x80]] = UInt64(0)
+        @test raw[UInt8[0x00, 0xff, 0x80]] == 0
+        @test LD.insert_batch!(raw, [UInt8[0xff] => nothing,
+            UInt8[0x80, 0x00] => 9]) == 2
+        @test Set(keys(raw)) == Set([UInt8[0x00, 0xff, 0x80],
+            UInt8[0xff], UInt8[0x80, 0x00]])
+        unicode["é🙂"] = 7
+        @test unicode["é🙂"] == 7
+        captured = LD.snapshot(raw)
+        empty!(raw)
+        try
+            @test length(captured) == 3
+        finally
+            close(captured)
+        end
+    finally
+        close(raw)
+        close(unicode)
+    end
+    @test_throws LD.NativeError LD.PathMap(LD.UNIT_U64)
+end
+
+@testset "revision-8 typed suffix-source snapshots" begin
+    index = LD.SuffixIndex(LD.UNIT_BYTE)
+    try
+        for (text, value) in [("aba", UInt64(0)), ("aba", nothing),
+            ("ababa", UInt64(7)), ("", nothing)]
+            LD.insert_source!(index, text, value)
+        end
+        view = LD.source_snapshot(index)
+        try
+            @test length(view) == 4
+            @test LD.contains_source(view, "aba")
+            @test !LD.contains_source(view, "ba")
+            @test LD.contains_substring(view, "ba")
+            @test LD.substring_frequency(view, "aba") == 4
+            @test LD.substring_frequency(view, "") == 15
+            records = LD.source_records(view; page_size=2)
+            @test getfield.(records, :source_id) == [3, 0, 1, 2]
+            @test getfield.(records, :text) == ["", "aba", "aba", "ababa"]
+            @test getfield.(records, :value) == [nothing, UInt64(0), nothing, UInt64(7)]
+            identity = LD.source_identity(view)
+            @test identity.producer != 0
+            @test identity.revision == 4
+            @test LD.remove_source!(index, "aba")
+            later = LD.source_snapshot(index)
+            try
+                @test LD.substring_frequency(later, "aba") == 3
+            finally
+                close(later)
+            end
+            @test LD.substring_frequency(view, "aba") == 4
+            @test LD.compact!(index) === index
+            empty!(index)
+            LD.insert_source!(index, "new")
+            after_clear = LD.source_snapshot(index)
+            try
+                @test first(LD.source_records(after_clear)).source_id == 0
+                @test LD.source_identity(after_clear).revision > identity.revision
+            finally
+                close(after_clear)
+            end
+            close(index)
+            @test LD.substring_frequency(view, "aba") == 4
+        finally
+            close(view)
+        end
+    finally
+        close(index)
+    end
+    scalar = LD.SuffixIndex(LD.UNIT_UNICODE_SCALAR)
+    bytes = LD.SuffixIndex(LD.UNIT_BYTE)
+    try
+        for index in (scalar, bytes)
+            LD.insert_source!(index, "é🙂é")
+            LD.insert_source!(index, "")
+        end
+        scalar_view = LD.source_snapshot(scalar)
+        byte_view = LD.source_snapshot(bytes)
+        try
+            @test LD.substring_frequency(scalar_view, "") == 5
+            @test LD.substring_frequency(byte_view, "") == 10
+            @test LD.substring_frequency(scalar_view, "é") == 2
+        finally
+            close(scalar_view)
+            close(byte_view)
+        end
+    finally
+        close(scalar)
+        close(bytes)
+    end
+    @test_throws LD.NativeError LD.SuffixIndex(LD.UNIT_U64)
 end
 
 @testset "Unicode AbstractDict and snapshot iteration" begin

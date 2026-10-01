@@ -16,8 +16,18 @@ export API_REVISION,
     ValueMerge,
     DynamicDawg,
     SortedMinimalDawg,
+    PathMap,
     DoubleArrayTrie,
     Scdawg,
+    SuffixIndex,
+    SuffixSnapshot,
+    insert_source!,
+    remove_source!,
+    source_snapshot,
+    source_page,
+    source_records,
+    contains_source,
+    source_identity,
     PersistentARTrie,
     PersistentVocabulary,
     insert_batch!,
@@ -486,6 +496,12 @@ end
 normalize_domain(domain::VTI.UnitDomain) = domain
 normalize_domain(domain::Integer) = VTI.UnitDomain(UInt32(domain))
 
+function require_revision8(feature::Symbol)
+    api_revision() >= UInt32(8) || throw(NativeError(STATUS_UNSUPPORTED,
+        feature, "native libdictenstein API revision 8 is required"))
+    nothing
+end
+
 function key_type(domain::VTI.UnitDomain)
     domain == UNIT_BYTE && return Vector{UInt8}
     domain == UNIT_UNICODE_SCALAR && return String
@@ -532,6 +548,9 @@ function construct(symbol::Symbol, domain)
         abi_ldict_dynamic_dawg_new(UInt32(normalized), output)
     elseif symbol === :ldict_scdawg_new
         abi_ldict_scdawg_new(UInt32(normalized), output)
+    elseif symbol === :ldict_pathmap_new
+        require_revision8(symbol)
+        abi_ldict_pathmap_new(UInt32(normalized), output)
     else
         throw(ArgumentError("unsupported constructor $symbol"))
     end
@@ -589,6 +608,216 @@ end
 
 """Construct an empty mutable suffix-aware compact DAWG."""
 Scdawg(domain=UNIT_UNICODE_SCALAR) = construct(:ldict_scdawg_new, domain)
+
+"""Construct a mutable PathMap dictionary with exact byte or Unicode keys.
+
+Byte keys may contain any octet, including malformed UTF-8; Unicode keys must
+be valid Julia strings. The native `pathmap-backend` feature must be present.
+The u64-token domain is not supported. This is an ordinary `AbstractDict`,
+unlike the specialized `SuffixIndex` source-record API.
+"""
+PathMap(domain=UNIT_UNICODE_SCALAR) = construct(:ldict_pathmap_new, domain)
+
+"""Owned typed suffix-source index. Equal source texts remain distinct records.
+
+Both byte-transition and Unicode-scalar modes accept valid UTF-8 source text;
+they differ in empty-pattern boundary counts. This is not an `AbstractDict`:
+`contains_substring` tests occurrences inside active source records, while
+`contains_source` tests exact source text. Captured snapshots outlive the index.
+"""
+mutable struct SuffixIndex
+    handle::Ptr{Cvoid}
+    domain::VTI.UnitDomain
+    closed::Bool
+end
+
+mutable struct SuffixSnapshot
+    handle::Ptr{Cvoid}
+    domain::VTI.UnitDomain
+    closed::Bool
+end
+
+function SuffixIndex(domain=UNIT_UNICODE_SCALAR)
+    require_revision8(:ldict_suffix_index_new)
+    normalized = normalize_domain(domain)
+    output = Ref{Ptr{Cvoid}}(C_NULL)
+    checked(abi_ldict_suffix_index_new(UInt32(normalized), output), :ldict_suffix_index_new)
+    index = SuffixIndex(output[], normalized, false)
+    finalizer(close!, index)
+    index
+end
+
+function require_open(index::Union{SuffixIndex,SuffixSnapshot})
+    index.closed && throw(NativeError(STATUS_CLOSED, :suffix, "suffix resource is closed"))
+    index.handle
+end
+
+function close!(index::SuffixIndex)
+    index.closed && return nothing
+    handle = index.handle
+    index.handle = C_NULL
+    index.closed = true
+    if handle != C_NULL
+        abi_ldict_suffix_index_close(handle)
+        abi_ldict_suffix_index_free(handle)
+    end
+    nothing
+end
+
+function close!(view::SuffixSnapshot)
+    view.closed && return nothing
+    handle = view.handle
+    view.handle = C_NULL
+    view.closed = true
+    if handle != C_NULL
+        abi_ldict_suffix_snapshot_close(handle)
+        abi_ldict_suffix_snapshot_free(handle)
+    end
+    nothing
+end
+
+Base.close(index::Union{SuffixIndex,SuffixSnapshot}) = close!(index)
+Base.isopen(index::Union{SuffixIndex,SuffixSnapshot}) = !index.closed
+
+"""Append one source record; duplicate texts and present-zero values survive."""
+function insert_source!(index::SuffixIndex, text::AbstractString, value=nothing)
+    bytes = Vector{UInt8}(codeunits(text))
+    optional = checked_optional(value)
+    GC.@preserve bytes begin
+        checked(abi_ldict_suffix_index_insert_text(require_open(index),
+            isempty(bytes) ? C_NULL : pointer(bytes), length(bytes), optional),
+            :ldict_suffix_index_insert_text)
+    end
+    index
+end
+
+"""Remove one oldest active source record matching `text`; return whether found."""
+function remove_source!(index::SuffixIndex, text::AbstractString)
+    bytes = Vector{UInt8}(codeunits(text))
+    removed = Ref{UInt8}(0)
+    GC.@preserve bytes begin
+        checked(abi_ldict_suffix_index_remove_text(require_open(index),
+            isempty(bytes) ? C_NULL : pointer(bytes), length(bytes), removed),
+            :ldict_suffix_index_remove_text)
+    end
+    removed[] == 1
+end
+
+function Base.empty!(index::SuffixIndex)
+    checked(abi_ldict_suffix_index_clear(require_open(index)), :ldict_suffix_index_clear)
+    index
+end
+
+"""Compact the suffix graph; no reclaimed-node count is promised."""
+function compact!(index::SuffixIndex)
+    checked(abi_ldict_suffix_index_compact(require_open(index)),
+        :ldict_suffix_index_compact)
+    index
+end
+
+"""Capture an immutable active-source revision that may outlive its index."""
+function source_snapshot(index::SuffixIndex)
+    output = Ref{Ptr{Cvoid}}(C_NULL)
+    checked(abi_ldict_suffix_index_snapshot(require_open(index), output),
+        :ldict_suffix_index_snapshot)
+    view = SuffixSnapshot(output[], index.domain, false)
+    finalizer(close!, view)
+    view
+end
+
+function Base.length(view::SuffixSnapshot)
+    output = Ref{UInt64}(0)
+    checked(abi_ldict_suffix_snapshot_source_count(require_open(view), output),
+        :ldict_suffix_snapshot_source_count)
+    Int(output[])
+end
+
+"""Return the type-scoped producer/revision identity of a captured view.
+
+Source IDs are stable only within the revision and may be reused after clear;
+never compare this pair with generic dictionary resource identities.
+"""
+function source_identity(view::SuffixSnapshot)
+    producer = Ref{UInt64}(0)
+    revision = Ref{UInt64}(0)
+    checked(abi_ldict_suffix_snapshot_identity(require_open(view), producer, revision),
+        :ldict_suffix_snapshot_identity)
+    (; producer=producer[], revision=revision[])
+end
+
+function suffix_query(view::SuffixSnapshot, pattern::AbstractString, operation::Symbol)
+    bytes = Vector{UInt8}(codeunits(pattern))
+    output = Ref{UInt64}(0)
+    GC.@preserve bytes begin
+        handle = require_open(view)
+        data = isempty(bytes) ? C_NULL : pointer(bytes)
+        status = if operation === :contains_source
+            abi_ldict_suffix_snapshot_contains_source(handle, data, length(bytes), output)
+        elseif operation === :contains_substring
+            abi_ldict_suffix_snapshot_contains_substring(handle, data, length(bytes), output)
+        elseif operation === :substring_frequency
+            abi_ldict_suffix_snapshot_substring_frequency(handle, data, length(bytes), output)
+        else
+            throw(ArgumentError("unknown suffix query $operation"))
+        end
+        checked(status, Symbol("ldict_suffix_snapshot_", operation))
+    end
+    output[]
+end
+
+contains_source(view::SuffixSnapshot, text::AbstractString) =
+    suffix_query(view, text, :contains_source) == 1
+contains_substring(view::SuffixSnapshot, pattern::AbstractString) =
+    suffix_query(view, pattern, :contains_substring) == 1
+substring_frequency(view::SuffixSnapshot, pattern::AbstractString) =
+    Int(suffix_query(view, pattern, :substring_frequency))
+
+const SourceRecord = NamedTuple{(:source_id,:text,:value),
+    Tuple{UInt64,String,Union{Nothing,UInt64}}}
+
+"""Copy one bounded, lexicographically ordered page of active source records.
+
+The native page borrows text from the captured snapshot. This Julia facade
+copies each text before returning, so returned records outlive `close(view)`.
+Equal texts are ordered by source ID. A zero-capacity page is rejected here;
+use `length(view)` for count-only queries.
+"""
+function source_page(view::SuffixSnapshot, offset::Integer; capacity::Integer=256)
+    0 <= offset <= typemax(UInt64) || throw(ArgumentError("offset outside UInt64"))
+    0 < capacity <= typemax(Int) || throw(ArgumentError("capacity must be positive"))
+    descriptors = Vector{SuffixSourceRecord}(undef, Int(capacity))
+    written = Ref{Csize_t}(0)
+    total = Ref{UInt64}(0)
+    GC.@preserve view descriptors begin
+        require_open(view)
+        records = SourceRecord[]
+        status = abi_ldict_suffix_snapshot_source_page(require_open(view), UInt64(offset),
+            pointer(descriptors), length(descriptors), written, total)
+        status == STATUS_END && return records
+        checked(status, :ldict_suffix_snapshot_source_page)
+        for descriptor in @view descriptors[1:Int(written[])]
+            text = descriptor.len == 0 ? "" : String(copy(unsafe_wrap(
+                Vector{UInt8}, descriptor.data, Int(descriptor.len); own=false)))
+            value = descriptor.value.has_value == 0 ? nothing : descriptor.value.value
+            push!(records, (; source_id=descriptor.source_id, text, value))
+        end
+        records
+    end
+end
+
+"""Collect active records using bounded native pages, not one FFI call per key."""
+function source_records(view::SuffixSnapshot; page_size::Integer=256)
+    page_size > 0 || throw(ArgumentError("page_size must be positive"))
+    records = SourceRecord[]
+    offset = 0
+    while offset < length(view)
+        page = source_page(view, offset; capacity=page_size)
+        isempty(page) && break
+        append!(records, page)
+        offset += length(page)
+    end
+    records
+end
 
 function text_buffer(key, domain::VTI.UnitDomain)
     domain == UNIT_BYTE && key isa AbstractVector{UInt8} && return Vector{UInt8}(key)
