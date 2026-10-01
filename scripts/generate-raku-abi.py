@@ -350,6 +350,71 @@ def facade_source(source: str) -> str:
     return source
 
 
+def facade_code(source: str) -> str:
+    """Mask inert Raku text before recognizing handwritten native calls.
+
+    The facade uses ordinary single/double-quoted strings, line comments, and
+    ``=begin``/``=end`` POD blocks. Other quoting or comment forms must be
+    understood before they are introduced: failing closed is safer than
+    accidentally treating documentation as a native call.
+    """
+    code_lines: list[str] = []
+    pod_block: str | None = None
+    for line in source.splitlines(keepends=True):
+        begin = re.match(r"^=begin\s+(\w+)\s*$", line.rstrip("\r\n"))
+        end = re.match(r"^=end\s+(\w+)\s*$", line.rstrip("\r\n"))
+        if pod_block is not None:
+            if end and end.group(1) == pod_block:
+                pod_block = None
+            code_lines.append("\n" if line.endswith("\n") else "")
+            continue
+        if begin:
+            pod_block = begin.group(1)
+            code_lines.append("\n" if line.endswith("\n") else "")
+            continue
+        if line.startswith("=") and re.match(r"^=[A-Za-z]", line):
+            raise ModelError("unsupported Raku POD directive in facade")
+        code_lines.append(line)
+    if pod_block is not None:
+        raise ModelError(f"unterminated Raku POD block {pod_block}")
+
+    code = "".join(code_lines)
+    result: list[str] = []
+    quote: str | None = None
+    index = 0
+    while index < len(code):
+        char = code[index]
+        if quote is not None:
+            if char == "\\" and index + 1 < len(code):
+                result.extend(
+                    "\n" if part == "\n" else " " for part in code[index : index + 2]
+                )
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            result.append("\n" if char == "\n" else " ")
+        elif char in {"'", '"'}:
+            quote = char
+            result.append(" ")
+        elif char == "#":
+            if code.startswith("#`", index):
+                raise ModelError("unsupported Raku nested comment in facade")
+            while index < len(code) and code[index] != "\n":
+                result.append(" ")
+                index += 1
+            continue
+        else:
+            result.append(char)
+        index += 1
+    if quote is not None:
+        raise ModelError("unterminated Raku string in facade")
+    masked = "".join(result)
+    if re.search(r"(?<![\w-])(?:q|qq|Q|rx|m|s|tr)(?::[\w-]+)*\s*[({\[</!]", masked):
+        raise ModelError("unsupported Raku quoting form in facade")
+    return masked
+
+
 def validate_surface(model: dict, source: str) -> dict[str, str]:
     facade = model["facades"]["raku"]
     if facade["importLayers"] != [str(RAKU_PATH.relative_to(ROOT))]:
@@ -363,8 +428,23 @@ def validate_surface(model: dict, source: str) -> dict[str, str]:
         raise ModelError("Raku generator path differs from the model")
     if facade["abiInventory"] != str(INVENTORY_PATH.relative_to(ROOT)):
         raise ModelError("Raku ABI inventory path differs from the model")
-    outside = facade_source(source)
-    if re.search(r"^\s*sub\s+ldict-[a-z0-9-]+\s*\(", outside, re.MULTILINE):
+    outside = facade_code(facade_source(source))
+    # memcpy is the sole handwritten libc import. Project ABI declarations and
+    # symbol aliases belong in the generated region, regardless of local name.
+    if len(re.findall(r"\bis\s+native\b", outside)) != 1 or not re.search(
+        r"\bsub\s+memcpy\s*\(\s*Pointer\s*,\s*Pointer\s*,\s*size_t\s*-->\s*Pointer\s*\)\s*is\s+native\s*\{\s*\*\s*\}",
+        outside,
+    ):
+        raise ModelError("handwritten Raku native declaration differs from libc memcpy")
+    if re.search(r"\bis\s+symbol\s*\(", outside):
+        raise ModelError(
+            "handwritten Raku native symbol alias outside generated region"
+        )
+    if re.search(
+        r"^\s*(?:(?:my|our|multi|proto)\s+)*sub\s+ldict-[a-z0-9-]+\s*\(",
+        outside,
+        re.MULTILINE,
+    ):
         raise ModelError(
             "handwritten ldict NativeCall declaration outside generated region"
         )
@@ -377,16 +457,8 @@ def validate_surface(model: dict, source: str) -> dict[str, str]:
         raise ModelError(
             f"Raku facade calls unmodeled native symbol: {sorted(unknown)}"
         )
-    used = {
-        name
-        for name in names
-        if re.search(
-            r"(?<![A-Za-z0-9-])"
-            + re.escape(name.replace("_", "-"))
-            + r"(?![A-Za-z0-9-])",
-            outside,
-        )
-    }
+    calls = set(re.findall(r"(?<![A-Za-z0-9-])(ldict-[a-z0-9-]+)\s*\(", outside))
+    used = {name for name in names if name.replace("_", "-") in calls}
     reasons = facade["rawOnlyReasons"]
     raw_only = facade["rawOnly"]
     if set(raw_only) != names - used:
@@ -447,6 +519,11 @@ def render(model: dict, header: str, source: str) -> tuple[str, str]:
 
 def self_test(model: dict, header: str, source: str) -> None:
     render(model, header, source)
+    surface = validate_surface(model, source)
+    if surface["ldict_abi_version"] != "facade":
+        raise ModelError("live facade call was not recognized")
+    if surface["ldict_dynamic_dawg_new_byte_values"] != "byte-values":
+        raise ModelError("reasoned raw-only omission was not recognized")
     duplicate = copy.deepcopy(model)
     duplicate["cFunctions"].append(copy.deepcopy(duplicate["cFunctions"][0]))
     controls = [(duplicate, header, source, "duplicate symbol")]
@@ -496,8 +573,54 @@ def self_test(model: dict, header: str, source: str) -> None:
         (
             model,
             header,
+            source + "\nmulti sub ldict-abi-version() { 7 }\n",
+            "handwritten multi-sub shadowing",
+        )
+    )
+    controls.append(
+        (
+            model,
+            header,
+            source
+            + "\nsub rogue(--> int32) is native(&native-library) "
+            + 'is symbol("ldict_dynamic_dawg_new_byte_values") { * }\n',
+            "handwritten native symbol alias",
+        )
+    )
+    controls.append(
+        (
+            model,
+            header,
             source + "\nmy $ignored = ldict-fake(Pointer);\n",
             "unmodeled facade reference",
+        )
+    )
+    raw_symbol = "ldict_dynamic_dawg_new_byte_values"
+    hidden_omission = copy.deepcopy(model)
+    hidden_omission["facades"]["raku"]["rawOnly"].pop(raw_symbol)
+    raku_symbol = raw_symbol.replace("_", "-")
+    for inert_text, label in (
+        (f"# {raku_symbol}()", "comment-spoofed facade call"),
+        (f"my $ignored = '{raku_symbol}()';", "string-spoofed facade call"),
+        (f"=begin pod\n{raku_symbol}()\n=end pod", "POD-spoofed facade call"),
+    ):
+        controls.append(
+            (hidden_omission, header, source + "\n" + inert_text + "\n", label)
+        )
+    controls.append(
+        (
+            model,
+            header,
+            source + f"\n#`(\n{raku_symbol}()\n)\n",
+            "unsupported nested comment",
+        )
+    )
+    controls.append(
+        (
+            model,
+            header,
+            source + f"\nmy $ignored = q{{{raku_symbol}()}};\n",
+            "unsupported Raku quoting form",
         )
     )
     for bad_model, bad_header, bad_source, label in controls:

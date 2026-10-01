@@ -280,7 +280,7 @@ sub check-status(Int:D $status, Str:D $operation --> Nil) {
     X::Libdictenstein.new(
         :$status,
         :$operation,
-        detail => (try ldict-last-error-message) // '',
+        detail => (try ldict-last-error-message()) // '',
     ).throw;
 }
 
