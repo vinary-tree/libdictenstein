@@ -429,6 +429,17 @@ def validate_surface(model: dict, source: str) -> dict[str, str]:
     if facade["abiInventory"] != str(INVENTORY_PATH.relative_to(ROOT)):
         raise ModelError("Raku ABI inventory path differs from the model")
     outside = facade_code(facade_source(source))
+    # memcpy is the sole handwritten libc import. Project ABI declarations and
+    # symbol aliases belong in the generated region, regardless of local name.
+    if len(re.findall(r"\bis\s+native\b", outside)) != 1 or not re.search(
+        r"\bsub\s+memcpy\s*\(\s*Pointer\s*,\s*Pointer\s*,\s*size_t\s*-->\s*Pointer\s*\)\s*is\s+native\s*\{\s*\*\s*\}",
+        outside,
+    ):
+        raise ModelError("handwritten Raku native declaration differs from libc memcpy")
+    if re.search(r"\bis\s+symbol\s*\(", outside):
+        raise ModelError(
+            "handwritten Raku native symbol alias outside generated region"
+        )
     if re.search(
         r"^\s*(?:(?:my|our|multi|proto)\s+)*sub\s+ldict-[a-z0-9-]+\s*\(",
         outside,
@@ -564,6 +575,16 @@ def self_test(model: dict, header: str, source: str) -> None:
             header,
             source + "\nmulti sub ldict-abi-version() { 7 }\n",
             "handwritten multi-sub shadowing",
+        )
+    )
+    controls.append(
+        (
+            model,
+            header,
+            source
+            + "\nsub rogue(--> int32) is native(&native-library) "
+            + 'is symbol("ldict_dynamic_dawg_new_byte_values") { * }\n',
+            "handwritten native symbol alias",
         )
     )
     controls.append(

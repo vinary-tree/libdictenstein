@@ -67,6 +67,8 @@ Its facade-use check recognizes actual calls after masking ordinary quoted
 strings, line comments, and `=begin`/`=end` POD blocks. It rejects other Raku
 quoting or nested-comment forms until the scanner and negative controls are
 extended, so inert documentation cannot satisfy a facade-coverage claim.
+The only handwritten native import permitted outside generated regions is
+libc `memcpy`; a second import or symbol alias fails the drift check.
 
 ## Snapshots, iteration, and algebra
 
