@@ -95,6 +95,16 @@ impl<V: DictionaryValue> PathMapDictionaryChar<V> {
         self.state.load_full()
     }
 
+    /// Capture a Unicode traversal root and its count from one published state.
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn root_with_term_count(&self) -> (PathMapNodeChar<V>, usize) {
+        let state = self.load_state();
+        (
+            TrieRefNodeChar::new(trie_ref_root(state.map.clone())),
+            state.len,
+        )
+    }
+
     #[inline]
     fn compare_store_state(&self, current: &Arc<PathMapState<V>>, next: PathMapState<V>) -> bool {
         let previous = self.state.compare_and_swap(current, Arc::new(next));
@@ -219,6 +229,31 @@ impl<V: DictionaryValue> PathMapDictionaryChar<V> {
                 return inserted;
             }
 
+            backoff.snooze();
+        }
+    }
+
+    /// Insert or update valid Unicode terms with one atomic publication.
+    ///
+    /// Returns the number of newly inserted distinct terms. Later duplicate
+    /// entries update their value without incrementing the count.
+    pub fn insert_text_batch_with_values(&self, entries: Vec<(String, V)>) -> usize {
+        if entries.is_empty() {
+            return 0;
+        }
+        let mut backoff = CasBackoff::new();
+        loop {
+            let current = self.load_state();
+            let mut map = current.map.clone();
+            let mut inserted = 0;
+            for (term, value) in &entries {
+                if map.insert(term.as_bytes(), value.clone()).is_none() {
+                    inserted += 1;
+                }
+            }
+            if self.compare_store_state(&current, PathMapState::new(map, current.len + inserted)) {
+                return inserted;
+            }
             backoff.snooze();
         }
     }

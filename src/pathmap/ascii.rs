@@ -68,6 +68,16 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
         self.state.load_full()
     }
 
+    /// Capture a traversal root and its term count from the same published state.
+    #[cfg(feature = "bindings-core")]
+    pub(crate) fn root_with_term_count(&self) -> (PathMapNode<V>, usize) {
+        let state = self.load_state();
+        (
+            TrieRefNode::new(trie_ref_root(state.map.clone())),
+            state.len,
+        )
+    }
+
     #[inline]
     fn compare_store_state(&self, current: &Arc<PathMapState<V>>, next: PathMapState<V>) -> bool {
         let previous = self.state.compare_and_swap(current, Arc::new(next));
@@ -165,7 +175,17 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     where
         V: Default,
     {
-        self.insert_with_value(term, V::default())
+        self.insert_bytes(term.as_bytes())
+    }
+
+    /// Insert an arbitrary byte key with its default value.
+    ///
+    /// Unlike the text API, this accepts non-UTF-8 bytes and embedded NULs.
+    pub fn insert_bytes(&self, bytes: &[u8]) -> bool
+    where
+        V: Default,
+    {
+        self.insert_bytes_with_value(bytes, V::default())
     }
 
     /// Insert a term with a specific value into the dictionary
@@ -178,7 +198,14 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     /// Writers publish a cloned PathMap root with CAS. Readers observe either
     /// the old or new snapshot without waiting.
     pub fn insert_with_value(&self, term: &str, value: V) -> bool {
-        let bytes = term.as_bytes();
+        self.insert_bytes_with_value(term.as_bytes(), value)
+    }
+
+    /// Insert or update an arbitrary byte key with a value.
+    ///
+    /// Returns whether the key was newly inserted. The update and term count
+    /// are published together in one compare-and-swap operation.
+    pub fn insert_bytes_with_value(&self, bytes: &[u8], value: V) -> bool {
         let mut backoff = CasBackoff::new();
         loop {
             let current = self.load_state();
@@ -203,7 +230,11 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     /// Removal publishes a cloned PathMap root with CAS and never blocks
     /// readers.
     pub fn remove(&self, term: &str) -> bool {
-        let bytes = term.as_bytes();
+        self.remove_bytes(term.as_bytes())
+    }
+
+    /// Remove an arbitrary byte key, including non-UTF-8 keys.
+    pub fn remove_bytes(&self, bytes: &[u8]) -> bool {
         let mut backoff = CasBackoff::new();
         loop {
             let current = self.load_state();
@@ -297,9 +328,26 @@ impl<V: DictionaryValue> PathMapDictionary<V> {
     ///
     /// This method atomically loads one snapshot and performs a read-only lookup.
     pub fn get_value(&self, term: &str) -> Option<V> {
-        let bytes = term.as_bytes();
+        self.get_bytes_value(term.as_bytes())
+    }
+
+    /// Return the value of an arbitrary byte key, or `None` when absent.
+    pub fn get_bytes_value(&self, bytes: &[u8]) -> Option<V> {
         let state = self.load_state();
         state.map.get_val_at(bytes).cloned()
+    }
+
+    /// Test exact membership of an arbitrary byte key.
+    pub fn contains_bytes(&self, bytes: &[u8]) -> bool {
+        self.get_bytes_value(bytes).is_some()
+    }
+
+    /// Insert or update a batch of byte-keyed values with one atomic publication.
+    ///
+    /// Returns the number of newly inserted distinct keys. Later occurrences
+    /// of a duplicate key update its value without incrementing the count.
+    pub fn insert_bytes_batch_with_values(&self, entries: Vec<(Vec<u8>, V)>) -> usize {
+        self.extend_byte_entries(entries)
     }
 
     /// Update an existing term's value in place, or insert a new term with a default value.
@@ -797,6 +845,77 @@ mod tests {
         assert!(!dict.insert_with_value("hello", 99));
         assert_eq!(dict.get_value("hello"), Some(99));
         assert_eq!(dict.term_count(), 1);
+    }
+
+    #[test]
+    fn raw_byte_keys_preserve_non_utf8_nul_and_optional_values() {
+        #[derive(Clone, Debug, Default, PartialEq, Eq)]
+        #[cfg_attr(
+            feature = "persistent-artrie",
+            derive(serde::Serialize, serde::Deserialize)
+        )]
+        struct OptionalNumber(Option<u64>);
+        impl DictionaryValue for OptionalNumber {}
+
+        let dict: PathMapDictionary<OptionalNumber> = PathMapDictionary::new();
+        let invalid = b"\xff\0key";
+        let other = b"\xfe\0key";
+
+        assert!(!dict.contains_bytes(invalid));
+        assert_eq!(dict.get_bytes_value(invalid), None);
+        assert!(dict.insert_bytes(invalid));
+        assert_eq!(dict.get_bytes_value(invalid), Some(OptionalNumber(None)));
+        assert!(!dict.insert_bytes_with_value(invalid, OptionalNumber(Some(0))));
+        assert_eq!(dict.get_bytes_value(invalid), Some(OptionalNumber(Some(0))));
+
+        assert_eq!(
+            dict.insert_bytes_batch_with_values(vec![
+                (other.to_vec(), OptionalNumber(None)),
+                (other.to_vec(), OptionalNumber(Some(7))),
+                (b"plain\0text".to_vec(), OptionalNumber(Some(9))),
+            ]),
+            2
+        );
+        assert_eq!(dict.term_count(), 3);
+        assert_eq!(dict.get_bytes_value(other), Some(OptionalNumber(Some(7))));
+        assert_eq!(
+            dict.get_bytes_value(b"plain\0text"),
+            Some(OptionalNumber(Some(9)))
+        );
+
+        let root_before = dict.root();
+        assert!(dict.remove_bytes(invalid));
+        assert!(!dict.remove_bytes(invalid));
+        assert_eq!(dict.get_bytes_value(invalid), None);
+        assert_eq!(dict.term_count(), 2);
+        let old_key = root_before
+            .transition(0xff)
+            .and_then(|node| node.transition(0))
+            .and_then(|node| node.transition(b'k'))
+            .and_then(|node| node.transition(b'e'))
+            .and_then(|node| node.transition(b'y'))
+            .expect("pre-removal root retains the byte key");
+        assert_eq!(old_key.value(), Some(OptionalNumber(Some(0))));
+    }
+
+    #[test]
+    fn raw_byte_keys_roundtrip_every_octet_and_the_empty_key() {
+        let dict: PathMapDictionary<u16> = PathMapDictionary::new();
+        assert!(dict.insert_bytes_with_value(b"", 1000));
+        for octet in u8::MIN..=u8::MAX {
+            let key = [octet, 0, 0xff];
+            assert!(dict.insert_bytes_with_value(&key, u16::from(octet)));
+        }
+        assert_eq!(dict.term_count(), 257);
+        assert_eq!(dict.get_bytes_value(b""), Some(1000));
+        for octet in u8::MIN..=u8::MAX {
+            let key = [octet, 0, 0xff];
+            assert!(dict.contains_bytes(&key));
+            assert_eq!(dict.get_bytes_value(&key), Some(u16::from(octet)));
+        }
+        let entries: Vec<_> = dict.iter_bytes().collect();
+        assert_eq!(entries.len(), 257);
+        assert!(entries.contains(&(Vec::new(), 1000)));
     }
 
     #[test]

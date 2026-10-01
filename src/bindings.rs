@@ -20,6 +20,10 @@ use crate::dynamic_dawg::char::{DynamicDawgChar, DynamicDawgCharNode};
 use crate::dynamic_dawg::lockfree::PublishIfEmpty;
 use crate::dynamic_dawg::u64::{DynamicDawgU64, DynamicDawgU64Node};
 use crate::dynamic_dawg::{DynamicDawg, DynamicDawgNode};
+#[cfg(feature = "pathmap-backend")]
+use crate::pathmap::char::PathMapDictionaryChar;
+#[cfg(feature = "pathmap-backend")]
+use crate::pathmap::PathMapDictionary;
 use crate::scdawg::char::ScdawgChar;
 use crate::scdawg::Scdawg;
 use crate::{
@@ -1197,6 +1201,10 @@ enum SecondaryBackend {
     DoubleArrayUnicode(DoubleArrayTrieChar<BindingValue>),
     ScdawgByte(Scdawg<BindingValue>),
     ScdawgUnicode(ScdawgChar<BindingValue>),
+    #[cfg(feature = "pathmap-backend")]
+    PathMapByte(PathMapDictionary<BindingValue>),
+    #[cfg(feature = "pathmap-backend")]
+    PathMapUnicode(PathMapDictionaryChar<BindingValue>),
 }
 
 /// Same-binary causal control for direct immutable-DAT cursor snapshots.
@@ -1219,9 +1227,13 @@ impl SecondaryBackend {
     fn domain(&self) -> BindingUnitDomain {
         match self {
             Self::DoubleArrayByte(_) | Self::ScdawgByte(_) => BindingUnitDomain::Byte,
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMapByte(_) => BindingUnitDomain::Byte,
             Self::DoubleArrayUnicode(_) | Self::ScdawgUnicode(_) => {
                 BindingUnitDomain::UnicodeScalar
             }
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMapUnicode(_) => BindingUnitDomain::UnicodeScalar,
         }
     }
 
@@ -1231,6 +1243,10 @@ impl SecondaryBackend {
             Self::DoubleArrayUnicode(dictionary) => dictionary.len().unwrap_or_default(),
             Self::ScdawgByte(dictionary) => dictionary.term_count(),
             Self::ScdawgUnicode(dictionary) => dictionary.term_count(),
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMapByte(dictionary) => dictionary.term_count(),
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMapUnicode(dictionary) => dictionary.term_count(),
         }
     }
 
@@ -1330,7 +1346,226 @@ impl SecondaryBackend {
                     }),
                 )
             }
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMapByte(dictionary) => {
+                let (root, term_count) = dictionary.root_with_term_count();
+                exact_traversal_snapshot(root, term_count, VtUnitDomain::Byte, false, identity)
+            }
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMapUnicode(dictionary) => {
+                let (root, term_count) = dictionary.root_with_term_count();
+                exact_traversal_snapshot(
+                    root,
+                    term_count,
+                    VtUnitDomain::UnicodeScalar,
+                    false,
+                    identity,
+                )
+            }
         }
+    }
+}
+
+/// Mutable PathMap dictionary exposed through exact binding snapshots.
+///
+/// Byte dictionaries accept arbitrary octets; Unicode dictionaries accept
+/// valid UTF-8 strings and traverse their Unicode scalar values. Clones share
+/// an atomic copy-on-write state, while retained resources keep old revisions.
+#[cfg(feature = "pathmap-backend")]
+#[derive(Clone)]
+pub struct PathMapBinding {
+    shared: Arc<SnapshotSource<SecondaryBackend>>,
+}
+
+#[cfg(feature = "pathmap-backend")]
+impl PathMapBinding {
+    /// Construct an empty byte-keyed PathMap dictionary.
+    pub fn new_byte() -> Self {
+        Self {
+            shared: Arc::new(SnapshotSource::new(SecondaryBackend::PathMapByte(
+                PathMapDictionary::new(),
+            ))),
+        }
+    }
+
+    /// Construct an empty Unicode-scalar PathMap dictionary.
+    pub fn new_unicode() -> Self {
+        Self {
+            shared: Arc::new(SnapshotSource::new(SecondaryBackend::PathMapUnicode(
+                PathMapDictionaryChar::new(),
+            ))),
+        }
+    }
+
+    /// Unit domain used by this dictionary.
+    pub fn domain(&self) -> BindingUnitDomain {
+        self.shared.domain()
+    }
+
+    /// Exact term count from the currently published state.
+    pub fn len(&self) -> usize {
+        self.shared.len()
+    }
+
+    /// Whether the dictionary has no terms.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Insert or update a raw byte key; Unicode dictionaries reject this form.
+    pub fn insert_bytes(&self, term: &[u8], value: Option<u64>) -> Result<bool, BindingError> {
+        let dictionary = match &self.shared.backend {
+            SecondaryBackend::PathMapByte(dictionary) => dictionary,
+            _ => return Err(BindingError::DomainMismatch),
+        };
+        let mutation = self.shared.snapshots.begin_mutation();
+        let inserted = dictionary.insert_bytes_with_value(term, BindingValue::from_option(value));
+        mutation.finish(true);
+        Ok(inserted)
+    }
+
+    /// Insert or update a UTF-8 term in either supported domain.
+    pub fn insert_text(&self, term: &str, value: Option<u64>) -> bool {
+        let mutation = self.shared.snapshots.begin_mutation();
+        let value = BindingValue::from_option(value);
+        let inserted = match &self.shared.backend {
+            SecondaryBackend::PathMapByte(dictionary) => dictionary.insert_with_value(term, value),
+            SecondaryBackend::PathMapUnicode(dictionary) => {
+                dictionary.insert_with_value(term, value)
+            }
+            _ => unreachable!("PathMapBinding contains only PathMap backends"),
+        };
+        mutation.finish(true);
+        inserted
+    }
+
+    /// Apply one raw-byte batch as one native atomic publication.
+    pub fn insert_bytes_batch(
+        &self,
+        entries: Vec<(Vec<u8>, Option<u64>)>,
+    ) -> Result<usize, BindingError> {
+        let dictionary = match &self.shared.backend {
+            SecondaryBackend::PathMapByte(dictionary) => dictionary,
+            _ => return Err(BindingError::DomainMismatch),
+        };
+        if entries.is_empty() {
+            return Ok(0);
+        }
+        let mutation = self.shared.snapshots.begin_mutation();
+        let inserted = dictionary.insert_bytes_batch_with_values(
+            entries
+                .into_iter()
+                .map(|(term, value)| (term, BindingValue::from_option(value)))
+                .collect(),
+        );
+        mutation.finish(true);
+        Ok(inserted)
+    }
+
+    /// Apply one UTF-8 batch as one native atomic publication.
+    pub fn insert_text_batch(&self, entries: Vec<(String, Option<u64>)>) -> usize {
+        if entries.is_empty() {
+            return 0;
+        }
+        let mutation = self.shared.snapshots.begin_mutation();
+        let entries: Vec<(String, BindingValue)> = entries
+            .into_iter()
+            .map(|(term, value)| (term, BindingValue::from_option(value)))
+            .collect();
+        let inserted = match &self.shared.backend {
+            SecondaryBackend::PathMapByte(dictionary) => dictionary.insert_bytes_batch_with_values(
+                entries
+                    .into_iter()
+                    .map(|(term, value)| (term.into_bytes(), value))
+                    .collect(),
+            ),
+            SecondaryBackend::PathMapUnicode(dictionary) => {
+                dictionary.insert_text_batch_with_values(entries)
+            }
+            _ => unreachable!("PathMapBinding contains only PathMap backends"),
+        };
+        mutation.finish(true);
+        inserted
+    }
+
+    /// Remove a raw byte key; Unicode dictionaries reject this form.
+    pub fn remove_bytes(&self, term: &[u8]) -> Result<bool, BindingError> {
+        let dictionary = match &self.shared.backend {
+            SecondaryBackend::PathMapByte(dictionary) => dictionary,
+            _ => return Err(BindingError::DomainMismatch),
+        };
+        let mutation = self.shared.snapshots.begin_mutation();
+        let removed = dictionary.remove_bytes(term);
+        mutation.finish(removed);
+        Ok(removed)
+    }
+
+    /// Remove a UTF-8 term in either supported domain.
+    pub fn remove_text(&self, term: &str) -> bool {
+        let mutation = self.shared.snapshots.begin_mutation();
+        let removed = match &self.shared.backend {
+            SecondaryBackend::PathMapByte(dictionary) => dictionary.remove(term),
+            SecondaryBackend::PathMapUnicode(dictionary) => dictionary.remove(term),
+            _ => unreachable!("PathMapBinding contains only PathMap backends"),
+        };
+        mutation.finish(removed);
+        removed
+    }
+
+    /// Test exact membership of a raw byte key.
+    pub fn contains_bytes(&self, term: &[u8]) -> Result<bool, BindingError> {
+        match &self.shared.backend {
+            SecondaryBackend::PathMapByte(dictionary) => Ok(dictionary.contains_bytes(term)),
+            _ => Err(BindingError::DomainMismatch),
+        }
+    }
+
+    /// Test exact membership of a UTF-8 term.
+    pub fn contains_text(&self, term: &str) -> bool {
+        match &self.shared.backend {
+            SecondaryBackend::PathMapByte(dictionary) => dictionary.contains_bytes(term.as_bytes()),
+            SecondaryBackend::PathMapUnicode(dictionary) => dictionary.contains(term),
+            _ => unreachable!("PathMapBinding contains only PathMap backends"),
+        }
+    }
+
+    /// Read raw-byte metadata, distinguishing absent and valueless records.
+    pub fn value_bytes(&self, term: &[u8]) -> Result<Option<Option<u64>>, BindingError> {
+        match &self.shared.backend {
+            SecondaryBackend::PathMapByte(dictionary) => Ok(dictionary
+                .get_bytes_value(term)
+                .map(BindingValue::into_option)),
+            _ => Err(BindingError::DomainMismatch),
+        }
+    }
+
+    /// Read UTF-8 metadata, distinguishing absent and valueless records.
+    pub fn value_text(&self, term: &str) -> Option<Option<u64>> {
+        match &self.shared.backend {
+            SecondaryBackend::PathMapByte(dictionary) => dictionary
+                .get_bytes_value(term.as_bytes())
+                .map(BindingValue::into_option),
+            SecondaryBackend::PathMapUnicode(dictionary) => {
+                dictionary.get_value(term).map(BindingValue::into_option)
+            }
+            _ => unreachable!("PathMapBinding contains only PathMap backends"),
+        }
+    }
+
+    /// Atomically clear every term.
+    pub fn clear(&self) {
+        let mutation = self.shared.snapshots.begin_mutation();
+        match &self.shared.backend {
+            SecondaryBackend::PathMapByte(dictionary) => dictionary.clear(),
+            SecondaryBackend::PathMapUnicode(dictionary) => dictionary.clear(),
+            _ => unreachable!("PathMapBinding contains only PathMap backends"),
+        }
+        mutation.finish(true);
+    }
+
+    /// Borrow a retained interoperable snapshot resource.
+    pub fn resource(&self) -> OwnedDictionaryResource {
+        OwnedDictionaryResource::new(ResourcePayload::Secondary(Arc::clone(&self.shared)))
     }
 }
 
@@ -3819,6 +4054,124 @@ fn dictionary_vtable(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "pathmap-backend")]
+    #[test]
+    fn pathmap_binding_preserves_byte_domain_values_and_snapshot_revision() {
+        let dictionary = PathMapBinding::new_byte();
+        let raw = b"\xff\0key";
+        assert_eq!(dictionary.domain(), BindingUnitDomain::Byte);
+        assert!(dictionary.insert_bytes(raw, None).unwrap());
+        assert_eq!(dictionary.value_bytes(raw).unwrap(), Some(None));
+        assert!(!dictionary.insert_bytes(raw, Some(0)).unwrap());
+        assert_eq!(dictionary.value_bytes(raw).unwrap(), Some(Some(0)));
+        assert_eq!(dictionary.value_bytes(b"absent").unwrap(), None);
+
+        let resource = dictionary.resource();
+        let context = unsafe { &*resource.as_raw().context.cast::<ResourceContext>() };
+        let first = context.snapshot();
+        assert_eq!(first.identity(), context.snapshot().identity());
+        let old_entries = resource.entries();
+        assert_eq!(
+            dictionary
+                .insert_bytes_batch(vec![
+                    (b"x\0y".to_vec(), None),
+                    (b"x\0y".to_vec(), Some(7)),
+                    (b"next".to_vec(), Some(8)),
+                ])
+                .unwrap(),
+            2
+        );
+        assert_eq!(dictionary.len(), 3);
+        let second = context.snapshot();
+        assert_eq!(first.identity().producer, second.identity().producer);
+        assert_ne!(first.identity().revision, second.identity().revision);
+        assert_eq!(
+            old_entries.collect::<Result<Vec<_>, _>>().unwrap(),
+            vec![BindingEntry {
+                term: BindingTerm::Bytes(raw.to_vec()),
+                value: Some(0),
+            }]
+        );
+        let current = resource.entries().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(current.len(), 3);
+        assert!(current.contains(&BindingEntry {
+            term: BindingTerm::Bytes(b"x\0y".to_vec()),
+            value: Some(7),
+        }));
+        assert!(dictionary.remove_bytes(raw).unwrap());
+        assert!(!dictionary.contains_bytes(raw).unwrap());
+        dictionary.clear();
+        assert!(dictionary.is_empty());
+    }
+
+    #[cfg(feature = "pathmap-backend")]
+    #[test]
+    fn pathmap_binding_unicode_rejects_raw_bytes_and_preserves_scalar_entries() {
+        let dictionary = PathMapBinding::new_unicode();
+        assert_eq!(dictionary.domain(), BindingUnitDomain::UnicodeScalar);
+        assert_eq!(
+            dictionary.insert_bytes(b"not text", None),
+            Err(BindingError::DomainMismatch)
+        );
+        assert_eq!(
+            dictionary.insert_bytes_batch(vec![(b"text".to_vec(), None)]),
+            Err(BindingError::DomainMismatch)
+        );
+        assert_eq!(
+            dictionary.value_bytes(b"text"),
+            Err(BindingError::DomainMismatch)
+        );
+        assert_eq!(
+            dictionary.insert_text_batch(vec![
+                ("café".to_owned(), None),
+                ("🐦".to_owned(), Some(0)),
+                ("café".to_owned(), Some(5)),
+            ]),
+            2
+        );
+        assert_eq!(dictionary.value_text("café"), Some(Some(5)));
+        assert_eq!(dictionary.value_text("🐦"), Some(Some(0)));
+        let entries = dictionary
+            .resource()
+            .entries()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.contains(&BindingEntry {
+            term: BindingTerm::Unicode("café".to_owned()),
+            value: Some(5),
+        }));
+        assert!(dictionary.remove_text("café"));
+        assert!(!dictionary.contains_text("café"));
+    }
+
+    #[cfg(feature = "pathmap-backend")]
+    #[test]
+    fn pathmap_binding_concurrent_snapshots_never_tear_count_from_root() {
+        let dictionary = PathMapBinding::new_byte();
+        let writer = dictionary.clone();
+        let thread = std::thread::spawn(move || {
+            for index in 0..120u64 {
+                writer
+                    .insert_bytes(&index.to_le_bytes(), Some(index))
+                    .unwrap();
+                if index % 3 == 0 {
+                    writer.remove_bytes(&index.to_le_bytes()).unwrap();
+                }
+            }
+        });
+        let resource = dictionary.resource();
+        for _ in 0..120 {
+            let entries = resource.entries();
+            let exact_count = entries.size_hint().0;
+            let captured = entries.collect::<Result<Vec<_>, _>>().unwrap();
+            assert_eq!(captured.len(), exact_count);
+        }
+        thread.join().unwrap();
+        let entries = resource.entries().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(entries.len(), dictionary.len());
+    }
     use std::sync::mpsc;
     use std::time::Duration;
 
