@@ -7,6 +7,26 @@ function cloneKey(key) {
 }
 function ownedEntry(entry) { return Object.freeze([cloneKey(entry[0]), entry[1]]); }
 const owned = Symbol("owned dictionary snapshot entries");
+class UnsupportedBackendError extends Error {
+  constructor(backend, revision) {
+    const reason = revision !== null && revision < 8
+      ? `${backend} requires native API revision 8 (found ${revision})`
+      : `${backend} is not yet mediated by this JavaScript binding`;
+    super(reason);
+    this.name = "UnsupportedBackendError";
+    this.status = 6;
+    this.backend = backend;
+    this.requiredRevision = 8;
+    this.apiRevision = revision;
+  }
+}
+function unsupportedBackend(namespace, backend) {
+  const reported = typeof namespace.apiRevision === "function"
+    ? namespace.apiRevision()
+    : namespace.apiRevision;
+  const revision = Number.isInteger(reported) && reported >= 0 ? reported : null;
+  throw new UnsupportedBackendError(backend, revision);
+}
 function disposeCursor(cursor) {
   if (typeof cursor.close === "function") { cursor.close(); return; }
   if (typeof Symbol.dispose === "symbol" && typeof cursor[Symbol.dispose] === "function") {
@@ -116,6 +136,8 @@ function collectionNamespace(namespace) {
     dynamicDawg: (...arguments_) => wrap(namespace.dynamicDawg(...arguments_)),
     doubleArrayTrie: (...arguments_) => wrap(namespace.doubleArrayTrie(...arguments_)),
     scdawg: (...arguments_) => wrap(namespace.scdawg(...arguments_)),
+    pathMap: () => unsupportedBackend(namespace, "PathMap"),
+    suffixIndex: () => unsupportedBackend(namespace, "suffix index"),
   };
   if (typeof namespace.createPersistentARTrie === "function") {
     result.createPersistentARTrie = (...arguments_) => wrap(namespace.createPersistentARTrie(...arguments_));
@@ -123,4 +145,4 @@ function collectionNamespace(namespace) {
   }
   return Object.freeze(result);
 }
-module.exports = { DictionarySnapshot, collectionNamespace };
+module.exports = { DictionarySnapshot, UnsupportedBackendError, collectionNamespace };

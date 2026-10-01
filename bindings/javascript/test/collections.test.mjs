@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import test from "node:test";
 
-import { collectionNamespace } from "../facades/collections.mjs";
+import { collectionNamespace, UnsupportedBackendError } from "../facades/collections.mjs";
 import { runCollectionTraversalProfile } from "../benchmarks/collection-traversal-profile.mjs";
 
 function compare(left, right) {
@@ -51,6 +52,50 @@ function fakeNamespace(counters = { opened: 0, closed: 0 }) {
     scdawg() { return this.dynamicDawg(); },
   };
 }
+
+test("revision-8 backends reject explicitly without aliasing older constructors", () => {
+  for (const [reportedRevision, expectedReason] of [
+    [7, /requires native API revision 8/],
+    [8, /not yet mediated/],
+    [undefined, /not yet mediated/],
+  ]) {
+    let forwarded = 0;
+    const namespace = collectionNamespace({
+      ...fakeNamespace(),
+      apiRevision: reportedRevision,
+      pathMap() { forwarded += 1; },
+      suffixIndex() { forwarded += 1; },
+    });
+    for (const [name, backend] of [["pathMap", "PathMap"], ["suffixIndex", "suffix index"]]) {
+      assert.throws(() => namespace[name](), (error) => {
+        assert.ok(error instanceof UnsupportedBackendError);
+        assert.equal(error.status, 6);
+        assert.equal(error.backend, backend);
+        assert.equal(error.requiredRevision, 8);
+        assert.equal(error.apiRevision, reportedRevision ?? null);
+        assert.match(error.message, expectedReason);
+        return true;
+      });
+    }
+    assert.equal(forwarded, 0, "rev8 symbols must not be called by an unqualified facade");
+  }
+});
+
+test("CommonJS facade preserves the same status-6 revision gate", () => {
+  const require = createRequire(import.meta.url);
+  const { collectionNamespace: commonJsNamespace, UnsupportedBackendError: CommonJsError } =
+    require("../facades/collections.cjs");
+  const namespace = commonJsNamespace({ ...fakeNamespace(), apiRevision: () => 7 });
+  for (const constructor of [namespace.pathMap, namespace.suffixIndex]) {
+    assert.throws(constructor, (error) => {
+      assert.ok(error instanceof CommonJsError);
+      assert.equal(error.status, 6);
+      assert.equal(error.requiredRevision, 8);
+      assert.equal(error.apiRevision, 7);
+      return true;
+    });
+  }
+});
 
 test("ordinary protocols materialize and close; explicit streams cancel", () => {
   const counters = { opened: 0, closed: 0 };

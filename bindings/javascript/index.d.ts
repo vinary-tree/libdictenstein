@@ -8,6 +8,14 @@ export type DictionaryEntry = readonly [DictionaryKey, DictionaryValue];
 export type AlgebraOperation = "union" | "intersection" | "difference" | "symmetric-difference";
 export type ValueMerge = "first" | "last" | "lattice-join" | "lattice-meet";
 export interface Lookup { readonly found: boolean; readonly value: DictionaryValue; }
+/** Status-6 rejection for a backend not mediated by this binding. */
+export class UnsupportedBackendError extends Error {
+  constructor(backend: string, revision: number | null);
+  readonly status: 6;
+  readonly backend: string;
+  readonly requiredRevision: 8;
+  readonly apiRevision: number | null;
+}
 export interface DictionaryEntryCursor extends IterableIterator<DictionaryEntry> {
   readonly size: number;
   readonly identity: Readonly<{ producer: bigint; revision: bigint }> | null;
@@ -71,10 +79,16 @@ export interface LibdictensteinNamespace {
   dynamicDawg(unitDomain?: UnitDomain): Dictionary;
   doubleArrayTrie(entries: readonly { term: string; value?: DictionaryValue }[], unitDomain?: "byte" | "unicode"): Dictionary;
   scdawg(unitDomain?: "byte" | "unicode"): Dictionary;
+  /** Always throws status-6 UNSUPPORTED until the revision-8 backend is mediated. */
+  pathMap(unitDomain?: "byte" | "unicode"): never;
+  /** Always throws status-6 UNSUPPORTED; this is not a generic dictionary. */
+  suffixIndex(unitDomain?: "byte" | "unicode"): never;
 }
 export const runtimeIdentity: RuntimeIdentity;
 export function dynamicDawg(unitDomain?: UnitDomain): Dictionary;
 export function doubleArrayTrie(entries: readonly { term: string; value?: DictionaryValue }[], unitDomain?: "byte" | "unicode"): Dictionary;
 export function scdawg(unitDomain?: "byte" | "unicode"): Dictionary;
+export function pathMap(unitDomain?: "byte" | "unicode"): never;
+export function suffixIndex(unitDomain?: "byte" | "unicode"): never;
 declare const libdictenstein: LibdictensteinNamespace;
 export default libdictenstein;

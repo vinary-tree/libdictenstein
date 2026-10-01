@@ -17,9 +17,11 @@ test("all language facades select the shared umbrella runtime", () => {
 
 test("ClojureScript mirrors Clojure CRUD naming", async () => {
   const source = await readFile(new URL("cljs/vinary_tree/libdictenstein.cljs", root), "utf8");
-  for (const name of ["dynamic-dawg", "double-array-trie", "scdawg", "contains?", "get", "put!", "put-all!", "remove!", "snapshot", "entries", "keys", "values", "union", "intersection", "difference", "symmetric-difference", "reduce-entries", "with-entry-stream", "clear!", "compact!", "contains-substring?", "frequency", "close!"]) {
+  for (const name of ["dynamic-dawg", "double-array-trie", "scdawg", "path-map", "suffix-index", "contains?", "get", "put!", "put-all!", "remove!", "snapshot", "entries", "keys", "values", "union", "intersection", "difference", "symmetric-difference", "reduce-entries", "with-entry-stream", "clear!", "compact!", "contains-substring?", "frequency", "close!"]) {
     assert.ok(source.includes(`(defn ${name}`), `missing ${name}`);
   }
+  assert.ok(source.includes("(native/pathMap)"));
+  assert.ok(source.includes("(native/suffixIndex)"));
   assert.equal((source.match(/\.streamEntries dictionary/g) ?? []).length, 2);
   assert.equal(source.includes("(.close cursor)"), true);
 });

@@ -26,6 +26,16 @@
   ([] (native/scdawg "unicode"))
   ([unit-domain] (native/scdawg (domain-name unit-domain))))
 
+(defn path-map
+  "Reject unmediated PathMap with status-6 UNSUPPORTED."
+  ([] (native/pathMap))
+  ([_unit-domain] (native/pathMap)))
+
+(defn suffix-index
+  "Reject the unmediated typed suffix index with status-6 UNSUPPORTED."
+  ([] (native/suffixIndex))
+  ([_unit-domain] (native/suffixIndex)))
+
 (defn size [dictionary] (.-size dictionary))
 (defn- native-key [term]
   (if (or (string? term)

@@ -16,6 +16,7 @@ import java.lang.invoke.MethodHandle;
 /** Java FFM downcalls for the stable project ABI. */
 final class Native {
     static final int OK = 0;
+    static final int UNSUPPORTED = 6;
     static final MemoryLayout OPTIONAL_U64 = MemoryLayout.structLayout(
             JAVA_LONG.withName("value"),
             JAVA_BYTE.withName("has_value"),
