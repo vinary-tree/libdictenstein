@@ -1630,7 +1630,6 @@ unsafe fn text_operation(
     if out_changed.is_null() {
         return Err((LdictStatus::NullPointer, "output boolean is null".into()));
     }
-    out_changed.write(0);
     let dictionary = dictionary
         .as_ref()
         .ok_or((LdictStatus::NullPointer, "dictionary is null".into()))?;
@@ -1652,9 +1651,6 @@ pub unsafe extern "C" fn ldict_dictionary_insert_text(
     out_inserted: *mut u8,
 ) -> LdictStatus {
     boundary(|| {
-        if !out_inserted.is_null() {
-            out_inserted.write(0);
-        }
         let value = value.decode()?;
         text_operation(
             dictionary,
@@ -2040,7 +2036,6 @@ pub unsafe extern "C" fn ldict_dictionary_insert_text_batch(
         if out_inserted.is_null() {
             return Err((LdictStatus::NullPointer, "out_inserted is null".into()));
         }
-        out_inserted.write(0);
         let entries = slice(entries, entry_count, "entries")?;
         #[cfg(feature = "pathmap-backend")]
         if let LdictBinding::PathMap(pathmap) = &dictionary.binding {

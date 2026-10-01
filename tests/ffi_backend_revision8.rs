@@ -483,7 +483,11 @@ fn pathmap_batch_is_atomic_and_retained_snapshot_is_immutable() {
             ldict_dictionary_insert_text_batch(pointer, bad.as_ptr(), 2, &mut inserted),
             LdictStatus::InvalidArgument
         );
-        assert_eq!(inserted, 0);
+        assert_eq!(
+            inserted,
+            usize::MAX,
+            "existing batch ABI leaves failure output untouched"
+        );
         let mut contains = 1;
         assert_eq!(
             ldict_dictionary_contains_text(pointer, b"new".as_ptr(), 3, &mut contains),
@@ -502,7 +506,7 @@ fn pathmap_batch_is_atomic_and_retained_snapshot_is_immutable() {
 
 #[cfg(feature = "pathmap-backend")]
 #[test]
-fn pathmap_rejects_u64_and_invalid_unicode_without_leaking_output() {
+fn pathmap_rejects_u64_and_invalid_unicode_preserving_generic_failure_output() {
     unsafe {
         let mut pointer = 1usize as *mut LdictDictionary;
         assert_eq!(ldict_pathmap_new(3, &mut pointer), LdictStatus::Unsupported);
@@ -520,7 +524,10 @@ fn pathmap_rejects_u64_and_invalid_unicode_without_leaking_output() {
             ),
             LdictStatus::InvalidUtf8
         );
-        assert_eq!(inserted, 0);
+        assert_eq!(
+            inserted, 1,
+            "old generic insert ABI preserves failure output"
+        );
         let good = "é".as_bytes();
         assert_eq!(
             ldict_dictionary_insert_text(

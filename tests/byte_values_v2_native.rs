@@ -1,5 +1,5 @@
 #![cfg(feature = "ffi")]
-//! End-to-end native producer and revision-7 C facade qualification.
+//! End-to-end native producer and additive revision-8 C facade qualification.
 
 use libdictenstein::ffi::*;
 use std::collections::BTreeMap;
@@ -290,7 +290,7 @@ fn c_crud_preserves_three_presence_states_and_unit_domains() {
             },
             LdictStatus::InvalidArgument
         );
-        assert_eq!(ldict_api_revision(), 7);
+        assert_eq!(ldict_api_revision(), 8);
     }
 }
 

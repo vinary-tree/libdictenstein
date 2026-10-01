@@ -5,12 +5,15 @@
 #include <stdint.h>
 
 typedef struct LdictDictionary LdictDictionary;
+typedef struct LdictTextEntry LdictTextEntry;
 extern uint32_t ldict_abi_version(void);
 extern uint32_t ldict_api_revision(void);
 extern int32_t ldict_dynamic_dawg_new(uint32_t, LdictDictionary**);
 extern void ldict_dictionary_free(LdictDictionary*);
 extern int32_t ldict_dictionary_insert_text_value(
     LdictDictionary*, const uint8_t*, size_t, uint64_t, uint8_t, uint8_t*);
+extern int32_t ldict_dictionary_insert_text_batch(
+    LdictDictionary*, const LdictTextEntry*, size_t, size_t*);
 extern int32_t ldict_dictionary_get_text_value(
     const LdictDictionary*, const uint8_t*, size_t, uint8_t*, uint64_t*,
     uint8_t*);
@@ -25,6 +28,17 @@ int main(void) {
     assert(ldict_dictionary_insert_text_value(
                dictionary, key, sizeof(key), 0, 1, &inserted) == 0);
     assert(inserted == 1);
+    uint8_t rejected = 0xa5;
+    assert(ldict_dictionary_insert_text_value(
+               dictionary, key, sizeof(key), 0, 2, &rejected) == 2);
+    assert(rejected == 0xa5); /* revision-7 failure output remains untouched */
+    assert(ldict_dictionary_insert_text_value(
+               NULL, key, sizeof(key), 0, 1, &rejected) == 4);
+    assert(rejected == 0xa5);
+    size_t batch_rejected = SIZE_MAX;
+    assert(ldict_dictionary_insert_text_batch(
+               dictionary, NULL, 1, &batch_rejected) == 4);
+    assert(batch_rejected == SIZE_MAX);
     uint8_t found = 0;
     uint8_t has_value = 0;
     uint64_t value = UINT64_MAX;
