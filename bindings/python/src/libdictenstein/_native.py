@@ -7,7 +7,6 @@ import ctypes.util
 import os
 import platform
 import sys
-from enum import IntEnum
 from collections.abc import (
     ItemsView,
     Iterable,
@@ -19,6 +18,7 @@ from collections.abc import (
     ValuesView,
 )
 from contextlib import suppress
+from enum import IntEnum
 from pathlib import Path
 from types import MappingProxyType
 
@@ -324,6 +324,23 @@ def abi_version() -> int:
 def api_revision() -> int:
     """Compatible-additions revision within the ABI version (LDICT_API_REVISION)."""
     return int(_lib.ldict_api_revision())
+
+
+def _pathmap_constructor() -> ctypes._CFuncPtr:
+    """Resolve the PathMap constructor only after the live library passes its gate.
+
+    Looking up a revision-8 symbol during module import would make an otherwise
+    compatible revision-7 library unusable even for its original backends.
+    """
+    if api_revision() < 8:
+        raise NativeError(6, "PathMap requires native API revision 8")
+    try:
+        constructor = _lib.ldict_pathmap_new
+    except AttributeError as error:
+        raise NativeError(6, "native API revision 8 lacks ldict_pathmap_new") from error
+    constructor.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
+    constructor.restype = ctypes.c_uint32
+    return constructor
 
 
 def _error() -> str:
@@ -733,9 +750,7 @@ class _Dictionary(Mapping[DictionaryKey, int | None]):
 
     def difference(self, other: _Dictionary) -> DynamicDawg:
         """Return keys present in this dictionary but absent from ``other``."""
-        return self.algebra(
-            other, AlgebraOperation.DIFFERENCE, ValueMerge.FIRST
-        )
+        return self.algebra(other, AlgebraOperation.DIFFERENCE, ValueMerge.FIRST)
 
     def symmetric_difference(self, other: _Dictionary) -> DynamicDawg:
         """Return keys present in exactly one input dictionary."""
@@ -867,12 +882,39 @@ class DynamicDawg(_MutableDictionary):
         super().__init__(domain, handle)
 
     @classmethod
-    def _from_handle(
-        cls, domain: UnitDomain, handle: ctypes.c_void_p
-    ) -> DynamicDawg:
+    def _from_handle(cls, domain: UnitDomain, handle: ctypes.c_void_p) -> DynamicDawg:
         instance = object.__new__(cls)
         _Dictionary.__init__(instance, domain, handle)
         return instance
+
+
+class PathMap(_MutableDictionary):
+    """Mutable PathMap dictionary for raw byte or Unicode-scalar keys.
+
+    The constructor is resolved lazily so importing this module remains safe
+    with an older revision-7 native library. U64-token keys are unsupported.
+    """
+
+    def __init__(self, domain: UnitDomain = UnitDomain.UNICODE_SCALAR) -> None:
+        domain = UnitDomain(domain)
+        if domain == UnitDomain.U64:
+            raise NativeError(6, "PathMap does not support u64-token keys")
+        handle = ctypes.c_void_p()
+        _check(_pathmap_constructor()(int(domain), ctypes.byref(handle)))
+        super().__init__(domain, handle)
+
+
+class SuffixIndex:
+    """Explicitly unsupported typed suffix-source facade.
+
+    Revision-8 suffix snapshots are not generic dictionary snapshots; the
+    Python binding does not yet provide the distinct ownership contract.
+    """
+
+    def __init__(self, domain: UnitDomain = UnitDomain.UNICODE_SCALAR) -> None:
+        raise NativeError(
+            6, "typed suffix-source snapshots are not exposed by the Python binding"
+        )
 
 
 class DoubleArrayTrie(_Dictionary):
@@ -889,9 +931,7 @@ class DoubleArrayTrie(_Dictionary):
             (entry, None) if isinstance(entry, (str, bytes)) else entry
             for entry in entries
         ]
-        buffers = [
-            ctypes.create_string_buffer(_text(term)) for term, _ in materialized
-        ]
+        buffers = [ctypes.create_string_buffer(_text(term)) for term, _ in materialized]
         descriptors = (_TextEntry * len(materialized))(
             *[
                 _TextEntry(

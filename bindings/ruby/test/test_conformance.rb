@@ -23,6 +23,7 @@
 #     ruby -Ilib -Itest test/test_conformance.rb
 
 require "minitest/autorun"
+require "minitest/mock"
 require "json"
 require "tmpdir"
 require "set"
@@ -76,6 +77,43 @@ class ConformanceTest < Minitest::Test
     dawg&.close
     dat&.close
     scdawg&.close
+  end
+
+  def test_c1_pathmap_revision8_domains_and_values
+    assert_operator LD.api_revision, :>=, 8
+    byte_map = LD::PathMap.new(domain: LD::BYTE)
+    assert_equal 6, byte_map.kind
+    assert byte_map.put("\xff\x00".b, nil)
+    assert byte_map.put("zero", 0)
+    assert byte_map.include?("\xff\x00".b)
+    assert_equal 0, byte_map.get("zero").value
+    assert_nil byte_map.get("\xff\x00".b).value
+    assert byte_map.remove("zero")
+    assert_equal 2, byte_map.put_all([["batch-empty", nil], ["batch-zero", 0]])
+    assert_nil byte_map.get("batch-empty").value
+    assert_equal 0, byte_map.get("batch-zero").value
+
+    scalar_map = LD::PathMap.new
+    assert scalar_map.put("café", 7)
+    assert_equal 7, scalar_map.get("café").value
+    invalid = assert_raises(LD::Error) { scalar_map.put("\xff".b) }
+    assert_equal 3, invalid.status
+    unsupported = assert_raises(LD::Error) { LD::PathMap.new(domain: LD::U64) }
+    assert_equal 6, unsupported.status
+  ensure
+    byte_map&.close
+    scalar_map&.close
+  end
+
+  def test_c1_revision8_optional_constructors_have_explicit_gates
+    LD.stub(:api_revision, 7) do
+      error = assert_raises(LD::Error) { LD::PathMap.new }
+      assert_equal 6, error.status
+      assert_match(/revision-8/, error.message)
+    end
+    error = assert_raises(LD::Error) { LD::SuffixIndex.new }
+    assert_equal 6, error.status
+    assert_match(/not exposed/, error.message)
   end
 
   # --------------------------------------------------------------------------
