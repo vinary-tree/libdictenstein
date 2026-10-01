@@ -56,6 +56,18 @@
   (is (= 1 (d/abi-version)))
   (is (<= 6 (d/api-revision))))
 
+(deftest c1-revision-eight-backends-have-explicit-status-six-gates
+  (let [expected-reason (if (< (d/api-revision) 8)
+                          #"requires native API revision 8"
+                          #"not yet mediated")]
+    (doseq [constructor [d/path-map d/suffix-index]]
+      (let [error (try (constructor)
+                       nil
+                       (catch NativeException failure failure))]
+        (is (instance? NativeException error))
+        (is (= 6 (.status ^NativeException error)))
+        (is (re-find expected-reason (.getMessage ^NativeException error)))))))
+
 (deftest c1-kind-and-capabilities
   (with-open [dawg (d/dynamic-dawg)]
     (is (= 1 (.kind ^Dictionary dawg)))

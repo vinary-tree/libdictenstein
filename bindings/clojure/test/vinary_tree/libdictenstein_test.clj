@@ -1,7 +1,20 @@
 (ns vinary-tree.libdictenstein-test
   (:require [clojure.test :refer [deftest is]]
             [vinary-tree.libdictenstein :as dictionary])
-  (:import (io.vinarytree.liblevenshtein Transducer)))
+  (:import (io.vinarytree.libdictenstein NativeException)
+           (io.vinarytree.liblevenshtein Transducer)))
+
+(deftest revision-eight-backends-are-explicitly-unsupported
+  (let [expected-reason (if (< (dictionary/api-revision) 8)
+                          #"requires native API revision 8"
+                          #"not yet mediated")]
+    (doseq [constructor [dictionary/path-map dictionary/suffix-index]]
+      (let [error (try (constructor)
+                       nil
+                       (catch NativeException failure failure))]
+        (is (instance? NativeException error))
+        (is (= 6 (.status ^NativeException error)))
+        (is (re-find expected-reason (.getMessage ^NativeException error)))))))
 
 (deftest dynamic-crud-and-query-snapshot
   (let [dawg (dictionary/dynamic-dawg)]

@@ -106,6 +106,39 @@ public abstract class Dictionary implements DictionaryResource, Iterable<Diction
     /** Compatible-additions revision within the ABI version (LDICT_API_REVISION). */
     public static int apiRevision() { return Native.apiRevision(); }
 
+    /**
+     * Require the revision-8 PathMap backend through this JVM facade.
+     *
+     * <p>The native backend is not yet mediated here. This gate never resolves a
+     * revision-8 symbol against an older native library or substitutes another
+     * dictionary implementation.
+     *
+     * @throws NativeException with status {@code LDICT_STATUS_UNSUPPORTED} (6)
+     */
+    public static void requirePathMap() {
+        throw unsupportedBackend("PathMap", apiRevision());
+    }
+
+    /**
+     * Require the revision-8 typed suffix-index backend through this JVM facade.
+     *
+     * <p>A suffix index is not a generic {@code Dictionary} or SCDAWG. Until its
+     * distinct handle and snapshot lifetime are mediated, this gate rejects it.
+     *
+     * @throws NativeException with status {@code LDICT_STATUS_UNSUPPORTED} (6)
+     */
+    public static void requireSuffixIndex() {
+        throw unsupportedBackend("suffix index", apiRevision());
+    }
+
+    static NativeException unsupportedBackend(String backend, int revision) {
+        String reason = revision < 8
+                ? backend + " requires native API revision 8 (found " + revision + ")"
+                : backend + " is not yet mediated by the JVM binding (native API revision "
+                        + revision + ")";
+        return new NativeException(Native.UNSUPPORTED, reason);
+    }
+
     /** Unit domain fixed at construction/open time. */
     public final UnitDomain domain() { return domain; }
 

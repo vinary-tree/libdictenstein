@@ -107,6 +107,25 @@ final class ConformanceTest {
     }
 
     @Test
+    void c1_revision8BackendsHaveExplicitUnsupportedGates() {
+        String expectedReason = Dictionary.apiRevision() < 8
+                ? "requires native API revision 8" : "not yet mediated";
+        for (Runnable gate : List.<Runnable>of(
+                Dictionary::requirePathMap, Dictionary::requireSuffixIndex)) {
+            var error = assertThrows(NativeException.class, gate::run);
+            assertEquals(6, error.status());
+            assertTrue(error.getMessage().contains(expectedReason));
+        }
+
+        // Revision-7 producers must be rejected before looking up rev8 symbols.
+        var oldProducer = Dictionary.unsupportedBackend("PathMap", 7);
+        assertEquals(6, oldProducer.status());
+        assertTrue(oldProducer.getMessage().contains("requires native API revision 8"));
+        assertTrue(Dictionary.unsupportedBackend("suffix index", 8)
+                .getMessage().contains("not yet mediated"));
+    }
+
+    @Test
     void c1_kindAndCapabilities() {
         try (var dawg = new DynamicDawg()) {
             assertEquals(1, dawg.kind());

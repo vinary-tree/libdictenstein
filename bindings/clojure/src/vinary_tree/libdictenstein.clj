@@ -87,6 +87,18 @@
   ([] (Scdawg.))
   ([unit-domain] (Scdawg. (domain unit-domain))))
 
+(defn path-map
+  "PathMap is not yet mediated by this facade; throw status-6 UNSUPPORTED.
+  Native API revisions older than 8 are rejected before any rev8 symbol lookup."
+  ([] (Dictionary/requirePathMap))
+  ([_unit-domain] (Dictionary/requirePathMap)))
+
+(defn suffix-index
+  "The revision-8 typed suffix index is not a SCDAWG or generic dictionary.
+  Throw status-6 UNSUPPORTED until its distinct lifetime is mediated here."
+  ([] (Dictionary/requireSuffixIndex))
+  ([_unit-domain] (Dictionary/requireSuffixIndex)))
+
 (defn create-persistent-artrie
   ([path] (PersistentARTrie/create (Path/of (str path) (make-array String 0))))
   ([path unit-domain]
