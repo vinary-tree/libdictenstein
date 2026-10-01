@@ -273,6 +273,12 @@ impl<V: DictionaryValue> ExactSizeIterator for SuffixAutomatonEntryIterator<V> {
 impl<V: DictionaryValue> FusedIterator for SuffixAutomatonEntryIterator<V> {}
 
 impl<V: DictionaryValue> SuffixAutomaton<V> {
+    /// Capture one immutable, active-source revision for exact source and
+    /// substring queries. Unlike graph reachability, it excludes removals.
+    pub fn source_snapshot(&self) -> super::source_snapshot::SuffixSourceSnapshot<u8, V> {
+        super::source_snapshot::SuffixSourceSnapshot::from_root(self.inner.load())
+    }
+
     #[inline]
     fn from_inner(inner: SuffixAutomatonInner<V>) -> Self {
         Self {

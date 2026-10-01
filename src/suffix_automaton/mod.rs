@@ -10,11 +10,13 @@ pub mod char;
 pub mod char_zipper;
 pub mod core;
 pub(crate) mod lockfree;
+pub mod source_snapshot;
 pub mod zipper;
 
 pub use ascii::{SuffixAutomaton, SuffixNodeHandle};
 pub use char::{SuffixAutomatonChar, SuffixNodeCharHandle};
 pub use char_zipper::SuffixAutomatonCharZipper;
+pub use source_snapshot::{SuffixSourceRecord, SuffixSourceSnapshot};
 pub use zipper::SuffixAutomatonZipper;
 
 #[cfg(feature = "persistent-artrie")]

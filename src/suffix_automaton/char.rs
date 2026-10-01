@@ -310,6 +310,12 @@ impl<V: DictionaryValue> ExactSizeIterator for SuffixAutomatonCharEntryIterator<
 impl<V: DictionaryValue> FusedIterator for SuffixAutomatonCharEntryIterator<V> {}
 
 impl<V: DictionaryValue> SuffixAutomatonChar<V> {
+    /// Capture one immutable, active-source revision for exact source and
+    /// substring queries in Unicode-scalar transition units.
+    pub fn source_snapshot(&self) -> super::source_snapshot::SuffixSourceSnapshot<char, V> {
+        super::source_snapshot::SuffixSourceSnapshot::from_root(self.inner.load())
+    }
+
     #[inline]
     fn from_inner(inner: SuffixAutomatonCharInner<V>) -> Self {
         Self {
