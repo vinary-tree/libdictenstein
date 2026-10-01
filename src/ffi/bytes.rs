@@ -501,7 +501,7 @@ fn validate_batch(
         || batch.entries.is_null()
         || batch.units.is_null() != (batch.unit_count == 0)
         || batch.value_bytes.is_null() != (batch.value_byte_count == 0)
-        || (batch.units as usize) % width != 0
+        || !(batch.units as usize).is_multiple_of(width)
         || batch
             .entry_count
             .checked_mul(std::mem::size_of::<LdictByteEntry>())

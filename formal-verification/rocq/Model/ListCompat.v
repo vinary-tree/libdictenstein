@@ -44,6 +44,23 @@ Proof.
   - simpl. rewrite IH. reflexivity.
 Qed.
 
+(** Supported Coq/Rocq versions expose the length-of-[rev] fact under
+    different names.  Prove the invariant directly so callers use a stable
+    name. *)
+Lemma rev_length_portable :
+  forall (A : Type) (items : list A),
+    length (rev items) = length items.
+Proof.
+  intros A items.
+  induction items as [| item items IH].
+  - reflexivity.
+  - simpl.
+    rewrite app_length_portable.
+    simpl.
+    rewrite IH, Nat.add_1_r.
+    reflexivity.
+Qed.
+
 Lemma seq_length_portable :
   forall start count, length (seq start count) = count.
 Proof.
