@@ -15,20 +15,34 @@ if [ ! -f "$contracts" ]; then
   exit 1
 fi
 
-actual="$(mktemp)"
-expected="$(mktemp)"
-ledger_tags="$(mktemp)"
-contract_tags="$(mktemp)"
-contract_statuses="$(mktemp)"
-persistence_tags="$(mktemp)"
-missing_tags="$(mktemp)"
-unused_tags="$(mktemp)"
+scratch_dir="$repo_root/target/unsafe-inventory-tmp"
+mkdir -p "$scratch_dir"
+actual="$(mktemp "$scratch_dir/actual.XXXXXXXX")"
+expected="$(mktemp "$scratch_dir/expected.XXXXXXXX")"
+ledger_tags="$(mktemp "$scratch_dir/ledger-tags.XXXXXXXX")"
+contract_tags="$(mktemp "$scratch_dir/contract-tags.XXXXXXXX")"
+contract_statuses="$(mktemp "$scratch_dir/contract-statuses.XXXXXXXX")"
+persistence_tags="$(mktemp "$scratch_dir/persistence-tags.XXXXXXXX")"
+missing_tags="$(mktemp "$scratch_dir/missing-tags.XXXXXXXX")"
+unused_tags="$(mktemp "$scratch_dir/unused-tags.XXXXXXXX")"
 trap 'rm -f "$actual" "$expected" "$ledger_tags" "$contract_tags" "$contract_statuses" "$persistence_tags" "$missing_tags" "$unused_tags"' EXIT
 
 cd "$repo_root"
 
+inventory_pattern='(^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?unsafe[[:space:]]+impl\b|^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?unsafe[[:space:]]+(extern[[:space:]]+"[^"]+"[[:space:]]+)?fn\b|\bunsafe[[:space:]]*\{)'
+# Keep the declaration variants that previously escaped this gate observable.
+for declaration in \
+  'pub unsafe extern "C" fn public_boundary() {}' \
+  'pub(super) unsafe extern "C" fn scoped_boundary() {}' \
+  'pub(crate) unsafe fn internal_boundary() {}'; do
+  if ! printf '%s\n' "$declaration" | rg --quiet "$inventory_pattern"; then
+    echo "Unsafe inventory scanner missed declaration control: $declaration" >&2
+    exit 1
+  fi
+done
+
 rg -n --no-heading \
-  '(^[[:space:]]*unsafe[[:space:]]+impl\b|^[[:space:]]*(pub[[:space:]]+)?unsafe[[:space:]]+fn\b|\bunsafe[[:space:]]*\{)' \
+  "$inventory_pattern" \
   src -g '*.rs' \
   | awk -F: '
       function ltrim(s) { sub(/^[[:space:]]+/, "", s); return s }
@@ -41,9 +55,11 @@ rg -n --no-heading \
         stripped = trim(line)
         if (stripped ~ /^\/\//) next
 
-        if (stripped ~ /^unsafe[[:space:]]+impl/) {
+        if (stripped ~ /^(pub(\([^)]*\))?[[:space:]]+)?unsafe[[:space:]]+impl/) {
           kind = "unsafe_impl"
-        } else if (stripped ~ /^(pub[[:space:]]+)?unsafe[[:space:]]+fn/) {
+        } else if (stripped ~ /^(pub(\([^)]*\))?[[:space:]]+)?unsafe[[:space:]]+extern[[:space:]]+"[^"]+"[[:space:]]+fn/) {
+          kind = "unsafe_extern_fn"
+        } else if (stripped ~ /^(pub(\([^)]*\))?[[:space:]]+)?unsafe[[:space:]]+fn/) {
           kind = "unsafe_fn"
         } else if (stripped ~ /unsafe[[:space:]]*\{/) {
           kind = "unsafe_block"

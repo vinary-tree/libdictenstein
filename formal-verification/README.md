@@ -45,7 +45,7 @@ At a glance, the corpus comprises:
 | Rocq propositions (`Theorem`+`Lemma`+`Corollary`+`Proposition`) | Rocq/Coq | **1,773** | all closed by `Qed.`/`Defined.`; **0** `Admitted` / **0** `Axiom` / **0** `Parameter` |
 | TLA⁺ modules (`.tla`) | TLA⁺ / TLC / SANY | **79** | concurrency safety, crash-recovery, linearizability, and starvation freedom (with **156** `.cfg` TLC configs) |
 | `unsafe` inventory patterns | CI set-equality gate | **364** | every grouped `unsafe` pattern mapped to a reviewed contract |
-| `unsafe` safety contracts | CI set-equality gate | **45** | each contract tied to a coverage class + evidence |
+| `unsafe` safety contracts | CI set-equality gate | **48** | each contract tied to a coverage class + evidence |
 
 > The two-pronged split is illustrated in
 > [Proof-artifact map](#proof-artifact-map) below; the spec↔Rust mapping is

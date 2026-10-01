@@ -13,6 +13,19 @@ use vinary_tree_interop::{
 
 struct Dict(*mut LdictDictionary);
 
+// The scoped workers borrow a single live C handle; Dict frees it only after
+// they join. The byte-valued DynamicDawg binding supports concurrent calls.
+struct SharedByteDictionary(*mut LdictDictionary);
+// SAFETY: the C handle remains live for the entire scoped borrow, and its
+// byte-valued binding synchronizes concurrent reads and writes internally.
+unsafe impl Sync for SharedByteDictionary {}
+
+impl SharedByteDictionary {
+    fn as_ptr(&self) -> *mut LdictDictionary {
+        self.0
+    }
+}
+
 impl Dict {
     fn new(domain: u32) -> Self {
         let mut raw = ptr::null_mut();
@@ -752,10 +765,11 @@ fn deterministic_mutation_fuzz_matches_three_state_byte_model() {
 #[test]
 fn concurrent_byte_value_reads_and_writes_remain_coherent() {
     let dictionary = Dict::new(1);
-    let address = dictionary.0 as usize;
+    let shared = SharedByteDictionary(dictionary.0);
     std::thread::scope(|scope| {
+        let shared = &shared;
         scope.spawn(move || {
-            let raw = address as *mut LdictDictionary;
+            let raw = shared.as_ptr();
             for i in 0u16..128 {
                 let key = i.to_be_bytes();
                 let mut inserted = 0u8;
@@ -777,7 +791,7 @@ fn concurrent_byte_value_reads_and_writes_remain_coherent() {
             }
         });
         scope.spawn(move || {
-            let raw = address as *const LdictDictionary;
+            let raw = shared.as_ptr().cast_const();
             for i in 0u16..128 {
                 let key = i.to_be_bytes();
                 let mut found = 9u8;

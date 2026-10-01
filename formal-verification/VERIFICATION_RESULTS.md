@@ -11,7 +11,7 @@ As of the live tree the corpus is **85** Rocq `.v` files (**1,773**
 propositions = 1,393 `Theorem` + 362 `Lemma` + 18 `Corollary` + 0 `Proposition`,
 all `Qed.`/`Defined.`-closed, **0** `Admitted` / **0** `Axiom` / **0**
 `Parameter`) and **79** TLA⁺ modules with **156** `.cfg` TLC configurations. The
-`unsafe` surface is pinned by **364** grouped inventory patterns and **45** safety contracts,
+`unsafe` surface is pinned by **533** grouped inventory patterns and **48** safety contracts,
 both CI-gated by `scripts/verify-unsafe-boundary-inventory.sh` (set-equality).
 
 ### Change history
@@ -455,6 +455,7 @@ implementation surface.
 | Vocab overlay reverse-map exactness | overlay-only vocabulary ownership to `get_index`/`get_term` after checkpoint and WAL replay | Passed; stale node-map/eviction targets were removed because vocab overlay eviction and the owned parent-pointer tree no longer exist |
 | Unsafe inventory drift gate | live `src/**/*.rs` unsafe surface to `formal-verification/UNSAFE_INVENTORY.tsv` | Passed |
 | Unsafe contract coverage/status gate | unsafe inventory contract tags to `formal-verification/UNSAFE_CONTRACTS.tsv` coverage metadata | Passed |
+| Revision-7 byte-valued FFI strict provenance | native byte-value copy, snapshot-owned leased entry arenas, reducer callbacks, and concurrent C facade to `tests/byte_values_v2_native.rs` | Passed all 7 cases under `cargo +nightly miri test --features ffi --test byte_values_v2_native` with `-Zmiri-strict-provenance`; wired into `RUN_MIRI=1` |
 | Unsafe Send/Sync contracts | explicit unsafe impl surface for persistent nodes, optimistic cell, vocab trie, lock-free/concurrent vocab wrappers, and MVCC read transactions | Passed |
 | SCDAWG handle thread contracts | byte and Unicode SCDAWG handle `Send`/`Sync` contracts outside the persistent feature gate | Passed, compile-time assertions plus concurrent read traversal |
 | End-to-end torn-WAL reopen | crash-prefix model to `PersistentARTrie::open` | Passed, torn header and torn payload |

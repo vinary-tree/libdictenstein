@@ -1,6 +1,6 @@
 # Unsafe Boundary Verification Notes
 
-Updated: 2026-08-27
+Updated: 2026-09-30
 
 This document records the current Rust implementation boundary that is not
 covered by Rocq extraction or TLC state exploration. The goal is to keep every
@@ -20,8 +20,8 @@ pinned reader can still observe it (no use-after-free). A **coverage class** is
 the kind of evidence backing a contract (`rocq`, `tla`, `loom`, `miri`,
 `correspondence`, `compile-time`, `unit`, or `trusted-boundary`).
 
-The `unsafe` surface is pinned by **364** grouped inventory patterns
-([`UNSAFE_INVENTORY.tsv`](UNSAFE_INVENTORY.tsv)) and **45** safety contracts
+The `unsafe` surface is pinned by **533** grouped inventory patterns
+([`UNSAFE_INVENTORY.tsv`](UNSAFE_INVENTORY.tsv)) and **48** safety contracts
 ([`UNSAFE_CONTRACTS.tsv`](UNSAFE_CONTRACTS.tsv)), both CI-gated by
 `scripts/verify-unsafe-boundary-inventory.sh` (set-equality: no `unsafe` site
 without a reviewed contract, and no orphan contract tag). The trust zones are
@@ -48,7 +48,8 @@ illustrated below.
 | Indexed char/vocab lock-free overlays | `persistent_artrie::char::lockfree_cas`, `persistent_artrie::vocab::lockfree_cas` | `LockFreeIndexedOverlay.tla` checks char increment value preservation, merge-prefix behavior, vocab duplicate insert stability, committed-index uniqueness, sparse `next_index` claims, and cache/root/persistent agreement. `LockFreeCounterMergeAtomicity.tla` also covers checked char counter overflow and merge failure preservation for the persistent counter boundary. Loom tests cover the same bounded schedule obligations. |
 | Retained immutable DynamicDawg edge ranges | `SnapshotEdgeRangeToken`, `DynamicDawgNode::{cursor_edge_range_start,cursor_edge_range_step}`, and byte/char/u64 adapters | `RetainedEdgeRangeTraversal.tla` binds each range to a retained immutable revision, checks same-allocation bounds and exact progression, and prevents partial external publication. `SerializationRoundtripSpec.v` proves range-worklist refinement of recursive depth-first traversal. Strict-provenance Miri covers inline and spilled `SmallVec` storage, exact two-word tokens, absence of child-`Arc` clones, and survival of an old range across publication of a new root. |
 | Optimized-protobuf exact spare-capacity commit | `serialization::protobuf_impl::commit_v2_event_to_spare` | `SerializationRoundtripSpec.v` proves a two-vector transaction: both capacity guards authorize before initialization, failure preserves both logical vectors, and a successful commit appends exactly the optional final-node word and three edge words. Strict-provenance Miri covers spare-capacity boundaries, second-reservation failure, allocator consultation only at exhaustion, exact one-commit-per-event accounting, and 256 generated event sequences. |
-| Whole-crate unsafe inventory | `formal-verification/UNSAFE_INVENTORY.tsv`, `formal-verification/UNSAFE_CONTRACTS.tsv`, `scripts/verify-unsafe-boundary-inventory.sh` | The verification harness now compares the live `src/**/*.rs` unsafe blocks, unsafe functions, and unsafe impls against the reviewed inventory, checks that every inventory tag has a reviewed contract entry, and rejects contract rows without a valid coverage/status classification. New or changed unsafe sites fail the correspondence script until the pattern, count, contract tag, coverage class, status, and evidence are updated intentionally. |
+| Revision-7 byte-value FFI | `bindings::entries_bytes`, `bindings` byte-value callbacks, and `ffi::bytes` | The native producer retains one immutable snapshot per stream and owns bounded descriptor, key-unit, and value-byte arenas through an exact-generation lease. The C facade validates shape, scalar units, ordering, and output capacity before publication. The native vtable and arena addresses are trusted in-process pointers; the facade cannot make an arbitrary forged address safe. All seven `tests/byte_values_v2_native.rs` cases pass strict-provenance Miri and are wired into `RUN_MIRI=1`, covering optional/empty values, three unit domains, graph copies, leases, reducers, mutation traces, and concurrent snapshots. These contracts do not claim a new Rocq proof. |
+| Whole-crate unsafe inventory | `formal-verification/UNSAFE_INVENTORY.tsv`, `formal-verification/UNSAFE_CONTRACTS.tsv`, `scripts/verify-unsafe-boundary-inventory.sh` | The verification harness compares live `src/**/*.rs` unsafe blocks, unsafe functions (including `extern "C"` callbacks and scoped visibility), and unsafe impls against the reviewed inventory. Scanner declaration controls cover previously missed forms; injected source-drift qualification confirmed the gate fails on both. Every inventory tag must resolve to a reviewed contract with valid coverage/status metadata; changed sites fail until audited. |
 | Unsafe `Send`/`Sync` impls outside the persistent ART core | SCDAWG handles, vocab variants, test mock nodes | The explicit unsafe impl surface is inventoried. Persistent ARTrie/vocab contracts are type-checked in `persistent_artrie_formal_correspondence`; SCDAWG byte/char handle contracts are type-checked and exercised under concurrent read traversal in `unsafe_boundary_contracts`. |
 
 ## Safety Contract Matrix
@@ -67,6 +68,7 @@ illustrated below.
 | Cached page references are backed by active read leases, mutable page references exclude all other leases, and dirty flushes do not read through an active mutable lease. | `BufferPageLease.tla` invariants `CachedPagesPinned`, `NoReadWriteAlias`, `CachedFramesResident`, `FlushesExcludeWriteLease`, and focused `BufferManager`/`TraversalContext` lease tests. |
 | A retained edge-range pointer is dereferenced only while its exact immutable owner revision is live; every step remains within the originating allocation and advances exactly once. | `RetainedEdgeRangeTraversal.tla`, `SerializationRoundtripSpec.v`, the `snapshot-retained-edge-range-token` contract row, and strict-provenance Miri range tests. |
 | A V2 event exposes no initialized element until both vectors have sufficient capacity, and then exposes exactly the initialized slots without allocation or callback between writes and length publication. | `SerializationRoundtripSpec.v`, the `protobuf-v2-exact-spare-commit` contract row, allocation-fault regressions, event-oracle property testing, and strict-provenance Miri. |
+| Byte-valued C streams expose only snapshot-owned arenas for one exact generation, reject reentrant same-cursor use, and distinguish absent values from present empty bytes. | `abi-byte-entry-cursor-provider-ownership`, `ffi-byte-value-facade-contract`, and `abi-byte-value-copy` contract rows; `tests/byte_values_v2_native.rs` bounded lease, reducer, and two-phase copy tests, wired into strict-provenance `RUN_MIRI=1`. |
 | Every unsafe source pattern has a reviewed contract tag and coverage class. | `scripts/verify-unsafe-boundary-inventory.sh` compares `src/**/*.rs` against `formal-verification/UNSAFE_INVENTORY.tsv`, checks every tag against `formal-verification/UNSAFE_CONTRACTS.tsv`, validates coverage tokens (`rocq`, `tla`, `loom`, `miri`, `correspondence`, `compile-time`, `unit`, or `trusted-boundary`), and rejects persistence unsafe contracts that are not `covered` or `miri-wired`. |
 
 ## Current Claim

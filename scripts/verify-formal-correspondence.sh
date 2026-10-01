@@ -444,6 +444,9 @@ if [ "${RUN_MIRI:-0}" = "1" ]; then
     --features ffi \
     --lib \
     bindings::tests::dynamic_snapshot_graph_is_stable_and_live_resources_do_not_advertise_it
+  run_miri_filtered \
+    --features ffi \
+    --test byte_values_v2_native
 else
   echo "Skipping Miri unsafe-boundary checks; set RUN_MIRI=1 to enable them"
 fi

@@ -3254,18 +3254,16 @@ unsafe fn copy_byte_value(
     let bytes = value.as_deref().unwrap_or_default();
     // SAFETY: output pointers are caller-owned writable objects, as required
     // by the C ABI. No output is written before validation completes.
-    unsafe {
-        out_required.write(bytes.len());
-        out_has_value.write(u8::from(value.is_some()));
-        if capacity < bytes.len() {
-            out_written.write(0);
-            return VtStatus::LimitExceeded;
-        }
-        if !bytes.is_empty() {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_bytes, bytes.len());
-        }
-        out_written.write(bytes.len());
+    unsafe { out_required.write(bytes.len()) };
+    unsafe { out_has_value.write(u8::from(value.is_some())) };
+    if capacity < bytes.len() {
+        unsafe { out_written.write(0) };
+        return VtStatus::LimitExceeded;
     }
+    if !bytes.is_empty() {
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_bytes, bytes.len()) };
+    }
+    unsafe { out_written.write(bytes.len()) };
     VtStatus::Ok
 }
 
@@ -3280,7 +3278,7 @@ unsafe extern "C" fn dictionary_node_value_bytes(
     out_has_value: *mut u8,
 ) -> u32 {
     // SAFETY: forwarded under the exact optional byte-value ABI contract.
-    unsafe {
+    let status = unsafe {
         copy_byte_value(
             context,
             node,
@@ -3291,8 +3289,8 @@ unsafe extern "C" fn dictionary_node_value_bytes(
             out_has_value,
             false,
         )
-    }
-    .to_raw()
+    };
+    status.to_raw()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3306,7 +3304,7 @@ unsafe extern "C" fn dictionary_graph_value_bytes(
     out_has_value: *mut u8,
 ) -> u32 {
     // SAFETY: forwarded under the exact optional byte-value ABI contract.
-    unsafe {
+    let status = unsafe {
         copy_byte_value(
             context,
             cursor,
@@ -3317,8 +3315,8 @@ unsafe extern "C" fn dictionary_graph_value_bytes(
             out_has_value,
             true,
         )
-    }
-    .to_raw()
+    };
+    status.to_raw()
 }
 
 unsafe fn dictionary_snapshot_status(
