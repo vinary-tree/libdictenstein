@@ -214,8 +214,7 @@ jobs:
         with: { ruby-version: "3.4" }
       - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
-      # Minitest 6 extracted minitest/mock into a separate gem; pin both test tools.
-      - run: gem install minitest -v 6.0.6 && gem install minitest-mock -v 5.27.0
+      - run: gem install minitest -v 6.0.6
       - name: Run conformance and public-package profile smoke tests
         working-directory: bindings/ruby
         run: |

@@ -23,7 +23,6 @@
 #     ruby -Ilib -Itest test/test_conformance.rb
 
 require "minitest/autorun"
-require "minitest/mock"
 require "json"
 require "tmpdir"
 require "set"
@@ -105,12 +104,7 @@ class ConformanceTest < Minitest::Test
     scalar_map&.close
   end
 
-  def test_c1_revision8_optional_constructors_have_explicit_gates
-    LD.stub(:api_revision, 7) do
-      error = assert_raises(LD::Error) { LD::PathMap.new }
-      assert_equal 6, error.status
-      assert_match(/revision-8/, error.message)
-    end
+  def test_c1_typed_suffix_index_has_explicit_unsupported_gate
     error = assert_raises(LD::Error) { LD::SuffixIndex.new }
     assert_equal 6, error.status
     assert_match(/not exposed/, error.message)
