@@ -206,7 +206,8 @@ them explicitly until record and snapshot lifetimes are qualified. Other
 foreign facades must either add a native PathMap dictionary and typed suffix
 index with the above lifetimes, or fail explicitly rather than silently
 selecting an older backend. The exact per-language gate status is tracked by
-the [binding model](../../bindings/api.json) and revision-8 integration task;
-**a generated symbol declaration is not
+the [capability matrix](revision8-capability-matrix.md); the
+[binding model](../../bindings/api.json) instead governs symbols, constants,
+and layouts. **A generated symbol declaration is not
 evidence of an idiomatic high-level facade**. No RC.6 artifact is published by
 this source change.
