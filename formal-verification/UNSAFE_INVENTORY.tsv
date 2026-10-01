@@ -312,6 +312,7 @@ src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_entry_cursor_free(cur
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_entry_cursor_next(	1	ffi-entry-cursor-handle-ownership
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_entry_cursor_reduce(	1	ffi-entry-cursor-handle-ownership
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_entry_cursor_release(	1	ffi-entry-cursor-handle-ownership
+src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_pathmap_new(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_persistent_artrie_create(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_persistent_artrie_open(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_persistent_vocab_create(	1	ffi-caller-pointer-contracts
@@ -383,6 +384,26 @@ src/ffi/bytes.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dynamic_dawg_ne
 src/ffi/bytes.rs	unsafe_extern_fn	unsafe extern "C" fn reducer_trampoline(	1	ffi-byte-value-facade-contract
 src/ffi/bytes.rs	unsafe_fn	unsafe fn copy_result(	1	ffi-byte-value-facade-contract
 src/ffi/bytes.rs	unsafe_fn	unsafe fn get_bytes(	1	ffi-byte-value-facade-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_clear(index: *mut LdictSuffixIndex) -> LdictStatus {	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_close(index: *mut LdictSuffixIndex) -> LdictStatus {	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_compact(index: *mut LdictSuffixIndex) -> LdictStatus {	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_free(index: *mut LdictSuffixIndex) {	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_insert_text(	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_new(	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_remove_text(	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_snapshot(	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_snapshot_close(	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_snapshot_contains_source(	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_snapshot_contains_substring(	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_snapshot_free(snapshot: *mut LdictSuffixSnapshot) {	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_snapshot_identity(	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_snapshot_source_count(	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_snapshot_source_page(	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_snapshot_substring_frequency(	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_fn	unsafe fn load_index(handle: *const LdictSuffixIndex) -> Result<Arc<IndexState>, Failure> {	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_fn	unsafe fn load_snapshot(handle: *const LdictSuffixSnapshot) -> Result<Arc<SnapshotState>, Failure> {	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_fn	unsafe fn query(	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_fn	unsafe fn text<'a>(data: *const u8, len: usize) -> Result<&'a str, Failure> {	1	ffi-suffix-handle-and-borrow-contract
 src/lib.rs	unsafe_block	let (is_final, total_edge_count) = unsafe {	1	snapshot-retained-edge-range-token
 src/lib.rs	unsafe_block	let edges = unsafe { std::slice::from_raw_parts(self.edges.as_ptr().add(start), len) };	1	snapshot-dense-cursor-contract
 src/lib.rs	unsafe_block	let is_final = unsafe {	1	snapshot-dense-cursor-contract
