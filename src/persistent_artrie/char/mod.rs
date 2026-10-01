@@ -346,6 +346,9 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use crate::persistent_artrie::core::key_encoding::CharKey;
+use crate::persistent_artrie::core::overlay::durable_write::{
+    RegistryEligibleMutation, SemanticMutationPublicationPermit,
+};
 use crate::persistent_artrie::wal::AsyncWalWriter;
 use crate::persistent_artrie::wal_managed::WalManaged;
 use crate::value::DictionaryValue;
@@ -369,6 +372,9 @@ pub type SharedCharARTrie<V, S = crate::persistent_artrie::disk_manager::MmapDis
 /// Deprecated alias for backward compatibility.
 #[deprecated(since = "0.9.0", note = "Use SharedCharARTrie instead")]
 pub type SharedCharTrie<V> = SharedCharARTrie<V>;
+
+pub(crate) type RegistrySemanticPublicationPermit =
+    SemanticMutationPublicationPermit<'static, RegistryEligibleMutation>;
 
 #[doc(inline)]
 pub use crate::persistent_artrie::core::shared_access::SharedTrieAccess;
@@ -1660,15 +1666,8 @@ impl<V: DictionaryValue, S: crate::persistent_artrie::block_storage::BlockStorag
     /// publishes the successor. No coordinator lookup, gate, registry write,
     /// allocation, atomic operation, branch, or fallible admission is required.
     #[inline(always)]
-    pub(crate) fn begin_semantic_publication(
-        &self,
-    ) ->
-        crate::persistent_artrie::core::overlay::durable_write::SemanticMutationPublicationPermit<
-            'static,
-            crate::persistent_artrie::core::overlay::durable_write::RegistryEligibleMutation,
-        >
-    {
-        crate::persistent_artrie::core::overlay::durable_write::SemanticMutationPublicationPermit::exact_root_cas()
+    pub(crate) fn begin_semantic_publication(&self) -> RegistrySemanticPublicationPermit {
+        SemanticMutationPublicationPermit::exact_root_cas()
     }
 
     /// Preserve the established raw-handle diagnostic for durable structural
