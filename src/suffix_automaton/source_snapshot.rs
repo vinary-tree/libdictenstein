@@ -11,8 +11,9 @@ use crate::CharUnit;
 
 /// Unit-specific source-text scanning for the two suffix-automaton families.
 ///
-/// Source text is always valid UTF-8. Byte mode counts UTF-8 byte starts,
-/// including starts within a multibyte scalar; char mode counts scalar starts.
+/// Source text is always valid UTF-8. Byte mode measures source lengths and
+/// empty-pattern boundaries in bytes; nonempty patterns are valid UTF-8 and
+/// match by their byte sequence. Char mode counts Unicode scalar boundaries.
 pub trait SuffixIndexUnit: CharUnit {
     /// Number of transition units in the source text.
     fn source_len(text: &str) -> usize;
