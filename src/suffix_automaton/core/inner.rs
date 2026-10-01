@@ -37,6 +37,12 @@ use crate::CharUnit;
     ))
 )]
 pub struct SuffixAutomatonInner<U: CharUnit, V: DictionaryValue = ()> {
+    /// Process-local producer identity, assigned when a live automaton is created.
+    #[cfg_attr(feature = "serialization", serde(skip))]
+    pub(crate) producer_id: u64,
+    /// Successful publication count for this producer.
+    #[cfg_attr(feature = "serialization", serde(skip))]
+    pub(crate) revision: u64,
     /// Node storage (index-based graph). State 0 is always the root.
     pub nodes: Vec<SuffixNode<U, V>>,
     /// Current state during online construction (the last state added).
@@ -70,6 +76,8 @@ impl<U: CharUnit, V: DictionaryValue> SuffixAutomatonInner<U, V> {
     /// Create an empty suffix automaton with a single root state.
     pub fn new() -> Self {
         Self {
+            producer_id: 0,
+            revision: 0,
             nodes: vec![SuffixNode::root()],
             last_state: 0,
             string_count: 0,

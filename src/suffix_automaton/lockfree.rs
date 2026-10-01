@@ -12,7 +12,10 @@ use crate::value::DictionaryValue;
 use crate::CharUnit;
 use arc_swap::ArcSwap;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+static NEXT_PRODUCER_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct LockFreeSuffixAutomaton<U: CharUnit, V: DictionaryValue = ()> {
     inner: Arc<ArcSwap<SuffixAutomatonInner<U, V>>>,
@@ -48,7 +51,11 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeSuffixAutomaton<U, V> {
         Self::from_inner(SuffixAutomatonInner::new())
     }
 
-    pub(crate) fn from_inner(inner: SuffixAutomatonInner<U, V>) -> Self {
+    pub(crate) fn from_inner(mut inner: SuffixAutomatonInner<U, V>) -> Self {
+        inner.producer_id = NEXT_PRODUCER_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .expect("suffix-index producer IDs exhausted");
+        inner.revision = 0;
         Self {
             inner: Arc::new(ArcSwap::from_pointee(inner)),
         }
@@ -72,6 +79,14 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeSuffixAutomaton<U, V> {
             if !changed {
                 return result;
             }
+
+            // The closure may replace the root (clear); stamp the identity only
+            // after it completes, and publish identity and data in one CAS.
+            next.producer_id = current.producer_id;
+            next.revision = current
+                .revision
+                .checked_add(1)
+                .expect("suffix-index revisions exhausted");
 
             let previous = self.inner.compare_and_swap(&current, Arc::new(next));
             if Arc::ptr_eq(&previous, &current) {
