@@ -156,7 +156,15 @@ class SuffixSourceRecord is repr('CStruct') is export {
     has uint64 $.source-id;
     has Pointer $.data;
     has size_t $.len;
-    has OptionalValue $.value;
+    has uint64 $.mapped-value;
+    has uint8 $.has-value;
+    has uint8 $.reserved0;
+    has uint8 $.reserved1;
+    has uint8 $.reserved2;
+    has uint8 $.reserved3;
+    has uint8 $.reserved4;
+    has uint8 $.reserved5;
+    has uint8 $.reserved6;
 }
 # END GENERATED RAKU ABI LAYOUTS
 
@@ -701,6 +709,27 @@ sub dynamic-dawg(UnitDomain:D $domain = UNICODE-SCALAR --> Dictionary:D) is expo
     my Pointer $output .= new;
     check-status(ldict-dynamic-dawg-new($domain.Int, $output), 'dynamic-dawg-new');
     dictionary-from($output, $domain)
+}
+
+# PathMap is an ordinary exact-key dictionary. The suffix-source index is not:
+# its duplicate records must not be coerced into Associative semantics.
+sub pathmap(UnitDomain:D $domain = UNICODE-SCALAR --> Dictionary:D) is export {
+    X::Libdictenstein.new(
+        status => 6,
+        operation => 'pathmap-new',
+        detail => 'native API revision 8 is required',
+    ).throw if api-revision() < 8;
+    my Pointer $output .= new;
+    check-status(ldict-pathmap-new($domain.Int, $output), 'pathmap-new');
+    dictionary-from($output, $domain)
+}
+
+sub suffix-index(--> Mu) is export {
+    X::Libdictenstein.new(
+        status => 6,
+        operation => 'suffix-index',
+        detail => 'typed suffix-source records are not yet wrapped by the Raku facade; use the revision-8 C ABI',
+    ).throw;
 }
 
 sub scdawg(UnitDomain:D $domain = UNICODE-SCALAR --> Dictionary:D) is export {

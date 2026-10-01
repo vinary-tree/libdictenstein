@@ -1,0 +1,11 @@
+use Test;
+use Libdictenstein;
+
+is abi-version, 1, 'probe has the stable ABI major';
+is api-revision, 7, 'probe advertises revision 7';
+throws-like { pathmap(BYTE) }, X::Libdictenstein, status => 6,
+    'PathMap rejects revision 7 before resolving its absent constructor';
+throws-like { suffix-index }, X::Libdictenstein, status => 6,
+    'typed suffix index remains explicitly unavailable through the facade';
+
+done-testing;

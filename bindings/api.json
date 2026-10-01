@@ -1250,14 +1250,13 @@
       "generator": "scripts/generate-raku-abi.py",
       "abiInventory": "bindings/generated/raku-abi-capabilities.tsv",
       "rawOnlyReasons": {
-        "revision8-typed-backends": "Revision-8 PathMap and typed suffix C calls are available as low-level declarations only; the idiomatic Raku facade requires a separately qualified wrapper and an api_revision >= 8 gate.",
+        "revision8-typed-backends": "Revision-8 typed suffix C calls are available as low-level declarations only; the idiomatic Raku suffix-source facade requires a separately qualified wrapper and an api_revision >= 8 gate. PathMap is exposed by the revision-gated Dictionary facade.",
         "byte-values": "The revision-7 byte-value C ABI is declared, but the idiomatic Raku byte-value dictionary and cursor facade is a separate parity task; no u64 reinterpretation is allowed.",
         "entry-cursor": "The idiomatic facade traverses retained Vinary-Tree-Interop snapshots; the project-owned cursor ABI remains available only as a low-level declaration.",
         "legacy-optional-insert": "The facade uses the explicit scalar-value insertion call to preserve valueless versus zero semantics.",
         "legacy-scalar-getter": "The facade uses the optional-value output struct and membership flag instead of the older scalar getter."
       },
       "rawOnly": {
-        "ldict_pathmap_new": "revision8-typed-backends",
         "ldict_suffix_index_new": "revision8-typed-backends",
         "ldict_suffix_index_close": "revision8-typed-backends",
         "ldict_suffix_index_free": "revision8-typed-backends",

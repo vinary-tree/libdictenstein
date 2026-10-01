@@ -11,6 +11,27 @@ is PERSISTENT-VOCABULARY, PERSISTENT-VOCAB-ARTRIE,
 is nativesizeof(OptionalValue), 16, 'optional u64 layout matches C';
 is nativesizeof(TextEntry), 32, 'text descriptor layout matches C';
 is nativesizeof(U64Entry), 32, 'u64 descriptor layout matches C';
+is nativesizeof(SuffixSourceRecord),
+    8 + 2 * nativesizeof(Pointer) + nativesizeof(OptionalValue),
+    'typed suffix record descriptor layout matches C';
+
+subtest 'revision-8 PathMap and explicit suffix absence' => {
+    my $bytes = pathmap(BYTE);
+    is $bytes.kind, PATHMAP, 'PathMap reports its distinct backend kind';
+    my $raw = Buf.new(0x00, 0xff, 0x80);
+    $bytes.ASSIGN-KEY($raw, 0);
+    is $bytes.AT-KEY($raw), 0, 'PathMap preserves non-UTF-8 byte keys and zero values';
+    is $bytes.insert-batch([Pair.new(Buf.new(0xff), Nil)]), 1,
+        'PathMap batches arbitrary byte keys';
+    $bytes.close;
+    my $unicode = pathmap;
+    $unicode.ASSIGN-KEY('é🙂', 7);
+    is $unicode.AT-KEY('é🙂'), 7, 'Unicode PathMap follows scalar domain';
+    $unicode.close;
+    dies-ok { pathmap(U64) }, 'PathMap rejects the unsupported token domain';
+    throws-like { suffix-index }, X::Libdictenstein,
+        status => 6, 'suffix records are explicitly unsupported by the Raku facade';
+};
 
 subtest 'Unicode Associative and snapshot Iterable' => {
     my $dictionary = dynamic-dawg;

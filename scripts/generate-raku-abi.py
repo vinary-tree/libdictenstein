@@ -325,7 +325,12 @@ def render_layouts(model: dict) -> str:
         "    has uint64 $.source-id;",
         "    has Pointer $.data;",
         "    has size_t $.len;",
-        "    has OptionalValue $.value;",
+        # NativeCall represents a nested CStruct attribute as a pointer,
+        # whereas the C ABI embeds LdictOptionalU64 by value. Flatten its
+        # fields so sizeof/offsets match the public descriptor exactly.
+        "    has uint64 $.mapped-value;",
+        "    has uint8 $.has-value;",
+        *[f"    has uint8 $.reserved{i};" for i in range(7)],
         "}",
         end,
     ]
