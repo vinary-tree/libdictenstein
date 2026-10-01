@@ -161,6 +161,24 @@ func TestC1_IdentityConstants(t *testing.T) {
 	}
 }
 
+func TestC1_OptionalRevision8BackendsAreExplicitlyUnsupported(t *testing.T) {
+	if ld.PathMapKind != 6 {
+		t.Fatalf("PathMap kind = %d, want 6", ld.PathMapKind)
+	}
+	for _, backend := range []ld.OptionalBackend{ld.PathMapBackend, ld.TypedSuffixIndexBackend} {
+		if backend.Supported() {
+			t.Fatalf("backend %d falsely advertises facade support", backend)
+		}
+		var native *ld.Error
+		if !errors.As(backend.Require(), &native) || native.Status != 6 {
+			t.Fatalf("backend %d did not return explicit UNSUPPORTED status", backend)
+		}
+		if !strings.Contains(native.Message, "not exposed") {
+			t.Fatalf("backend %d returned unclear message: %s", backend, native.Message)
+		}
+	}
+}
+
 func TestC1_KindAndCapabilities(t *testing.T) {
 	dawg, err := ld.NewDynamicDawg(ld.UnicodeScalarDomain)
 	must(t, err)

@@ -111,6 +111,19 @@ final class ConformanceTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(Dictionary.apiRevision(), 7)
     }
 
+    func testC1OptionalRevision8BackendsAreExplicitlyUnsupported() {
+        for backend in [OptionalBackend.pathMap, .typedSuffixIndex] {
+            XCTAssertFalse(backend.isSupported)
+            XCTAssertThrowsError(try backend.require()) { error in
+                guard let native = error as? LibdictensteinError else {
+                    return XCTFail("expected LibdictensteinError, got \(error)")
+                }
+                XCTAssertEqual(native.status, 6)
+                XCTAssertTrue(native.description.contains("not exposed"))
+            }
+        }
+    }
+
     func testC1KindAndCapabilities() throws {
         let dawg = try DynamicDAWG()
         XCTAssertEqual(try dawg.kind, 1)

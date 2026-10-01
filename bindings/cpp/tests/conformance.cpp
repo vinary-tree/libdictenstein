@@ -340,6 +340,21 @@ void check_c1_identity() {
     CHECK(ld::api_revision() == LDICT_API_REVISION);
 }
 
+void check_c1_optional_revision8_backends() {
+    CHECK(static_cast<std::uint32_t>(ld::backend_kind::pathmap) == LDICT_KIND_PATHMAP);
+    for (const auto backend : {ld::optional_backend::pathmap,
+                               ld::optional_backend::typed_suffix_index}) {
+        CHECK(!ld::supports(backend));
+        try {
+            ld::require(backend);
+            CHECK(false);
+        } catch (const ld::error& failure) {
+            CHECK(failure.status() == LDICT_STATUS_UNSUPPORTED);
+            CHECK(std::string_view(failure.what()).find("not exposed") != std::string_view::npos);
+        }
+    }
+}
+
 void check_c1_kind_and_capabilities() {
     const std::uint64_t read = 1ull << 0, insert = 1ull << 1, remove = 1ull << 2,
                         clear = 1ull << 3, compact = 1ull << 4, substring = 1ull << 5,
@@ -859,6 +874,7 @@ int main(int argc, char** argv) {
     }
 
     check_c1_identity();
+    check_c1_optional_revision8_backends();
     check_c1_kind_and_capabilities();
     check_c2_move_and_null_free();
     check_c2_free_order_independence();

@@ -22,6 +22,8 @@ class error final : public std::runtime_error {
 public:
     explicit error(LdictStatus status)
         : std::runtime_error(ldict_last_error_message()), status_(status) {}
+    error(LdictStatus status, std::string message)
+        : std::runtime_error(std::move(message)), status_(status) {}
     [[nodiscard]] LdictStatus status() const noexcept { return status_; }
 private:
     LdictStatus status_;
@@ -50,7 +52,27 @@ enum class backend_kind : std::uint32_t {
     scdawg = LDICT_KIND_SCDAWG,
     persistent_artrie = LDICT_KIND_PERSISTENT_ARTRIE,
     persistent_vocabulary = LDICT_KIND_PERSISTENT_VOCAB_ARTRIE,
+    pathmap = LDICT_KIND_PATHMAP,
 };
+
+// These revision-8 backends are present in the C library but not in this
+// statically linked facade. Merely referencing a new C symbol would prevent a
+// revision-7 shared library from loading the otherwise compatible consumer.
+enum class optional_backend { pathmap, typed_suffix_index };
+
+[[nodiscard]] constexpr bool supports(optional_backend) noexcept { return false; }
+
+inline void require(optional_backend backend) {
+    switch (backend) {
+    case optional_backend::pathmap:
+        throw error(LDICT_STATUS_UNSUPPORTED,
+                    "PathMap is not exposed by the statically linked C++ facade");
+    case optional_backend::typed_suffix_index:
+        throw error(LDICT_STATUS_UNSUPPORTED,
+                    "typed suffix-source snapshots are not exposed by the C++ facade");
+    }
+    throw std::invalid_argument("unknown optional libdictenstein backend");
+}
 
 enum class algebra_operation : std::uint32_t {
     set_union = LDICT_ALGEBRA_UNION,

@@ -3,9 +3,36 @@ import VinaryTreeInterop
 
 public struct LibdictensteinError: Error, CustomStringConvertible, Sendable {
     public let description: String
-    init(_ fallback: String) {
-        let native = ldict_last_error_message().map(String.init(cString:)) ?? ""
+    /// Native status, including UNSUPPORTED for a deliberately absent facade.
+    public let status: UInt32?
+
+    init(_ fallback: String, status: UInt32? = nil, useNativeMessage: Bool = true) {
+        self.status = status
+        let native = useNativeMessage ? (ldict_last_error_message().map(String.init(cString:)) ?? "") : ""
         description = native.isEmpty ? fallback : native
+    }
+}
+
+/// Revision-8 C backends deliberately not imported by this statically linked
+/// facade. A new symbol reference would prevent loading an older revision-7
+/// shared library before any runtime revision check could execute.
+public enum OptionalBackend: Sendable {
+    case pathMap
+    case typedSuffixIndex
+
+    public var isSupported: Bool { false }
+
+    public func require() throws {
+        let message: String
+        switch self {
+        case .pathMap:
+            message = "PathMap is not exposed by the statically linked Swift facade"
+        case .typedSuffixIndex:
+            message = "typed suffix-source snapshots are not exposed by the Swift facade"
+        }
+        throw LibdictensteinError(
+            message, status: UInt32(LDICT_STATUS_UNSUPPORTED.rawValue), useNativeMessage: false
+        )
     }
 }
 
@@ -96,7 +123,9 @@ public struct EntrySnapshot: RandomAccessCollection, Sendable {
 
 private func checked(_ status: LdictStatus) throws {
     guard status == LDICT_STATUS_OK else {
-        throw LibdictensteinError("libdictenstein status \(status.rawValue)")
+        throw LibdictensteinError(
+            "libdictenstein status \(status.rawValue)", status: UInt32(status.rawValue)
+        )
     }
 }
 
