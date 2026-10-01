@@ -29,6 +29,40 @@ snapshot = dictionary.entries
 `each` returns an `Enumerator` without a block. `entry_stream` exposes manual
 `next`, `cancel`, and `close` for pull-driven bounded traversal.
 
+## Revision-8 PathMap and typed suffix-source boundary
+
+`PathMap` uses the existing Ruby dictionary and `Enumerable` surface for
+exact byte or Unicode keys. A byte-domain `String` retains arbitrary bytes;
+`nil` is valueless membership, not absence or numeric zero. Close the owning
+handle in `ensure`, including when iteration stops early:
+
+```ruby
+LD = VinaryTree::Libdictenstein
+words = LD::PathMap.new(domain: LD::BYTE)
+begin
+  words.put("\xff\x00".b, nil)
+  words.put("zero", 0)
+  raise "missing byte key" unless words.include?("\xff\x00".b)
+  raise "lost zero" unless words.get("zero").value == 0
+ensure
+  words.close
+end
+```
+
+Fiddle binds the new constructor only after `api_revision >= 8`, preserving
+older revision-7 library loading. `LD::PathMap.new(domain: LD::U64)` raises
+`LD::Error` with `UNSUPPORTED` status 6; invalid UTF-8 for a Unicode-domain
+map raises status 3. The [real revision-7 loader
+probe](test/test_revision7_gate.rb) and [conformance
+tests](test/test_conformance.rb) pin these behaviors.
+
+`LD::SuffixIndex` deliberately raises `UNSUPPORTED` status 6. Typed suffix
+source records can repeat identical text and retain independent snapshots;
+they cannot be safely represented by the existing dictionary facade. The
+[revision-8 contract](../../docs/bindings/backend-api-revision8.md) and
+[capability matrix](../../docs/bindings/revision8-capability-matrix.md) describe
+the native surface and current language status.
+
 <!-- BEGIN GENERATED BINDING OPERATIONS; DO NOT EDIT -->
 
 ## Support and package contract

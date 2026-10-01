@@ -8,6 +8,41 @@ and performs no serialization or term copying.
 Wheels bundle the project native library. Set `LIBDICTENSTEIN_LIBRARY` only for
 development against an explicit build.
 
+## Revision-8 PathMap and typed suffix-source boundary
+
+`PathMap` is a mutable exact-key dictionary, so it uses Python's ordinary
+mapping operations and the same retained snapshot protocol as other dictionary
+backends. Byte-domain keys are `bytes` and preserve arbitrary octets; Unicode
+keys are `str`. A present key with value `None` is distinct from a missing key
+and from a present value of zero:
+
+```python
+from libdictenstein import PathMap, UnitDomain
+
+with PathMap(UnitDomain.BYTE) as words:
+    words[b"\xff\x00"] = None
+    words[b"zero"] = 0
+    assert words.lookup(b"\xff\x00") == (True, None)
+    assert words.lookup(b"zero") == (True, 0)
+    frozen = words.snapshot()  # copied Mapping; safe after the handle closes
+assert frozen[b"\xff\x00"] is None
+```
+
+The constructor checks the loaded native API revision before looking up the
+revision-8 symbol, so importing this package against a revision-7 library
+does not break its existing backends. `PathMap(UnitDomain.U64)` raises
+`NativeError` with `UNSUPPORTED` status 6; invalid UTF-8 bytes passed to a
+Unicode-domain map raise status 3. The public [revision-7 loader
+probe](tests/test_revision7_gate.py) and [backend
+tests](tests/test_backends.py) exercise these boundaries.
+
+The distinct `SuffixIndex` source-record/snapshot facade is **not yet
+available** in Python. Constructing it raises `NativeError` status 6; it never
+falls back to SCDAWG or treats duplicate insertion records as mapping keys.
+The native semantics and the current language-by-language status are in the
+[revision-8 contract](../../docs/bindings/backend-api-revision8.md) and
+[capability matrix](../../docs/bindings/revision8-capability-matrix.md).
+
 <!-- BEGIN GENERATED BINDING OPERATIONS; DO NOT EDIT -->
 
 ## Support and package contract

@@ -55,6 +55,14 @@ jobs:
           export PYTHONPATH="$GITHUB_WORKSPACE/bindings/python/src:$parent/vinary-tree-interop/bindings/python/src"
           export LIBDICTENSTEIN_LIBRARY="$GITHUB_WORKSPACE/target/release/liblibdictenstein.so"
           python -m pytest -q bindings/python/tests/test_conformance.py bindings/python/tests/test_backends.py
+      - name: Gate Python optional backends against revision 7
+        run: |
+          cc -std=c11 -shared -fPIC tests/fixtures/revision7_probe.c \
+            -o target/revision7-probe.so
+          parent="$(dirname "$GITHUB_WORKSPACE")"
+          export PYTHONPATH="$GITHUB_WORKSPACE/bindings/python/src:$parent/vinary-tree-interop/bindings/python/src"
+          LIBDICTENSTEIN_LIBRARY="$GITHUB_WORKSPACE/target/revision7-probe.so" \
+            python -m pytest -q bindings/python/tests/test_revision7_gate.py
 
   julia:
     name: Julia collections and algebra
@@ -188,6 +196,12 @@ jobs:
           ruby -Ilib -Itest test/test_conformance.rb
           ruby -Ilib -Itest test/test_collection_profile.rb
           ruby -c bin/libdictenstein-collection-profile
+      - name: Gate Ruby optional backends against revision 7
+        run: |
+          cc -std=c11 -shared -fPIC tests/fixtures/revision7_probe.c \
+            -o target/revision7-probe.so
+          LIBDICTENSTEIN_LIBRARY="$GITHUB_WORKSPACE/target/revision7-probe.so" \
+            ruby -Ibindings/ruby/lib bindings/ruby/test/test_revision7_gate.rb
 
   c:
     name: C entry cursor

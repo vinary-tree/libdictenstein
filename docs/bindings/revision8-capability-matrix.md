@@ -27,8 +27,8 @@ use its existing host/runtime bridge instead of importing C symbols itself.
 | Julia | Supported; constructor gates revision 8 | Supported as `SuffixIndex`/`SuffixSnapshot`, not `AbstractDict` | [Package tests](../../bindings/julia/Libdictenstein/test/runtests.jl) and [revision-7 probe](../../bindings/julia/Libdictenstein/test/revision7_gate.jl) |
 | Raku | Supported as `Dictionary`; constructor gates revision 8 | Explicitly unsupported by `suffix-index`; raw C declarations are not a facade | [Conformance](../../bindings/raku/t/01-conformance.rakutest) and [revision-7 probe](../../bindings/raku/t/02-revision7-gate.rakutest) |
 | C++ | Unqualified | Unqualified | Native header integration under review |
-| Python | Unqualified | Unqualified | Dynamic `ctypes` loader under review |
-| Ruby | Unqualified | Unqualified | Dynamic Fiddle loader under review |
+| Python | Supported; `ctypes` resolves constructor after revision gate | Explicitly unsupported by `SuffixIndex` | [Backend tests](../../bindings/python/tests/test_backends.py) and [real revision-7 symbol-set probe](../../bindings/python/tests/test_revision7_gate.py) |
+| Ruby | Supported; Fiddle binds constructor after revision gate | Explicitly unsupported by `SuffixIndex` | [Conformance](../../bindings/ruby/test/test_conformance.rb) and [real revision-7 symbol-set probe](../../bindings/ruby/test/test_revision7_gate.rb) |
 | Lua | Unqualified | Unqualified | Native module under review |
 | Go | Unqualified | Unqualified | cgo facade under review |
 | OCaml | Unqualified | Unqualified | Copied C header is exact; high-level facade under review |
