@@ -93,6 +93,43 @@ end
     end
 end
 
+@testset "sorted minimal DynamicDAWG builder" begin
+    unicode = LD.SortedMinimalDawg([
+        "" => nothing, "café" => 1, "café" => 2, "中文" => 0])
+    bytes = LD.SortedMinimalDawg([
+        UInt8[0x00] => nothing, UInt8[0x00, 0xff] => 4,
+        UInt8[0xff] => 7]; domain=LD.UNIT_BYTE)
+    tokens = LD.SortedMinimalDawg([
+        UInt64[] => nothing, UInt64[1] => 5, UInt64[1, 2] => 6];
+        domain=LD.UNIT_U64)
+    empty = LD.SortedMinimalDawg((); domain=LD.UNIT_BYTE)
+    try
+        @test LD.kind(unicode) == LD.KIND_DYNAMIC_DAWG
+        @test length(unicode) == 3
+        @test unicode[""] === nothing
+        @test unicode["café"] == 2
+        @test unicode["中文"] == 0
+        unicode["later"] = 8
+        @test unicode["later"] == 8
+
+        @test bytes[UInt8[0x00]] === nothing
+        @test bytes[UInt8[0x00, 0xff]] == 4
+        @test bytes[UInt8[0xff]] == 7
+        @test tokens[UInt64[]] === nothing
+        @test tokens[UInt64[1, 2]] == 6
+        @test isempty(empty)
+    finally
+        foreach(close, (unicode, bytes, tokens, empty))
+    end
+    @test_throws ArgumentError LD.SortedMinimalDawg(["z" => 1, "a" => 2])
+    @test_throws ArgumentError LD.SortedMinimalDawg([
+        UInt8[0xff] => 1, UInt8[0x00] => 2]; domain=LD.UNIT_BYTE)
+    @test_throws ArgumentError LD.SortedMinimalDawg([
+        UInt64[2] => 1, UInt64[1] => 2]; domain=LD.UNIT_U64)
+    @test_throws ArgumentError LD.SortedMinimalDawg(["a" => -1])
+    @test_throws ArgumentError LD.SortedMinimalDawg(["a" => 1]; domain=LD.UNIT_U64)
+end
+
 @testset "backend-specific operations" begin
     dat = LD.DoubleArrayTrie(["cat" => 1, "dog" => nothing])
     suffix = LD.Scdawg()

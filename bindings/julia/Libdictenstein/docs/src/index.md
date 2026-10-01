@@ -20,6 +20,7 @@ but maps to `nothing`; it is different from an absent key, which makes
 | Constructor | Best fit | Mutation | Special capability |
 |---|---|---:|---|
 | `DynamicDawg` | general exact dictionary | yes | minimal graph, all key domains |
+| `SortedMinimalDawg` | preordered bulk construction | yes | optimized freeze-once DynamicDAWG constructor; same backend kind |
 | `DoubleArrayTrie` | read-mostly text lexicon | no | dense array traversal |
 | `Scdawg` | exact terms plus factor search | yes | substring membership/frequency |
 | `PersistentARTrie` | durable large dictionary | yes | checkpoint and reopen |

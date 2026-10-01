@@ -31,6 +31,23 @@ finally
 end
 ```
 
+For already ordered input, `SortedMinimalDawg` validates nondecreasing keys
+and feeds one batch to the native freeze-once minimal-graph builder. The result
+is still a mutable `DynamicDawg`, not a separate backend:
+
+```julia
+ordered = SortedMinimalDawg(["ant" => 1, "bee" => nothing, "bee" => 2])
+try
+    @assert ordered["bee"] == 2 # last duplicate value wins
+finally
+    close(ordered)
+end
+```
+
+Supply `domain=UNIT_BYTE` for byte-vector keys or `domain=UNIT_U64` for
+unsigned token vectors. Out-of-order input raises `ArgumentError` before a
+native handle is created.
+
 Use `do`/`try`–`finally` around long-lived dictionaries. A finalizer protects
 abandoned objects, but deterministic `close` keeps native memory pressure
 independent of Julia garbage-collection timing.

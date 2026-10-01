@@ -5,6 +5,7 @@
 ```@docs
 Dictionary
 DynamicDawg
+SortedMinimalDawg
 DoubleArrayTrie
 Scdawg
 PersistentARTrie

@@ -15,6 +15,7 @@ export API_REVISION,
     AlgebraOperation,
     ValueMerge,
     DynamicDawg,
+    SortedMinimalDawg,
     DoubleArrayTrie,
     Scdawg,
     PersistentARTrie,
@@ -464,6 +465,46 @@ end
 
 """Construct an empty mutable DynamicDAWG in the requested key domain."""
 DynamicDawg(domain=UNIT_UNICODE_SCALAR) = construct(:ldict_dynamic_dawg_new, domain)
+
+function lexicographically_nondecreasing(previous, current)
+    for index in 1:min(length(previous), length(current))
+        previous[index] < current[index] && return true
+        previous[index] > current[index] && return false
+    end
+    length(previous) <= length(current)
+end
+
+"""Build a minimal DynamicDAWG from lexicographically nondecreasing entries.
+
+The input is already ordered, so the native empty-dictionary batch path uses
+its freeze-once minimal-graph builder without sorting. Duplicate keys are
+allowed and retain the last supplied optional `UInt64` value. This is an
+optimized constructor for `DynamicDawg`, not a separate backend kind; the
+result remains mutable. Byte keys use `Vector{UInt8}`, Unicode-scalar keys
+use `String`, and u64 keys use `Vector{UInt64}`.
+"""
+function SortedMinimalDawg(entries; domain=UNIT_UNICODE_SCALAR)
+    normalized = normalize_domain(domain)
+    pairs = normalized_pairs(entries)
+    previous = nothing
+    for entry in pairs
+        key = normalized == UNIT_U64 ? u64_buffer(first(entry), normalized) :
+            text_buffer(first(entry), normalized)
+        checked_optional(last(entry))
+        if previous !== nothing && !lexicographically_nondecreasing(previous, key)
+            throw(ArgumentError("SortedMinimalDawg requires lexicographically nondecreasing keys"))
+        end
+        previous = key
+    end
+    dictionary = DynamicDawg(normalized)
+    try
+        insert_batch!(dictionary, pairs)
+        dictionary
+    catch
+        close(dictionary)
+        rethrow()
+    end
+end
 
 """Construct an empty mutable suffix-aware compact DAWG."""
 Scdawg(domain=UNIT_UNICODE_SCALAR) = construct(:ldict_scdawg_new, domain)
