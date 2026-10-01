@@ -6,6 +6,11 @@ package is `libdictenstein`; the module is
 immutable DoubleArrayTrie construction, SCDAWG substring search, persistent
 ARTrie CRUD/checkpoint/reopen, and persistent vocabulary reverse lookup.
 
+`pathmap ()` and `suffix_index ()` fail explicitly with `UNSUPPORTED (status
+6)`: the statically linked OCaml stubs import no revision-8-only symbols and
+remain loadable against revision 7. The typed suffix index is deliberately
+distinct from `scdawg ()` and from the generic dictionary type.
+
 ## Native library
 
 The stubs link the shared library `libdictenstein`. Build it and put it on the

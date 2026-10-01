@@ -368,6 +368,16 @@ static int scdawg_new(lua_State* state) {
     return status == LDICT_STATUS_OK ? push_dictionary(state, output, selected) : dictionary_error(state, status);
 }
 
+/* These optional revision-8 symbols are deliberately not linked here: a Lua
+ * module built against revision 8 must still load with a revision-7 library. */
+static int pathmap_new(lua_State* state) {
+    return luaL_error(state, "UNSUPPORTED (status 6): PathMap is not exposed by this Lua facade");
+}
+
+static int suffix_index_new(lua_State* state) {
+    return luaL_error(state, "UNSUPPORTED (status 6): typed suffix-source snapshots are not exposed by this Lua facade");
+}
+
 static int double_array_trie_new(lua_State* state) {
     luaL_checktype(state, 1, LUA_TTABLE);
     uint32_t selected = domain(state, 2);
@@ -728,7 +738,8 @@ int luaopen_vinary_tree_libdictenstein(lua_State* state) {
     luaL_Reg functions[] = {
         {"abi_version", abi_version}, {"api_revision", api_revision},
         {"dynamic_dawg", dynamic_new}, {"double_array_trie", double_array_trie_new},
-        {"scdawg", scdawg_new},
+        {"scdawg", scdawg_new}, {"pathmap", pathmap_new},
+        {"suffix_index", suffix_index_new},
         {"create_persistent_artrie", persistent_create}, {"open_persistent_artrie", persistent_open},
         {"create_persistent_vocabulary", persistent_vocabulary_create},
         {"open_persistent_vocabulary", persistent_vocabulary_open},

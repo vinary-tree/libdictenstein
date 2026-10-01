@@ -2,6 +2,30 @@ using System.Text;
 
 namespace VinaryTree.Libdictenstein;
 
+/// <summary>Optional revision-8 backends not yet wrapped by this revision-7-linkable facade.</summary>
+public enum OptionalBackend
+{
+    /// <summary>The revision-8 exact-key PathMap dictionary.</summary>
+    PathMap,
+    /// <summary>The revision-8 typed suffix-source index.</summary>
+    TypedSuffixIndex,
+}
+
+/// <summary>Fail-closed capability probe for backends requiring new ABI symbols.</summary>
+public static class OptionalBackends
+{
+    /// <summary>The static .NET facade does not load revision-8-only symbols.</summary>
+    public static bool IsSupported(OptionalBackend backend) => false;
+
+    /// <summary>Throw status 6 instead of silently substituting a different backend.</summary>
+    public static void Require(OptionalBackend backend) => throw backend switch
+    {
+        OptionalBackend.PathMap => new LibdictensteinException(6, "PathMap is not exposed by the statically linked .NET facade"),
+        OptionalBackend.TypedSuffixIndex => new LibdictensteinException(6, "Typed suffix-source snapshots are not exposed by the .NET facade"),
+        _ => new ArgumentOutOfRangeException(nameof(backend)),
+    };
+}
+
 /// <summary>Mutable DynamicDAWG with full CRUD.</summary>
 public sealed class DynamicDawg : Dictionary
 {

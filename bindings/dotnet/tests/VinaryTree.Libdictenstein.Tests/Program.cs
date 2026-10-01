@@ -1,6 +1,13 @@
 using VinaryTree.Libdictenstein;
 using VinaryTree.Liblevenshtein;
 
+foreach (OptionalBackend backend in Enum.GetValues<OptionalBackend>())
+{
+    if (OptionalBackends.IsSupported(backend)) throw new Exception($"{backend} was advertised without a wrapper");
+    try { OptionalBackends.Require(backend); throw new Exception($"{backend} silently accepted"); }
+    catch (LibdictensteinException error) when (error.StatusCode == 6) { }
+}
+
 using var dictionary = new DynamicDawg();
 dictionary.PutAll(new Dictionary<string, ulong?> { ["cat"] = 1, ["cot"] = 2, ["cut"] = 3, ["scat"] = null });
 using var transducer = new Transducer(dictionary);

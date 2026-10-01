@@ -6,6 +6,13 @@ package is `libdictenstein`; the module loads as
 DoubleArrayTrie construction, SCDAWG substring search, persistent ARTrie
 CRUD/checkpoint/reopen, and persistent vocabulary reverse lookup.
 
+The optional revision-8 PathMap and typed suffix-source index are **not**
+implemented by this statically linked Lua module. `pathmap()` and
+`suffix_index()` raise `UNSUPPORTED (status 6)` rather than substituting
+DynamicDAWG or SCDAWG. This keeps the module loadable with revision-7 native
+libraries; SCDAWG's dictionary substring search is not the typed suffix
+record/snapshot API.
+
 ## Installation
 
 The Lua rock contains the idiomatic C facade and links to an explicitly

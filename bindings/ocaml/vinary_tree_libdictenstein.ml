@@ -1,4 +1,5 @@
 type t
+type suffix_index
 type lookup = { found : bool; value : int64 option }
 type algebra_operation = Union | Intersection | Difference | Symmetric_difference
 type value_merge = First | Last | Lattice_join | Lattice_meet
@@ -67,6 +68,16 @@ let double_array_trie ?(domain = Vinary_tree_interop.Unicode_scalar) entries =
   raw_double_array_trie domain entries
 
 let scdawg ?(domain = Vinary_tree_interop.Unicode_scalar) () = raw_scdawg domain
+
+(* Keep the OCaml module loadable against revision 7: these optional revision-8
+   symbols must not be imported by the statically linked stubs. *)
+let pathmap ?(domain = Vinary_tree_interop.Unicode_scalar) () =
+  ignore domain;
+  failwith "UNSUPPORTED (status 6): PathMap is not exposed by this OCaml facade"
+
+let suffix_index ?(domain = Vinary_tree_interop.Unicode_scalar) () =
+  ignore domain;
+  failwith "UNSUPPORTED (status 6): typed suffix-source snapshots are not exposed by this OCaml facade"
 
 let create_persistent_artrie
     ?(domain = Vinary_tree_interop.Unicode_scalar) path =

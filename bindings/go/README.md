@@ -12,7 +12,7 @@ independent liblevenshtein transducer without serialization.
 cgo links `libdictenstein` (file name `liblibdictenstein.so`):
 
 ```sh
-cargo build --release --no-default-features --features ffi
+cargo build --release --no-default-features --features ffi,pathmap-backend
 ```
 
 The `#cgo` directives in `libdictenstein.go` already add the in-repo header
@@ -97,6 +97,17 @@ convenient. `Cancel` is the explicit early-exit spelling.
 
 `Capabilities()` returns the `Can*` bitset; `Kind()` returns the backend
 constant.
+
+The revision-8 native library additionally defines `PathMapKind == 6` and a
+typed suffix-source index. This statically linked cgo facade does not import
+either new constructor; adding that link dependency would stop an otherwise
+valid revision-7 consumer from loading before a runtime check could run.
+`PathMapBackend.Require()` and `TypedSuffixIndexBackend.Require()` return a
+typed `*Error` with `UNSUPPORTED` status 6, and neither capability is silently
+mapped to DynamicDAWG or SCDAWG. The [linked conformance
+suite](conformance/conformance_test.go) tests those absences. See the
+[capability matrix](../../docs/bindings/revision8-capability-matrix.md) for
+the current host-surface status.
 
 ## Text domains and values
 

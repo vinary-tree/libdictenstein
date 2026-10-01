@@ -1,4 +1,5 @@
 type t
+type suffix_index
 type lookup = { found : bool; value : int64 option }
 type algebra_operation = Union | Intersection | Difference | Symmetric_difference
 type value_merge = First | Last | Lattice_join | Lattice_meet
@@ -22,6 +23,12 @@ val dynamic_dawg : ?domain:Vinary_tree_interop.unit_domain -> unit -> t
 val double_array_trie :
   ?domain:Vinary_tree_interop.unit_domain -> (string * int64 option) array -> t
 val scdawg : ?domain:Vinary_tree_interop.unit_domain -> unit -> t
+(* Explicitly unsupported in this revision-7-linkable facade (status 6).
+   No revision-8 symbol is loaded before this check. *)
+val pathmap : ?domain:Vinary_tree_interop.unit_domain -> unit -> t
+(* Typed suffix-source indexing is distinct from the generic dictionary API;
+   this facade reports unsupported (status 6) until a typed wrapper exists. *)
+val suffix_index : ?domain:Vinary_tree_interop.unit_domain -> unit -> suffix_index
 val create_persistent_artrie :
   ?domain:Vinary_tree_interop.unit_domain -> string -> t
 val open_persistent_artrie :

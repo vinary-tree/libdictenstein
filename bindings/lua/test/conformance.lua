@@ -158,6 +158,12 @@ file:close()
 check(m.abi_version() == 1, "abi version == 1")
 check(m.api_revision() >= 6, "api revision >= 6")
 
+for _, name in ipairs({ "pathmap", "suffix_index" }) do
+  local ok, failure = pcall(m[name], "unicode")
+  check(not ok and tostring(failure):match("UNSUPPORTED %(status 6%)"),
+    name .. " must fail explicitly without linking revision-8 symbols")
+end
+
 do
   local dawg <close> = m.dynamic_dawg("unicode")
   check(dawg:kind() == 1, "dawg kind")

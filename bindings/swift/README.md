@@ -12,7 +12,7 @@ native directory explicitly to SwiftPM's linker, and expose it to the runtime
 loader:
 
 ```sh
-cargo build --release --no-default-features --features ffi
+cargo build --release --no-default-features --features ffi,pathmap-backend
 export LD_LIBRARY_PATH="$PWD/target/release:$LD_LIBRARY_PATH"
 swift build --package-path bindings/swift/libdictenstein \
   -Xlinker "-L$PWD/target/release"
@@ -76,6 +76,17 @@ Both forms copy keys before releasing a native batch. Use `put(bytes:)` and
 Text and u64 terms are both accepted (`String` and `[UInt64]`); `put`, `get`,
 and `remove` are overloaded on the term type. `count` is a throwing property.
 
+The revision-8 native library also has PathMap and a separate typed
+suffix-source index, but this statically linked Swift facade does not import
+their new constructors. `OptionalBackend.pathMap.isSupported` and
+`.typedSuffixIndex.isSupported` are both false; `try backend.require()` throws
+`LibdictensteinError` with `UNSUPPORTED` status 6. This is a deliberate
+failure, not a fallback to DynamicDAWG or SCDAWG; retaining revision-7 binary
+loadability is more honest than an eager new-symbol reference. The
+[conformance test](libdictenstein/Tests/LibdictensteinTests/ConformanceTests.swift)
+and [capability matrix](../../docs/bindings/revision8-capability-matrix.md)
+track this gap.
+
 ## Values and domains
 
 `String` terms are passed as UTF-8; the Unicode-scalar backends validate it.
@@ -85,7 +96,9 @@ distinct. `Lookup` carries `found: Bool` and `value: UInt64?`.
 ## Error handling
 
 Fallible calls `throw` `LibdictensteinError`, whose `description` is the
-thread-local `ldict_last_error_message()`. Backend-unsupported operations
+thread-local `ldict_last_error_message()` for native failures and whose
+optional `status` preserves a native or explicit facade status.
+Backend-unsupported operations
 surface the `UNSUPPORTED` status; wrong-domain terms surface `DOMAIN_MISMATCH`
 (9).
 

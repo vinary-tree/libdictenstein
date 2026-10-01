@@ -5,9 +5,11 @@ module vinary_tree_libdictenstein
   private
 
   integer(c_int32_t), parameter, public :: ldict_ok = 0
+  integer(c_int32_t), parameter, public :: ldict_unsupported = 6
   integer(c_int32_t), parameter, public :: dynamic_dawg_kind = 1, double_array_trie_kind = 2
   integer(c_int32_t), parameter, public :: scdawg_kind = 3, persistent_artrie_kind = 4
   integer(c_int32_t), parameter, public :: persistent_vocabulary_kind = 5
+  integer(c_int32_t), parameter, public :: pathmap_kind = 6
   integer(c_int64_t), parameter, public :: can_read = 1, can_insert = 2, can_remove = 4
   integer(c_int64_t), parameter, public :: can_clear = 8, can_compact = 16
   integer(c_int64_t), parameter, public :: can_substring = 32, can_checkpoint = 64
@@ -97,7 +99,14 @@ module vinary_tree_libdictenstein
     final :: dictionary_finalize
   end type
 
+  ! A typed suffix-source index is intentionally not a generic dictionary.
+  type, public :: suffix_index
+    private
+    type(c_ptr) :: handle = c_null_ptr
+  end type
+
   public :: new_dynamic_dawg, new_double_array_trie, new_scdawg
+  public :: new_pathmap, new_suffix_index
   public :: create_persistent_artrie, open_persistent_artrie
   public :: create_persistent_vocabulary, open_persistent_vocabulary
   public :: abi_version, api_revision, last_error_message
@@ -340,6 +349,24 @@ contains
     integer(c_int32_t), intent(out), optional :: status; integer(c_int32_t) :: code, selected
     selected = vt_unit_unicode_scalar; if (present(domain)) selected = domain
     code = c_dynamic(selected, value%handle); if (present(status)) status = code
+  end subroutine
+
+  ! No revision-8 C symbol is imported: old revision-7 shared libraries remain
+  ! loadable, and callers receive the native UNSUPPORTED status explicitly.
+  subroutine new_pathmap(value, domain, status)
+    type(dictionary), intent(out) :: value
+    integer(c_int32_t), intent(in), optional :: domain
+    integer(c_int32_t), intent(out) :: status
+    value%handle = c_null_ptr
+    status = ldict_unsupported
+  end subroutine
+
+  subroutine new_suffix_index(value, domain, status)
+    type(suffix_index), intent(out) :: value
+    integer(c_int32_t), intent(in), optional :: domain
+    integer(c_int32_t), intent(out) :: status
+    value%handle = c_null_ptr
+    status = ldict_unsupported
   end subroutine
 
   subroutine make_entries(terms, values, has_values, entries, arena)

@@ -9,7 +9,8 @@
 //   C2  idempotent Dispose + free-order independence
 //   C3  reachable status arms (DOMAIN_MISMATCH, IO_ERROR) + message
 //       (INVALID_UTF8 unrepresentable via the string API;
-//        NULL_POINTER/UNSUPPORTED/LIMIT_EXCEEDED marked N/A with a reason)
+//        NULL_POINTER/LIMIT_EXCEEDED marked N/A with a reason; optional
+//        revision-8 surfaces explicitly report UNSUPPORTED status 6)
 //   C4  canonical fixture replay (all four backends)
 //   C5  CRUD + value + batch + substring; capability-derived rejects
 //   C6  precomposed/combining/multibyte, byte-domain NUL, u64 0/MAX
@@ -84,6 +85,12 @@ void AssertFixtureReads(Dictionary dictionary)
 
 Check(Dictionary.AbiVersion == 1, "abi version == 1");
 Check(Dictionary.ApiRevision >= 6, "api revision >= 6");
+foreach (OptionalBackend backend in Enum.GetValues<OptionalBackend>())
+{
+    Check(!OptionalBackends.IsSupported(backend), $"{backend} not falsely advertised");
+    try { OptionalBackends.Require(backend); Check(false, $"{backend} silently accepted"); }
+    catch (LibdictensteinException error) { Check(error.StatusCode == 6, $"{backend} explicit status 6"); }
+}
 
 const ulong Read = 1UL << 0, Insert = 1UL << 1, Remove = 1UL << 2,
     Clear = 1UL << 3, Compact = 1UL << 4, Substring = 1UL << 5, Checkpoint = 1UL << 6;

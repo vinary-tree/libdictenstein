@@ -7,6 +7,13 @@ insertion, immutable DoubleArrayTrie construction, SCDAWG substring search,
 persistent ARTrie CRUD/checkpoint/reopen, and persistent vocabulary reverse
 lookup.
 
+`OptionalBackends.Require(OptionalBackend.PathMap)` and
+`OptionalBackends.Require(OptionalBackend.TypedSuffixIndex)` throw a
+`LibdictensteinException` with status 6. Neither optional revision-8 surface
+is wrapped by this statically linked facade yet; it does not import their
+symbols, so revision-7 native libraries remain loadable. SCDAWG is a
+dictionary substring index, not the typed suffix record/snapshot API.
+
 ## Native library
 
 The interop layer imports the shared library named `libdictenstein` (resolved to

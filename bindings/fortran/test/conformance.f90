@@ -45,8 +45,15 @@ contains
 
   ! C1: identity constants are surfaced through the facade.
   subroutine test_identity()
+    type(dictionary) :: pathmap
+    type(suffix_index) :: suffix
+    integer(c_int32_t) :: st
     call check(abi_version() == 1, "abi_version == 1")
     call check(api_revision() >= 6, "api_revision >= 6")
+    call new_pathmap(pathmap, status=st)
+    call check(st == ldict_unsupported, "PathMap reports status 6")
+    call new_suffix_index(suffix, status=st)
+    call check(st == ldict_unsupported, "typed suffix index reports status 6")
   end subroutine
 
   ! C2: construction reports its kind; close is idempotent (no double free).

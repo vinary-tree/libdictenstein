@@ -17,6 +17,9 @@ module VinaryTree.Libdictenstein
   , DictionarySnapshot(..)
   , abiVersion
   , apiRevision
+  , OptionalBackend(..)
+  , optionalBackendSupported
+  , requireOptionalBackend
   , dynamicDawg
   , doubleArrayTrie
   , scdawg
@@ -84,6 +87,21 @@ import VinaryTree.Interop
 data LdictDictionary
 data LdictEntryCursor
 newtype Dictionary = Dictionary (ForeignPtr LdictDictionary)
+-- | Optional revision-8 surfaces remain separate from generic dictionaries.
+data OptionalBackend = PathMapBackend | TypedSuffixIndexBackend
+  deriving stock (Eq, Show)
+
+-- | The statically linked facade deliberately imports no revision-8 symbols,
+-- so it remains loadable against an existing revision-7 shared library.
+optionalBackendSupported :: OptionalBackend -> Bool
+optionalBackendSupported _ = False
+
+-- | Report status 6 explicitly instead of substituting SCDAWG or another
+-- backend for a typed suffix-source index.
+requireOptionalBackend :: OptionalBackend -> IO ()
+requireOptionalBackend backend = throwIO . userError $ case backend of
+  PathMapBackend -> "UNSUPPORTED (status 6): PathMap is not exposed by this Haskell facade"
+  TypedSuffixIndexBackend -> "UNSUPPORTED (status 6): typed suffix-source snapshots are not exposed by this Haskell facade"
 data Lookup = Lookup { found :: !Bool, mappedValue :: !(Maybe Word64) }
   deriving stock (Eq, Show)
 data AlgebraOperation = Union | Intersection | Difference | SymmetricDifference

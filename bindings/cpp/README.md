@@ -16,7 +16,7 @@ The facade links the shared library `libdictenstein` (file name
 `liblibdictenstein.so` / `.dylib` / `.dll`):
 
 ```sh
-cargo build --release --no-default-features --features ffi
+cargo build --release --no-default-features --features ffi,pathmap-backend
 ```
 
 ## Compiling against it
@@ -84,6 +84,17 @@ previous handle, so ownership transfer never double-frees.
 
 Query `capabilities()` for the runtime bitset (`LDICT_CAP_*`), or `kind()` for
 the backend identifier.
+
+The revision-8 C library also defines PathMap kind 6 and a distinct typed
+suffix-source index. This statically linked RAII facade does **not** import
+their new constructors, so a program using its older classes can still load
+with a revision-7 library. Querying `supports(optional_backend::pathmap)` or
+`supports(optional_backend::typed_suffix_index)` returns `false`; calling
+`require` for either throws `error` with `LDICT_STATUS_UNSUPPORTED`. It never
+substitutes DynamicDAWG or SCDAWG or flattens duplicate source records into a
+dictionary. The [linked conformance suite](tests/conformance.cpp) pins both
+negative paths; the [capability matrix](../../docs/bindings/revision8-capability-matrix.md)
+tracks future facade parity.
 
 ## Text domains and values
 

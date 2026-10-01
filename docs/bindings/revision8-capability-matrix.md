@@ -26,19 +26,19 @@ use its existing host/runtime bridge instead of importing C symbols itself.
 | C ABI | Supported; feature-off constructor returns `UNSUPPORTED` | Supported as separate index/snapshot handles | [Public FFI controls](../../tests/ffi_backend_revision8.rs), [header layout](../../tests/fixtures/revision8_header_layout.c), and [revision-7 consumer](../../tests/fixtures/revision7_consumer.c) |
 | Julia | Supported; constructor gates revision 8 | Supported as `SuffixIndex`/`SuffixSnapshot`, not `AbstractDict` | [Package tests](../../bindings/julia/Libdictenstein/test/runtests.jl) and [revision-7 probe](../../bindings/julia/Libdictenstein/test/revision7_gate.jl) |
 | Raku | Supported as `Dictionary`; constructor gates revision 8 | Explicitly unsupported by `suffix-index`; raw C declarations are not a facade | [Conformance](../../bindings/raku/t/01-conformance.rakutest) and [revision-7 probe](../../bindings/raku/t/02-revision7-gate.rakutest) |
-| C++ | Unqualified | Unqualified | Native header integration under review |
+| C++ | Explicitly unsupported by the static RAII facade | Explicitly unsupported; never coerced to `dictionary` | [Linked conformance](../../bindings/cpp/tests/conformance.cpp) requires both requests to throw status 6 |
 | Python | Supported; `ctypes` resolves constructor after revision gate | Explicitly unsupported by `SuffixIndex` | [Backend tests](../../bindings/python/tests/test_backends.py) and [real revision-7 symbol-set probe](../../bindings/python/tests/test_revision7_gate.py) |
 | Ruby | Supported; Fiddle binds constructor after revision gate | Explicitly unsupported by `SuffixIndex` | [Conformance](../../bindings/ruby/test/test_conformance.rb) and [real revision-7 symbol-set probe](../../bindings/ruby/test/test_revision7_gate.rb) |
-| Lua | Unqualified | Unqualified | Native module under review |
-| Go | Unqualified | Unqualified | cgo facade under review |
-| OCaml | Unqualified | Unqualified | Copied C header is exact; high-level facade under review |
+| Lua | Explicitly unsupported by the static C module | Explicitly unsupported; not SCDAWG | [Linked conformance](../../bindings/lua/test/conformance.lua) requires both constructors to raise status 6 |
+| Go | Explicitly unsupported by the static cgo facade | Explicitly unsupported; never coerced to `Dictionary` | [Linked conformance](../../bindings/go/conformance/conformance_test.go) requires typed status 6 for both |
+| OCaml | Explicitly unsupported by the static stubs | Explicitly unsupported as a distinct abstract type | [Linked conformance](../../bindings/ocaml/test/conformance.ml) requires both constructors to fail with status 6; copied C header remains exact |
 | JVM/Java | Unqualified | Unqualified | Java foreign-function facade under review |
 | Clojure | Unqualified | Unqualified | Mediated through JVM facade; under review |
 | JavaScript, TypeScript, ClojureScript | Unqualified | Unqualified | Mediated host runtime; under review |
-| .NET/C# | Unqualified | Unqualified | P/Invoke facade under review |
-| Swift | Unqualified | Unqualified | Clang-imported native facade under review |
-| Fortran | Unqualified | Unqualified | ISO C binding facade under review |
-| Haskell | Unqualified | Unqualified | FFI facade under review |
+| .NET/C# | Explicitly unsupported by the static P/Invoke facade | Explicitly unsupported; not SCDAWG | [Linked conformance](../../bindings/dotnet/tests/VinaryTree.Libdictenstein.Conformance/Program.cs) requires `LibdictensteinException` status 6 for both |
+| Swift | Explicitly unsupported by the static facade | Explicitly unsupported; never coerced to `Dictionary` | [Linked conformance](../../bindings/swift/libdictenstein/Tests/LibdictensteinTests/ConformanceTests.swift): 28/28 tests, including status-6 probes |
+| Fortran | Explicitly unsupported by the static ISO C facade | Explicitly unsupported as a separate `suffix_index` type | [Linked conformance](../../bindings/fortran/test/conformance.f90) requires `ldict_unsupported` status 6 and null handles |
+| Haskell | Explicitly unsupported by the static FFI facade | Explicitly unsupported; not SCDAWG | [Linked conformance](../../bindings/haskell/test/Conformance.hs) requires both requests to raise status 6 |
 
 No RC.6 artifact should advertise an `Unqualified` capability as supported.
 This matrix must be updated from tested evidence as the mirror lanes complete;

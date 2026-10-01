@@ -28,7 +28,7 @@ import Data.Bits (shiftR)
 import qualified Data.ByteString as BS
 import Data.Char (chr, digitToInt, isDigit, isSpace)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (isPrefixOf)
+import Data.List (isInfixOf, isPrefixOf)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
@@ -208,6 +208,12 @@ c1 failures = do
   api <- apiRevision
   check failures (abi == 1) "abi version == 1"
   check failures (api >= 6) "api revision >= 6"
+  forM_ [PathMapBackend, TypedSuffixIndexBackend] $ \backend -> do
+    check failures (not $ optionalBackendSupported backend) (show backend ++ " unsupported")
+    attempt <- try (requireOptionalBackend backend) :: IO (Either SomeException ())
+    check failures (case attempt of
+      Left err -> "UNSUPPORTED (status 6)" `isInfixOf` show err
+      Right () -> False) (show backend ++ " explicit status 6")
   dawg <- dynamicDawg UnicodeScalar
   k <- dictionaryKind dawg
   check failures (k == 1) "dawg kind"

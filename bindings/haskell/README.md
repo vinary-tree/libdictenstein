@@ -7,6 +7,12 @@ Hackage package is `libdictenstein`; the module is
 immutable DoubleArrayTrie construction, SCDAWG substring search, persistent
 ARTrie CRUD/checkpoint/reopen, and persistent vocabulary reverse lookup.
 
+`optionalBackendSupported` is false for `PathMapBackend` and
+`TypedSuffixIndexBackend`; `requireOptionalBackend` raises an explicit
+`UNSUPPORTED (status 6)` error. This static facade imports no revision-8-only
+symbols and remains loadable with revision-7 native libraries. The typed
+suffix-source index is not the generic SCDAWG dictionary.
+
 ## Native library
 
 The facade links the shared library `libdictenstein`. Build it and expose it to

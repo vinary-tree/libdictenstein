@@ -108,7 +108,16 @@ let c1 () =
   let scdawg = D.scdawg () in
   check (D.kind scdawg = 3) "scdawg kind";
   check (has (D.capabilities scdawg) cap_substring) "scdawg substring";
-  D.close scdawg
+  D.close scdawg;
+  let unsupported name action =
+    match action () with
+    | exception Failure message ->
+        check (String.starts_with ~prefix:"UNSUPPORTED (status 6)" message)
+          (name ^ " explicitly unsupported")
+    | _ -> failwith (name ^ " silently accepted")
+  in
+  unsupported "PathMap" (fun () -> D.pathmap ());
+  unsupported "typed suffix index" (fun () -> D.suffix_index ())
 
 (* --------------------------------------------------------------------- *)
 (* C2 lifecycle/ownership                                                *)

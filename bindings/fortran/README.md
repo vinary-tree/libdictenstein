@@ -5,6 +5,11 @@ insertion, immutable DoubleArrayTrie construction, SCDAWG substring operations,
 persistent ARTrie CRUD/checkpoint/reopen, persistent vocabulary reverse lookup,
 and the shared retained `vt_resource` used by liblevenshtein.
 
+`new_pathmap` and `new_suffix_index` return `ldict_unsupported` (status 6)
+with null handles. The latter uses a distinct `suffix_index` type rather than
+pretending to be a dictionary. This static facade does not import revision-8
+symbols, retaining load compatibility with revision-7 native libraries.
+
 The fpm package is `libdictenstein`. Link against
 `libdictenstein`; published CMake packages support shared or static linkage.
 
