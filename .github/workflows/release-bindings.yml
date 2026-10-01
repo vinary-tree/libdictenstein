@@ -340,7 +340,29 @@ jobs:
         with: { persist-credentials: false }
       - uses: actions/setup-node@v6
         with: { node-version: "24", package-manager-cache: false }
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: "25" }
+      - uses: DeLaGuardo/setup-clojure@13.6.1
+        with: { cli: 1.12.5.1664 }
+      - name: Checkout exact interop declarations for TypeScript consumer
+        shell: bash
+        run: |
+          parent="$(dirname "$GITHUB_WORKSPACE")"
+          git clone --depth 1 --branch v4.0.0-rc.6 \
+            https://github.com/vinary-tree/vinary-tree-interop.git \
+            "$parent/vinary-tree-interop"
+      - name: Install pinned TypeScript without resolving unpublished RC.6 packages
+        shell: bash
+        run: |
+          npm install --prefix "$GITHUB_WORKSPACE/target/ci-typescript" \
+            --ignore-scripts --no-package-lock --no-audit --no-fund \
+            --save-exact typescript@6.0.3
+          echo "$GITHUB_WORKSPACE/target/ci-typescript/node_modules/.bin" >> "$GITHUB_PATH"
       - run: npm test
+        working-directory: bindings/javascript
+      - run: npm run test:typescript
+        working-directory: bindings/javascript
+      - run: npm run test:cljs
         working-directory: bindings/javascript
       - name: Pack the JavaScript facade artifact
         working-directory: bindings/javascript

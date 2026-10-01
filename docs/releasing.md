@@ -38,6 +38,18 @@ publication workflow may regenerate.
 The repository CI additionally proves the feature matrix, Rocq models,
 sanitizers, documentation, diagrams, and all language conformance suites.
 
+The JavaScript-family package has three executable pre-pack gates in both
+branch/PR conformance CI and the `npm-package` release job: `npm test` checks
+the Node ESM/CommonJS runtime, `npm run test:typescript` strictly checks the
+public rejection declarations with TypeScript `6.0.3`, and
+`npm run test:cljs` compiles the ClojureScript facade with ClojureScript
+`1.12.145` before executing its Node assertions. The release job checks out
+the exact `v4.0.0-rc.6` interop declarations; branch CI uses the coordinated
+development sibling. TypeScript is installed into an isolated tool directory,
+not through `npm install` in the package root, because the RC.6 runtime
+dependencies may not yet be public at this prepublication gate. All three
+gates must pass before `npm pack`; none publishes a package.
+
 ## Two-phase workflow
 
 Pushing the tag creates only the immutable source ref. A manual
