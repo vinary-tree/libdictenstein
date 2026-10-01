@@ -319,7 +319,7 @@ fn suffix_domains_empty_pattern_and_fail_closed_outputs() {
             ldict_suffix_snapshot_free(view);
             ldict_suffix_index_free(index);
         }
-        let mut index = 1usize as *mut LdictSuffixIndex;
+        let mut index = ptr::dangling_mut::<LdictSuffixIndex>();
         assert_eq!(
             ldict_suffix_index_new(3, &mut index),
             LdictStatus::Unsupported
@@ -341,7 +341,7 @@ fn suffix_domains_empty_pattern_and_fail_closed_outputs() {
 #[test]
 fn pathmap_constructor_is_feature_gated_and_byte_exact() {
     unsafe {
-        let mut dictionary = 1usize as *mut LdictDictionary;
+        let mut dictionary = ptr::dangling_mut::<LdictDictionary>();
         let status = ldict_pathmap_new(1, &mut dictionary);
         #[cfg(not(feature = "pathmap-backend"))]
         {
@@ -508,7 +508,7 @@ fn pathmap_batch_is_atomic_and_retained_snapshot_is_immutable() {
 #[test]
 fn pathmap_rejects_u64_and_invalid_unicode_preserving_generic_failure_output() {
     unsafe {
-        let mut pointer = 1usize as *mut LdictDictionary;
+        let mut pointer = ptr::dangling_mut::<LdictDictionary>();
         assert_eq!(ldict_pathmap_new(3, &mut pointer), LdictStatus::Unsupported);
         assert!(pointer.is_null());
         assert_eq!(ldict_pathmap_new(2, &mut pointer), LdictStatus::Ok);
