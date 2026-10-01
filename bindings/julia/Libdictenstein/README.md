@@ -46,7 +46,10 @@ end
 
 Supply `domain=UNIT_BYTE` for byte-vector keys or `domain=UNIT_U64` for
 unsigned token vectors. Out-of-order input raises `ArgumentError` before a
-native handle is created.
+native handle is created. Calling `insert_batch!` once on an empty
+`DynamicDawg` with ordered entries reaches the same native fast path; this
+constructor adds validation and may allocate more than that direct call. Its
+advantage is over building the dictionary by repeated individual insertions.
 
 Use `do`/`try`–`finally` around long-lived dictionaries. A finalizer protects
 abandoned objects, but deterministic `close` keeps native memory pressure

@@ -482,6 +482,11 @@ allowed and retain the last supplied optional `UInt64` value. This is an
 optimized constructor for `DynamicDawg`, not a separate backend kind; the
 result remains mutable. Byte keys use `Vector{UInt8}`, Unicode-scalar keys
 use `String`, and u64 keys use `Vector{UInt64}`.
+
+The same native fast path is available by calling `insert_batch!` once on an
+empty `DynamicDawg` with ordered entries. This helper additionally validates
+ordering before creating the handle; it does not claim to outperform that
+direct batch call and currently materializes keys again for insertion.
 """
 function SortedMinimalDawg(entries; domain=UNIT_UNICODE_SCALAR)
     normalized = normalize_domain(domain)
