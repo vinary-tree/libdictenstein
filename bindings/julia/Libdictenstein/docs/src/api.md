@@ -6,8 +6,11 @@
 Dictionary
 DynamicDawg
 SortedMinimalDawg
+PathMap
 DoubleArrayTrie
 Scdawg
+SuffixIndex
+SuffixSnapshot
 PersistentARTrie
 PersistentVocabulary
 ```
@@ -19,6 +22,10 @@ insert_batch!
 compact!
 checkpoint!
 snapshot
+source_snapshot
+source_identity
+source_page
+source_records
 kind
 capabilities
 close!
@@ -33,6 +40,9 @@ difference
 symmetric_difference
 contains_substring
 substring_frequency
+contains_source
+insert_source!
+remove_source!
 vocabulary_term
 ```
 

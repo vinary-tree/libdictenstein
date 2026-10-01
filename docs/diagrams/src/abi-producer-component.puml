@@ -2,10 +2,10 @@
 !pragma layout smetana
 ' ============================================================================
 ' libdictenstein as the vt.dictionary.v1 PRODUCER — component view.
-' Source of truth: src/bindings.rs (four backend bindings, ResourceContext,
+' Source of truth: src/bindings.rs (five backend bindings, ResourceContext,
 ' TraversalSnapshot graph/fallback views, 'static vtables,
 ' OwnedDictionaryResource) and
-' src/ffi.rs (the 42-function ldict_* C ABI). Machine-readable model:
+' src/ffi.rs and src/ffi/suffix.rs (the 70-function ldict_* C ABI). Model:
 ' bindings/api.json.
 ' Color key (family palette + ABI concept colors):
 '   #D5F5E3 libdictenstein (producer)   #FADBD8 liblevenshtein / interop host
@@ -28,7 +28,7 @@ skinparam defaultFontSize 12
 skinparam nodesep 6
 skinparam ranksep 24
 
-title libdictenstein producer stack\nbackends → bindings → 'static vtables → exported VtResource
+title libdictenstein revision-8 producer stack\ndictionary resources and separate typed suffix snapshots
 
 rectangle "**Trust boundary** — independently compiled consumers\nreach the producer only through the C ABI\nand the resource vtables" as consumers #FFCDD2 {
   component "liblevenshtein\ntransducer" as llev #FADBD8
@@ -38,15 +38,18 @@ rectangle "**Trust boundary** — independently compiled consumers\nreach the pr
 
 package "libdictenstein cdylib — the producer" #D5F5E3 {
   package "C ABI — src/ffi.rs" {
-    component "ldict_* × 41 — catch_unwind → LdictStatus,\nCRUD · lifecycle · entry snapshots/reduce" as ffi #FFFFFF
+    component "ldict_* × 70 — catch_unwind → LdictStatus,\nCRUD · lifecycle · entry snapshots/reduce" as ffi #FFFFFF
     component "LdictDictionary handle\n{ binding, resource }" as handle #FFFFFF
+    component "LdictSuffixIndex + LdictSuffixSnapshot\ntyped source records · substring frequency\nno vt.dictionary.v1 coercion" as suffix #FFECB3
   }
 
   package "Producer bindings — src/bindings.rs" {
     component "DynamicDawgBinding\nDynamicBackend (fixed domain)\n→ inner GraphVersion CAS u8·char·u64" as dynb #FFFFFF
     component "DoubleArrayTrieBinding\nArc(SecondaryBackend)\n→ DoubleArrayTrie u8·char" as datb #FFFFFF
     component "ScdawgBinding\nArc(SecondaryBackend)\n→ SCDAWG u8·char" as scdb #FFFFFF
+    component "PathMapBinding\nArc(SecondaryBackend)\n→ raw u8 or Unicode-scalar keys" as pathb #FFFFFF
     component "PersistentARTrieBinding\nArc(PersistentBackend)\n→ PersistentARTrie + WAL\nu8·char·u64·vocab" as perb #FFFFFF
+    component "SuffixAutomaton u8/char\nimmutable active-source roots\nduplicate records preserved" as suffixcore #FFECB3
     component "OwnedDictionaryResource\nborn with one retain" as owned #DCEDC8
     component "ResourceContext — payload:\nLive | Secondary |\nPersistent | Snapshot" as ctx #FFFFFF
     component "TraversalSnapshot\nretained immutable root +\nOnceLock(native/ABI graph) +\nchunked fallback arena" as snap #FFECB3
@@ -63,7 +66,8 @@ package "vinary-tree-interop — the family contract\n(standalone no_std crate)"
 
 ' --- layout hints: keep the binding grid two columns wide -------------------
 dynb -[hidden]right- datb
-scdb -[hidden]right- perb
+scdb -[hidden]right- pathb
+pathb -[hidden]right- perb
 dynb -[hidden]down- scdb
 
 ' Stack the family-contract components instead of allowing PlantUML to place
@@ -77,15 +81,19 @@ statics -[hidden]down- vtres
 llev -down-> ffi : ldict_* calls
 dual -down-> ffi : ldict_* calls
 ccaller -down-> ffi : ldict_* calls
+ccaller -down-> suffix : typed suffix calls
 ffi -down-> handle : owns
+suffix -down-> suffixcore : O(1) source snapshot
 handle -down-> dynb
 handle -down-> datb
 handle -down-> scdb
+handle -down-> pathb
 handle -down-> perb
 
 dynb -down-> owned : resource()
 datb -down-> owned : resource()
 scdb -down-> owned : resource()
+pathb -down-> owned : resource()
 perb -down-> owned : resource()
 owned -down-> ctx : Arc(ResourceContext) —\nstrong count = retain ledger
 ctx -down-> snap : snapshot() —\nO(1) revision capture

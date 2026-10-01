@@ -21,8 +21,10 @@ but maps to `nothing`; it is different from an absent key, which makes
 |---|---|---:|---|
 | `DynamicDawg` | general exact dictionary | yes | minimal graph, all key domains |
 | `SortedMinimalDawg` | preordered bulk construction | yes | optimized freeze-once DynamicDAWG constructor; same backend kind |
+| `PathMap` | exact keys, including arbitrary byte vectors | yes | raw-byte or Unicode dictionary with retained snapshots |
 | `DoubleArrayTrie` | read-mostly text lexicon | no | dense array traversal |
 | `Scdawg` | exact terms plus factor search | yes | substring membership/frequency |
+| `SuffixIndex` | duplicate source records and substring occurrences | yes | typed immutable source snapshots; **not** an `AbstractDict` |
 | `PersistentARTrie` | durable large dictionary | yes | checkpoint and reopen |
 | `PersistentVocabulary` | durable term/index vocabulary | append | reverse index lookup |
 
@@ -44,10 +46,38 @@ julia> sort!(collect(keys(d)))
 julia> close(d)
 ```
 
-Iteration opens a native immutable entry cursor. Batches are bounded, copied
+Dictionary iteration opens a native immutable entry cursor. Batches are bounded, copied
 into Julia-owned keys, and released before iteration advances. Consequently,
 the iterator observes one coherent revision even while writers publish later
 revisions.
+
+`PathMap(UNIT_BYTE)` keeps byte keys as `Vector{UInt8}` without interpreting
+invalid UTF-8. The separate suffix index accepts valid UTF-8 sources in both
+byte-transition and Unicode-scalar modes. It preserves duplicate source
+records and their optional values:
+
+```julia
+index = SuffixIndex(UNIT_BYTE)
+try
+    insert_source!(index, "aba", UInt64(0))
+    insert_source!(index, "aba", nothing)
+    view = source_snapshot(index)
+    try
+        @assert length(view) == 2
+        @assert substring_frequency(view, "aba") == 2
+        @assert getfield.(source_records(view), :value) == [UInt64(0), nothing]
+    finally
+        close(view)
+    end
+finally
+    close(index)
+end
+```
+
+`source_records` fetches bounded native pages and copies each borrowed source
+text before returning it. Source IDs are meaningful within the captured
+revision and may be reused after `empty!(index)`; the identity returned by
+`source_identity` is suffix-family-specific, not a dictionary cache key.
 
 ## Algebra and value semantics
 
@@ -117,8 +147,9 @@ objects.
   diagnostic buffer is thread-local and replaced by the next ABI call.
 - Paths are passed as UTF-8 bytes to the persistent constructors. Apply the
   same filesystem authorization and sandboxing policy as native Julia code.
-- Artifact builds must pin the ABI version and require an API revision of at
-  least `6`; a later additive revision remains compatible.
+- Existing dictionary calls require ABI major 1; `PathMap` and `SuffixIndex`
+  check API revision at least 8 before resolving their additive symbols.
+  Earlier revision-7 consumers remain compatible with a revision-8 library.
 
 The finite-map algebra follows the library's `llattice` optional-value laws.
 For the underlying ordered-automaton construction, see Daciuk et al.,

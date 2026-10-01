@@ -26,7 +26,7 @@ graph for the whole revision on first request.
 
 | Term | Definition |
 |---|---|
-| binding | A cheaply clonable `Arc`-shared wrapper (`DynamicDawgBinding`, `ByteValueDawgBinding`, `DoubleArrayTrieBinding`, `ScdawgBinding`, `PersistentARTrieBinding`) exposing one engine's CRUD to `src/ffi.rs` and producing resources. |
+| binding | A cheaply clonable `Arc`-shared wrapper (`DynamicDawgBinding`, `ByteValueDawgBinding`, `DoubleArrayTrieBinding`, `ScdawgBinding`, `PathMapBinding`, `PersistentARTrieBinding`) exposing one engine's CRUD to `src/ffi.rs` and producing resources. PathMap is feature-gated. |
 | payload | The `ResourcePayload` variant a resource context carries: `Live` (optional-`u64` DynamicDAWG), `LiveBytes` (byte-valued DynamicDAWG), `Secondary` (DAT or SCDAWG), `Persistent` (ARTrie family), or `Snapshot` (a captured revision). |
 | revision | One immutable logical value of a dictionary. Mutable backends *publish* successor revisions; they never edit a published one in place. |
 | capture | Producing a `Snapshot` payload from any other payload: reuse the source revision's memoized snapshot or clone its current root handle and allocate a one-slot fallback arena plus empty graph publication cells — no traversal, no dictionary copy. |
@@ -40,7 +40,7 @@ graph for the whole revision on first request.
 
 ## 2. Architecture
 
-<img src="../diagrams/abi-producer-component.svg" alt="Component diagram of the libdictenstein producer stack. At the top, inside a red trust-boundary rectangle, sit the foreign consumers: the liblevenshtein transducer, the duallity WFST constructor, and any C-ABI or facade caller. They call into the green libdictenstein cdylib package: the C ABI layer (42 ldict_* functions with catch_unwind and a thread-local last error, including bounded entry snapshot cursors, native dictionary algebra, and reduction, owning LdictDictionary handles) which fans out to the four producer bindings — DynamicDawgBinding over a fixed-domain DynamicBackend with inner GraphVersion CAS, DoubleArrayTrieBinding and ScdawgBinding over Arc(SecondaryBackend), and PersistentARTrieBinding over Arc(PersistentBackend) — each wrapping its dictionary core. Every binding produces an OwnedDictionaryResource (drawn in the green handle color, born with one retain) which holds an Arc(ResourceContext) whose strong count is the retain ledger. The context creates TraversalSnapshot values with a lazy compact-graph publication path and a fallback append-only ABI-local-id arena via O(1) revision capture. query_interface selects the static base, dictionary, visit, compact-graph, and snapshot-identity vtables. The OwnedDictionaryResource exports the two borrowed words as a VtResource conforming to the pink vinary-tree-interop family contract at the bottom; consumers call retain, release, query_interface, and either compact-graph or node-walk operations against it across the trust boundary." width="100%"/>
+<img src="../diagrams/abi-producer-component.svg" alt="Revision-8 libdictenstein producer stack. Foreign consumers enter through the C ABI. Dictionary handles dispatch to DynamicDAWG, DoubleArrayTrie, SCDAWG, PathMap, or persistent ARTrie bindings; each produces an owned, retained VtResource and immutable dictionary snapshot through static family vtables. A separate typed suffix-index and source-snapshot branch preserves duplicate source records and substring frequency without claiming the generic dictionary interface. The red consumer rectangle marks the trust boundary; green resources mark the retain ledger, and amber nodes mark immutable revisions." width="100%"/>
 
 Five layers, from the metal up:
 
@@ -48,10 +48,12 @@ Five layers, from the metal up:
    ([DynamicDAWG](../algorithms/implementations/dynamic-dawg.md),
    [DoubleArrayTrie](../algorithms/implementations/double-array-trie.md),
    [SCDAWG](../theory/scdawg/README.md),
+   [PathMap](../algorithms/implementations/pathmap-dictionary.md),
    [persistent ARTrie](../persistence/README.md)). All are internally
    synchronized; readers are lock-free on the in-memory cores.
 2. **Backend enums** — `DynamicBackend` (byte/Unicode/u64 DAWG),
-   `SecondaryBackend` (DAT + SCDAWG in both text domains), and
+   `SecondaryBackend` (DAT, SCDAWG, and feature-gated PathMap in both text
+   domains), and
    `PersistentBackend` (byte/Unicode/u64/vocabulary ARTrie) erase the
    per-domain generics behind one `snapshot()`/`len()`/`domain()` seam.
 3. **Bindings** — the public structs `src/ffi.rs` dispatches into; each
@@ -78,6 +80,17 @@ released snapshots, before graph publication. Range exhaustion rejects the
 graph with `LimitExceeded` without reusing authority. See
 [the revision-7 C surface](c-abi-reference.md#131-optional-byte-values-api-revision-7)
 for the bounded copy, lease, and status rules.
+
+API revision 8 adds `PathMapBinding` to the existing resource-producing
+dictionary family. It preserves arbitrary byte keys without UTF-8 coercion,
+publishes one immutable root for a validated batch, and reports
+`READ | INSERT | REMOVE | CLEAR`. `ffi` alone keeps the PathMap constructor
+symbol available but returns `UNSUPPORTED` unless `pathmap-backend` is
+enabled. A **separate** `LdictSuffixIndex` / `LdictSuffixSnapshot` API exposes
+active source records and substring frequency. It does **not** enter
+`ResourceContext`, publish `vt.dictionary.v1`, or share dictionary snapshot
+identity: duplicate source records are meaningful and source IDs can be reused
+after clear. See the [revision-8 typed API](backend-api-revision8.md).
 
 ### 2.1 Why the DynamicDAWG binding needs no outer lock
 

@@ -5,12 +5,13 @@
 [FFI boundary analysis](../security/ffi-boundary.md) ·
 [Findings ledger](FINDINGS_LEDGER.md)
 
-This is the normative reference for the **53-function `ldict_*` C ABI** exported
+This is the normative reference for the **70-function `ldict_*` C ABI** exported
 by the libdictenstein cdylib — the project-owned surface above the family
 resource ABI. Every function is documented with its exact header signature, its
 preconditions, the **exact** set of statuses it can return (derived from the
 function bodies in [`src/ffi.rs`](../../src/ffi.rs) and
-[`src/ffi/bytes.rs`](../../src/ffi/bytes.rs), not from convention), its
+[`src/ffi/bytes.rs`](../../src/ffi/bytes.rs) and
+[`src/ffi/suffix.rs`](../../src/ffi/suffix.rs), not from convention), its
 ownership rules, its thread-safety truth, and its complexity.
 
 Authoritative sources, in precedence order:
@@ -18,19 +19,20 @@ Authoritative sources, in precedence order:
 1. [`bindings/api.json`](../../bindings/api.json) — the machine-readable model
    of this surface (exact return and parameter types, parameter direction and
    ownership, symbols, enums, kinds, capabilities, and marshalling laws),
-   enforced against `src/ffi.rs` and `src/ffi/bytes.rs`,
+   enforced against `src/ffi.rs`, `src/ffi/bytes.rs`, and `src/ffi/suffix.rs`,
    `include/libdictenstein.h`, and all 16
    language facades by [`scripts/check-bindings.py`](../../scripts/check-bindings.py)
    (CI job `binding-contract`).
 2. [`include/libdictenstein.h`](../../include/libdictenstein.h) — the C header
    whose signatures are quoted verbatim below.
 3. [`src/ffi.rs`](../../src/ffi.rs) — the implementation each claim below was
-   read from (plus [`src/ffi/bytes.rs`](../../src/ffi/bytes.rs) for revision 7).
+   read from (plus [`src/ffi/bytes.rs`](../../src/ffi/bytes.rs) for revision 7
+   and [`src/ffi/suffix.rs`](../../src/ffi/suffix.rs) for revision 8).
 
 The Julia facade consumes the first source mechanically through
 [`scripts/generate-julia-abi.py`](../../scripts/generate-julia-abi.py). Its
 [`signature inventory`](../../bindings/generated/julia-abi-capabilities.tsv)
-makes all 53 generated calls and their lifetime metadata reviewable, while the
+makes all 70 generated calls and their lifetime metadata reviewable, while the
 public header remains an independent exact-signature oracle.
 
 The family layer underneath (two-word `VtResource`, retain/release,
@@ -45,11 +47,11 @@ how the two connect at [`ldict_dictionary_resource`](#ldict_dictionary_resource)
 
 | Term | Definition |
 |---|---|
-| handle | An opaque `LdictDictionary*` returned by a constructor. It owns one concrete dictionary plus one retained resource, and is destroyed by [`ldict_dictionary_free`](#ldict_dictionary_free). |
-| backend | The concrete dictionary implementation behind a handle: DynamicDAWG, DoubleArrayTrie, SCDAWG, persistent ARTrie, or persistent vocabulary ARTrie. Reported by [`ldict_dictionary_kind`](#ldict_dictionary_kind). |
+| handle | An opaque `LdictDictionary*` returned by a dictionary constructor. It owns one concrete dictionary plus one retained resource, and is destroyed by [`ldict_dictionary_free`](#ldict_dictionary_free). Typed suffix-index/snapshot handles are separate and are described in the [revision-8 supplement](backend-api-revision8.md). |
+| backend | The concrete dictionary implementation behind a handle: DynamicDAWG, DoubleArrayTrie, SCDAWG, PathMap, persistent ARTrie, or persistent vocabulary ARTrie. Reported by [`ldict_dictionary_kind`](#ldict_dictionary_kind). The suffix-source index is not a dictionary backend. |
 | unit domain | The label alphabet a dictionary transitions over: raw bytes (`1`), Unicode scalar values (`2`), or `u64` tokens (`3`). Matches the interop `VtUnitDomain` numbering. |
 | capability | One bit in the `uint64_t` bitset reported by [`ldict_dictionary_capabilities`](#ldict_dictionary_capabilities): an operation family the backend supports. |
-| out-parameter | A caller-supplied pointer the function writes a result through. Unless a function documents otherwise, out-parameters are written **only on `LDICT_STATUS_OK`**. |
+| out-parameter | A caller-supplied pointer the function writes a result through. Legacy functions document their own error behavior; revision-8 typed suffix calls initialize every non-null scalar output before fallible validation, while constructors null their output handles. |
 | resource | The two-word `VtResource` (context + vtable) borrowed from a handle: the family-neutral object a consumer retains, negotiates interfaces on, and walks snapshots of. |
 | snapshot | An immutable capture of one dictionary revision, obtained through the resource vtable's `snapshot` operation — never through an `ldict_*` function. Capture is $`\mathcal{O}(1)`$ (see [resource-producer.md](resource-producer.md)). |
 | boundary | The `catch_unwind` + thread-local-error wrapper every fallible `ldict_*` function runs inside (`boundary()` in `src/ffi.rs`). |
@@ -65,7 +67,7 @@ evolution model (see the canonical
 | Constant | Value | Meaning | Caller check |
 |---|---|---|---|
 | `LDICT_ABI_VERSION` | 1 | Breaking-change counter for the `ldict_*` surface: layouts, ownership rules, status meanings. | **Exact equality** — refuse any other value. |
-| `LDICT_API_REVISION` | 7 | Additive counter: revision 5 added bounded entries; revision 6 added native dictionary algebra; revision 7 adds optional opaque byte values and byte-valued finite entries. | **At least** — a facade built against revision $`n`$ refuses a library reporting less than $`n`$. |
+| `LDICT_API_REVISION` | 8 | Additive counter: revision 5 added bounded entries; revision 6 added algebra; revision 7 added byte-valued DAWGs/entries; revision 8 adds PathMap and a separate typed suffix-source index. | **At least** — a facade checks $`n`$ before resolving a symbol added in revision $`n`$. Older calls remain usable against newer libraries. |
 
 Every fallible function reports failure twice: as an `LdictStatus` return value
 (the machine channel) and as a human-readable message retrievable through
@@ -93,7 +95,7 @@ Returns `LDICT_ABI_VERSION` (currently `1`).
 LDICT_API uint32_t ldict_api_revision(void);
 ```
 
-Returns `LDICT_API_REVISION` (currently `7`).
+Returns `LDICT_API_REVISION` (currently `8`).
 
 - **Preconditions**: none.
 - **Statuses**: none — cannot fail.
@@ -285,6 +287,7 @@ attached value; `out_found == 1` with `has_value == 1` — a member with `value`
 #define LDICT_KIND_SCDAWG 3u
 #define LDICT_KIND_PERSISTENT_ARTRIE 4u
 #define LDICT_KIND_PERSISTENT_VOCAB_ARTRIE 5u
+#define LDICT_KIND_PATHMAP 6u
 ```
 
 | Kind | Backend | Unit domains | Mutability | Documented in |
@@ -294,6 +297,7 @@ attached value; `out_found == 1` with `has_value == 1` — a member with `value`
 | 3 | SCDAWG | Byte, UnicodeScalar | insert-only (plus substring queries) | [SCDAWG](../theory/scdawg/README.md) |
 | 4 | Persistent ARTrie | Byte, UnicodeScalar, U64 | mutable + durable | [persistence corpus](../persistence/README.md) |
 | 5 | Persistent vocabulary ARTrie | UnicodeScalar | insert-only bijection term ↔ index | [vocab trie](../algorithms/vocab-trie.md) |
+| 6 | PathMap | Byte, UnicodeScalar | fully mutable | [revision-8 PathMap and suffix API](backend-api-revision8.md) |
 
 ### 5.2 Capability bits
 
@@ -316,6 +320,7 @@ The exact bitsets, from the `capabilities()` match in `src/ffi.rs`:
 | SCDAWG | ✔ | ✔ | — | — | — | ✔ | — | `0x23` |
 | Persistent ARTrie | ✔ | ✔ | ✔ | — | — | — | ✔ | `0x47` |
 | Persistent vocab ARTrie | ✔ | ✔ | — | — | — | — | ✔ | `0x43` |
+| PathMap | ✔ | ✔ | ✔ | ✔ | — | — | — | `0x0F` |
 
 ### 5.3 What `UNSUPPORTED` vs `DOMAIN_MISMATCH` mean
 
@@ -333,19 +338,19 @@ Derived from the per-operation match arms in `src/ffi.rs` and
 `src/bindings.rs`, the full matrix (cell = status when the operation cannot
 proceed; `OK` = supported):
 
-| Operation | DynDAWG B/U | DynDAWG 64 | DAT B/U | SCDAWG B/U | P-ART B/U | P-ART 64 | P-Vocab |
-|---|---|---|---|---|---|---|---|
-| `insert_text` (+`_value`, batch) | OK | DOMAIN_MISMATCH | UNSUPPORTED | OK | OK | DOMAIN_MISMATCH | OK¹ |
-| `remove_text` | OK | DOMAIN_MISMATCH | UNSUPPORTED | UNSUPPORTED | OK | DOMAIN_MISMATCH | UNSUPPORTED |
-| `contains_text` / `get_text` (+`_value`) | OK | DOMAIN_MISMATCH | OK | OK | OK | DOMAIN_MISMATCH | OK¹ |
-| `insert_u64` (+`_value`, batch) | DOMAIN_MISMATCH² | OK | DOMAIN_MISMATCH | DOMAIN_MISMATCH | DOMAIN_MISMATCH² | OK | DOMAIN_MISMATCH |
-| `remove_u64` | DOMAIN_MISMATCH² | OK | DOMAIN_MISMATCH | DOMAIN_MISMATCH | DOMAIN_MISMATCH² | OK | DOMAIN_MISMATCH |
-| `contains_u64` / `get_u64` (+`_value`) | DOMAIN_MISMATCH² | OK | DOMAIN_MISMATCH | DOMAIN_MISMATCH | DOMAIN_MISMATCH² | OK | DOMAIN_MISMATCH |
-| `clear` | OK | OK | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED |
-| `compact` | OK | OK | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED |
-| `checkpoint` | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | OK | OK | OK |
-| `scdawg_contains_substring` / `substring_frequency` | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | OK | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED |
-| `vocab_get_term` | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | OK |
+| Operation | DynDAWG B/U | DynDAWG 64 | DAT B/U | SCDAWG B/U | PathMap B/U | P-ART B/U | P-ART 64 | P-Vocab |
+|---|---|---|---|---|---|---|---|---|
+| `insert_text` (+`_value`, batch) | OK | DOMAIN_MISMATCH | UNSUPPORTED | OK | OK | OK | DOMAIN_MISMATCH | OK¹ |
+| `remove_text` | OK | DOMAIN_MISMATCH | UNSUPPORTED | UNSUPPORTED | OK | OK | DOMAIN_MISMATCH | UNSUPPORTED |
+| `contains_text` / `get_text` (+`_value`) | OK | DOMAIN_MISMATCH | OK | OK | OK | OK | DOMAIN_MISMATCH | OK¹ |
+| `insert_u64` (+`_value`, batch) | DOMAIN_MISMATCH² | OK | DOMAIN_MISMATCH | DOMAIN_MISMATCH | DOMAIN_MISMATCH | DOMAIN_MISMATCH² | OK | DOMAIN_MISMATCH |
+| `remove_u64` | DOMAIN_MISMATCH² | OK | DOMAIN_MISMATCH | DOMAIN_MISMATCH | DOMAIN_MISMATCH | DOMAIN_MISMATCH² | OK | DOMAIN_MISMATCH |
+| `contains_u64` / `get_u64` (+`_value`) | DOMAIN_MISMATCH² | OK | DOMAIN_MISMATCH | DOMAIN_MISMATCH | DOMAIN_MISMATCH | DOMAIN_MISMATCH² | OK | DOMAIN_MISMATCH |
+| `clear` | OK | OK | UNSUPPORTED | UNSUPPORTED | OK | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED |
+| `compact` | OK | OK | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED |
+| `checkpoint` | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | OK | OK | OK |
+| `scdawg_contains_substring` / `substring_frequency` | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | OK | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED |
+| `vocab_get_term` | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | OK |
 
 ¹ Vocabulary value semantics: on insert, a supplied value is the **index** to
 bind (`insert_with_index`); with no value the vocabulary assigns the next
@@ -374,12 +379,14 @@ backend accepts depends on both backend and domain:
 | SCDAWG · Byte and UnicodeScalar | valid UTF-8 only (same rationale) | `INVALID_UTF8` |
 | Persistent ARTrie · Byte | **arbitrary bytes** | accepted as-is |
 | Persistent ARTrie · UnicodeScalar; vocabulary | valid UTF-8 only | `INVALID_UTF8` |
+| PathMap · Byte | **arbitrary bytes**, including invalid UTF-8 and embedded NUL | accepted as-is |
+| PathMap · UnicodeScalar | valid UTF-8 only | `INVALID_UTF8` |
 
 ---
 
 ## 6. Constructors
 
-All seven constructors share the contract: `out_dictionary` must be non-null;
+The eight constructors in this section share the contract: `out_dictionary` must be non-null;
 it is nulled first, then set to a heap-allocated handle only on `OK`. The
 returned handle owns the dictionary **and** one already-retained resource, so
 [`ldict_dictionary_resource`](#ldict_dictionary_resource) is $`\mathcal{O}(1)`$
@@ -443,6 +450,24 @@ substring containment/frequency queries and produces suffix-flagged resources.
 - **Ownership**: on `OK` the caller owns the handle.
 - **Thread-safety**: safe from any thread.
 - **Complexity**: $`\mathcal{O}(1)`$.
+
+### `ldict_pathmap_new` (API revision 8)
+
+```c
+LDICT_API LdictStatus ldict_pathmap_new(
+    uint32_t unit_domain, LdictDictionary** out_dictionary);
+```
+
+Constructs an empty PathMap in byte or Unicode-scalar domain. Byte keys are
+raw octets, not UTF-8 strings; its generic CRUD, batch, and retained
+`vt.dictionary.v1` resource obey the same snapshot boundary as the other
+dictionary backends. Its capability bits are `READ | INSERT | REMOVE | CLEAR`.
+The symbol remains exported when `pathmap-backend` is disabled, but then
+returns `UNSUPPORTED` and leaves `*out_dictionary == NULL`. Domain 3 likewise
+returns `UNSUPPORTED`. An unknown domain is `INVALID_ARGUMENT`, a null output
+pointer is `NULL_POINTER`, and a caught panic is `PANIC`. The official native
+binding package enables `pathmap-backend` explicitly. For batch atomicity and
+concurrent snapshot details, see the [revision-8 supplement](backend-api-revision8.md).
 
 ### `ldict_persistent_artrie_create`
 

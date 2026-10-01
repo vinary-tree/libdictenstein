@@ -631,6 +631,11 @@ mutable struct SuffixIndex
     closed::Bool
 end
 
+"""Owned immutable active-source revision captured from a `SuffixIndex`.
+
+Close it explicitly after use. It remains valid after closing the index, and
+its paged records are copied to Julia-owned strings by `source_page`.
+"""
 mutable struct SuffixSnapshot
     handle::Ptr{Cvoid}
     domain::VTI.UnitDomain
@@ -765,6 +770,7 @@ function suffix_query(view::SuffixSnapshot, pattern::AbstractString, operation::
     output[]
 end
 
+"""Test whether an active source record exactly equals `text`."""
 contains_source(view::SuffixSnapshot, text::AbstractString) =
     suffix_query(view, text, :contains_source) == 1
 contains_substring(view::SuffixSnapshot, pattern::AbstractString) =

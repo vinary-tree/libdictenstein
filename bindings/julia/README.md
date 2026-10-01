@@ -2,9 +2,12 @@
 
 High-performance dictionaries and trie-maps for approximate string matching,
 presented as Julia `AbstractDict` implementations rather than C-shaped handles.
-The `Libdictenstein` package covers DynamicDAWG, DoubleArrayTrie, SCDAWG,
-persistent ARTrie, and persistent vocabulary backends across byte, Unicode
-scalar, and `UInt64` token domains.
+The `Libdictenstein` package covers DynamicDAWG, PathMap, DoubleArrayTrie,
+SCDAWG, persistent ARTrie, and persistent vocabulary dictionaries. A separate
+typed suffix index preserves duplicate source records and substring counts;
+it is intentionally not an `AbstractDict`. Domains vary by backend: PathMap
+supports raw bytes and Unicode scalars, while the suffix index requires valid
+UTF-8 sources even in byte-transition mode.
 
 ## Quick start
 
@@ -38,7 +41,7 @@ Package-specific API pages live under
 
 ## Generated ABI boundary
 
-Julia's low-level constants, enums, layouts, and 42 typed native calls are
+Julia's low-level constants, enums, layouts, and 70 typed native calls are
 generated from the signature and lifetime records in
 [`bindings/api.json`](../api.json). The public C header remains an independent
 parity oracle: generation fails if a return type, parameter type, parameter
@@ -62,6 +65,12 @@ After an intentional model change, regenerate with `--write`, inspect both the
 Julia diff and inventory diff, and then run the two commands above. The
 self-test proves that duplicate symbols, invalid flow directions, header
 signature drift, and an injected handwritten `ccall` are detected.
+
+`PathMap` and `SuffixIndex` check the native API revision before resolving
+their revision-8 symbols. The new suffix snapshot returns bounded pages and
+copies borrowed text into Julia-owned strings; it remains valid after its
+index closes. See the [revision-8 contract](../../docs/bindings/backend-api-revision8.md)
+and the [Julia API reference](Libdictenstein/docs/src/api.md).
 
 ## Snapshot algebra
 
