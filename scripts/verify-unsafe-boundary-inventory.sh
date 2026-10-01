@@ -29,12 +29,14 @@ trap 'rm -f "$actual" "$expected" "$ledger_tags" "$contract_tags" "$contract_sta
 
 cd "$repo_root"
 
-inventory_pattern='(^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?unsafe[[:space:]]+impl\b|^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?unsafe[[:space:]]+(extern[[:space:]]+"[^"]+"[[:space:]]+)?fn\b|\bunsafe[[:space:]]*\{)'
+inventory_pattern='(^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?unsafe[[:space:]]+impl\b|^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?((const|async)[[:space:]]+)*unsafe[[:space:]]+(extern[[:space:]]+"[^"]+"[[:space:]]+)?fn\b|\bunsafe[[:space:]]*\{)'
 # Keep the declaration variants that previously escaped this gate observable.
 for declaration in \
   'pub unsafe extern "C" fn public_boundary() {}' \
   'pub(super) unsafe extern "C" fn scoped_boundary() {}' \
-  'pub(crate) unsafe fn internal_boundary() {}'; do
+  'pub(crate) unsafe fn internal_boundary() {}' \
+  'pub const unsafe fn constructor_boundary() {}' \
+  'pub(crate) const unsafe fn scoped_constructor_boundary() {}'; do
   if ! printf '%s\n' "$declaration" | rg --quiet "$inventory_pattern"; then
     echo "Unsafe inventory scanner missed declaration control: $declaration" >&2
     exit 1
@@ -57,9 +59,9 @@ rg -n --no-heading \
 
         if (stripped ~ /^(pub(\([^)]*\))?[[:space:]]+)?unsafe[[:space:]]+impl/) {
           kind = "unsafe_impl"
-        } else if (stripped ~ /^(pub(\([^)]*\))?[[:space:]]+)?unsafe[[:space:]]+extern[[:space:]]+"[^"]+"[[:space:]]+fn/) {
+        } else if (stripped ~ /^(pub(\([^)]*\))?[[:space:]]+)?((const|async)[[:space:]]+)*unsafe[[:space:]]+extern[[:space:]]+"[^"]+"[[:space:]]+fn/) {
           kind = "unsafe_extern_fn"
-        } else if (stripped ~ /^(pub(\([^)]*\))?[[:space:]]+)?unsafe[[:space:]]+fn/) {
+        } else if (stripped ~ /^(pub(\([^)]*\))?[[:space:]]+)?((const|async)[[:space:]]+)*unsafe[[:space:]]+fn/) {
           kind = "unsafe_fn"
         } else if (stripped ~ /unsafe[[:space:]]*\{/) {
           kind = "unsafe_block"

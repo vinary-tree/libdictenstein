@@ -22,7 +22,7 @@ it.
 
 **Current aggregate (verified 2026-09-01):** 85 Rocq `.v` files / 1,773
 propositions (0 `Admitted` / 0 `Axiom` / 0 `Parameter`); 79 TLA⁺ modules / 156
-`.cfg` TLC configs; 533 grouped `unsafe` inventory patterns + 48 contracts.
+`.cfg` TLC configs; 534 grouped `unsafe` inventory patterns + 48 contracts.
 
 ## Rest-of-Repo Verification Audit
 

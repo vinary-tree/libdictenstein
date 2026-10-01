@@ -390,6 +390,7 @@ src/lib.rs	unsafe_block	let node = unsafe { *self.nodes.get_unchecked(index) };	
 src/lib.rs	unsafe_block	unsafe {	2	snapshot-dense-cursor-contract
 src/lib.rs	unsafe_block	unsafe { self.snapshot_cursor_value(cursor) }	1	snapshot-dense-cursor-contract
 src/lib.rs	unsafe_block	unsafe { self.snapshot_graph_cursor_value(graph, cursor) }	1	snapshot-dense-cursor-contract
+src/lib.rs	unsafe_fn	pub const unsafe fn from_raw_parts(	1	snapshot-retained-edge-range-token
 src/lib.rs	unsafe_fn	pub unsafe fn edges_and_finality_unchecked(	1	snapshot-dense-cursor-contract
 src/lib.rs	unsafe_fn	unsafe fn filter_map_snapshot_cursor_edges_and_finality<T, P, F>(	1	snapshot-dense-cursor-contract
 src/lib.rs	unsafe_fn	unsafe fn snapshot_cursor_edge_at(	1	snapshot-retained-edge-range-token

@@ -11,7 +11,7 @@ As of the live tree the corpus is **85** Rocq `.v` files (**1,773**
 propositions = 1,393 `Theorem` + 362 `Lemma` + 18 `Corollary` + 0 `Proposition`,
 all `Qed.`/`Defined.`-closed, **0** `Admitted` / **0** `Axiom` / **0**
 `Parameter`) and **79** TLA⁺ modules with **156** `.cfg` TLC configurations. The
-`unsafe` surface is pinned by **533** grouped inventory patterns and **48** safety contracts,
+`unsafe` surface is pinned by **534** grouped inventory patterns and **48** safety contracts,
 both CI-gated by `scripts/verify-unsafe-boundary-inventory.sh` (set-equality).
 
 ### Change history
