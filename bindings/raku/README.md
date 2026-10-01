@@ -63,6 +63,10 @@ optional-value paths. In particular, absent byte values and present empty
 byte strings must not be conflated or reinterpreted as unsigned 64-bit values.
 The generator fails if a facade use or omission is added, removed, or left
 unexplained.
+Its facade-use check recognizes actual calls after masking ordinary quoted
+strings, line comments, and `=begin`/`=end` POD blocks. It rejects other Raku
+quoting or nested-comment forms until the scanner and negative controls are
+extended, so inert documentation cannot satisfy a facade-coverage claim.
 
 ## Snapshots, iteration, and algebra
 
