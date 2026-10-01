@@ -429,8 +429,10 @@ fn byte_entry_leases_are_bounded_atomic_and_snapshot_owned() {
         unsafe { ldict_byte_entry_cursor_release(cursor, batch.generation) },
         LdictStatus::Ok
     );
-    let mut untouched = LdictByteEntryBatch::default();
-    untouched.generation = 777;
+    let mut untouched = LdictByteEntryBatch {
+        generation: 777,
+        ..Default::default()
+    };
     assert_eq!(
         unsafe { ldict_byte_entry_cursor_next(cursor, &limits, &mut untouched) },
         LdictStatus::LimitExceeded

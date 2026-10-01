@@ -348,7 +348,9 @@ fn byte_parallel_readers_writers_and_checkpoint_reopen() {
             barrier.wait();
             for idx in 0..12 {
                 let term = format!("writer-{writer}-term-{idx}-suffix-tree");
-                assert!(tree.insert_with_value(&term, writer * 100 + idx));
+                assert!(tree
+                    .try_insert_with_value(&term, writer * 100 + idx)
+                    .expect("concurrent suffix-tree insert"));
                 assert!(tree.contains("suffix"));
             }
         }));

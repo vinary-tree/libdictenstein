@@ -817,6 +817,7 @@ struct NativeSuffixTreeIndex<U: PersistentSuffixTreeUnit, V: DictionaryValue> {
     path: Option<PathBuf>,
     next_op_id: AtomicU64,
     committed_op_id: AtomicU64,
+    committed_epoch: AtomicU64,
     inflight_publications: AtomicUsize,
 }
 
@@ -867,6 +868,7 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeIndex<U, V
             path: None,
             next_op_id: AtomicU64::new(1),
             committed_op_id: AtomicU64::new(0),
+            committed_epoch: AtomicU64::new(0),
             inflight_publications: AtomicUsize::new(0),
         }
     }
@@ -880,6 +882,7 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeIndex<U, V
             path: Some(path.to_path_buf()),
             next_op_id: AtomicU64::new(1),
             committed_op_id: AtomicU64::new(0),
+            committed_epoch: AtomicU64::new(0),
             inflight_publications: AtomicUsize::new(0),
         })
     }
@@ -900,6 +903,7 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeIndex<U, V
                 path: Some(path.to_path_buf()),
                 next_op_id: AtomicU64::new(max_op_id.saturating_add(1)),
                 committed_op_id: AtomicU64::new(max_op_id),
+                committed_epoch: AtomicU64::new(0),
                 inflight_publications: AtomicUsize::new(0),
             },
             report.replayed,
@@ -947,6 +951,8 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeIndex<U, V
         }
 
         for _ in 0..MAX_CAS_RETRIES {
+            let _wal_operation =
+                super::suffix_wal_guard::SuffixWalOperation::begin(&self.inflight_publications);
             let op_id = self.next_op_id.fetch_add(1, Ordering::Relaxed);
             self.append_record(&NativeSuffixTreeWalRecord::Prepare {
                 op_id,
@@ -955,19 +961,17 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeIndex<U, V
             let current = self.graph.load_full();
             let mut next = (*current).clone();
             let result = Self::apply_op(&mut next, op.clone());
-            self.inflight_publications.fetch_add(1, Ordering::SeqCst);
             let previous = self.graph.compare_and_swap(&current, Arc::new(next));
             if Arc::ptr_eq(&previous, &current) {
                 let commit_result =
                     self.append_record(&NativeSuffixTreeWalRecord::Commit { op_id });
                 if commit_result.is_ok() {
                     self.committed_op_id.fetch_max(op_id, Ordering::SeqCst);
+                    self.committed_epoch.fetch_add(1, Ordering::SeqCst);
                 }
-                self.inflight_publications.fetch_sub(1, Ordering::SeqCst);
                 commit_result?;
                 return Ok(result);
             }
-            self.inflight_publications.fetch_sub(1, Ordering::SeqCst);
         }
 
         Err(PersistentARTrieError::internal(format!(
@@ -1015,6 +1019,8 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeIndex<U, V
         }
 
         for _ in 0..MAX_CAS_RETRIES {
+            let _wal_operation =
+                super::suffix_wal_guard::SuffixWalOperation::begin(&self.inflight_publications);
             let current = self.graph.load_full();
             let mut next = (*current).clone();
             let (was_new, value) = next.update_or_insert(text, default_value.clone(), &update_fn);
@@ -1026,19 +1032,17 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeIndex<U, V
                     value,
                 },
             })?;
-            self.inflight_publications.fetch_add(1, Ordering::SeqCst);
             let previous = self.graph.compare_and_swap(&current, Arc::new(next));
             if Arc::ptr_eq(&previous, &current) {
                 let commit_result =
                     self.append_record(&NativeSuffixTreeWalRecord::Commit { op_id });
                 if commit_result.is_ok() {
                     self.committed_op_id.fetch_max(op_id, Ordering::SeqCst);
+                    self.committed_epoch.fetch_add(1, Ordering::SeqCst);
                 }
-                self.inflight_publications.fetch_sub(1, Ordering::SeqCst);
                 commit_result?;
                 return Ok(was_new);
             }
-            self.inflight_publications.fetch_sub(1, Ordering::SeqCst);
         }
 
         Err(PersistentARTrieError::internal(format!(
@@ -1055,10 +1059,15 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeIndex<U, V
                 std::thread::yield_now();
                 continue;
             }
+            let epoch_before = self.committed_epoch.load(Ordering::SeqCst);
             let committed_before = self.committed_op_id.load(Ordering::SeqCst);
             let graph = self.graph.load_full();
             let committed_after = self.committed_op_id.load(Ordering::SeqCst);
+            let epoch_after = self.committed_epoch.load(Ordering::SeqCst);
+            // Operation IDs can commit out of order. A lower ID committing
+            // after a higher one leaves the max unchanged, so use an epoch too.
             if committed_before == committed_after
+                && epoch_before == epoch_after
                 && self.inflight_publications.load(Ordering::SeqCst) == 0
             {
                 write_snapshot_file::<U, V>(path, graph.as_ref(), committed_after)?;
@@ -1265,9 +1274,14 @@ fn prune_wal_segments(dir: &Path, checkpoint_op_id: u64) -> Result<()> {
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        let Some((op_id, _)) = name.split_once('.') else {
+        let Some((op_id, kind)) = name.split_once('.') else {
             continue;
         };
+        // Only published segments belong to checkpoint pruning. In particular,
+        // a writer may still be syncing its .tmp file with an older operation ID.
+        if kind != "prepare.wal" && kind != "commit.wal" {
+            continue;
+        }
         let Ok(op_id) = op_id.parse::<u64>() else {
             continue;
         };
@@ -2475,6 +2489,33 @@ impl<V: DictionaryValue> Default for PersistentSuffixTreeChar<V> {
 #[cfg(test)]
 mod snapshot_cursor_fallback_tests {
     use super::*;
+
+    #[test]
+    fn checkpoint_pruning_never_unlinks_an_inflight_wal_temp_file() {
+        fs::create_dir_all("target").expect("create disk-backed test directory");
+        let dir = tempfile::tempdir_in("target").expect("WAL fixture directory");
+        let temp = dir.path().join("00000000000000000003.prepare.123.tmp");
+        let published = dir.path().join("00000000000000000003.prepare.wal");
+        let unrelated = dir.path().join("00000000000000000003.notes.wal");
+        fs::write(&temp, b"still being written").expect("create temporary segment");
+        fs::write(&published, b"checkpointed").expect("create published segment");
+        fs::write(&unrelated, b"not a segment").expect("create unrelated file");
+
+        prune_wal_segments(dir.path(), 3).expect("prune checkpointed segments");
+
+        assert!(
+            temp.exists(),
+            "checkpoint must not unlink a writer's temp file"
+        );
+        assert!(
+            unrelated.exists(),
+            "checkpoint must not unlink unrelated files"
+        );
+        assert!(
+            !published.exists(),
+            "checkpoint must prune published segments"
+        );
+    }
 
     #[test]
     fn compressed_suffix_tree_keeps_exact_path_aware_fallback() {

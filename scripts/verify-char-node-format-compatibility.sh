@@ -84,6 +84,11 @@ if [ "$current_manifest_sha" != "$current_source_sha" ]; then
 fi
 
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-12}"
+# The historical lockfile can require versions absent from the current crate's
+# lockfile (for example lru 0.18.1 versus 0.18.2). Fetch both exact graphs
+# before the offline replay; a fresh CI runner must not depend on cache luck.
+cargo fetch --locked --manifest-path "$repo_root/Cargo.toml"
+cargo fetch --manifest-path "$scratch/baseline/Cargo.toml"
 export CARGO_TARGET_DIR="$scratch/current-target"
 cargo run --quiet --locked --offline --manifest-path "$repo_root/Cargo.toml" --no-default-features --features persistent-artrie --example char_node_format_probe -- emit current "$current_source_sha" > "$scratch/current-writer.txt"
 cmp "$scratch/current-writer.txt" "$fixture_dir/current-writer.txt"

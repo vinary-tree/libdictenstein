@@ -222,6 +222,7 @@ pub mod public_iter;
 // suffix graph snapshots, operation WAL replay, and copy-on-write publication.
 pub(crate) mod suffix_array;
 pub mod suffix_automaton;
+mod suffix_wal_guard;
 
 // Persistent SCDAWG-compatible byte/char variants built on the persistent suffix
 // index architecture.
