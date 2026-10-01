@@ -21,6 +21,9 @@
     "@vinary-tree/vinary-tree-interop": "4.0.0-rc.6",
     "@vinary-tree/javascript-runtime": "4.0.0-rc.6"
   },
+  "devDependencies": {
+    "typescript": "6.0.3"
+  },
   "types": "./index.d.ts",
   "exports": {
     ".": {
@@ -76,6 +79,8 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
+    "test:typescript": "tsc -p tsconfig.test.json",
+    "test:cljs": "node test/clojurescript-test.mjs",
     "prepack": "npm test"
   }
 }

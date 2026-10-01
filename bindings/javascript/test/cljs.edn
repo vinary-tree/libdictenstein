@@ -1,0 +1,7 @@
+{:target :nodejs
+ :output-to "../../target/libdictenstein-cljs-r8/main.cjs"
+ :output-dir "../../target/libdictenstein-cljs-r8/out"
+ :npm-deps {"@vinary-tree/libdictenstein" "file:."}
+ :install-deps false
+ :optimizations :none
+ :main vinary-tree.libdictenstein-rev8-test}

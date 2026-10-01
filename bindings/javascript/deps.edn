@@ -1,1 +1,6 @@
-{:paths ["cljs"]}
+{:paths ["cljs" "test/cljs"]
+ :deps {org.clojure/clojurescript {:mvn/version "1.12.145"}}
+ :aliases
+ {:cljs-test
+  {:main-opts ["-m" "cljs.main" "-co" "test/cljs.edn"
+               "-c" "vinary-tree.libdictenstein-rev8-test"]}}}

@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": false,
+    "paths": {
+      "@vinary-tree/vinary-tree-interop": ["../../../vinary-tree-interop/bindings/javascript/index.d.ts"]
+    }
+  },
+  "include": ["test/typescript.ts"]
+}
