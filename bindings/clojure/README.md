@@ -6,6 +6,14 @@ facade over the Java 22+ FFM package. Dictionaries implement the shared
 serialization. Bulk mutation uses one native crossing and lookup preserves the
 three states absent, present-without-value, and present-with-u64-value.
 
+The `path-map` and `suffix-index` capability gates currently throw status 6
+(`UNSUPPORTED`), even with a revision-8 native library, because the JVM
+facade does not yet mediate those optional handles. A typed suffix-source
+index is distinct from the ordinary SCDAWG dictionary. The gates inspect the
+native revision before rejecting and do not import revision-8-only symbols
+into a revision-7-compatible library. ClojureScript exposes the same explicit
+rejections through its JavaScript facade.
+
 Publish to Clojars with `lein deploy clojars`; credentials are read from
 `CLOJARS_USERNAME` and `CLOJARS_PASSWORD`.
 

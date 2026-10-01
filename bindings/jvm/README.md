@@ -8,6 +8,13 @@ persistent ARTrie CRUD/checkpoint/reopen, and persistent vocabulary reverse
 lookup. The Clojure facade (`io.vinarytree/libdictenstein-clojure`) is a thin
 layer over these classes.
 
+PathMap and the typed suffix-source index require native API revision 8 but
+are not yet mediated by this Java facade. `Dictionary.requirePathMap()` and
+`Dictionary.requireSuffixIndex()` reject with `LDICT_STATUS_UNSUPPORTED` (6),
+distinguishing an older native revision from a missing host wrapper. The
+second operation is not SCDAWG or a generic `Dictionary`; neither gate
+resolves an optional C symbol, so a revision-7 library still loads.
+
 ## Requirements and native library
 
 The facade uses `java.lang.foreign`, so run on a recent JDK with native access
@@ -17,7 +24,7 @@ extracts and loads it, falling back to `System.loadLibrary("libdictenstein")`.
 For a source checkout, build the library and put it on `java.library.path`:
 
 ```sh
-cargo build --release --no-default-features --features ffi
+cargo build --release --no-default-features --features ffi,pathmap-backend
 # then run with: -Djava.library.path=target/release --enable-native-access=ALL-UNNAMED
 ```
 

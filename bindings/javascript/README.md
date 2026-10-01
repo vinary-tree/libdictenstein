@@ -9,6 +9,15 @@ Use the default export for native Node, `/wasm` in browsers, and `/wasi` for
 Node filesystem-backed persistent ARTrie dictionaries. Query consumers remain
 lazy and never require materializing the complete result set.
 
+`pathMap()` and `suffixIndex()` currently throw `UnsupportedBackendError`
+with status 6. They are explicit capability gates, not alternate names for
+DynamicDAWG or SCDAWG. The error records whether the underlying runtime
+reports a native API revision below 8 or whether the revision-8 backend still
+lacks host mediation; neither path forwards to an unqualified native, browser
+WASM, or WASI constructor. TypeScript declares both functions as returning
+`never`; the ClojureScript facade exposes `path-map` and `suffix-index` with
+the same rejection contract.
+
 <!-- BEGIN GENERATED BINDING OPERATIONS; DO NOT EDIT -->
 
 ## Support and package contract
