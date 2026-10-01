@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections.abc import Mapping, MutableMapping
 from collections.abc import Set as AbstractSet
 from pathlib import Path
+from unittest.mock import patch
 
 import libdictenstein
+import pytest
 
 
 def test_double_array_trie_preserves_valueless_terms() -> None:
@@ -26,6 +28,44 @@ def test_scdawg_substring_semantics() -> None:
     assert dictionary.insert("cit", 4)
     assert dictionary.frequency("t") == 4
     dictionary.close()
+
+
+def test_pathmap_revision8_domains_values_and_kind() -> None:
+    assert libdictenstein.api_revision() >= 8
+    with libdictenstein.PathMap(libdictenstein.UnitDomain.BYTE) as dictionary:
+        dictionary.update({b"\xff\x00": None, b"zero": 0})
+        assert dictionary.kind == 6
+        assert dictionary.lookup(b"\xff\x00") == (True, None)
+        assert dictionary.lookup(b"zero") == (True, 0)
+        assert dictionary.snapshot()[b"\xff\x00"] is None
+        del dictionary[b"zero"]
+        assert b"zero" not in dictionary
+
+    with libdictenstein.PathMap() as dictionary:
+        dictionary["café"] = 7
+        assert dictionary.lookup("café") == (True, 7)
+        with pytest.raises(libdictenstein.NativeError) as invalid:
+            dictionary.insert(b"\xff")
+        assert invalid.value.status == 3
+
+    with pytest.raises(libdictenstein.NativeError) as unsupported:
+        libdictenstein.PathMap(libdictenstein.UnitDomain.U64)
+    assert unsupported.value.status == 6
+
+
+def test_revision8_optional_constructors_are_explicitly_gated() -> None:
+    with (
+        patch("libdictenstein._native.api_revision", return_value=7),
+        pytest.raises(libdictenstein.NativeError) as old_library,
+    ):
+        libdictenstein.PathMap()
+    assert old_library.value.status == 6
+    assert "revision 8" in str(old_library.value)
+
+    with pytest.raises(libdictenstein.NativeError) as typed_suffix:
+        libdictenstein.SuffixIndex()
+    assert typed_suffix.value.status == 6
+    assert "not exposed" in str(typed_suffix.value)
 
 
 def test_persistent_artrie_checkpoint_and_reopen(

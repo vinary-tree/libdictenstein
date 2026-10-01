@@ -34,9 +34,9 @@ module VinaryTree
 
     class Error < StandardError
       attr_reader :status
-      def initialize(status)
+      def initialize(status, message = nil)
         @status = status
-        super("libdictenstein status #{status}: #{Native.ldict_last_error_message.to_s}")
+        super(message || "libdictenstein status #{status}: #{Native.ldict_last_error_message.to_s}")
       end
     end
     def self.check(status) = (raise Error, status unless status.zero?)
@@ -438,21 +438,10 @@ module VinaryTree
       end
     end
 
-    class DynamicDawg < Dictionary
-      def self.adopt(pointer) = new(pointer: pointer)
-
-      def initialize(domain: UNICODE_SCALAR, pointer: nil)
-        unless pointer
-          output = Native.pointer_output
-          Libdictenstein.check(Native.ldict_dynamic_dawg_new(domain, output))
-          pointer = Native.read_pointer(output)
-        end
-        super(pointer)
-      end
+    # The text-key mutation surface is shared by DynamicDAWG and PathMap.
+    module MutableTextDictionary
       def put(term, value = nil) = put_text(term, value)
       def remove(term) = remove_text(term)
-      def put_u64(tokens, value = nil) = put_tokens(tokens, value)
-      def remove_u64(tokens) = remove_tokens(tokens)
       def clear = @handle.with_pointer { |pointer| Libdictenstein.check(Native.ldict_dictionary_clear(pointer)) }
       def compact
         output = Native.size_output; @handle.with_pointer { |pointer| Libdictenstein.check(Native.ldict_dictionary_compact(pointer, output)) }; Native.read_size(output)
@@ -470,6 +459,43 @@ module VinaryTree
         output = Native.size_output
         @handle.with_pointer { |pointer| Libdictenstein.check(Native.ldict_dictionary_insert_text_batch(pointer, memory, entries.length, output)) }
         Native.read_size(output)
+      end
+    end
+
+    class DynamicDawg < Dictionary
+      include MutableTextDictionary
+
+      def self.adopt(pointer) = new(pointer: pointer)
+
+      def initialize(domain: UNICODE_SCALAR, pointer: nil)
+        unless pointer
+          output = Native.pointer_output
+          Libdictenstein.check(Native.ldict_dynamic_dawg_new(domain, output))
+          pointer = Native.read_pointer(output)
+        end
+        super(pointer)
+      end
+      def put_u64(tokens, value = nil) = put_tokens(tokens, value)
+      def remove_u64(tokens) = remove_tokens(tokens)
+    end
+
+    class PathMap < Dictionary
+      include MutableTextDictionary
+
+      def initialize(domain: UNICODE_SCALAR)
+        raise Error.new(6, "PathMap does not support u64-token keys") if domain == U64
+        if Libdictenstein.api_revision < 8 || !Native.respond_to?(:ldict_pathmap_new)
+          raise Error.new(6, "PathMap requires a native revision-8 library with ldict_pathmap_new")
+        end
+        output = Native.pointer_output
+        Libdictenstein.check(Native.ldict_pathmap_new(domain, output))
+        super(Native.read_pointer(output))
+      end
+    end
+
+    class SuffixIndex
+      def initialize(domain: UNICODE_SCALAR)
+        raise Error.new(6, "typed suffix-source snapshots are not exposed by the Ruby binding")
       end
     end
 
