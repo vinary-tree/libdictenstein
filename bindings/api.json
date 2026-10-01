@@ -216,7 +216,7 @@
     "_source": "release pins in .github/workflows/release-bindings.yml; dev facade pins in bindings/go/go.mod, Package.swift, bindings/jvm/build.gradle.kts (test scope), bindings/clojure/project.clj (:test profile), and bindings/javascript/package.json (@vinary-tree/javascript-runtime). Recorded verbatim; tag existence is a release concern tracked in docs/bindings/FINDINGS_LEDGER.md (LDICT-B1)."
   },
   "abiVersion": 1,
-  "apiRevision": 7,
+  "apiRevision": 8,
   "cPrefix": "ldict_",
   "cHeader": "include/libdictenstein.h",
   "featureGates": {
@@ -297,6 +297,15 @@
           "type": "LdictOptionalU64"
         }
       ]
+    },
+    "LdictSuffixSourceRecord": {
+      "fields": [
+        {"name": "source_id", "type": "u64"},
+        {"name": "data", "type": "*const u8"},
+        {"name": "len", "type": "usize"},
+        {"name": "value", "type": "LdictOptionalU64"}
+      ],
+      "ownership": "caller-owned-descriptors; borrowed-data-until-snapshot-close"
     },
     "LdictEntry": {
       "alias": "VtDictionaryEntry",
@@ -388,7 +397,8 @@
       "DOUBLE_ARRAY_TRIE": 2,
       "SCDAWG": 3,
       "PERSISTENT_ARTRIE": 4,
-      "PERSISTENT_VOCAB_ARTRIE": 5
+      "PERSISTENT_VOCAB_ARTRIE": 5,
+      "PATHMAP": 6
     },
     "compatibilityAliases": {
       "PERSISTENT_VOCABULARY": "PERSISTENT_VOCAB_ARTRIE"
@@ -449,6 +459,21 @@
       ]
     },
     {
+      "kind": "PATHMAP",
+      "producer": "PathMapBinding",
+      "feature": "pathmap-backend",
+      "unitDomains": [
+        "BYTE",
+        "UNICODE_SCALAR"
+      ],
+      "capabilities": [
+        "READ",
+        "INSERT",
+        "REMOVE",
+        "CLEAR"
+      ]
+    },
+    {
       "kind": "PERSISTENT_ARTRIE",
       "producer": "PersistentARTrieBinding",
       "feature": "persistent-artrie",
@@ -496,6 +521,11 @@
     "ScdawgBinding": {
       "module": "src/bindings.rs",
       "kind": "SCDAWG"
+    },
+    "PathMapBinding": {
+      "module": "src/bindings.rs",
+      "kind": "PATHMAP",
+      "feature": "pathmap-backend"
     },
     "PersistentARTrieBinding": {
       "module": "src/bindings.rs",
@@ -658,6 +688,31 @@
         {"name": "out_dictionary", "cType": "LdictDictionary**", "direction": "output", "ownership": "caller-owned-handle"}
       ]
     },
+    {
+      "name": "ldict_pathmap_new",
+      "group": "constructor",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "unit_domain", "cType": "uint32_t", "direction": "input", "ownership": "value"},
+        {"name": "out_dictionary", "cType": "LdictDictionary**", "direction": "output", "ownership": "caller-owned-handle"}
+      ]
+    },
+    {"name":"ldict_suffix_index_new","group":"constructor","returnType":"LdictStatus","parameters":[{"name":"unit_domain","cType":"uint32_t","direction":"input","ownership":"value"},{"name":"out_index","cType":"LdictSuffixIndex**","direction":"output","ownership":"caller-owned-handle"}]},
+    {"name":"ldict_suffix_index_close","group":"suffix-index","returnType":"LdictStatus","parameters":[{"name":"index","cType":"LdictSuffixIndex*","direction":"input","ownership":"borrowed-handle"}]},
+    {"name":"ldict_suffix_index_free","group":"suffix-index","returnType":"void","parameters":[{"name":"index","cType":"LdictSuffixIndex*","direction":"input","ownership":"consumed-handle"}]},
+    {"name":"ldict_suffix_index_insert_text","group":"suffix-index","returnType":"LdictStatus","parameters":[{"name":"index","cType":"LdictSuffixIndex*","direction":"input","ownership":"borrowed-handle"},{"name":"data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},{"name":"len","cType":"size_t","direction":"input","ownership":"value"},{"name":"value","cType":"LdictOptionalU64","direction":"input","ownership":"value"}]},
+    {"name":"ldict_suffix_index_remove_text","group":"suffix-index","returnType":"LdictStatus","parameters":[{"name":"index","cType":"LdictSuffixIndex*","direction":"input","ownership":"borrowed-handle"},{"name":"data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},{"name":"len","cType":"size_t","direction":"input","ownership":"value"},{"name":"out_removed","cType":"uint8_t*","direction":"output","ownership":"caller-owned-storage"}]},
+    {"name":"ldict_suffix_index_clear","group":"suffix-index","returnType":"LdictStatus","parameters":[{"name":"index","cType":"LdictSuffixIndex*","direction":"input","ownership":"borrowed-handle"}]},
+    {"name":"ldict_suffix_index_compact","group":"suffix-index","returnType":"LdictStatus","parameters":[{"name":"index","cType":"LdictSuffixIndex*","direction":"input","ownership":"borrowed-handle"}]},
+    {"name":"ldict_suffix_index_snapshot","group":"suffix-index","returnType":"LdictStatus","parameters":[{"name":"index","cType":"const LdictSuffixIndex*","direction":"input","ownership":"borrowed-handle"},{"name":"out_snapshot","cType":"LdictSuffixSnapshot**","direction":"output","ownership":"caller-owned-handle"}]},
+    {"name":"ldict_suffix_snapshot_close","group":"suffix-snapshot","returnType":"LdictStatus","parameters":[{"name":"snapshot","cType":"LdictSuffixSnapshot*","direction":"input","ownership":"borrowed-handle"}]},
+    {"name":"ldict_suffix_snapshot_free","group":"suffix-snapshot","returnType":"void","parameters":[{"name":"snapshot","cType":"LdictSuffixSnapshot*","direction":"input","ownership":"consumed-handle"}]},
+    {"name":"ldict_suffix_snapshot_identity","group":"suffix-snapshot","returnType":"LdictStatus","parameters":[{"name":"snapshot","cType":"const LdictSuffixSnapshot*","direction":"input","ownership":"borrowed-handle"},{"name":"out_producer","cType":"uint64_t*","direction":"output","ownership":"caller-owned-storage"},{"name":"out_revision","cType":"uint64_t*","direction":"output","ownership":"caller-owned-storage"}]},
+    {"name":"ldict_suffix_snapshot_source_count","group":"suffix-snapshot","returnType":"LdictStatus","parameters":[{"name":"snapshot","cType":"const LdictSuffixSnapshot*","direction":"input","ownership":"borrowed-handle"},{"name":"out_count","cType":"uint64_t*","direction":"output","ownership":"caller-owned-storage"}]},
+    {"name":"ldict_suffix_snapshot_contains_source","group":"suffix-snapshot","returnType":"LdictStatus","parameters":[{"name":"snapshot","cType":"const LdictSuffixSnapshot*","direction":"input","ownership":"borrowed-handle"},{"name":"data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},{"name":"len","cType":"size_t","direction":"input","ownership":"value"},{"name":"out_contains","cType":"uint64_t*","direction":"output","ownership":"caller-owned-storage"}]},
+    {"name":"ldict_suffix_snapshot_contains_substring","group":"suffix-snapshot","returnType":"LdictStatus","parameters":[{"name":"snapshot","cType":"const LdictSuffixSnapshot*","direction":"input","ownership":"borrowed-handle"},{"name":"data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},{"name":"len","cType":"size_t","direction":"input","ownership":"value"},{"name":"out_contains","cType":"uint64_t*","direction":"output","ownership":"caller-owned-storage"}]},
+    {"name":"ldict_suffix_snapshot_substring_frequency","group":"suffix-snapshot","returnType":"LdictStatus","parameters":[{"name":"snapshot","cType":"const LdictSuffixSnapshot*","direction":"input","ownership":"borrowed-handle"},{"name":"data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},{"name":"len","cType":"size_t","direction":"input","ownership":"value"},{"name":"out_frequency","cType":"uint64_t*","direction":"output","ownership":"caller-owned-storage"}]},
+    {"name":"ldict_suffix_snapshot_source_page","group":"suffix-snapshot","returnType":"LdictStatus","parameters":[{"name":"snapshot","cType":"const LdictSuffixSnapshot*","direction":"input","ownership":"borrowed-handle"},{"name":"offset","cType":"uint64_t","direction":"input","ownership":"value"},{"name":"out_records","cType":"LdictSuffixSourceRecord*","direction":"output","ownership":"caller-owned-storage"},{"name":"capacity","cType":"size_t","direction":"input","ownership":"value"},{"name":"out_written","cType":"size_t*","direction":"output","ownership":"caller-owned-storage"},{"name":"out_total","cType":"uint64_t*","direction":"output","ownership":"caller-owned-storage"}]},
     {
       "name": "ldict_persistent_artrie_create",
       "group": "constructor",
@@ -1195,12 +1250,30 @@
       "generator": "scripts/generate-raku-abi.py",
       "abiInventory": "bindings/generated/raku-abi-capabilities.tsv",
       "rawOnlyReasons": {
+        "revision8-typed-backends": "Revision-8 PathMap and typed suffix C calls are available as low-level declarations only; the idiomatic Raku facade requires a separately qualified wrapper and an api_revision >= 8 gate.",
         "byte-values": "The revision-7 byte-value C ABI is declared, but the idiomatic Raku byte-value dictionary and cursor facade is a separate parity task; no u64 reinterpretation is allowed.",
         "entry-cursor": "The idiomatic facade traverses retained Vinary-Tree-Interop snapshots; the project-owned cursor ABI remains available only as a low-level declaration.",
         "legacy-optional-insert": "The facade uses the explicit scalar-value insertion call to preserve valueless versus zero semantics.",
         "legacy-scalar-getter": "The facade uses the optional-value output struct and membership flag instead of the older scalar getter."
       },
       "rawOnly": {
+        "ldict_pathmap_new": "revision8-typed-backends",
+        "ldict_suffix_index_new": "revision8-typed-backends",
+        "ldict_suffix_index_close": "revision8-typed-backends",
+        "ldict_suffix_index_free": "revision8-typed-backends",
+        "ldict_suffix_index_insert_text": "revision8-typed-backends",
+        "ldict_suffix_index_remove_text": "revision8-typed-backends",
+        "ldict_suffix_index_clear": "revision8-typed-backends",
+        "ldict_suffix_index_compact": "revision8-typed-backends",
+        "ldict_suffix_index_snapshot": "revision8-typed-backends",
+        "ldict_suffix_snapshot_close": "revision8-typed-backends",
+        "ldict_suffix_snapshot_free": "revision8-typed-backends",
+        "ldict_suffix_snapshot_identity": "revision8-typed-backends",
+        "ldict_suffix_snapshot_source_count": "revision8-typed-backends",
+        "ldict_suffix_snapshot_contains_source": "revision8-typed-backends",
+        "ldict_suffix_snapshot_contains_substring": "revision8-typed-backends",
+        "ldict_suffix_snapshot_substring_frequency": "revision8-typed-backends",
+        "ldict_suffix_snapshot_source_page": "revision8-typed-backends",
         "ldict_dynamic_dawg_new_byte_values": "byte-values",
         "ldict_dictionary_insert_text_bytes": "byte-values",
         "ldict_dictionary_insert_u64_bytes": "byte-values",

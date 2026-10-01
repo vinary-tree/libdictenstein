@@ -52,6 +52,12 @@ LOCAL_LAYOUTS = {
         ("len", "usize"),
         ("value", "LdictOptionalU64"),
     ],
+    "LdictSuffixSourceRecord": [
+        ("source_id", "u64"),
+        ("data", "*const u8"),
+        ("len", "usize"),
+        ("value", "LdictOptionalU64"),
+    ],
 }
 HEADER_FIELD_TYPES = {
     "u64": "uint64_t",
@@ -199,13 +205,18 @@ def nativecall_parameter(parameter: dict) -> str:
         return "OptionalValue"
     if c_type == "VtResource*":
         return "RawResource"
-    if c_type in {"LdictDictionary**", "LdictEntryCursor**", "LdictByteEntryCursor**"}:
+    if c_type in {"LdictDictionary**", "LdictEntryCursor**", "LdictByteEntryCursor**", "LdictSuffixIndex**", "LdictSuffixSnapshot**"}:
         return "Pointer is rw"
     pointer_types = {
         "LdictDictionary*",
         "const LdictDictionary*",
         "LdictEntryCursor*",
         "LdictByteEntryCursor*",
+        "LdictSuffixIndex*",
+        "const LdictSuffixIndex*",
+        "LdictSuffixSnapshot*",
+        "const LdictSuffixSnapshot*",
+        "LdictSuffixSourceRecord*",
         "const uint8_t*",
         "const uint64_t*",
         "const LdictTextEntry*",
@@ -310,6 +321,12 @@ def render_layouts(model: dict) -> str:
         "",
         "class TextEntry is repr('CStruct') does EntryDescriptor is export { }",
         "class U64Entry is repr('CStruct') does EntryDescriptor is export { }",
+        "class SuffixSourceRecord is repr('CStruct') is export {",
+        "    has uint64 $.source-id;",
+        "    has Pointer $.data;",
+        "    has size_t $.len;",
+        "    has OptionalValue $.value;",
+        "}",
         end,
     ]
     return "\n".join(lines)

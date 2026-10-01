@@ -82,7 +82,8 @@ impl SuffixIndexUnit for char {
 /// One active insertion record. Equal source texts remain distinct records.
 #[derive(Debug, Clone, Copy)]
 pub struct SuffixSourceRecord<'a, V> {
-    /// Stable insertion ID within this producer's history.
+    /// Source ID within this captured revision. Existing IDs survive insert,
+    /// remove and compaction, but may be reused after `clear` resets the index.
     pub source_id: usize,
     /// Valid UTF-8 source text.
     pub text: &'a str,

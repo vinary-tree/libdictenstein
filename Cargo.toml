@@ -138,7 +138,7 @@ bindings-core = ["dep:vinary-tree-interop"]
 # select in-memory backends at runtime without producing an ABI-fragmented
 # shared library.
 ffi = ["bindings-core", "persistent-artrie"]
-native-bindings-full = ["ffi"]
+native-bindings-full = ["ffi", "pathmap-backend"]
 c-bindings = ["native-bindings-full"]
 cpp-bindings = ["native-bindings-full"]
 python-bindings = ["native-bindings-full"]

@@ -49,9 +49,9 @@ def julia_parameter_type(parameter: dict) -> str:
     c_type = canonical_c_type(parameter["cType"])
     direction = parameter["direction"]
     name = parameter["name"]
-    if c_type in {"LdictDictionary*", "const LdictDictionary*", "LdictEntryCursor*", "LdictByteEntryCursor*"}:
+    if c_type in {"LdictDictionary*", "const LdictDictionary*", "LdictEntryCursor*", "LdictByteEntryCursor*", "LdictSuffixIndex*", "const LdictSuffixIndex*", "LdictSuffixSnapshot*", "const LdictSuffixSnapshot*"}:
         return "Ptr{Cvoid}"
-    if c_type in {"LdictDictionary**", "LdictEntryCursor**", "LdictByteEntryCursor**"}:
+    if c_type in {"LdictDictionary**", "LdictEntryCursor**", "LdictByteEntryCursor**", "LdictSuffixIndex**", "LdictSuffixSnapshot**"}:
         return "Ref{Ptr{Cvoid}}"
     if c_type == "uint32_t":
         return "UInt32"
@@ -81,6 +81,8 @@ def julia_parameter_type(parameter: dict) -> str:
         return "Ptr{TextEntry}"
     if c_type == "const LdictU64Entry*":
         return "Ptr{U64Entry}"
+    if c_type == "LdictSuffixSourceRecord*":
+        return "Ptr{SuffixSourceRecord}"
     if c_type == "VtResource*":
         return "Ref{VTI.VtResourceRaw}"
     if c_type == "const LdictEntryBatchLimits*":
@@ -153,6 +155,12 @@ def render_layouts(model: dict) -> str:
             ("len", "usize"),
             ("value", "LdictOptionalU64"),
         ],
+        "LdictSuffixSourceRecord": [
+            ("source_id", "u64"),
+            ("data", "*const u8"),
+            ("len", "usize"),
+            ("value", "LdictOptionalU64"),
+        ],
     }
     for name, expected_fields in expected_local.items():
         actual = [(field["name"], field["type"]) for field in structs[name]["fields"]]
@@ -175,6 +183,13 @@ def render_layouts(model: dict) -> str:
         "",
         "struct U64Entry",
         "    data::Ptr{UInt64}",
+        "    len::Csize_t",
+        "    value::OptionalU64",
+        "end",
+        "",
+        "struct SuffixSourceRecord",
+        "    source_id::UInt64",
+        "    data::Ptr{UInt8}",
         "    len::Csize_t",
         "    value::OptionalU64",
         "end",

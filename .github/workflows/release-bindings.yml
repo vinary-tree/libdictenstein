@@ -63,9 +63,10 @@ jobs:
             echo "::error::The libdictenstein RC.4 crate is already public; a corrective source must not republish it." >&2
             exit 1
           fi
-          cargo test --features ffi --test query_start_snapshot_correspondence
-          cargo test --features ffi --lib ffi
-          cargo clippy --features ffi --lib -- -D warnings
+          cargo test --features ffi,pathmap-backend --test query_start_snapshot_correspondence
+          cargo test --features ffi,pathmap-backend --test ffi_backend_revision8
+          cargo test --features ffi,pathmap-backend --lib ffi
+          cargo clippy --features ffi,pathmap-backend --lib -- -D warnings
 
   native:
     name: Native ${{ matrix.target }}
@@ -115,7 +116,7 @@ jobs:
           git clone --depth 1 --branch v4.0.0-rc.6 https://github.com/vinary-tree/vinary-tree-interop.git "$parent/vinary-tree-interop"
       - uses: dtolnay/rust-toolchain@1.95
         with: { targets: "${{ matrix.target }}" }
-      - run: cargo build --release --target "${{ matrix.target }}" --features ffi
+      - run: cargo build --release --target "${{ matrix.target }}" --features ffi,pathmap-backend
       - name: Stage relocatable archive and managed-runtime libraries
         shell: bash
         run: |
@@ -252,7 +253,7 @@ jobs:
       - name: Build local native dependencies for cross-project tests
         shell: bash
         run: |
-          cargo build --features ffi
+          cargo build --features ffi,pathmap-backend
           cargo build --manifest-path ../liblevenshtein-rust/Cargo.toml --features native-bindings-full
           mkdir -p ../liblevenshtein-rust/bindings/jvm/build/native-resources/META-INF/native/linux-x86_64
           cp ../liblevenshtein-rust/target/debug/libliblevenshtein.so \
@@ -292,7 +293,7 @@ jobs:
       - name: Build and install exact local Java test dependencies
         shell: bash
         run: |
-          cargo build --features ffi
+          cargo build --features ffi,pathmap-backend
           cargo build --manifest-path ../liblevenshtein-rust/Cargo.toml --features native-bindings-full
           mkdir -p ../liblevenshtein-rust/bindings/jvm/build/native-resources/META-INF/native/linux-x86_64
           cp ../liblevenshtein-rust/target/debug/libliblevenshtein.so \
@@ -452,7 +453,7 @@ jobs:
       - name: Validate the numeric 4.0.0 candidates without publication
         shell: bash
         run: |
-          cargo build --release --features ffi
+          cargo build --release --features ffi,pathmap-backend
           fpm build -C ../vinary-tree-interop/bindings/fortran --dump fpm_model.json
           fpm build -C bindings/fortran \
             --build-dir "$RUNNER_TEMP/fpm-build-libdictenstein" \

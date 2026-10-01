@@ -30,7 +30,7 @@ jobs:
       - uses: ./.github/actions/checkout-dev-siblings
       - uses: dtolnay/rust-toolchain@stable
       - name: Build the producer ABI cdylib
-        run: cargo build --release --no-default-features --features ffi
+        run: cargo build --release --no-default-features --features ffi,pathmap-backend
       - uses: actions/upload-artifact@v7
         with:
           name: libdictenstein-so

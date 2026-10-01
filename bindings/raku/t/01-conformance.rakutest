@@ -3,7 +3,7 @@ use NativeCall;
 use Libdictenstein;
 
 is abi-version, ABI-VERSION, 'ABI version matches the package contract';
-is api-revision, API-REVISION, 'API revision includes byte-valued native DAWG';
+is api-revision, API-REVISION, 'API revision includes typed suffix index and PathMap constructor';
 is +STATUS-OK, 0, 'generated status enum agrees with the C header';
 is +STATUS-BATCH-IN-USE, 12, 'generated status enum includes cursor lease errors';
 is PERSISTENT-VOCABULARY, PERSISTENT-VOCAB-ARTRIE,

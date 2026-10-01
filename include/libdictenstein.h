@@ -28,13 +28,14 @@ extern "C" {
 #endif
 
 #define LDICT_ABI_VERSION 1u
-#define LDICT_API_REVISION 7u
+#define LDICT_API_REVISION 8u
 
 #define LDICT_KIND_DYNAMIC_DAWG 1u
 #define LDICT_KIND_DOUBLE_ARRAY_TRIE 2u
 #define LDICT_KIND_SCDAWG 3u
 #define LDICT_KIND_PERSISTENT_ARTRIE 4u
 #define LDICT_KIND_PERSISTENT_VOCAB_ARTRIE 5u
+#define LDICT_KIND_PATHMAP 6u
 
 #define LDICT_CAP_READ (UINT64_C(1) << 0)
 #define LDICT_CAP_INSERT (UINT64_C(1) << 1)
@@ -94,6 +95,17 @@ typedef struct LdictU64Entry {
     LdictOptionalU64 value;
 } LdictU64Entry;
 
+/* Typed suffix-source records are not generic dictionary entries. Source IDs
+ * are stable within a captured revision but may be reused after clear; the
+ * borrowed UTF-8 data remains
+ * valid until the owning snapshot is closed/freed. */
+typedef struct LdictSuffixSourceRecord {
+    uint64_t source_id;
+    const uint8_t* data;
+    size_t len;
+    LdictOptionalU64 value;
+} LdictSuffixSourceRecord;
+
 /* Natural project aliases for the vt.dict.entry.v1 descriptor arenas. Keys are
  * always present; value_len == 0 means a valueless member and value_len == 1
  * means values[value_offset] is present, including the value zero. */
@@ -123,6 +135,8 @@ typedef LdictStatus (*LdictByteEntryReducer)(
     void* reducer_context, const LdictByteEntryBatch* batch);
 
 typedef struct LdictDictionary LdictDictionary;
+typedef struct LdictSuffixIndex LdictSuffixIndex;
+typedef struct LdictSuffixSnapshot LdictSuffixSnapshot;
 
 LDICT_API uint32_t ldict_abi_version(void);
 LDICT_API uint32_t ldict_api_revision(void);
@@ -144,6 +158,56 @@ LDICT_API LdictStatus ldict_double_array_trie_new(
 LDICT_API LdictStatus ldict_scdawg_new(
     uint32_t unit_domain,
     LdictDictionary** out_dictionary);
+/* PathMap supports arbitrary byte keys or UTF-8 Unicode-scalar keys, never
+ * u64 tokens. The symbol is always exported; a build without pathmap-backend
+ * initializes the output to NULL and returns UNSUPPORTED. */
+LDICT_API LdictStatus ldict_pathmap_new(
+    uint32_t unit_domain,
+    LdictDictionary** out_dictionary);
+
+/* Revision-8 typed suffix-source API. Byte and Unicode-scalar modes accept
+ * valid UTF-8 source text/patterns; byte mode counts UTF-8 transition bytes,
+ * Unicode mode counts scalar transitions. U64 and persistence are unsupported.
+ * `close` retains the allocation for CLOSED results; `free` deallocates it.
+ * Captured snapshots survive index close/free. These identities are
+ * type-scoped and MUST NOT alias generic dictionary snapshot identities. */
+LDICT_API LdictStatus ldict_suffix_index_new(
+    uint32_t unit_domain, LdictSuffixIndex** out_index);
+LDICT_API LdictStatus ldict_suffix_index_close(LdictSuffixIndex* index);
+LDICT_API void ldict_suffix_index_free(LdictSuffixIndex* index);
+LDICT_API LdictStatus ldict_suffix_index_insert_text(
+    LdictSuffixIndex* index, const uint8_t* data, size_t len,
+    LdictOptionalU64 value);
+LDICT_API LdictStatus ldict_suffix_index_remove_text(
+    LdictSuffixIndex* index, const uint8_t* data, size_t len,
+    uint8_t* out_removed);
+LDICT_API LdictStatus ldict_suffix_index_clear(LdictSuffixIndex* index);
+LDICT_API LdictStatus ldict_suffix_index_compact(LdictSuffixIndex* index);
+LDICT_API LdictStatus ldict_suffix_index_snapshot(
+    const LdictSuffixIndex* index, LdictSuffixSnapshot** out_snapshot);
+LDICT_API LdictStatus ldict_suffix_snapshot_close(LdictSuffixSnapshot* snapshot);
+LDICT_API void ldict_suffix_snapshot_free(LdictSuffixSnapshot* snapshot);
+LDICT_API LdictStatus ldict_suffix_snapshot_identity(
+    const LdictSuffixSnapshot* snapshot, uint64_t* out_producer,
+    uint64_t* out_revision);
+LDICT_API LdictStatus ldict_suffix_snapshot_source_count(
+    const LdictSuffixSnapshot* snapshot, uint64_t* out_count);
+LDICT_API LdictStatus ldict_suffix_snapshot_contains_source(
+    const LdictSuffixSnapshot* snapshot, const uint8_t* data, size_t len,
+    uint64_t* out_contains);
+LDICT_API LdictStatus ldict_suffix_snapshot_contains_substring(
+    const LdictSuffixSnapshot* snapshot, const uint8_t* data, size_t len,
+    uint64_t* out_contains);
+LDICT_API LdictStatus ldict_suffix_snapshot_substring_frequency(
+    const LdictSuffixSnapshot* snapshot, const uint8_t* data, size_t len,
+    uint64_t* out_frequency);
+/* `capacity == 0` permits null out_records and still returns out_total.
+ * END means offset >= total. Caller owns descriptors; data is borrowed until
+ * snapshot close/free. Do not race close with use of borrowed data. */
+LDICT_API LdictStatus ldict_suffix_snapshot_source_page(
+    const LdictSuffixSnapshot* snapshot, uint64_t offset,
+    LdictSuffixSourceRecord* out_records, size_t capacity,
+    size_t* out_written, uint64_t* out_total);
 LDICT_API LdictStatus ldict_persistent_artrie_create(
     uint32_t unit_domain,
     const uint8_t* path_data,

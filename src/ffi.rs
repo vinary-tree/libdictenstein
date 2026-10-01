@@ -2,7 +2,11 @@
 
 mod bytes;
 pub use bytes::*;
+mod suffix;
+pub use suffix::*;
 
+#[cfg(feature = "pathmap-backend")]
+use crate::bindings::PathMapBinding;
 #[cfg(feature = "persistent-artrie")]
 use crate::bindings::PersistentARTrieBinding;
 use crate::bindings::{
@@ -24,7 +28,7 @@ use vinary_tree_interop::{
 /// ABI version for the libdictenstein project API.
 pub const LDICT_ABI_VERSION: u32 = 1;
 /// Additive project API revision.
-pub const LDICT_API_REVISION: u32 = 7;
+pub const LDICT_API_REVISION: u32 = 8;
 
 /// DynamicDAWG backend identifier.
 pub const LDICT_KIND_DYNAMIC_DAWG: u32 = 1;
@@ -36,6 +40,8 @@ pub const LDICT_KIND_SCDAWG: u32 = 3;
 pub const LDICT_KIND_PERSISTENT_ARTRIE: u32 = 4;
 /// Persistent term/index vocabulary ARTrie identifier.
 pub const LDICT_KIND_PERSISTENT_VOCAB_ARTRIE: u32 = 5;
+/// PathMap backend identifier.
+pub const LDICT_KIND_PATHMAP: u32 = 6;
 
 /// Exact membership and value lookup capability.
 pub const LDICT_CAP_READ: u64 = 1 << 0;
@@ -220,6 +226,8 @@ enum LdictBinding {
     DynamicBytes(ByteValueDawgBinding),
     DoubleArray(DoubleArrayTrieBinding),
     Scdawg(ScdawgBinding),
+    #[cfg(feature = "pathmap-backend")]
+    PathMap(PathMapBinding),
     #[cfg(feature = "persistent-artrie")]
     Persistent(PersistentARTrieBinding),
 }
@@ -230,6 +238,8 @@ impl LdictBinding {
             Self::Dynamic(_) | Self::DynamicBytes(_) => LDICT_KIND_DYNAMIC_DAWG,
             Self::DoubleArray(_) => LDICT_KIND_DOUBLE_ARRAY_TRIE,
             Self::Scdawg(_) => LDICT_KIND_SCDAWG,
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(_) => LDICT_KIND_PATHMAP,
             #[cfg(feature = "persistent-artrie")]
             Self::Persistent(binding) => {
                 if binding.is_vocab() {
@@ -252,6 +262,10 @@ impl LdictBinding {
             }
             Self::DoubleArray(_) => LDICT_CAP_READ,
             Self::Scdawg(_) => LDICT_CAP_READ | LDICT_CAP_INSERT | LDICT_CAP_SUBSTRING,
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(_) => {
+                LDICT_CAP_READ | LDICT_CAP_INSERT | LDICT_CAP_REMOVE | LDICT_CAP_CLEAR
+            }
             #[cfg(feature = "persistent-artrie")]
             Self::Persistent(binding) => {
                 let mut capabilities = LDICT_CAP_READ | LDICT_CAP_INSERT | LDICT_CAP_CHECKPOINT;
@@ -269,6 +283,8 @@ impl LdictBinding {
             Self::DynamicBytes(binding) => binding.domain(),
             Self::DoubleArray(binding) => binding.domain(),
             Self::Scdawg(binding) => binding.domain(),
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(binding) => binding.domain(),
             #[cfg(feature = "persistent-artrie")]
             Self::Persistent(binding) => binding.domain(),
         }
@@ -280,6 +296,8 @@ impl LdictBinding {
             Self::DynamicBytes(binding) => binding.len(),
             Self::DoubleArray(binding) => binding.len(),
             Self::Scdawg(binding) => binding.len(),
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(binding) => binding.len(),
             #[cfg(feature = "persistent-artrie")]
             Self::Persistent(binding) => binding.len(),
         }
@@ -291,6 +309,8 @@ impl LdictBinding {
             Self::DynamicBytes(binding) => binding.resource(),
             Self::DoubleArray(binding) => binding.resource(),
             Self::Scdawg(binding) => binding.resource(),
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(binding) => binding.resource(),
             #[cfg(feature = "persistent-artrie")]
             Self::Persistent(binding) => binding.resource(),
         }
@@ -303,6 +323,11 @@ impl LdictBinding {
                 Ok(())
             }
             Self::DynamicBytes(binding) => {
+                binding.clear();
+                Ok(())
+            }
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(binding) => {
                 binding.clear();
                 Ok(())
             }
@@ -333,6 +358,15 @@ impl LdictBinding {
                 let term = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
                 Ok(binding.insert(term, value))
             }
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(binding) => match binding.domain() {
+                BindingUnitDomain::Byte => binding.insert_bytes(term, value),
+                BindingUnitDomain::UnicodeScalar => {
+                    let text = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
+                    Ok(binding.insert_text(text, value))
+                }
+                BindingUnitDomain::U64 => unreachable!("PathMap has no u64 constructor"),
+            },
             #[cfg(feature = "persistent-artrie")]
             Self::Persistent(binding) => binding.insert_text(term, value),
         }
@@ -342,6 +376,15 @@ impl LdictBinding {
         match self {
             Self::Dynamic(binding) => binding.remove_text(term),
             Self::DynamicBytes(binding) => binding.remove_text(term),
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(binding) => match binding.domain() {
+                BindingUnitDomain::Byte => binding.remove_bytes(term),
+                BindingUnitDomain::UnicodeScalar => {
+                    let text = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
+                    Ok(binding.remove_text(text))
+                }
+                BindingUnitDomain::U64 => unreachable!("PathMap has no u64 constructor"),
+            },
             #[cfg(feature = "persistent-artrie")]
             Self::Persistent(binding) => binding.remove_text(term),
             _ => Err(BindingError::Unsupported),
@@ -360,6 +403,15 @@ impl LdictBinding {
                 let term = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
                 Ok(binding.contains(term))
             }
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(binding) => match binding.domain() {
+                BindingUnitDomain::Byte => binding.contains_bytes(term),
+                BindingUnitDomain::UnicodeScalar => {
+                    let text = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
+                    Ok(binding.contains_text(text))
+                }
+                BindingUnitDomain::U64 => unreachable!("PathMap has no u64 constructor"),
+            },
             #[cfg(feature = "persistent-artrie")]
             Self::Persistent(binding) => binding.contains_text(term),
         }
@@ -377,6 +429,15 @@ impl LdictBinding {
                 let term = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
                 Ok(binding.value(term))
             }
+            #[cfg(feature = "pathmap-backend")]
+            Self::PathMap(binding) => match binding.domain() {
+                BindingUnitDomain::Byte => binding.value_bytes(term),
+                BindingUnitDomain::UnicodeScalar => {
+                    let text = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
+                    Ok(binding.value_text(text))
+                }
+                BindingUnitDomain::U64 => unreachable!("PathMap has no u64 constructor"),
+            },
             #[cfg(feature = "persistent-artrie")]
             Self::Persistent(binding) => binding.value_text(term),
         }
@@ -788,6 +849,51 @@ pub unsafe extern "C" fn ldict_scdawg_new(
         };
         out_dictionary.write(Box::into_raw(Box::new(LdictDictionary::new(binding))));
         Ok(LdictStatus::Ok)
+    })
+}
+
+/// Construct an empty mutable PathMap dictionary for byte or Unicode keys.
+///
+/// The symbol remains available without `pathmap-backend`, but reports
+/// `UNSUPPORTED` and leaves a non-null output slot empty in that build.
+///
+/// # Safety
+/// `out_dictionary` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn ldict_pathmap_new(
+    unit_domain: u32,
+    out_dictionary: *mut *mut LdictDictionary,
+) -> LdictStatus {
+    boundary(|| {
+        if out_dictionary.is_null() {
+            return Err((LdictStatus::NullPointer, "out_dictionary is null".into()));
+        }
+        out_dictionary.write(ptr::null_mut());
+        #[cfg(feature = "pathmap-backend")]
+        {
+            let binding = match domain(unit_domain)? {
+                BindingUnitDomain::Byte => PathMapBinding::new_byte(),
+                BindingUnitDomain::UnicodeScalar => PathMapBinding::new_unicode(),
+                BindingUnitDomain::U64 => {
+                    return Err((
+                        LdictStatus::Unsupported,
+                        "PathMap supports byte and Unicode-scalar terms, not u64 tokens".into(),
+                    ));
+                }
+            };
+            out_dictionary.write(Box::into_raw(Box::new(LdictDictionary::new(
+                LdictBinding::PathMap(binding),
+            ))));
+            Ok(LdictStatus::Ok)
+        }
+        #[cfg(not(feature = "pathmap-backend"))]
+        {
+            let _ = unit_domain;
+            Err((
+                LdictStatus::Unsupported,
+                "PathMap is unavailable: build with pathmap-backend".into(),
+            ))
+        }
     })
 }
 
@@ -1521,12 +1627,13 @@ unsafe fn text_operation(
     operation: impl FnOnce(&LdictBinding, &[u8]) -> Result<bool, BindingError>,
     out_changed: *mut u8,
 ) -> Result<LdictStatus, (LdictStatus, String)> {
-    let dictionary = dictionary
-        .as_ref()
-        .ok_or((LdictStatus::NullPointer, "dictionary is null".into()))?;
     if out_changed.is_null() {
         return Err((LdictStatus::NullPointer, "output boolean is null".into()));
     }
+    out_changed.write(0);
+    let dictionary = dictionary
+        .as_ref()
+        .ok_or((LdictStatus::NullPointer, "dictionary is null".into()))?;
     let changed = binding(operation(&dictionary.binding, slice(data, len, "term")?))?;
     out_changed.write(u8::from(changed));
     Ok(LdictStatus::Ok)
@@ -1545,6 +1652,9 @@ pub unsafe extern "C" fn ldict_dictionary_insert_text(
     out_inserted: *mut u8,
 ) -> LdictStatus {
     boundary(|| {
+        if !out_inserted.is_null() {
+            out_inserted.write(0);
+        }
         let value = value.decode()?;
         text_operation(
             dictionary,
@@ -1930,7 +2040,35 @@ pub unsafe extern "C" fn ldict_dictionary_insert_text_batch(
         if out_inserted.is_null() {
             return Err((LdictStatus::NullPointer, "out_inserted is null".into()));
         }
+        out_inserted.write(0);
         let entries = slice(entries, entry_count, "entries")?;
+        #[cfg(feature = "pathmap-backend")]
+        if let LdictBinding::PathMap(pathmap) = &dictionary.binding {
+            let inserted = match pathmap.domain() {
+                BindingUnitDomain::Byte => {
+                    let mut decoded = Vec::with_capacity(entries.len());
+                    for entry in entries {
+                        decoded.push((
+                            slice(entry.data, entry.len, "entry data")?.to_vec(),
+                            entry.value.decode()?,
+                        ));
+                    }
+                    binding(pathmap.insert_bytes_batch(decoded))?
+                }
+                BindingUnitDomain::UnicodeScalar => {
+                    let mut decoded = Vec::with_capacity(entries.len());
+                    for entry in entries {
+                        let text = std::str::from_utf8(slice(entry.data, entry.len, "entry data")?)
+                            .map_err(|error| (LdictStatus::InvalidUtf8, error.to_string()))?;
+                        decoded.push((text.to_owned(), entry.value.decode()?));
+                    }
+                    pathmap.insert_text_batch(decoded)
+                }
+                BindingUnitDomain::U64 => unreachable!("PathMap has no u64 constructor"),
+            };
+            out_inserted.write(inserted);
+            return Ok(LdictStatus::Ok);
+        }
         let inserted = if let LdictBinding::Dynamic(dynamic) = &dictionary.binding {
             if entries.is_empty() {
                 out_inserted.write(0);

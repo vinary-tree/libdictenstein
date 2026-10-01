@@ -5,7 +5,7 @@ const LD = Libdictenstein
 
 @testset "ABI identity and layouts" begin
     @test LD.abi_version() == LD.ABI_VERSION == 1
-    @test LD.API_REVISION == 7
+    @test LD.API_REVISION == 8
     @test LD.api_revision() >= LD.API_REVISION
     @test fieldnames(LD.OptionalU64) == (:value, :has_value, :reserved)
     @test fieldnames(LD.TextEntry) == (:data, :len, :value)
