@@ -50,7 +50,34 @@ const (
 	ScdawgKind
 	PersistentArtrieKind
 	PersistentVocabularyKind
+	PathMapKind
 )
+
+// OptionalBackend names revision-8 C backends not yet exposed by this
+// statically linked Go facade. Importing their C constructors would make a
+// binary fail to load against an otherwise compatible revision-7 library.
+type OptionalBackend uint8
+
+const (
+	PathMapBackend OptionalBackend = iota + 1
+	TypedSuffixIndexBackend
+)
+
+// Supported reports whether this Go facade provides the optional backend.
+func (b OptionalBackend) Supported() bool { return false }
+
+// Require returns an explicit UNSUPPORTED status, never a generic dictionary
+// masquerading as a typed suffix-source snapshot.
+func (b OptionalBackend) Require() error {
+	switch b {
+	case PathMapBackend:
+		return &Error{Status: uint32(C.LDICT_STATUS_UNSUPPORTED), Message: "PathMap is not exposed by the statically linked Go facade"}
+	case TypedSuffixIndexBackend:
+		return &Error{Status: uint32(C.LDICT_STATUS_UNSUPPORTED), Message: "typed suffix-source snapshots are not exposed by the Go facade"}
+	default:
+		return fmt.Errorf("unknown optional libdictenstein backend %d", b)
+	}
+}
 
 // AlgebraOperation selects the exact key-set operation performed natively.
 type AlgebraOperation uint32
