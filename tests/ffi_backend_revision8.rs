@@ -79,6 +79,17 @@ fn suffix_records_are_ordered_retained_and_not_dictionary_keys() {
         let view = capture(index);
         assert_eq!(frequency(view, "aba"), 4);
         assert_eq!(frequency(view, ""), 15);
+        let mut exact = 99;
+        let mut substring = 99;
+        assert_eq!(
+            ldict_suffix_snapshot_contains_source(view, b"ba".as_ptr(), 2, &mut exact),
+            LdictStatus::Ok
+        );
+        assert_eq!(
+            ldict_suffix_snapshot_contains_substring(view, b"ba".as_ptr(), 2, &mut substring),
+            LdictStatus::Ok
+        );
+        assert_eq!((exact, substring), (0, 1));
         let mut count = 0;
         assert_eq!(
             ldict_suffix_snapshot_source_count(view, &mut count),
@@ -178,6 +189,88 @@ fn suffix_records_are_ordered_retained_and_not_dictionary_keys() {
 }
 
 #[test]
+fn suffix_source_record_layout_and_output_boundaries_are_exact() {
+    use std::mem::{offset_of, size_of};
+
+    let pointer_size = size_of::<*const u8>();
+    assert_eq!(
+        size_of::<LdictSuffixSourceRecord>(),
+        8 + pointer_size + size_of::<usize>() + size_of::<LdictOptionalU64>()
+    );
+    assert_eq!(offset_of!(LdictSuffixSourceRecord, source_id), 0);
+    assert_eq!(offset_of!(LdictSuffixSourceRecord, data), 8);
+    assert_eq!(offset_of!(LdictSuffixSourceRecord, len), 8 + pointer_size);
+    assert_eq!(
+        offset_of!(LdictSuffixSourceRecord, value),
+        8 + pointer_size + size_of::<usize>()
+    );
+    unsafe {
+        let index = open_suffix(1);
+        insert(index, "aba", Some(0));
+        let view = capture(index);
+        let mut producer = 99;
+        assert_eq!(
+            ldict_suffix_snapshot_identity(view, &mut producer, ptr::null_mut()),
+            LdictStatus::NullPointer
+        );
+        assert_eq!(producer, 0);
+        let mut revision = 99;
+        assert_eq!(
+            ldict_suffix_snapshot_identity(ptr::null(), &mut producer, &mut revision),
+            LdictStatus::NullPointer
+        );
+        assert_eq!((producer, revision), (0, 0));
+
+        let mut row = [LdictSuffixSourceRecord::default(); 1];
+        row[0].source_id = 99;
+        let mut written = 99;
+        let mut total = 99;
+        assert_eq!(
+            ldict_suffix_snapshot_source_page(
+                ptr::null(),
+                0,
+                row.as_mut_ptr(),
+                1,
+                &mut written,
+                &mut total
+            ),
+            LdictStatus::NullPointer
+        );
+        assert_eq!((row[0].source_id, written, total), (0, 0, 0));
+        row[0].source_id = 99;
+        total = 99;
+        assert_eq!(
+            ldict_suffix_snapshot_source_page(
+                view,
+                0,
+                row.as_mut_ptr(),
+                1,
+                ptr::null_mut(),
+                &mut total
+            ),
+            LdictStatus::NullPointer
+        );
+        assert_eq!((row[0].source_id, total), (0, 0));
+        written = 99;
+        total = 99;
+        assert_eq!(
+            ldict_suffix_snapshot_source_page(
+                view,
+                0,
+                ptr::null_mut(),
+                1,
+                &mut written,
+                &mut total
+            ),
+            LdictStatus::NullPointer
+        );
+        assert_eq!((written, total), (0, 0));
+        ldict_suffix_snapshot_free(view);
+        ldict_suffix_index_free(index);
+    }
+}
+
+#[test]
 fn suffix_domains_empty_pattern_and_fail_closed_outputs() {
     unsafe {
         for (domain, expected) in [(1, 10), (2, 5)] {
@@ -201,6 +294,12 @@ fn suffix_domains_empty_pattern_and_fail_closed_outputs() {
             assert_eq!(
                 ldict_suffix_index_insert_text(index, b"\xff".as_ptr(), 1, optional(None)),
                 LdictStatus::InvalidUtf8
+            );
+            let mut invalid = optional(Some(0));
+            invalid.has_value = 2;
+            assert_eq!(
+                ldict_suffix_index_insert_text(index, b"x".as_ptr(), 1, invalid),
+                LdictStatus::InvalidArgument
             );
             let mut rows = [LdictSuffixSourceRecord::default(); 1];
             let mut written = 77;
@@ -271,6 +370,52 @@ fn pathmap_constructor_is_feature_gated_and_byte_exact() {
                 LdictStatus::Ok
             );
             assert_eq!(contains, 1);
+            let mut found = 0;
+            let mut value = optional(Some(99));
+            assert_eq!(
+                ldict_dictionary_get_text(
+                    dictionary,
+                    key.as_ptr(),
+                    key.len(),
+                    &mut found,
+                    &mut value
+                ),
+                LdictStatus::Ok
+            );
+            assert_eq!((found, value.has_value), (1, 0));
+            assert_eq!(
+                ldict_dictionary_insert_text(
+                    dictionary,
+                    key.as_ptr(),
+                    key.len(),
+                    optional(Some(0)),
+                    &mut inserted
+                ),
+                LdictStatus::Ok
+            );
+            assert_eq!(inserted, 0);
+            assert_eq!(
+                ldict_dictionary_get_text(
+                    dictionary,
+                    key.as_ptr(),
+                    key.len(),
+                    &mut found,
+                    &mut value
+                ),
+                LdictStatus::Ok
+            );
+            assert_eq!((found, value.has_value, value.value), (1, 1, 0));
+            let mut removed = 0;
+            assert_eq!(
+                ldict_dictionary_remove_text(dictionary, key.as_ptr(), key.len(), &mut removed),
+                LdictStatus::Ok
+            );
+            assert_eq!(removed, 1);
+            assert_eq!(
+                ldict_dictionary_contains_text(dictionary, key.as_ptr(), key.len(), &mut contains),
+                LdictStatus::Ok
+            );
+            assert_eq!(contains, 0);
             ldict_dictionary_free(dictionary);
         }
     }
@@ -389,5 +534,64 @@ fn pathmap_rejects_u64_and_invalid_unicode_without_leaking_output() {
         );
         assert_eq!(inserted, 1);
         drop(dictionary);
+    }
+}
+
+#[cfg(feature = "pathmap-backend")]
+#[test]
+fn pathmap_ffi_snapshots_survive_concurrent_public_mutation() {
+    unsafe {
+        let mut pointer = ptr::null_mut();
+        assert_eq!(ldict_pathmap_new(1, &mut pointer), LdictStatus::Ok);
+        let dictionary = DictGuard(pointer);
+        let base = [0xff, 0x00];
+        let mut inserted = 0;
+        assert_eq!(
+            ldict_dictionary_insert_text(
+                pointer,
+                base.as_ptr(),
+                base.len(),
+                optional(Some(0)),
+                &mut inserted
+            ),
+            LdictStatus::Ok
+        );
+        let address = pointer as usize;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let pointer = address as *mut LdictDictionary;
+                for index in 0..64u8 {
+                    let key = [0x80, index];
+                    let mut inserted = 0;
+                    assert_eq!(
+                        ldict_dictionary_insert_text(
+                            pointer,
+                            key.as_ptr(),
+                            key.len(),
+                            optional(None),
+                            &mut inserted,
+                        ),
+                        LdictStatus::Ok
+                    );
+                }
+            });
+            for _ in 0..4 {
+                scope.spawn(move || {
+                    let pointer = address as *mut LdictDictionary;
+                    for _ in 0..32 {
+                        let mut resource = vinary_tree_interop::VtResource::NULL;
+                        assert_eq!(
+                            ldict_dictionary_resource(pointer, &mut resource),
+                            LdictStatus::Ok
+                        );
+                        let view = capture_snapshot(resource);
+                        let terms = walk_terms(view.resource, 8);
+                        assert_eq!(terms.get(&vec![0xff, 0x00]), Some(&Some(0)));
+                    }
+                });
+            }
+        });
+        let final_view = capture_snapshot(dictionary.resource());
+        assert_eq!(snapshot_len(final_view.resource), (65, true));
     }
 }

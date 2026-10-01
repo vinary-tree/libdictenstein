@@ -107,6 +107,13 @@ jobs:
             Pkg.instantiate()
             include("bindings/julia/Libdictenstein/docs/make.jl")
           '
+      - name: Gate new Julia symbols against revision 7
+        run: |
+          cc -std=c11 -shared -fPIC tests/fixtures/revision7_probe.c \
+            -o target/revision7-probe.so
+          LIBDICTENSTEIN_LIBRARY="$GITHUB_WORKSPACE/target/revision7-probe.so" \
+            julia --project=target/julia-ci-env \
+              bindings/julia/Libdictenstein/test/revision7_gate.jl
 
   raku:
     name: Raku collections and algebra
@@ -130,6 +137,15 @@ jobs:
           raku -Ibindings/raku/lib
           -I../vinary-tree-interop/bindings/raku/lib
           bindings/raku/t/01-conformance.rakutest
+      - name: Gate Raku PathMap against revision 7
+        run: |
+          mkdir -p target
+          cc -std=c11 -shared -fPIC tests/fixtures/revision7_probe.c \
+            -o target/revision7-probe.so
+          LIBDICTENSTEIN_LIBRARY="$GITHUB_WORKSPACE/target/revision7-probe.so" \
+            raku -Ibindings/raku/lib \
+              -I../vinary-tree-interop/bindings/raku/lib \
+              bindings/raku/t/02-revision7-gate.rakutest
 
   go:
     name: Go (C1-C10)
@@ -184,6 +200,14 @@ jobs:
       - name: Compile conformance and public-package profile smoke tests
         run: |
           rel="$GITHUB_WORKSPACE/target/release"
+          cc -std=c17 -Wall -Wextra -Werror -I include \
+            tests/fixtures/revision8_header_layout.c \
+            -o target/revision8-header-layout
+          target/revision8-header-layout
+          cc -std=c17 -Wall -Wextra -Werror \
+            tests/fixtures/revision7_consumer.c \
+            -L "$rel" -llibdictenstein -o target/revision7-consumer
+          LD_LIBRARY_PATH="$rel" target/revision7-consumer
           cc -std=c17 -O2 -Wall -Wextra -Werror bindings/c/tests/entries.c \
             -I include -L "$rel" -llibdictenstein -o /tmp/c_entries
           LD_LIBRARY_PATH="$rel" /tmp/c_entries
