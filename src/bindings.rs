@@ -4068,7 +4068,9 @@ mod tests {
         assert_eq!(dictionary.value_bytes(b"absent").unwrap(), None);
 
         let resource = dictionary.resource();
-        let context = unsafe { &*resource.as_raw().context.cast::<ResourceContext>() };
+        let context = ResourceContext {
+            payload: ResourcePayload::Secondary(Arc::clone(&dictionary.shared)),
+        };
         let first = context.snapshot();
         assert_eq!(first.identity(), context.snapshot().identity());
         let old_entries = resource.entries();
