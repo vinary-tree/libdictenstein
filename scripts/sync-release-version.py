@@ -347,11 +347,6 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
         r"github\.com/vinary-tree/(?:liblevenshtein-rust/vinary-tree-interop|vinary-tree-interop)/bindings/go(?:/v4)? v\S+",
         f"github.com/vinary-tree/vinary-tree-interop/bindings/go/v4 {versions['goTag']}",
     )
-    replace(
-        ".github/workflows/release-bindings.yml",
-        r"github\.com/vinary-tree/vinary-tree-interop/bindings/go(?:/v4)?@v\S+",
-        f"github.com/vinary-tree/vinary-tree-interop/bindings/go/v4@{versions['goTag']}",
-    )
     for path in ("bindings/go/entries.go", "bindings/go/libdictenstein.go"):
         source = text(path)
         source = source.replace(
@@ -493,6 +488,82 @@ def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:
     rewrite_active_release_guide(
         canonical, int(model["publication"].get("luaRocksRevision", 1))
     )
+
+
+def go_publication_wait_gate_failures(
+    model: dict[str, object],
+    versions: dict[str, str],
+    go_mod: str,
+    release_workflow: str,
+) -> list[str]:
+    """Check the actual dynamic Go dependency gate, not a retired literal tag."""
+
+    failures: list[str] = []
+    modules = (
+        "github.com/vinary-tree/vinary-tree-interop/bindings/go/v4",
+        "github.com/vinary-tree/liblevenshtein-rust/bindings/go/v4",
+    )
+    tag = versions["goTag"]
+    expected_dependency_version = tag.removeprefix("v")
+    dependencies = model.get("dependencies")
+    if not isinstance(dependencies, dict) or any(
+        dependencies.get(name) != expected_dependency_version
+        for name in ("vinary-tree-interop", "liblevenshtein")
+    ):
+        failures.append("Go dependency versions differ from the publication tag")
+
+    if (
+        re.search(
+            r"(?m)^module github\.com/vinary-tree/libdictenstein/bindings/go/v4$",
+            go_mod,
+        )
+        is None
+    ):
+        failures.append("Go module lacks /v4 semantic import path")
+    for module in modules:
+        if (
+            re.search(
+                rf"(?m)^\s*{re.escape(module)}\s+{re.escape(tag)}\s*$",
+                go_mod,
+            )
+            is None
+        ):
+            failures.append(f"Go module requires the wrong {module} version")
+
+    job = re.search(
+        r"(?ms)^  go-module:\n(.*?)(?=^  [A-Za-z][A-Za-z0-9-]*:\n|\Z)",
+        release_workflow,
+    )
+    marker = "      - name: Verify annotated module tag and public proxy readback\n"
+    if job is None or job.group(1).count(marker) != 1:
+        failures.append("Go publication wait gate is absent from the go-module job")
+        return failures
+    step = job.group(1).split(marker, 1)[1].split("\n      - ", 1)[0]
+    run_marker = "        run: |\n"
+    if step.count(run_marker) != 1:
+        failures.append("Go publication wait gate has no shell body")
+        return failures
+    lines = [line.strip() for line in step.split(run_marker, 1)[1].splitlines()]
+    if "version=$(jq -er '.registries.goTag' release/version.json)" not in lines:
+        failures.append("Go publication wait gate does not read the release Go tag")
+    expected_loop = (
+        "for path in \\",
+        f"{modules[0]} \\",
+        f"{modules[1]}; do",
+        "GOWORK=off go -C bindings/go mod edit -json |",
+        'jq -e --arg path "$path" --arg version "$version" \\',
+        "'any(.Require[]?; .Path == $path and .Version == $version)'",
+        "done",
+    )
+    if not any(
+        tuple(lines[index : index + len(expected_loop)]) == expected_loop
+        for index in range(len(lines) - len(expected_loop) + 1)
+    ):
+        failures.append(
+            "Go publication wait gate must verify both canonical module paths "
+            "and their dynamically selected versions"
+        )
+    return failures
 
 
 def validate(model: dict[str, object], versions: dict[str, str]) -> list[str]:
@@ -715,14 +786,10 @@ def validate(model: dict[str, object], versions: dict[str, str]) -> list[str]:
                 f"{path.relative_to(ROOT)} retains a deprecated npm coordinate"
             )
     go_mod = text("bindings/go/go.mod")
-    if "module github.com/vinary-tree/libdictenstein/bindings/go/v4" not in go_mod:
-        failures.append("Go module lacks /v4 semantic import path")
     release_workflow = text(".github/workflows/release-bindings.yml")
-    if (
-        f"github.com/vinary-tree/vinary-tree-interop/bindings/go/v4@{versions['goTag']}"
-        not in release_workflow
-    ):
-        failures.append("Go publication wait gate uses a stale interop module identity")
+    failures.extend(
+        go_publication_wait_gate_failures(model, versions, go_mod, release_workflow)
+    )
     release_guide = text("docs/releasing.md")
     current_release_markers = (
         f"libdictenstein's `{canonical}` source",
