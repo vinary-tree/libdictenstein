@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 import sys
@@ -114,8 +115,10 @@ def rewrite_active_release_guide(canonical: str, lua_rocks_revision: int) -> Non
 def update_json(path: str, mutate) -> None:
     target = ROOT / path
     value = json.loads(target.read_text(encoding="utf-8"))
+    original = copy.deepcopy(value)
     mutate(value)
-    target.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+    if value != original:
+        target.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
 def write_versions(model: dict[str, object], versions: dict[str, str]) -> None:

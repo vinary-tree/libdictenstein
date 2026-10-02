@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -92,6 +94,23 @@ class GoPublicationWaitGateTests(unittest.TestCase):
             },
         }
         self.assertTrue(self.failures(model=model))
+
+    def test_json_writer_preserves_existing_format_without_semantic_change(
+        self,
+    ) -> None:
+        scratch = ROOT / "target"
+        scratch.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix="release-json-", dir=scratch
+        ) as directory:
+            path = Path(directory) / "format.json"
+            original = '{"canonical":"4.0.0-rc.6",  "goTag":"v4.0.0-rc.6"}\n'
+            path.write_text(original, encoding="utf-8")
+            with patch.object(SYNC, "ROOT", Path(directory)):
+                SYNC.update_json(
+                    "format.json", lambda value: value.update({"goTag": "v4.0.0-rc.6"})
+                )
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
 
 
 if __name__ == "__main__":
