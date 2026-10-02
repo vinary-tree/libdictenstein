@@ -52,7 +52,8 @@ allocation panic is contained as `PANIC`. Every successful handle is freed by
 
 PathMap's batch call validates and copies the complete descriptor array
 before one native batch publication. An invalid entry publishes none of the
-batch and initializes `out_inserted` to zero. Ordinary single-key mutation
+batch and leaves `out_inserted` untouched; read that output only when the
+call returns `OK`. Ordinary single-key mutation
 has the same snapshot isolation as other dictionary backends: a captured
 resource revision retains its original keys and values after later mutation,
 clear, or handle free. A consumer borrows a two-word resource from the handle,

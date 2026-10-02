@@ -146,16 +146,16 @@ typedef enum LdictStatus {
 | Value | Name | Semantics | Producible today? |
 |---:|---|---|---|
 | 0 | `OK` | The operation completed; every documented out-parameter was written. | yes — every function |
-| 1 | `END` | An entry cursor is exhausted, or an entry reducer requests successful early stop. | yes — entry collection surface |
+| 1 | `END` | An entry cursor is exhausted, an entry reducer requests successful early stop, or a typed suffix source-page offset is at or beyond the record count. | yes — entry collection and typed suffix source-page surfaces |
 | 2 | `INVALID_ARGUMENT` | An argument value is outside its contract: an unknown unit domain, an empty persistence path, or `LdictOptionalU64.has_value` outside $`\{0, 1\}`$. | yes |
 | 3 | `INVALID_UTF8` | A term, pattern, or path that must be UTF-8 was not (see the [text-acceptance matrix](#54-text-acceptance-per-backend)). | yes |
 | 4 | `NULL_POINTER` | A required pointer was null: the handle, a non-empty input buffer, or any out-parameter. | yes |
 | 5 | `PANIC` | A Rust panic was caught at the boundary; the panic payload becomes the thread-local diagnostic. Defense-in-depth — no known input produces it. | yes (any boundary-wrapped function) |
-| 6 | `UNSUPPORTED` | The backend cannot perform this operation **in any domain** — e.g. removal from an SCDAWG, substring search on a DAWG (see [§ 5.3](#53-what-unsupported-vs-domain_mismatch-mean)). | yes |
+| 6 | `UNSUPPORTED` | The requested backend, operation, or constructor-domain combination is unavailable — e.g. removal from an SCDAWG or constructing a PathMap/suffix index for `u64` terms (see [§ 5.3](#53-what-unsupported-vs-domain_mismatch-mean)). | yes |
 | 7 | `IO_ERROR` | A persistent-engine operation failed: create/open, WAL append, checkpoint. The diagnostic carries the engine's message. | yes (persistent backends only) |
-| 8 | `CLOSED` | A handle was already closed. | **no** — reserved. `ldict_*` handles have no closed-but-not-freed state; the code exists for family enum-shape parity and future lifecycle surfaces. |
+| 8 | `CLOSED` | An allocated typed suffix index or snapshot was explicitly closed. | yes — typed suffix handles retain a closed-but-not-freed state; generic dictionary handles have no close operation. |
 | 9 | `DOMAIN_MISMATCH` | The operation exists, but the caller used the wrong **term representation** for the dictionary's unit domain — e.g. a `*_text` call on a `u64`-domain dictionary. | yes |
-| 10 | `LIMIT_EXCEEDED` | A resource bound was exceeded. Today: [`ldict_vocab_get_term`](#ldict_vocab_get_term)'s output buffer is too small (the required size is reported). | yes |
+| 10 | `LIMIT_EXCEEDED` | A resource or ABI bound was exceeded. For example, [`ldict_vocab_get_term`](#ldict_vocab_get_term)'s output buffer is too small (the required size is reported); typed suffix count/frequency conversions also check their `uint64_t` bound. | yes — vocabulary buffer; suffix overflow checks are defensive |
 | 11 | `PROVIDER_ERROR` | The negotiated entry provider returned an unknown status, malformed metadata/batch, or an otherwise unclassified failure. | yes — entry collection surface |
 | 12 | `BATCH_IN_USE` | The entry cursor already has a live borrowed batch; release its exact generation before `next`, `reduce`, or `free`. | yes — entry collection surface |
 
@@ -197,11 +197,15 @@ Every fallible function's body runs inside `boundary()`:
    is cleared; on any failure it is set before the status is returned. The
    diagnostic therefore always describes the **most recent failure** of the
    calling thread, never a stale one.
-3. **Out-parameter hygiene** — constructors write `NULL` through
+3. **Out-parameter hygiene** — dictionary constructors write `NULL` through
    `*out_dictionary` *before* attempting construction, so a failed constructor
-   never leaves an uninitialized handle pointer. All other out-parameters are
-   written only on `OK`, with the single documented exception of
-   [`ldict_vocab_get_term`](#ldict_vocab_get_term).
+   never leaves an uninitialized handle pointer. Each function defines when
+   its other outputs are written: legacy dictionary batches preserve the
+   caller's output on failure, whereas
+   [`ldict_vocab_get_term`](#ldict_vocab_get_term) and the revision-7 byte
+   getters report selected size/metadata outputs on `LIMIT_EXCEEDED`.
+   Revision-8 typed suffix calls initialize non-null scalar outputs before
+   fallible validation; see the [suffix-index supplement](backend-api-revision8.md).
 
 ### 3.3 Dictionary algebra enums
 
@@ -326,9 +330,13 @@ The exact bitsets, from the `capabilities()` match in `src/ffi.rs`:
 
 The two "you can't do that" statuses carve the failure space precisely:
 
-- **`UNSUPPORTED`** — the backend lacks the operation *family* entirely; the
-  corresponding capability bit is clear. Removing from a DoubleArrayTrie fails
-  this way no matter how the term is spelled.
+- **`UNSUPPORTED`** — the backend lacks the operation *family* entirely, so
+  the corresponding capability bit is clear; removing from a DoubleArrayTrie
+  fails this way no matter how the term is spelled. Constructors also use this
+  status when a known unit domain is not implemented for that backend: PathMap
+  and the typed suffix index reject `u64` here, even though they support byte
+  and Unicode scalar domains. This is not a term-representation mismatch on an
+  existing handle.
 - **`DOMAIN_MISMATCH`** — the operation family exists, but the caller entered
   through the wrong **term representation** for the dictionary's unit domain:
   a `*_text` call against a `u64`-domain dictionary, or a `*_u64` call against
@@ -1025,7 +1033,8 @@ Scalar twin of `ldict_dictionary_get_u64`.
 
 ## 11. Batch mutation
 
-Both batch functions apply entries **sequentially, fail-fast**:
+For dictionary backends other than PathMap, both batch functions apply entries
+**sequentially, fail-fast**:
 
 ```math
 \text{apply}(e_1), \ \text{apply}(e_2), \ \ldots \ \text{until the first } e_k \text{ that fails}
@@ -1037,6 +1046,11 @@ transaction), `out_inserted` is **not written** (read it only on `OK`), and
 the returned status plus diagnostic describe $`e_k`$. Duplicate terms within
 one batch are legal; later entries update earlier ones and do not count as new
 insertions.
+
+PathMap's text batch is different: it validates and copies every descriptor
+before one native batch publication. An invalid descriptor therefore publishes
+none of that batch. It also leaves `out_inserted` untouched on failure; as for
+the other backends, read this output only when the call returns `OK`.
 
 #### `ldict_dictionary_insert_text_batch`
 
@@ -1054,8 +1068,8 @@ excluded), so `*out_inserted <= entry_count`.
 
 - **Preconditions**: `dictionary`, `out_inserted` non-null; `entries` non-null when `entry_count > 0`; per entry: `data` non-null when `len > 0`, `has_value` ∈ {0, 1}, bytes acceptable per [§ 5.4](#54-text-acceptance-per-backend).
 - **Statuses**: `OK` · `NULL_POINTER` · `INVALID_ARGUMENT` · `INVALID_UTF8` · `UNSUPPORTED` (DoubleArrayTrie) · `DOMAIN_MISMATCH` (`u64`-domain instance) · `IO_ERROR` (persistent) · `PANIC` — the per-entry failure statuses are exactly `ldict_dictionary_insert_text`'s.
-- **Ownership**: all buffers caller-owned; terms copied as applied.
-- **Thread-safety**: safe concurrently; note the batch as a whole is **not atomic** — a concurrent reader may observe a prefix.
+- **Ownership**: all buffers caller-owned; terms are copied before or during application and are not retained from the caller after return.
+- **Thread-safety**: safe concurrently. PathMap publishes one batch revision, so a concurrent snapshot sees either the old or the new batch; the other backends can expose a prefix because their batch as a whole is **not atomic**.
 - **Complexity**: amortized $`\mathcal{O}\!\left(\sum_i \lvert t_i \rvert\right)`$.
 
 #### `ldict_dictionary_insert_u64_batch`
