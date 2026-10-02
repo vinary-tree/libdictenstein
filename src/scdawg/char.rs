@@ -871,6 +871,13 @@ impl<V: DictionaryValue> BidirectionalDictionaryNode for ScdawgCharNodeHandle<V>
 // ============================================================================
 
 impl<V: DictionaryValue> SubstringDictionary for ScdawgChar<V> {
+    fn next_complete_term_in_snapshot<'a>(
+        snapshot_root: &'a Self::Node,
+        cursor: &mut usize,
+    ) -> Option<&'a str> {
+        snapshot_root.inner.next_complete_term(cursor)
+    }
+
     fn find_exact_substring_in_snapshot(
         snapshot_root: &Self::Node,
         pattern: &str,

@@ -251,6 +251,12 @@ impl<U: PersistentSuffixTreeUnit, V: DictionaryValue> NativeSuffixTreeGraph<U, V
             .collect()
     }
 
+    fn next_active_text(&self, cursor: &mut usize) -> Option<&str> {
+        crate::substring::next_live_term(&self.sources, cursor, |record| {
+            record.active.then_some(record.text.as_str())
+        })
+    }
+
     fn active_source_ids(&self) -> HashSet<u64> {
         self.sources
             .iter()
@@ -2345,6 +2351,13 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary for Persistent
 }
 
 impl<V: DictionaryValue, S: BlockStorage> SubstringDictionary for PersistentSuffixTree<V, S> {
+    fn next_complete_term_in_snapshot<'a>(
+        snapshot_root: &'a Self::Node,
+        cursor: &mut usize,
+    ) -> Option<&'a str> {
+        snapshot_root.graph.next_active_text(cursor)
+    }
+
     fn find_exact_substring_in_snapshot(
         snapshot_root: &Self::Node,
         pattern: &str,
@@ -2452,6 +2465,13 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary
 }
 
 impl<V: DictionaryValue, S: BlockStorage> SubstringDictionary for PersistentSuffixTreeChar<V, S> {
+    fn next_complete_term_in_snapshot<'a>(
+        snapshot_root: &'a Self::Node,
+        cursor: &mut usize,
+    ) -> Option<&'a str> {
+        snapshot_root.graph.next_active_text(cursor)
+    }
+
     fn find_exact_substring_in_snapshot(
         snapshot_root: &Self::Node,
         pattern: &str,

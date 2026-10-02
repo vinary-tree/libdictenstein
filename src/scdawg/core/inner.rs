@@ -344,6 +344,11 @@ impl<U: CharUnit, V: DictionaryValue> ScdawgCoreInner<U, V> {
         self.terms.iter()
     }
 
+    /// Borrow complete terms in insertion order from one retained revision.
+    pub fn next_complete_term(&self, cursor: &mut usize) -> Option<&str> {
+        crate::substring::next_live_term(&self.terms, cursor, |term| Some(term.as_str()))
+    }
+
     /// Get the frequency (occurrence count) of a substring pattern.
     pub fn frequency(&self, pattern: &str) -> usize {
         if pattern.is_empty() {

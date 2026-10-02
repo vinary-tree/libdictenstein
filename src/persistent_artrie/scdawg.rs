@@ -1969,6 +1969,13 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary for Persistent
 }
 
 impl<V: DictionaryValue, S: BlockStorage> SubstringDictionary for PersistentScdawg<V, S> {
+    fn next_complete_term_in_snapshot<'a>(
+        snapshot_root: &'a Self::Node,
+        cursor: &mut usize,
+    ) -> Option<&'a str> {
+        snapshot_root.graph.core.next_complete_term(cursor)
+    }
+
     fn find_exact_substring_in_snapshot(
         snapshot_root: &Self::Node,
         pattern: &str,
@@ -2079,6 +2086,13 @@ impl<V: DictionaryValue, S: BlockStorage> MutableMappedDictionary for Persistent
 }
 
 impl<V: DictionaryValue, S: BlockStorage> SubstringDictionary for PersistentScdawgChar<V, S> {
+    fn next_complete_term_in_snapshot<'a>(
+        snapshot_root: &'a Self::Node,
+        cursor: &mut usize,
+    ) -> Option<&'a str> {
+        snapshot_root.graph.core.next_complete_term(cursor)
+    }
+
     fn find_exact_substring_in_snapshot(
         snapshot_root: &Self::Node,
         pattern: &str,

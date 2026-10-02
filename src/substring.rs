@@ -244,6 +244,23 @@ pub trait SubstringDictionary: Dictionary {
         pattern: &str,
     ) -> Vec<SubstringMatch<Self::Node>>;
 
+    /// Borrow the next complete term from one retained snapshot revision.
+    ///
+    /// Initialize `cursor` to zero, then pass the same root and cursor to
+    /// successive calls until this returns `None`. Terms appear once each in
+    /// the same order as `find_exact_substring_in_snapshot(root, "")`; removed
+    /// terms are skipped. The returned borrow is tied to the snapshot root,
+    /// not to a mutable dictionary or the cursor. This lets consumers reject
+    /// a candidate by length or distance before allocating its owned result.
+    ///
+    /// Implementations must advance in amortized constant time per stored
+    /// record, retain no per-query collection of terms, and never visit a
+    /// later dictionary revision through an already captured root.
+    fn next_complete_term_in_snapshot<'a>(
+        snapshot_root: &'a Self::Node,
+        cursor: &mut usize,
+    ) -> Option<&'a str>;
+
     /// Find all dictionary terms containing the exact substring.
     ///
     /// # Arguments
@@ -317,6 +334,25 @@ pub trait SubstringDictionary: Dictionary {
     fn count_substring_matches(&self, pattern: &str) -> usize {
         self.find_exact_substring(pattern).len()
     }
+}
+
+/// Advance an insertion-ordered snapshot record cursor without cloning terms.
+///
+/// `term` returns `None` for inactive records; the cursor still advances, so a
+/// tombstone is visited at most once. Byte/character SCDAWGs and persistent
+/// suffix indexes share this traversal while retaining their own record types.
+pub(crate) fn next_live_term<'a, T>(
+    records: &'a [T],
+    cursor: &mut usize,
+    mut term: impl FnMut(&'a T) -> Option<&'a str>,
+) -> Option<&'a str> {
+    while let Some(record) = records.get(*cursor) {
+        *cursor += 1;
+        if let Some(value) = term(record) {
+            return Some(value);
+        }
+    }
+    None
 }
 
 /// Dictionary node supporting bidirectional (forward and backward) traversal.
