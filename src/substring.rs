@@ -256,6 +256,24 @@ pub trait SubstringDictionary: Dictionary {
     /// Implementations must advance in amortized constant time per stored
     /// record, retain no per-query collection of terms, and never visit a
     /// later dictionary revision through an already captured root.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use libdictenstein::scdawg::Scdawg;
+    /// use libdictenstein::{Dictionary, SubstringDictionary};
+    ///
+    /// let dictionary = Scdawg::<()>::from_terms(["cat", "car"]);
+    /// let snapshot = dictionary.root();
+    /// let mut cursor = 0;
+    /// let mut short_terms = Vec::new();
+    /// while let Some(term) = Scdawg::next_complete_term_in_snapshot(&snapshot, &mut cursor) {
+    ///     if term.len() <= 3 {
+    ///         short_terms.push(term.to_owned());
+    ///     }
+    /// }
+    /// assert_eq!(short_terms, ["cat", "car"]);
+    /// ```
     fn next_complete_term_in_snapshot<'a>(
         snapshot_root: &'a Self::Node,
         cursor: &mut usize,
