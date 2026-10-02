@@ -14,5 +14,11 @@ Gem::Specification.new do |spec|
   spec.bindir = "bin"
   spec.executables = ["libdictenstein-collection-profile"]
   spec.require_paths = ["lib"]
-  spec.metadata = { "source_code_uri" => spec.homepage, "rubygems_mfa_required" => "true" }
+  spec.extra_rdoc_files = ["README.md"]
+  spec.rdoc_options = ["--main", "README.md"]
+  spec.metadata = {
+    "source_code_uri" => spec.homepage,
+    "documentation_uri" => "https://www.rubydoc.info/gems/libdictenstein/#{spec.version}",
+    "rubygems_mfa_required" => "true"
+  }
 end

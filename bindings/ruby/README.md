@@ -29,6 +29,26 @@ snapshot = dictionary.entries
 `each` returns an `Enumerator` without a block. `entry_stream` exposes manual
 `next`, `cancel`, and `close` for pull-driven bounded traversal.
 
+## Ruby API reference
+
+The public classes and methods carry RDoc comments with examples, ownership
+rules, value semantics, and native-capability boundaries. Generate a local
+HTML reference from this package directory without publishing a gem:
+
+```sh
+mkdir -p ../../target
+rdoc --op ../../target/ruby-rdoc --main README.md \
+  README.md lib/vinary_tree/libdictenstein.rb \
+  lib/vinary_tree/libdictenstein/native.rb \
+  lib/vinary_tree/libdictenstein/version.rb
+```
+
+Open `../../target/ruby-rdoc/index.html` and follow the links to
+`VinaryTree::Libdictenstein::Dictionary`, `EntryStream`, and the concrete
+backends. The gem declares a version-specific RubyDoc.info URL; check that
+the released version has actually been indexed before treating the public
+page as available. Generating this local reference does not publish RC.6.
+
 ## Revision-8 PathMap and typed suffix-source boundary
 
 `PathMap` uses the existing Ruby dictionary and `Enumerable` surface for

@@ -3,7 +3,9 @@ require "rbconfig"
 
 module VinaryTree
   module Libdictenstein
-    module Native
+    # Fiddle declarations are an implementation detail of the public Ruby
+    # collections. Use Dictionary and its concrete subclasses instead.
+    module Native # :nodoc:
       extend Fiddle::Importer
 
       def self.candidates
@@ -100,13 +102,33 @@ module VinaryTree
       extern "uint32_t ldict_vocab_get_term(void*, uint64_t, void*, size_t, void*, void*)"
 
       module_function
-      def pointer_output = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP, Fiddle::RUBY_FREE)
-      def read_pointer(output) = output[0, Fiddle::SIZEOF_VOIDP].unpack1("J")
-      def size_output = Fiddle::Pointer.malloc(Fiddle::SIZEOF_SIZE_T, Fiddle::RUBY_FREE)
-      def read_size(output) = output[0, Fiddle::SIZEOF_SIZE_T].unpack1("J")
-      def u64_output = Fiddle::Pointer.malloc(8, Fiddle::RUBY_FREE)
-      def read_u64(output) = output[0, 8].unpack1("Q")
-      def byte_output = Fiddle::Pointer.malloc(1, Fiddle::RUBY_FREE)
+      def pointer_output
+        Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP, Fiddle::RUBY_FREE)
+      end
+
+      def read_pointer(output)
+        output[0, Fiddle::SIZEOF_VOIDP].unpack1("J")
+      end
+
+      def size_output
+        Fiddle::Pointer.malloc(Fiddle::SIZEOF_SIZE_T, Fiddle::RUBY_FREE)
+      end
+
+      def read_size(output)
+        output[0, Fiddle::SIZEOF_SIZE_T].unpack1("J")
+      end
+
+      def u64_output
+        Fiddle::Pointer.malloc(8, Fiddle::RUBY_FREE)
+      end
+
+      def read_u64(output)
+        output[0, 8].unpack1("Q")
+      end
+
+      def byte_output
+        Fiddle::Pointer.malloc(1, Fiddle::RUBY_FREE)
+      end
     end
   end
 end

@@ -215,6 +215,40 @@ jobs:
       - uses: actions/download-artifact@v7
         with: { name: libdictenstein-so, path: target/release }
       - run: gem install minitest -v 6.0.6
+      - name: Generate and check the packaged Ruby API documentation
+        working-directory: bindings/ruby
+        run: |
+          ruby -c lib/vinary_tree/libdictenstein.rb
+          ruby -c lib/vinary_tree/libdictenstein/native.rb
+          ruby -c lib/vinary_tree/libdictenstein/version.rb
+          rdoc --coverage-report \
+            lib/vinary_tree/libdictenstein.rb \
+            lib/vinary_tree/libdictenstein/native.rb \
+            lib/vinary_tree/libdictenstein/version.rb \
+            | tee ../../target/ruby-rdoc-coverage.log
+          grep -Fq '100% documentation!' ../../target/ruby-rdoc-coverage.log
+          rdoc --quiet --op ../../target/ruby-rdoc --main README.md \
+            README.md \
+            lib/vinary_tree/libdictenstein.rb \
+            lib/vinary_tree/libdictenstein/native.rb \
+            lib/vinary_tree/libdictenstein/version.rb
+          test -s ../../target/ruby-rdoc/index.html
+          test -s ../../target/ruby-rdoc/VinaryTree/Libdictenstein/Dictionary.html
+          test -s ../../target/ruby-rdoc/VinaryTree/Libdictenstein/EntryStream.html
+          test -s ../../target/ruby-rdoc/VinaryTree/Libdictenstein/PathMap.html
+          grep -Fq 'id="method-i-algebra"' \
+            ../../target/ruby-rdoc/VinaryTree/Libdictenstein/Dictionary.html
+          grep -Fq 'id="method-i-next"' \
+            ../../target/ruby-rdoc/VinaryTree/Libdictenstein/EntryStream.html
+          gem build libdictenstein.gemspec --strict \
+            --output ../../target/libdictenstein-ruby-doc-check.gem
+          ruby -rrubygems/package -e '
+            package = Gem::Package.new(ARGV.fetch(0))
+            spec = package.spec
+            expected = "https://www.rubydoc.info/gems/#{spec.name}/#{spec.version}"
+            abort "unexpected documentation URI" unless spec.metadata["documentation_uri"] == expected
+            abort "README is missing from gem" unless package.contents.include?("README.md")
+          ' ../../target/libdictenstein-ruby-doc-check.gem
       - name: Run conformance and public-package profile smoke tests
         working-directory: bindings/ruby
         run: |

@@ -81,6 +81,8 @@ minimal mutable DynamicDAWG. No Julia hash table or per-key FFI loop is used.
 
 See the [full guide](docs/src/index.md) for domains, snapshots, persistence,
 ownership, algebraic value policies, performance, and security boundaries.
+The [live development guide](https://vinary-tree.github.io/libdictenstein/dev/)
+documents the current source branch; it is not a claim of RC.6 registry publication.
 
 ## ABI maintenance
 
