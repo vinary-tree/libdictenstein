@@ -2,14 +2,11 @@
 #include <lauxlib.h>
 
 #include <stdint.h>
-#include <inttypes.h>
-#include <errno.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "libdictenstein.h"
 #include "vinary_tree_lua.h"
+#include "vinary_tree_lua_u64.h"
 #include "dictionary_entries.h"
 
 #define VT_LUA_ENTRY_CURSOR_METATABLE "vinary-tree.dictionary.entries.cursor.v1"
@@ -46,47 +43,28 @@ static uint32_t domain(lua_State* state, int index) {
     return 0;
 }
 
-static uint64_t nonnegative_integer(lua_State* state, int index, const char* label);
-static void push_unsigned(lua_State* state, uint64_t value);
-
 static LdictOptionalU64 optional_value(lua_State* state, int index) {
     LdictOptionalU64 result = {0, 0, {0}};
     if (!lua_isnoneornil(state, index)) {
-        result.value = nonnegative_integer(
+        result.value = vt_lua_check_u64(
             state, index, "value must be an unsigned integer or decimal string");
         result.has_value = 1;
     }
     return result;
 }
 
-static uint64_t nonnegative_integer(lua_State* state, int index, const char* label) {
-    if (lua_isinteger(state, index)) {
-        lua_Integer value = lua_tointeger(state, index);
-        luaL_argcheck(state, value >= 0, index, label);
-        return (uint64_t)value;
-    }
-    size_t length = 0;
-    const char* decimal = luaL_checklstring(state, index, &length);
-    luaL_argcheck(state, length != 0, index, label);
-    for (size_t position = 0; position < length; ++position)
-        luaL_argcheck(state, decimal[position] >= '0' && decimal[position] <= '9',
-                      index, label);
-    errno = 0;
-    char* end = NULL;
-    uint64_t value = strtoull(decimal, &end, 10);
-    luaL_argcheck(state, errno != ERANGE && end == decimal + length, index, label);
-    return value;
-}
-
 static const uint64_t* u64_sequence(lua_State* state, int index, size_t* out_length) {
     luaL_checktype(state, index, LUA_TTABLE);
     lua_Integer length = luaL_len(state, index);
     luaL_argcheck(state, length >= 0, index, "invalid token sequence length");
+    luaL_argcheck(state, (uint64_t)length <= SIZE_MAX / sizeof(uint64_t),
+                  index, "token sequence is too long");
     uint64_t* data = (uint64_t*)lua_newuserdatauv(
         state, (size_t)length * sizeof(uint64_t), 0);
     for (lua_Integer position = 1; position <= length; ++position) {
         lua_rawgeti(state, index, position);
-        data[position - 1] = nonnegative_integer(state, -1, "tokens must be non-negative integers");
+        data[position - 1] = vt_lua_check_u64(
+            state, -1, "tokens must be non-negative integers or decimal strings");
         lua_pop(state, 1);
     }
     *out_length = (size_t)length;
@@ -97,20 +75,10 @@ static int push_lookup(lua_State* state, uint8_t found, LdictOptionalU64 result)
     lua_createtable(state, 0, 2);
     lua_pushboolean(state, found); lua_setfield(state, -2, "found");
     if (result.has_value) {
-        push_unsigned(state, result.value);
+        vt_lua_push_u64(state, result.value);
         lua_setfield(state, -2, "value");
     }
     return 1;
-}
-
-static void push_unsigned(lua_State* state, uint64_t value) {
-    if (value <= (uint64_t)LUA_MAXINTEGER) {
-        lua_pushinteger(state, (lua_Integer)value);
-        return;
-    }
-    char decimal[32];
-    int length = snprintf(decimal, sizeof(decimal), "%" PRIu64, value);
-    lua_pushlstring(state, decimal, (size_t)length);
 }
 
 static size_t utf8_length(const uint32_t* scalars, size_t count) {
@@ -158,7 +126,7 @@ static void push_entry_key(
         const uint64_t* tokens = (const uint64_t*)entry->units;
         lua_createtable(state, (int)entry->unit_len, 0);
         for (size_t index = 0; index < entry->unit_len; ++index) {
-            push_unsigned(state, tokens[index]);
+            vt_lua_push_u64(state, tokens[index]);
             lua_rawseti(state, -2, (lua_Integer)index + 1);
         }
     }
@@ -234,7 +202,7 @@ static int next_entry_cursor(lua_State* state) {
     if (status != VT_STATUS_OK) return entry_cursor_error(state, cursor, status);
     if (!present) return 0;
     push_entry_key(state, cursor->cursor.info.unit_domain, &entry);
-    if (entry.has_value) push_unsigned(state, entry.value);
+    if (entry.has_value) vt_lua_push_u64(state, entry.value);
     else lua_pushnil(state);
     lua_pushboolean(state, entry.has_value);
     return 3;
@@ -251,14 +219,14 @@ static int entry_cursor_metadata(lua_State* state) {
         ? "unit" : "optional_u64");
     lua_setfield(state, -2, "value_domain");
     if (info->flags & VT_DICTIONARY_ENTRIES_INFO_FLAG_EXACT_LEN) {
-        push_unsigned(state, info->exact_len);
+        vt_lua_push_u64(state, info->exact_len);
         lua_setfield(state, -2, "exact_length");
     }
     if (info->flags & VT_DICTIONARY_ENTRIES_INFO_FLAG_SNAPSHOT_IDENTITY) {
         lua_createtable(state, 0, 2);
-        push_unsigned(state, info->identity.producer);
+        vt_lua_push_u64(state, info->identity.producer);
         lua_setfield(state, -2, "producer");
-        push_unsigned(state, info->identity.revision);
+        vt_lua_push_u64(state, info->identity.revision);
         lua_setfield(state, -2, "revision");
         lua_setfield(state, -2, "snapshot_identity");
     }
@@ -326,7 +294,7 @@ static int materialize_entries(lua_State* state) {
         lua_createtable(state, 3, 0);
         push_entry_key(state, cursor->cursor.info.unit_domain, &entry);
         lua_rawseti(state, -2, 1);
-        if (entry.has_value) push_unsigned(state, entry.value);
+        if (entry.has_value) vt_lua_push_u64(state, entry.value);
         else lua_pushnil(state);
         lua_rawseti(state, -2, 2);
         lua_pushboolean(state, entry.has_value);
@@ -634,7 +602,8 @@ static int contains_u64(lua_State* state) {
 
 static int vocabulary_term(lua_State* state) {
     LuaDictionary* value = dictionary(state, 1);
-    uint64_t index = nonnegative_integer(state, 2, "index must be non-negative");
+    uint64_t index = vt_lua_check_u64(
+        state, 2, "index must be a non-negative integer or decimal string");
     size_t length = 0;
     uint8_t found = 0;
     LdictStatus status = ldict_vocab_get_term(

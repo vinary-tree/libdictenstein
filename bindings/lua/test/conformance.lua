@@ -341,6 +341,12 @@ do
   check(dawg:get_u64({ 9 }).value == math.maxinteger, "u64 value math.maxinteger")
   check(dawg:get_u64({ "18446744073709551615" }).value == "18446744073709551615",
     "u64 full-width decimal lookup")
+  for _, invalid in ipairs({"", "-1", "+1", "1.0", "18446744073709551616"}) do
+    check(not pcall(function() dawg:put_u64({invalid}, 1) end),
+      "reject invalid u64 decimal token: " .. invalid)
+    check(not pcall(function() dawg:put_u64({1}, invalid) end),
+      "reject invalid u64 decimal value: " .. invalid)
+  end
 end
 
 -- ---------------------------------------------------------------------------
