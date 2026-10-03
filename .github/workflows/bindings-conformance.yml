@@ -242,13 +242,8 @@ jobs:
             ../../target/ruby-rdoc/VinaryTree/Libdictenstein/EntryStream.html
           gem build libdictenstein.gemspec --strict \
             --output ../../target/libdictenstein-ruby-doc-check.gem
-          ruby -rrubygems/package -e '
-            package = Gem::Package.new(ARGV.fetch(0))
-            spec = package.spec
-            expected = "https://www.rubydoc.info/gems/#{spec.name}/#{spec.version}"
-            abort "unexpected documentation URI" unless spec.metadata["documentation_uri"] == expected
-            abort "README is missing from gem" unless package.contents.include?("README.md")
-          ' ../../target/libdictenstein-ruby-doc-check.gem
+          ruby ../../scripts/verify-rubygems-documentation.rb --package-only \
+            ../../target/libdictenstein-ruby-doc-check.gem
       - name: Run conformance and public-package profile smoke tests
         working-directory: bindings/ruby
         run: |
