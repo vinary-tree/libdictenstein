@@ -5,6 +5,27 @@ package is `libdictenstein`; the module is
 `Vinary_tree_libdictenstein`. It exposes DynamicDAWG CRUD and batch insertion,
 immutable DoubleArrayTrie construction, SCDAWG substring search, persistent
 ARTrie CRUD/checkpoint/reopen, and persistent vocabulary reverse lookup.
+The published source package carries an [odoc guide](doc/index.mld) and API
+reference generated from the documented
+[`vinary_tree_libdictenstein.mli`](vinary_tree_libdictenstein.mli).
+
+## Build and verify package documentation
+
+With the exact `vinary-tree-interop` dependency installed in an opam switch,
+run `opam install odoc` and then
+`opam exec -- dune build --root bindings/ocaml @doc`. Dune writes the guide
+and module reference beneath `bindings/ocaml/_build/default/_doc/_html/`.
+The binding CI checks both generated entry points; the opam source-archive
+contract checks that the guide, Dune stanza, interface comments, and this
+package README survive deterministic staging.
+
+Only after the source release is immutable and the opam-repository pull
+request has merged, dispatch `OCaml package documentation readback` from the
+exact source tag. That read-only workflow checks the version-specific
+`ocaml.org` package page, odoc guide, and module API; a candidate-only source
+tree is not evidence of public documentation. The [OCaml documentation
+guide](https://ocaml.org/docs/generating-documentation) explains odoc's
+generation and package-page conventions.
 
 `pathmap ()` and `suffix_index ()` fail explicitly with `UNSUPPORTED (status
 6)`: the statically linked OCaml stubs import no revision-8-only symbols and
@@ -226,7 +247,7 @@ failed construction transfers no ownership.
 
 ## Errors and failure containment
 
-Statuses become typed OCaml exceptions with copied diagnostics. Branch on the typed status or exception, not diagnostic text.
+Status failures raise OCaml `Failure` with a copied diagnostic; this facade does not expose a typed status exception. The numeric status is not available from this facade; treat the diagnostic as human context, not a machine protocol.
 Invalid UTF-8, domain mismatch, unsupported capability, closed handle, bad
 path, allocation failure, provider fault, I/O failure, and contained panic are
 distinct cases. Copy thread-local diagnostics before another native call.
