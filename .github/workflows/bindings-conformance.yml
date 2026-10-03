@@ -429,6 +429,22 @@ jobs:
             swift run --package-path bindings/swift/libdictenstein --skip-build \
               libdictenstein-collection-profile --arm stream-cancel \
               --entries 16 --batch-size 4 --early-cancel 5
+      - name: Generate and read back the Swift Package Index DocC reference
+        env:
+          VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/../vinary-tree-interop
+        run: |
+          swift package \
+            --package-path bindings/swift/libdictenstein \
+            --allow-writing-to-directory "$GITHUB_WORKSPACE/target/managed-api-docs/swift" \
+            generate-documentation \
+            --target Libdictenstein \
+            --disable-indexing \
+            --warnings-as-errors \
+            --transform-for-static-hosting \
+            --hosting-base-path libdictenstein \
+            --output-path "$GITHUB_WORKSPACE/target/managed-api-docs/swift"
+          python3 scripts/check-managed-api-docs.py swift \
+            target/managed-api-docs/swift --complete-toolchain-assets
 
   dotnet:
     name: .NET (C1-C10)
@@ -449,6 +465,16 @@ jobs:
             --project bindings/dotnet/tests/VinaryTree.Libdictenstein.Conformance \
             -p:VinaryTreeInteropRoot="$parent/vinary-tree-interop" \
             -- "$GITHUB_WORKSPACE/bindings/canonical_fixture.json"
+      - name: Compile the F# guide and generate/read back DocFX
+        env:
+          VinaryTreeInteropRoot: ${{ github.workspace }}/../vinary-tree-interop
+        run: |
+          dotnet build bindings/dotnet/tests/VinaryTree.Libdictenstein.FSharpUsage \
+            -p:NuGetAudit=false -m:1
+          dotnet tool restore
+          dotnet tool run docfx -- docs/api/dotnet/docfx.json --warningsAsErrors
+          python3 scripts/check-managed-api-docs.py dotnet \
+            target/managed-api-docs/dotnet
 
   jvm:
     name: JVM (C1-C10)
@@ -479,6 +505,13 @@ jobs:
             -jar /tmp/junit.jar --class-path /tmp/jvm-classes \
             --select-class io.vinarytree.libdictenstein.ConformanceTest \
             --disable-banner --details=summary --fail-if-no-tests
+      - name: Compile Kotlin and Scala examples and read back strict Javadoc
+        working-directory: bindings/jvm
+        run: |
+          ./gradlew --no-daemon -PjavaToolchain=25 \
+            compileTestKotlin compileTestScala javadoc -x verifyNativeResources
+          python3 ../../scripts/check-managed-api-docs.py jvm \
+            build/docs/javadoc
 
   clojure:
     name: Clojure (C1-C10)

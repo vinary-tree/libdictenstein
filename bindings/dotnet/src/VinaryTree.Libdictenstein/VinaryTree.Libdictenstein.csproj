@@ -19,7 +19,7 @@
     <PackageReference Include="VinaryTree.Interop" Version="4.0.0-rc.6" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="../../../../README.md" Pack="true" PackagePath="README.md" />
+    <None Include="../../NUGET.md" Pack="true" PackagePath="README.md" />
     <None Include="../../native/runtimes/**/*"
           Pack="true"
           PackagePath="runtimes/%(RecursiveDir)%(Filename)%(Extension)" />

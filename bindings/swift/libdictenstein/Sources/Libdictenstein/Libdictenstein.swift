@@ -1,6 +1,7 @@
 import CLibdictenstein
 import VinaryTreeInterop
 
+/// Native or facade failure with an optional stable C status and readable description.
 public struct LibdictensteinError: Error, CustomStringConvertible, Sendable {
     public let description: String
     /// Native status, including UNSUPPORTED for a deliberately absent facade.
@@ -20,8 +21,10 @@ public enum OptionalBackend: Sendable {
     case pathMap
     case typedSuffixIndex
 
+    /// Both optional revision-8 backends are unavailable in this Swift facade.
     public var isSupported: Bool { false }
 
+    /// Throw an explicit unsupported error instead of substituting a backend.
     public func require() throws {
         let message: String
         switch self {
@@ -36,6 +39,7 @@ public enum OptionalBackend: Sendable {
     }
 }
 
+/// Exact membership and optional mapped value; absence and valueless presence differ.
 public struct Lookup: Sendable, Equatable {
     public let found: Bool
     public let value: UInt64?
@@ -46,6 +50,7 @@ public struct Lookup: Sendable, Equatable {
     }
 }
 
+/// Exact key-set operation applied to two captured dictionary revisions.
 public enum AlgebraOperation: UInt32, Sendable {
     case union = 1
     case intersection = 2
@@ -53,6 +58,7 @@ public enum AlgebraOperation: UInt32, Sendable {
     case symmetricDifference = 4
 }
 
+/// Policy for optional values when an algebraic result key occurs in both inputs.
 public enum ValueMerge: UInt32, Sendable {
     case first = 1
     case last = 2
@@ -60,6 +66,7 @@ public enum ValueMerge: UInt32, Sendable {
     case latticeMeet = 4
 }
 
+/// Maximum entries, key units, and optional values copied in one native page.
 public struct EntryBatchLimits: Sendable, Equatable {
     public var maxEntries: Int
     public var maxUnits: Int
@@ -72,6 +79,7 @@ public struct EntryBatchLimits: Sendable, Equatable {
     }
 }
 
+/// Domain and optional cardinality/identity metadata for one captured revision.
 public struct EntriesInfo: Sendable, Equatable {
     public let unitDomain: UnitDomain
     public let exactCount: Int?
@@ -85,17 +93,20 @@ public struct EntriesInfo: Sendable, Equatable {
     }
 }
 
+/// Lossless, domain-tagged key units from an entry snapshot or stream.
 public enum DictionaryEntryKey: Sendable, Equatable {
     case bytes([UInt8])
     case unicodeScalars([UInt32])
     case u64([UInt64])
 
+    /// Decode a Unicode-scalar key; return nil for byte and u64 keys.
     public var string: String? {
         guard case let .unicodeScalars(scalars) = self else { return nil }
         return String(String.UnicodeScalarView(scalars.compactMap(UnicodeScalar.init)))
     }
 }
 
+/// Host-owned key and optional unsigned-64 value for one present term.
 public struct DictionaryEntry: Sendable, Equatable {
     public let key: DictionaryEntryKey
     public let value: UInt64?
@@ -106,6 +117,7 @@ public struct EntrySnapshot: RandomAccessCollection, Sendable {
     public typealias Index = Int
     public typealias Element = DictionaryEntry
 
+    /// Metadata from the same captured revision as this collection.
     public let info: EntriesInfo
     private let storage: [DictionaryEntry]
 
@@ -137,6 +149,7 @@ private func domain(_ value: UnitDomain) -> UInt32 {
 /// facade-wide mutex; libdictenstein's native concurrency semantics are kept.
 open class Dictionary: DictionaryResource, @unchecked Sendable {
     private var raw: OpaquePointer?
+    /// Domain chosen at construction; it controls accepted term overloads.
     public let unitDomain: UnitDomain
 
     init(raw: OpaquePointer, unitDomain: UnitDomain) {
@@ -151,6 +164,7 @@ open class Dictionary: DictionaryResource, @unchecked Sendable {
         return raw
     }
 
+    /// Idempotently release this native owner; do not use it afterward.
     public func close() {
         if let raw {
             ldict_dictionary_free(raw)
@@ -158,6 +172,7 @@ open class Dictionary: DictionaryResource, @unchecked Sendable {
         }
     }
 
+    /// Borrow the retained-resource descriptor for one synchronous consumer call.
     public func withVtResource<Result>(
         _ body: (UnsafePointer<VtResource>) throws -> Result
     ) rethrows -> Result {
@@ -191,6 +206,7 @@ open class Dictionary: DictionaryResource, @unchecked Sendable {
         }
     }
 
+    /// Number of complete terms, or an error if the owner is closed.
     public var count: Int {
         get throws {
             var result = 0
@@ -257,6 +273,7 @@ open class Dictionary: DictionaryResource, @unchecked Sendable {
         try algebra(right, operation: .symmetricDifference, valueMerge: .first)
     }
 
+    /// Insert or update a Unicode text term; return whether it was newly inserted.
     @discardableResult
     public func put(_ term: String, value: UInt64? = nil) throws -> Bool {
         let bytes = Array(term.utf8)
@@ -270,6 +287,7 @@ open class Dictionary: DictionaryResource, @unchecked Sendable {
         return inserted != 0
     }
 
+    /// Insert or update a u64-token term in a compatible dictionary.
     @discardableResult
     public func put(_ term: [UInt64], value: UInt64? = nil) throws -> Bool {
         var inserted: UInt8 = 0
@@ -282,6 +300,7 @@ open class Dictionary: DictionaryResource, @unchecked Sendable {
         return inserted != 0
     }
 
+    /// Insert or update arbitrary raw bytes in a byte-domain dictionary.
     @discardableResult
     public func put(bytes term: [UInt8], value: UInt64? = nil) throws -> Bool {
         var inserted: UInt8 = 0
@@ -294,6 +313,7 @@ open class Dictionary: DictionaryResource, @unchecked Sendable {
         return inserted != 0
     }
 
+    /// Remove one Unicode text term and report whether it had been present.
     @discardableResult
     public func remove(_ term: String) throws -> Bool {
         let bytes = Array(term.utf8)
@@ -306,6 +326,7 @@ open class Dictionary: DictionaryResource, @unchecked Sendable {
         return removed != 0
     }
 
+    /// Remove one u64-token term and report whether it had been present.
     @discardableResult
     public func remove(_ term: [UInt64]) throws -> Bool {
         var removed: UInt8 = 0
@@ -317,6 +338,7 @@ open class Dictionary: DictionaryResource, @unchecked Sendable {
         return removed != 0
     }
 
+    /// Remove one raw-byte term and report whether it had been present.
     @discardableResult
     public func remove(bytes term: [UInt8]) throws -> Bool {
         var removed: UInt8 = 0
@@ -328,6 +350,7 @@ open class Dictionary: DictionaryResource, @unchecked Sendable {
         return removed != 0
     }
 
+    /// Look up a Unicode text term without conflating absence and nil value.
     public func get(_ term: String) throws -> Lookup {
         let bytes = Array(term.utf8)
         var found: UInt8 = 0
@@ -342,6 +365,7 @@ open class Dictionary: DictionaryResource, @unchecked Sendable {
         return Lookup(found: found != 0, value: hasValue == 0 ? nil : value)
     }
 
+    /// Look up a u64-token term in a compatible dictionary.
     public func get(_ term: [UInt64]) throws -> Lookup {
         var found: UInt8 = 0
         var hasValue: UInt8 = 0
@@ -355,6 +379,7 @@ open class Dictionary: DictionaryResource, @unchecked Sendable {
         return Lookup(found: found != 0, value: hasValue == 0 ? nil : value)
     }
 
+    /// Look up a raw-byte term in a byte-domain dictionary.
     public func get(bytes term: [UInt8]) throws -> Lookup {
         var found: UInt8 = 0
         var hasValue: UInt8 = 0
@@ -368,14 +393,18 @@ open class Dictionary: DictionaryResource, @unchecked Sendable {
         return Lookup(found: found != 0, value: hasValue == 0 ? nil : value)
     }
 
+    /// Remove all terms if the backend supports clearing.
     public func clear() throws { try checked(ldict_dictionary_clear(try handle())) }
+    /// Reclaim backend-specific unreachable storage; return the reclaimed count.
     public func compact() throws -> Int {
         var reclaimed = 0
         try checked(ldict_dictionary_compact(try handle(), &reclaimed))
         return reclaimed
     }
+    /// Persist the current state when the backend supports checkpoints.
     public func checkpoint() throws { try checked(ldict_dictionary_checkpoint(try handle())) }
 
+    /// Test whether an SCDAWG contains a substring of any indexed term.
     public func containsSubstring(_ pattern: String) throws -> Bool {
         let bytes = Array(pattern.utf8)
         var result: UInt8 = 0
@@ -387,6 +416,7 @@ open class Dictionary: DictionaryResource, @unchecked Sendable {
         return result != 0
     }
 
+    /// Count an SCDAWG substring's indexed occurrences.
     public func substringFrequency(_ pattern: String) throws -> Int {
         let bytes = Array(pattern.utf8)
         var result = 0
@@ -604,6 +634,7 @@ public final class EntryStream: @unchecked Sendable {
     }
 }
 
+/// Mutable directed acyclic word graph for exact term lookup and traversal.
 public final class DynamicDAWG: Dictionary, @unchecked Sendable {
     public init(unitDomain: UnitDomain = .unicodeScalar) throws {
         var raw: OpaquePointer?
@@ -616,6 +647,7 @@ public final class DynamicDAWG: Dictionary, @unchecked Sendable {
     }
 }
 
+/// Suffix-compressed graph for exact terms and substring queries.
 public final class SCDAWG: Dictionary, @unchecked Sendable {
     public init(unitDomain: UnitDomain = .unicodeScalar) throws {
         var raw: OpaquePointer?
@@ -624,6 +656,7 @@ public final class SCDAWG: Dictionary, @unchecked Sendable {
     }
 }
 
+/// Read-optimized immutable trie built from a complete batch of text entries.
 public final class DoubleArrayTrie: Dictionary, @unchecked Sendable {
     public init(entries: [(String, UInt64?)], unitDomain: UnitDomain = .unicodeScalar) throws {
         let encoded = entries.map { Array($0.0.utf8) }
@@ -657,10 +690,13 @@ public final class DoubleArrayTrie: Dictionary, @unchecked Sendable {
     }
 }
 
+/// Filesystem-backed adaptive radix trie with explicit checkpointing.
 public final class PersistentARTrie: Dictionary, @unchecked Sendable {
+    /// Create a new persistent trie at a path, failing if native creation fails.
     public static func create(at path: String, unitDomain: UnitDomain = .unicodeScalar) throws -> PersistentARTrie {
         try construct(path, unitDomain, ldict_persistent_artrie_create)
     }
+    /// Reopen a compatible persistent trie from its path.
     public static func open(at path: String, unitDomain: UnitDomain = .unicodeScalar) throws -> PersistentARTrie {
         try construct(path, unitDomain, ldict_persistent_artrie_open)
     }

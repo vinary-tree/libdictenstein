@@ -1,6 +1,15 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
+let interopDependency: Package.Dependency = if let localRoot = Context.environment["VINARY_TREE_INTEROP_ROOT"] {
+    .package(path: localRoot)
+} else {
+    .package(
+        url: "https://github.com/vinary-tree/vinary-tree-interop.git",
+        exact: "4.0.0-rc.6"
+    )
+}
+
 let package = Package(
     name: "Libdictenstein",
     platforms: [.macOS(.v13)],
@@ -12,9 +21,10 @@ let package = Package(
         ),
     ],
     dependencies: [
+        interopDependency,
         .package(
-            url: "https://github.com/vinary-tree/vinary-tree-interop.git",
-            exact: "4.0.0-rc.6"
+            url: "https://github.com/swiftlang/swift-docc-plugin.git",
+            exact: "1.5.0"
         ),
     ],
     targets: [

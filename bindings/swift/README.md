@@ -5,6 +5,16 @@ importing the C header through the `CLibdictenstein` system-library target. The
 development package lives here; the root [`Package.swift`](../../Package.swift)
 declares the distributable `Libdictenstein` package and product.
 
+The root [Swift Package Index configuration](../../.spi.yml) requests a
+versioned API reference for `Libdictenstein`. CI builds its
+[DocC catalog](libdictenstein/Sources/Libdictenstein/Libdictenstein.docc/Libdictenstein.md)
+with warnings treated as errors, then reads back every public type and the
+browser assets. This local verification does not publish or tag RC.6.
+After a matching SwiftPM release tag is indexed, the
+[versioned Swift Package Index reference](https://swiftpackageindex.com/vinary-tree/libdictenstein/4.0.0-rc.6/documentation/libdictenstein)
+is checked by the read-only registry gate; the source build alone does not
+establish that hosted page.
+
 ## Native library
 
 The facade links the shared library `libdictenstein`. Build it, pass the
@@ -111,10 +121,10 @@ dictionary in constant time and keeps its query-start revision valid after
 
 ## Coverage note
 
-This facade currently binds the constructor, CRUD, maintenance, and substring
-surface. The `kind`/`capabilities` accessors, the contiguous batch inserts, and
-the persistent vocabulary backend are not yet wrapped; use another facade (or
-the C ABI directly) when those are required.
+This facade binds constructors, CRUD, maintenance, substring queries,
+`kind`/`capabilities`, snapshot traversal, and exact dictionary algebra. The
+contiguous batch inserts and persistent vocabulary backend are not yet
+wrapped; use another facade (or the C ABI directly) when those are required.
 
 <!-- BEGIN GENERATED BINDING OPERATIONS; DO NOT EDIT -->
 

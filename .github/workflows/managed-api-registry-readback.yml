@@ -1,0 +1,34 @@
+---
+name: Read back published managed API references
+
+# Dispatch only after Maven Central, NuGet, and Swift Package Index have
+# published the reviewed release. This workflow never uploads or edits them.
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  readback:
+    name: Verify exact-version Javadoc, NuGet XML, and Swift DocC
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with: { persist-credentials: false }
+      - name: Require the immutable reviewed source tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(jq -r '.publication.sourceTag' release/version.json)"
+          test "$GITHUB_REF" = "refs/tags/$tag"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" \
+            --jq '.draft == false and .immutable == true' | grep -Fx true
+          swift_tag="$(jq -r '.registries.swiftTag' release/version.json)"
+          git fetch --depth=1 origin "refs/tags/$swift_tag"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$(git rev-parse HEAD)"
+      - name: Read back exact-version public API documentation
+        run: |
+          version="$(jq -r '.canonical' release/version.json)"
+          python3 scripts/check_managed_registry_docs.py --version "$version"

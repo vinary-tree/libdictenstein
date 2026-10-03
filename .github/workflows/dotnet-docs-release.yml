@@ -1,0 +1,94 @@
+---
+name: Publish immutable .NET API reference
+
+# Manual follow-up only after the reviewed RC.6 release and every asset are immutable.
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: libdictenstein-pages-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Verify immutable DocFX archive, deploy, and read back every file
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    environment: github-release
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with: { dotnet-version: 10.0.x }
+      - name: Require exact tag and immutable release asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(jq -r '.publication.sourceTag' release/version.json)"
+          version="$(jq -r '.canonical' release/version.json)"
+          test "$GITHUB_REF" = "refs/tags/$tag"
+          asset="libdictenstein-dotnet-documentation-$version.tar.gz"
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag")"
+          jq -e --arg tag "$tag" --arg asset "$asset" '
+            .tag_name == $tag and .draft == false and .immutable == true and
+            ([.assets[] | select(.name == $asset and .state == "uploaded")]
+             | length) == 1
+          ' <<< "$release" >/dev/null
+          mkdir -p target/managed-api-docs-public-asset
+          gh release download "$tag" --pattern "$asset" \
+            --dir target/managed-api-docs-public-asset
+      - name: Rebuild from exact source and compare immutable archive bytes
+        env:
+          VinaryTreeInteropRoot: ${{ github.workspace }}/../vinary-tree-interop
+        run: |
+          git clone --depth 1 --branch v4.0.0-rc.6 \
+            https://github.com/vinary-tree/vinary-tree-interop.git \
+            ../vinary-tree-interop
+          dotnet --version
+          dotnet tool restore
+          dotnet tool run docfx -- docs/api/dotnet/docfx.json --warningsAsErrors
+          python3 scripts/check-managed-api-docs.py dotnet \
+            target/managed-api-docs/dotnet
+          python3 scripts/managed_docs_archive.py build
+          version="$(jq -r '.canonical' release/version.json)"
+          asset="libdictenstein-dotnet-documentation-$version.tar.gz"
+          cmp --silent "target/managed-api-docs-artifacts/$asset" \
+            "target/managed-api-docs-public-asset/$asset"
+          python3 scripts/managed_docs_archive.py verify \
+            --archive "target/managed-api-docs-public-asset/$asset"
+      - name: Preserve development and prior versioned Pages sites
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -r '.canonical' release/version.json)"
+          source="$PWD/target/managed-api-docs-readback/$version/dotnet"
+          git fetch --depth=1 origin gh-pages
+          live="$PWD/target/managed-docs-gh-pages"
+          git worktree add --detach "$live" FETCH_HEAD
+          test -f "$live/dev/index.html"
+          test -e "$live/.nojekyll" || touch "$live/.nojekyll"
+          destination="$live/$version/dotnet"
+          if [ -e "$destination" ]; then
+            diff --recursive --brief "$source" "$destination"
+          else
+            mkdir -p "$(dirname "$destination")"
+            cp -a "$source" "$destination"
+          fi
+          git -C "$live" add --all
+          if ! git -C "$live" diff --cached --quiet; then
+            bot_email='41898282+github-actions[bot]@users.noreply.github.com'
+            git -C "$live" \
+              -c user.name='github-actions[bot]' \
+              -c user.email="$bot_email" \
+              commit -m "docs: publish immutable .NET API reference for $version"
+            git -C "$live" push origin HEAD:refs/heads/gh-pages
+          fi
+      - name: Compare every public Pages byte with the immutable archive
+        run: |
+          version="$(jq -r '.canonical' release/version.json)"
+          python3 scripts/check_public_managed_docs.py \
+            "target/managed-api-docs-readback/$version/dotnet"

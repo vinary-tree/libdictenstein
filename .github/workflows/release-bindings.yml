@@ -408,6 +408,37 @@ jobs:
           path: dist/*.nupkg
           if-no-files-found: error
 
+  managed-documentation-package:
+    name: Stage exact versioned .NET API docs before immutable release
+    needs: contract
+    if: inputs.registry == 'validate-only'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with: { persist-credentials: false }
+      - name: Checkout exact shared .NET resource package
+        run: git clone --depth 1 --branch v4.0.0-rc.6 https://github.com/vinary-tree/vinary-tree-interop.git ../vinary-tree-interop
+      - uses: actions/setup-dotnet@v5
+        with: { dotnet-version: 10.0.x }
+      - name: Compile F# usage, generate DocFX, and stage checked archive
+        env:
+          VinaryTreeInteropRoot: ${{ github.workspace }}/../vinary-tree-interop
+        run: |
+          dotnet build bindings/dotnet/tests/VinaryTree.Libdictenstein.FSharpUsage \
+            -p:NuGetAudit=false -m:1
+          dotnet tool restore
+          dotnet tool run docfx -- docs/api/dotnet/docfx.json --warningsAsErrors
+          python3 scripts/check-managed-api-docs.py dotnet \
+            target/managed-api-docs/dotnet
+          python3 -m unittest discover -s scripts/tests -p 'test_managed*.py'
+          python3 scripts/managed_docs_archive.py build
+          python3 scripts/managed_docs_archive.py verify
+      - uses: actions/upload-artifact@v7
+        with:
+          name: managed-documentation-package
+          path: target/managed-api-docs-artifacts/*.tar.gz
+          if-no-files-found: error
+
   rubygems-package:
     name: RubyGem with platform runtimes
     needs: native
@@ -657,10 +688,39 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' && inputs.registry == 'nuget'
     runs-on: ubuntu-24.04
     environment: nuget
-    permissions: { id-token: write }
+    permissions: { contents: read, id-token: write }
     steps:
+      - uses: actions/checkout@v6
+        with: { persist-credentials: false }
       - uses: actions/setup-dotnet@v5
         with: { dotnet-version: 10.0.x }
+      - name: Require the exact versioned public .NET API before NuGet upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -r '.canonical' release/version.json)"
+          source_tag="$(jq -r '.publication.sourceTag' release/version.json)"
+          site="https://vinary-tree.github.io/libdictenstein/$version/dotnet"
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --location "$site/documentation-manifest.json" \
+                --output "$RUNNER_TEMP/dotnet-doc-manifest.json" && \
+              jq -e --arg version "$version" --arg source "$source_tag" '
+                .schemaVersion == 1 and .component == "libdictenstein" and
+                .version == $version and .sourceRef == $source and
+                (.sha256["index.html"] | type == "string")
+              ' "$RUNNER_TEMP/dotnet-doc-manifest.json" >/dev/null && \
+              curl --fail --silent --location "$site/index.html" \
+                --output "$RUNNER_TEMP/dotnet-doc-index.html" && \
+              grep -Fq 'libdictenstein .NET API' \
+                "$RUNNER_TEMP/dotnet-doc-index.html"; then
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo '::error::Exact versioned public .NET API is not available.' >&2
+              exit 1
+            fi
+            sleep 10
+          done
       - uses: actions/download-artifact@v7
         with: { name: nuget-package, path: dist }
       - name: Exchange GitHub identity for a short-lived NuGet key
@@ -818,6 +878,7 @@ jobs:
       - clojure-package
       - npm-package
       - nuget-package
+      - managed-documentation-package
       - rubygems-package
       - hackage-package
       - fpm-package
@@ -856,6 +917,8 @@ jobs:
         with: { name: luarocks-package, path: staged-assets/luarocks }
       - uses: actions/download-artifact@v7
         with: { name: lua-documentation-package, path: staged-assets/documentation }
+      - uses: actions/download-artifact@v7
+        with: { name: managed-documentation-package, path: staged-assets/documentation }
       - uses: actions/download-artifact@v7
         with: { name: opam-package, path: staged-assets/opam }
       - uses: actions/download-artifact@v7

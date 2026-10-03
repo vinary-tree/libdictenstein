@@ -7,6 +7,13 @@ insertion, immutable DoubleArrayTrie construction, SCDAWG substring search,
 persistent ARTrie CRUD/checkpoint/reopen, and persistent vocabulary reverse
 lookup.
 
+F# uses the same assembly through native `use` bindings; see the
+[compile-checked F# guide](fsharp.md). The [DocFX API source](../../docs/api/dotnet/index.md)
+is built into a browsable, versioned reference without publishing RC.6. After
+the reviewed immutable release and public-byte readback, its destination is
+[`4.0.0-rc.6/dotnet/`](https://vinary-tree.github.io/libdictenstein/4.0.0-rc.6/dotnet/);
+that URL is not evidence of a live candidate until the readback gate passes.
+
 `OptionalBackends.Require(OptionalBackend.PathMap)` and
 `OptionalBackends.Require(OptionalBackend.TypedSuffixIndex)` throw a
 `LibdictensteinException` with status 6. Neither optional revision-8 surface

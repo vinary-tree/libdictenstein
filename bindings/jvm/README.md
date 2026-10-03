@@ -8,6 +8,12 @@ persistent ARTrie CRUD/checkpoint/reopen, and persistent vocabulary reverse
 lookup. The Clojure facade (`io.vinarytree/libdictenstein-clojure`) is a thin
 layer over these classes.
 
+Kotlin and Scala 3 callers use the same Java API. Their idiomatic
+[Kotlin](kotlin.md) and [Scala](scala.md) guides contain Gradle-compiled
+examples; [Javadoc](https://javadoc.io/doc/io.vinarytree/libdictenstein/4.0.0-rc.6)
+is the shared RC.6 API reference after the candidate is published. There are
+no separate Kotlin/Scala facade artifacts or runtime dependencies in the JAR.
+
 PathMap and the typed suffix-source index require native API revision 8 but
 are not yet mediated by this Java facade. `Dictionary.requirePathMap()` and
 `Dictionary.requireSuffixIndex()` reject with `LDICT_STATUS_UNSUPPORTED` (6),

@@ -1,0 +1,31 @@
+{
+  "metadata": [
+    {
+      "src": [
+        {
+          "src": "../../../bindings/dotnet/src/VinaryTree.Libdictenstein",
+          "files": ["VinaryTree.Libdictenstein.csproj"]
+        }
+      ],
+      "dest": "../../../target/managed-api-docs-input/dotnet/api"
+    }
+  ],
+  "build": {
+    "content": [
+      {
+        "src": ".",
+        "files": ["index.md", "toc.yml"]
+      },
+      {
+        "src": "../../../target/managed-api-docs-input/dotnet",
+        "files": ["api/toc.yml", "api/**/*.yml"]
+      }
+    ],
+    "dest": "../../../target/managed-api-docs/dotnet",
+    "template": ["default"],
+    "globalMetadata": {
+      "_appTitle": "libdictenstein .NET API",
+      "_disableContribution": true
+    }
+  }
+}

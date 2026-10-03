@@ -587,7 +587,9 @@ jobs:
       - name: Run the binding architecture gate
         run: python3 scripts/check-bindings.py
       - name: Run the binding documentation gate
-        run: python3 scripts/check-binding-docs.py
+        run: |
+          python3 scripts/check-binding-docs.py
+          python3 -m unittest discover -s scripts/tests -p 'test_managed*.py'
 
   # -----------------------------------------------------------------
   # Scheduled/manual deep bounded model check. This is intentionally

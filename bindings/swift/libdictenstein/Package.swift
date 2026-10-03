@@ -20,7 +20,13 @@ let package = Package(
             targets: ["CollectionTraversalProfile"]
         ),
     ],
-    dependencies: [interopDependency],
+    dependencies: [
+        interopDependency,
+        .package(
+            url: "https://github.com/swiftlang/swift-docc-plugin.git",
+            exact: "1.5.0"
+        ),
+    ],
     targets: [
         .systemLibrary(name: "CLibdictenstein"),
         .target(

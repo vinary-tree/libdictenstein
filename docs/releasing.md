@@ -9,8 +9,10 @@ registry spellings, and credential matrix remain normative in
 
 `release/version.json` is the version authority. The root crate, package
 manifests, native metadata, and language facades must agree with it before a
-tag is created. The release tag is `v4.0.0-rc.6`; Go later receives the
-additional subdirectory tag `bindings/go/v4.0.0-rc.6`.
+tag is created. The reviewed corrective source tag is
+`v4.0.0-rc.6-release.1`; the separate Go module tag is
+`bindings/go/v4.0.0-rc.6`. Do not assume the earlier canonical tag points to
+the corrective source commit.
 
 The source validation graph consumes exact `v4.0.0-rc.6` tags for
 `vinary-tree-interop` and liblevenshtein plus `v0.1.0` for `llattice`.
@@ -37,6 +39,11 @@ publication workflow may regenerate.
 
 The repository CI additionally proves the feature matrix, Rocq models,
 sanitizers, documentation, diagrams, and all language conformance suites.
+The managed-language documentation gate compiles Kotlin and Scala examples
+against the Java facade, an F# example against both .NET targets, strict
+Javadoc, version-pinned DocFX, and Swift DocC. Generated references are
+read back against their complete public type inventories without uploading
+any RC.6 package.
 
 The JavaScript-family package has three executable pre-pack gates in both
 branch/PR conformance CI and the `npm-package` release job: `npm test` checks
@@ -170,6 +177,48 @@ compares the served Lua index and manifest with the archive. The LuaRocks job
 then requires the exact versioned guide before upload and reads back the
 public rockspec bytes and package-page link; neither a successful upload nor
 an HTTP 200 alone is documentation evidence.
+
+### Managed-language API documentation
+
+Kotlin and Scala consume the `io.vinarytree:libdictenstein` Java classes; no
+separately published Kotlin or Scala wrapper exists. Their compiled usage
+guides link to the same strict Javadoc shipped in the Maven `-javadoc.jar`.
+F# consumes the `Libdictenstein` NuGet assembly; the package ships C# XML
+comments for both `net8.0` and `net10.0`. Swift uses the root SwiftPM product
+and `.spi.yml` to request hosted, versioned DocC from Swift Package Index.
+The [managed API reference hub](api/README.md) records these actual surfaces
+without claiming any candidate is already public.
+
+`validate-only` builds DocFX from the exact source and stores a deterministic
+`libdictenstein-dotnet-documentation-4.0.0-rc.6.tar.gz` alongside the other
+assets **before** making the GitHub release immutable. Its manifest binds
+every site file digest to the canonical version and corrective source tag.
+Only after the immutable release exists, dispatch the protected deployment
+from that exact tag:
+
+```bash
+tag=$(jq -er '.publication.sourceTag' release/version.json)
+gh workflow run dotnet-docs-release.yml \
+  --repo vinary-tree/libdictenstein --ref "$tag"
+```
+
+That workflow compares a fresh DocFX build byte-for-byte with the release
+asset, preserves `dev/` and every previous `gh-pages` version, and reads back
+**every** public file at
+`https://vinary-tree.github.io/libdictenstein/4.0.0-rc.6/dotnet/`.
+Wait for its complete public-byte gate before authorizing NuGet publication.
+The repository's `nuget` uploader also preflights the exact versioned guide;
+no documentation deployment is performed by `validate-only` or a source PR.
+
+After Maven Central, NuGet, and Swift Package Index have indexed the reviewed
+release, dispatch the read-only
+`managed-api-registry-readback.yml` workflow from the corrective source tag.
+It checks the exact Maven `-javadoc.jar`, both NuGet XML API references plus
+the package README, and the versioned DocC module page. Swift Package Index
+needs a SwiftPM-compatible `4.0.0-rc.6` tag; verify that its peeled commit is
+identical to the reviewed corrective source tag before creating it, and never
+move an existing public tag. A passing local DocC build is not evidence that
+the index has ingested that tag.
 
 The source rock deliberately treats the native SDK as an external dependency.
 Its module paths use `LIBDICTENSTEIN_INCDIR` and
