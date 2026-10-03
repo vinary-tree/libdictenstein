@@ -258,6 +258,20 @@ only contains an abandoned iterator."""
         if g.name == "Lua"
         else "`resource()` lends `vt.dictionary.v1`; a consumer retains and snapshots it independently."
     )
+    source_link = f"../../{g.source}"
+    evidence_link = f"../../{g.evidence}"
+    docs_root = "../../docs"
+    diagram_link = f"{docs_root}/diagrams/abi-producer-component.svg"
+    if g.name == "OCaml":
+        # The opam source archive contains this README and facade sources, but
+        # not the repository-wide docs. Keep its links usable after staging.
+        source_link = "vinary_tree_libdictenstein.mli"
+        evidence_link = "test/conformance.ml"
+        docs_root = "https://github.com/vinary-tree/libdictenstein/blob/master/docs"
+        diagram_link = (
+            "https://raw.githubusercontent.com/vinary-tree/libdictenstein/"
+            "master/docs/diagrams/abi-producer-component.svg"
+        )
     return f"""{MARKER}
 
 ## Support and package contract
@@ -269,15 +283,15 @@ only contains an abandoned iterator."""
 | Support tier | {g.tier} |
 | Distribution | {g.package} |
 | Native boundary | {g.boundary} |
-| Canonical facade source | [`{g.source}`](../../{g.source}) |
+| Canonical facade source | [`{g.source}`]({source_link}) |
 
 All tiers implement the same ownership, snapshot, status, and compatibility
 laws. The tier controls release gating rather than semantic quality. Start with
-the [producer documentation hub](../../docs/bindings/README.md), then use the
-[`ldict_*` C ABI reference](../../docs/bindings/c-abi-reference.md) for exact
+the [producer documentation hub]({docs_root}/bindings/README.md), then use the
+[`ldict_*` C ABI reference]({docs_root}/bindings/c-abi-reference.md) for exact
 preconditions, statuses, thread-safety, and complexity.
 
-![A host facade owns a project handle while exported snapshots cross projects only as retained versioned resources.](../../docs/diagrams/abi-producer-component.svg)
+![A host facade owns a project handle while exported snapshots cross projects only as retained versioned resources.]({diagram_link})
 
 ## Installation and native loading
 
@@ -290,7 +304,7 @@ handshake. Never silently load an arbitrary same-named system library.
 
 ## Executable example and verification
 
-The canonical checked example is [`{g.evidence}`](../../{g.evidence}). CI runs
+The canonical checked example is [`{g.evidence}`]({evidence_link}). CI runs
 the public package path with:
 
 ```sh
@@ -333,7 +347,7 @@ The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk
 `FromIterator`/`Extend` where infallible, named fallible variants for persistent
 stores, deterministic order, and reusable fold/visitor paths. Read the local
-[Rust API audit](../../docs/bindings/rust-api-idioms.md) and the family
+[Rust API audit]({docs_root}/bindings/rust-api-idioms.md) and the family
 [collection-protocol design](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/docs/bindings/collection-protocols.md).
 
 Public spelling must remain native to this ecosystem. The shared engine
@@ -383,7 +397,7 @@ the same handle, and do not retain callback/paging buffers after return.
 Treat paths, terms, values, page offsets, serialized files, and foreign callers
 as untrusted. Validate lengths before allocation, contain panics at the ABI,
 bound diagnostics and batches, prevent path traversal, and reject unknown enum
-values. See the [FFI boundary analysis](../../docs/security/ffi-boundary.md) and
+values. See the [FFI boundary analysis]({docs_root}/security/ffi-boundary.md) and
 [family security model](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/security-model.md).
 
 ## Compatibility and troubleshooting

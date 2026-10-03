@@ -12,9 +12,10 @@ reference generated from the documented
 ## Build and verify package documentation
 
 With the exact `vinary-tree-interop` dependency installed in an opam switch,
-run `opam install odoc` and then
-`opam exec -- dune build --root bindings/ocaml @doc`. Dune writes the guide
-and module reference beneath `bindings/ocaml/_build/default/_doc/_html/`.
+run `opam install odoc`. From the full repository checkout, run
+`opam exec -- dune build --root bindings/ocaml @doc`; from the unpacked opam
+source archive, run `opam exec -- dune build @doc`. Dune writes the guide and
+module reference beneath that project's `_build/default/_doc/_html/`.
 The binding CI checks both generated entry points; the opam source-archive
 contract checks that the guide, Dune stanza, interface comments, and this
 package README survive deterministic staging.
@@ -34,8 +35,9 @@ distinct from `scdawg ()` and from the generic dictionary type.
 
 ## Native library
 
-The stubs link the shared library `libdictenstein`. Build it and put it on the
-loader path:
+The stubs link the shared library `libdictenstein`. Install its native package
+or build it from the full Rust checkout (the opam source archive contains only
+the OCaml facade), then put it on the loader path:
 
 ```sh
 cargo build --release --no-default-features --features ffi
@@ -131,15 +133,15 @@ dune exec --root bindings/ocaml bin/collection_traversal_profile.exe -- \
 | Support tier | Tier 3 |
 | Distribution | opam `libdictenstein` |
 | Native boundary | C stubs over the stable ABI |
-| Canonical facade source | [`bindings/ocaml/vinary_tree_libdictenstein.mli`](../../bindings/ocaml/vinary_tree_libdictenstein.mli) |
+| Canonical facade source | [`bindings/ocaml/vinary_tree_libdictenstein.mli`](vinary_tree_libdictenstein.mli) |
 
 All tiers implement the same ownership, snapshot, status, and compatibility
 laws. The tier controls release gating rather than semantic quality. Start with
-the [producer documentation hub](../../docs/bindings/README.md), then use the
-[`ldict_*` C ABI reference](../../docs/bindings/c-abi-reference.md) for exact
+the [producer documentation hub](https://github.com/vinary-tree/libdictenstein/blob/master/docs/bindings/README.md), then use the
+[`ldict_*` C ABI reference](https://github.com/vinary-tree/libdictenstein/blob/master/docs/bindings/c-abi-reference.md) for exact
 preconditions, statuses, thread-safety, and complexity.
 
-![A host facade owns a project handle while exported snapshots cross projects only as retained versioned resources.](../../docs/diagrams/abi-producer-component.svg)
+![A host facade owns a project handle while exported snapshots cross projects only as retained versioned resources.](https://raw.githubusercontent.com/vinary-tree/libdictenstein/master/docs/diagrams/abi-producer-component.svg)
 
 ## Installation and native loading
 
@@ -152,7 +154,7 @@ handshake. Never silently load an arbitrary same-named system library.
 
 ## Executable example and verification
 
-The canonical checked example is [`bindings/ocaml/test/conformance.ml`](../../bindings/ocaml/test/conformance.ml). CI runs
+The canonical checked example is [`bindings/ocaml/test/conformance.ml`](test/conformance.ml). CI runs
 the public package path with:
 
 ```sh
@@ -227,7 +229,7 @@ The pure Rust producer is the semantic and performance baseline: generic
 snapshot traversal, borrowed and snapshot-owning `IntoIterator`, optimized bulk
 `FromIterator`/`Extend` where infallible, named fallible variants for persistent
 stores, deterministic order, and reusable fold/visitor paths. Read the local
-[Rust API audit](../../docs/bindings/rust-api-idioms.md) and the family
+[Rust API audit](https://github.com/vinary-tree/libdictenstein/blob/master/docs/bindings/rust-api-idioms.md) and the family
 [collection-protocol design](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/docs/bindings/collection-protocols.md).
 
 Public spelling must remain native to this ecosystem. The shared engine
@@ -277,7 +279,7 @@ the same handle, and do not retain callback/paging buffers after return.
 Treat paths, terms, values, page offsets, serialized files, and foreign callers
 as untrusted. Validate lengths before allocation, contain panics at the ABI,
 bound diagnostics and batches, prevent path traversal, and reject unknown enum
-values. See the [FFI boundary analysis](../../docs/security/ffi-boundary.md) and
+values. See the [FFI boundary analysis](https://github.com/vinary-tree/libdictenstein/blob/master/docs/security/ffi-boundary.md) and
 [family security model](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/security-model.md).
 
 ## Compatibility and troubleshooting
