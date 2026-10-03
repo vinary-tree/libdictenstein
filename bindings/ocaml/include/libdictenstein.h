@@ -1,4 +1,8 @@
-/* Stable project-owned C API for libdictenstein dictionaries. */
+/* Stable project-owned C API for libdictenstein dictionaries.
+ * Opaque owning handles are valid only until their free function consumes
+ * them. Reusing or double-freeing a consumed pointer is undefined behavior,
+ * not an LdictStatus. Separately retained resources/snapshots may outlive
+ * their originating dictionary handle. */
 #ifndef LIBDICTENSTEIN_H
 #define LIBDICTENSTEIN_H
 

@@ -56,6 +56,15 @@ how the two connect at [`ldict_dictionary_resource`](#ldict_dictionary_resource)
 | snapshot | An immutable capture of one dictionary revision, obtained through the resource vtable's `snapshot` operation — never through an `ldict_*` function. Capture is $`\mathcal{O}(1)`$ (see [resource-producer.md](resource-producer.md)). |
 | boundary | The `catch_unwind` + thread-local-error wrapper every fallible `ldict_*` function runs inside (`boundary()` in `src/ffi.rs`). |
 
+An opaque handle is an owning C pointer, not a generation-tagged identifier.
+Only pass a live handle to an operation. `ldict_dictionary_free` consumes it;
+using the same pointer afterward (including freeing it twice) is undefined
+behavior, even if a new allocation happens to reuse its address. The ABI does
+not promise a status for a freed raw pointer. This is distinct from a retained
+`VtResource` or a captured snapshot: those own separate retains and remain
+valid after the originating dictionary handle is freed. Null arguments and
+operations on live but closed state follow their documented status rules.
+
 ---
 
 ## 2. Versioning and the error channel
