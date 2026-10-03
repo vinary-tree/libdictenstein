@@ -55,7 +55,9 @@ let fixture_path =
   else
     let dune_source =
       match Sys.getenv_opt "DUNE_SOURCEROOT" with
-      | Some root -> [ Filename.concat root "../canonical_fixture.json" ]
+      | Some root ->
+          [ Filename.concat root "canonical_fixture.json";
+            Filename.concat root "../canonical_fixture.json" ]
       | None -> []
     in
     let candidates =
@@ -67,6 +69,17 @@ let fixture_path =
      with Not_found -> "bindings/canonical_fixture.json")
 
 let root = Yojson.Safe.from_file fixture_path
+
+let test_scratch =
+  match Sys.getenv_opt "VINARY_TREE_TEST_TMPDIR" with
+  | Some path -> path
+  | None ->
+      (match Sys.getenv_opt "DUNE_SOURCEROOT" with
+       | Some source_root -> Filename.concat source_root "_build"
+       | None ->
+           invalid_arg
+             "set VINARY_TREE_TEST_TMPDIR or run the suite through Dune")
+
 let entries =
   U.member "entries" root |> U.to_list
   |> List.map (fun e -> (U.to_string (U.member "term" e), optval (U.member "value" e)))
@@ -148,7 +161,7 @@ let c3 () =
   let raised, _ = raises_with_message (fun () -> ignore (D.put_u64 dawg [| 1L; 2L |] None)) in
   check raised "domain mismatch raises";
   D.close dawg;
-  let path = Filename.temp_file "ldict-ocaml" ".part" in
+  let path = Filename.temp_file ~temp_dir:test_scratch "ldict-ocaml" ".part" in
   Sys.remove path;
   let raised, message = raises_with_message (fun () -> ignore (D.open_persistent_artrie path)) in
   check (raised && String.length message > 0) "io error raises with message"
@@ -165,7 +178,7 @@ let c4 () =
   let dat = D.double_array_trie entries in
   assert_fixture_reads dat;
   D.close dat;
-  let path = Filename.temp_file "ldict-ocaml-c4" ".part" in
+  let path = Filename.temp_file ~temp_dir:test_scratch "ldict-ocaml-c4" ".part" in
   Sys.remove path;
   let art = D.create_persistent_artrie path in
   Array.iter (fun (term, value) -> ignore (D.put art term value)) entries;

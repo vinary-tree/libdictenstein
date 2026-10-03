@@ -1,0 +1,68 @@
+{0 Libdictenstein for OCaml}
+
+This package provides native dictionaries and trie maps for exact lookup,
+snapshot-consistent iteration, set algebra, and approximate-search providers.
+The public module is {!module:Vinary_tree_libdictenstein}. Its resource can be
+passed to the independently packaged liblevenshtein OCaml binding.
+
+{1 First dictionary}
+
+Create a mutable Unicode-scalar DynamicDAWG and close it deterministically.
+An entry can be present without a value; [None] is not an absence marker.
+
+{[
+module D = Vinary_tree_libdictenstein
+
+let example () =
+  let words = D.dynamic_dawg () in
+  Fun.protect ~finally:(fun () -> D.close words) (fun () ->
+    ignore (D.put_many words [| ("cat", Some 1L); ("cot", None) |]);
+    let value = D.get words "cot" in
+    assert (value.found && value.value = None);
+    D.fold_entries words ~init:[]
+      ~f:(fun seen entry -> entry.key :: seen))
+]}
+
+{1 Selecting a backend and domain}
+
+{!Vinary_tree_libdictenstein.dynamic_dawg} supports byte, Unicode-scalar,
+and unsigned-64 token domains and accepts mutation. A double-array trie
+is read-optimized and immutable after construction. SCDAWG adds substring
+queries. Persistent ARTrie and vocabulary backends provide checkpoint/reopen.
+Check {!Vinary_tree_libdictenstein.capabilities} before invoking optional
+operations. The OCaml PathMap and typed suffix-index constructors currently
+report unsupported; they are not substitutes for the other backends.
+
+Text keys are OCaml [string] values validated as UTF-8 in the Unicode domain.
+Bytes keys may contain arbitrary octets. Unsigned-64 token keys are OCaml
+[int64 array] values whose bits are preserved, including values above the
+signed range. An optional value [Some 0L] is distinct from [None].
+
+{1 Snapshots and algebra}
+
+{!Vinary_tree_libdictenstein.with_entries_seq} scopes a lazy ordered sequence
+to one immutable revision and closes its native cursor even if the callback
+raises or returns early. Its entries are owned OCaml values. Do not return
+the lazy sequence from the callback. The eager reducer
+{!Vinary_tree_libdictenstein.fold_entries} offers the same snapshot law.
+
+Union, intersection, left difference, and symmetric difference each capture
+one immutable revision of both inputs and return a new mutable DynamicDAWG.
+Shared keys use an explicit optional-value policy. Close the result:
+
+{[
+let union_size left right =
+  let joined = D.union ~value_merge:D.Lattice_join left right in
+  Fun.protect ~finally:(fun () -> D.close joined)
+    (fun () -> D.length joined)
+]}
+
+{1 Errors and resource handoff}
+
+Native status failures raise OCaml [Failure] carrying a copied diagnostic;
+this facade does not expose a typed status exception. The producer's
+{!Vinary_tree_libdictenstein.resource} is retained independently by a
+consumer, so closing the original dictionary does not invalidate an
+already-captured query. For exact status, domain, and capability contracts,
+see the native ABI reference:
+https://github.com/vinary-tree/libdictenstein/blob/master/docs/bindings/c-abi-reference.md

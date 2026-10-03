@@ -357,11 +357,16 @@ jobs:
           parent="$(dirname "$GITHUB_WORKSPACE")"
           rel="$GITHUB_WORKSPACE/target/release"
           opam pin add --yes --no-action vinary-tree-interop "$parent/vinary-tree-interop/bindings/ocaml"
-          opam install --yes vinary-tree-interop yojson
+          opam install --yes vinary-tree-interop yojson odoc
           cd bindings/ocaml
           eval "$(opam env)"
           LIBRARY_PATH="$rel" LD_LIBRARY_PATH="$rel" \
             dune exec ./test/conformance.exe -- "$GITHUB_WORKSPACE/bindings/canonical_fixture.json"
+          LIBRARY_PATH="$rel" LD_LIBRARY_PATH="$rel" dune build @doc
+          test -f _build/default/_doc/_html/index.html
+          grep -Fq 'First dictionary' _build/default/_doc/_html/libdictenstein/index.html
+          test -f _build/default/_doc/_html/libdictenstein/Vinary_tree_libdictenstein/index.html
+          grep -Fq 'Native, snapshot-capable dictionary backends' _build/default/_doc/_html/libdictenstein/Vinary_tree_libdictenstein/index.html
 
   haskell:
     name: Haskell (C1-C10)

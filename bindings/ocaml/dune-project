@@ -1,5 +1,6 @@
 (lang dune 3.20)
 (name libdictenstein)
+(version 4.0.0~rc6)
 (generate_opam_files true)
 (source (github vinary-tree/libdictenstein))
 (authors "Dylon Edwards <dylon.devo@gmail.com>")
@@ -7,4 +8,4 @@
 (package
  (name libdictenstein)
  (synopsis "High-performance dictionaries and trie-maps for approximate string matching")
- (depends vinary-tree-interop))
+ (depends vinary-tree-interop (yojson :with-test)))
