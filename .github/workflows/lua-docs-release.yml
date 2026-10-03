@@ -1,0 +1,109 @@
+---
+name: Publish immutable Lua API reference
+
+# Run only after the reviewed RC.6 release has become immutable. The archive
+# must already be present among its assets before the release is published.
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: libdictenstein-pages-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Verify immutable archive, deploy, and read back Lua API
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    environment: github-release
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Lua 5.4 example syntax checker
+        run: sudo apt-get update && sudo apt-get install -y lua5.4
+      - name: Require exact tag and immutable release asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(jq -r '.publication.sourceTag' release/version.json)"
+          version="$(jq -r '.canonical' release/version.json)"
+          test "$GITHUB_REF" = "refs/tags/$tag"
+          asset="libdictenstein-lua-documentation-$version.tar.gz"
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag")"
+          jq -e --arg tag "$tag" --arg asset "$asset" '
+            .tag_name == $tag and .draft == false and .immutable == true and
+            ([.assets[] | select(.name == $asset and .state == "uploaded")]
+             | length) == 1
+          ' <<< "$release" >/dev/null
+          mkdir -p target/lua-docs-public-asset
+          gh release download "$tag" --pattern "$asset" \
+            --dir target/lua-docs-public-asset
+      - name: Rebuild from tagged source and compare exact archive bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest scripts.test_lua_api_reference
+          python3 scripts/lua_docs_archive.py
+          version="$(jq -r '.canonical' release/version.json)"
+          asset="libdictenstein-lua-documentation-$version.tar.gz"
+          cmp --silent "target/lua-docs-artifacts/$asset" \
+            "target/lua-docs-public-asset/$asset"
+      - name: Preserve Julia and immutable prior versions on gh-pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -r '.canonical' release/version.json)"
+          source="$PWD/target/lua-docs-stage/$version/lua"
+          git fetch --depth=1 origin gh-pages
+          live="$PWD/target/lua-docs-gh-pages"
+          git worktree add --detach "$live" FETCH_HEAD
+          test -f "$live/dev/index.html"
+          destination="$live/$version/lua"
+          if [ -e "$destination" ]; then
+            diff --recursive --brief "$source" "$destination"
+          else
+            mkdir -p "$(dirname "$destination")"
+            cp -a "$source" "$destination"
+          fi
+          git -C "$live" add --all
+          if ! git -C "$live" diff --cached --quiet; then
+            bot_email='41898282+github-actions[bot]@users.noreply.github.com'
+            git -C "$live" \
+              -c user.name='github-actions[bot]' \
+              -c user.email="$bot_email" \
+              commit -m "docs: publish immutable Lua API reference for $version"
+            git -C "$live" push origin HEAD:refs/heads/gh-pages
+          fi
+      - name: Compare public Pages bytes with immutable source
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -r '.canonical' release/version.json)"
+          source="$PWD/target/lua-docs-stage/$version/lua"
+          site="https://vinary-tree.github.io/libdictenstein/$version/lua"
+          for name in index.html documentation-manifest.json; do
+            ready=0
+            for attempt in $(seq 1 36); do
+              if curl --fail --silent --location "$site/$name" \
+                --output "$RUNNER_TEMP/lua-public-$name" && \
+                cmp --silent "$source/$name" \
+                  "$RUNNER_TEMP/lua-public-$name"; then
+                ready=1
+                break
+              fi
+              sleep 10
+            done
+            if [ "$ready" -ne 1 ]; then
+              echo "::error::Public Lua API differs at $site/$name" >&2
+              exit 1
+            fi
+          done
+          curl --fail --silent --location \
+            https://vinary-tree.github.io/libdictenstein/dev/ \
+            --output "$RUNNER_TEMP/julia-public.html"
+          grep -Fq 'High-performance dictionaries' \
+            "$RUNNER_TEMP/julia-public.html"

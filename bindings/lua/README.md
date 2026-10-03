@@ -6,6 +6,16 @@ package is `libdictenstein`; the module loads as
 DoubleArrayTrie construction, SCDAWG substring search, persistent ARTrie
 CRUD/checkpoint/reopen, and persistent vocabulary reverse lookup.
 
+The [versioned Lua API reference](https://vinary-tree.github.io/libdictenstein/4.0.0-rc.6/lua/)
+documents every exported constructor, method, and Lua traversal/operator
+protocol. Its generator verifies that the API inventory matches the C
+registration tables. An [executable quickstart](examples/quickstart.lua)
+demonstrates snapshot iteration and dictionary algebra:
+
+```sh
+lua5.4 bindings/lua/examples/quickstart.lua
+```
+
 The optional revision-8 PathMap and typed suffix-source index are **not**
 implemented by this statically linked Lua module. `pathmap()` and
 `suffix_index()` raise `UNSUPPORTED (status 6)` rather than substituting
@@ -179,7 +189,7 @@ serialization.
 | Dictionary handle | Owns one mutable or immutable backend instance and exposes kind/capability introspection. |
 | CRUD and batch mutation | Text and `u64` operations preserve optional values; empty-batch and partial-failure behavior follows the C reference. |
 | Persistent maintenance | `checkpoint`, `compact`, and `clear` are capability-gated and report unsupported operations explicitly. |
-| Retained resource | `resource()` lends `vt.dictionary.v1`; a consumer retains and snapshots it independently. |
+| Retained resource | The dictionary userdata is the `vinary-tree.dictionary.v1` resource; consumers retain and snapshot it independently. There is no `resource()` method. |
 | Snapshot | Immutable revision with stable node identifiers, exact domains, bounded edge pages, and optional mapped values. |
 
 Dynamic DAWG supports mutable finite-term dictionaries; double-array tries are

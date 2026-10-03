@@ -1,0 +1,71 @@
+{
+  "title": "libdictenstein Lua",
+  "repository": "https://github.com/vinary-tree/libdictenstein",
+  "summary": "Mutable, immutable, and persistent dictionaries with snapshot iteration, substring indexing, and dictionary algebra for Lua 5.4.",
+  "examples": [
+    {
+      "title": "Dictionary construction, iteration, and algebra",
+      "path": "bindings/lua/examples/quickstart.lua",
+      "description": "Build two dictionaries, preserve valueless membership, traverse an immutable revision, and union with an explicit mapped-value policy."
+    }
+  ],
+  "groups": [
+    {
+      "title": "Module functions",
+      "sourceArray": "functions",
+      "entries": [
+        {"name": "abi_version", "signature": "ld.abi_version()", "description": "Read the stable C ABI version for diagnostics and compatibility checks.", "returns": "Integer ABI version."},
+        {"name": "api_revision", "signature": "ld.api_revision()", "description": "Read the native API revision; optional facades must still negotiate their own support.", "returns": "Integer API revision."},
+        {"name": "dynamic_dawg", "signature": "ld.dynamic_dawg([domain])", "description": "Create a mutable DynamicDAWG; domain defaults to unicode and can also be byte or u64.", "returns": "Dictionary userdata."},
+        {"name": "double_array_trie", "signature": "ld.double_array_trie({{term[, value]}, ...}[, domain])", "description": "Bulk-build an immutable double-array trie from byte or Unicode terms; u64 keys are unsupported.", "returns": "Dictionary userdata."},
+        {"name": "scdawg", "signature": "ld.scdawg([domain])", "description": "Create a mutable substring-indexed dictionary for byte or Unicode terms; u64 keys are unsupported.", "returns": "Dictionary userdata."},
+        {"name": "pathmap", "signature": "ld.pathmap(...) (unsupported)", "description": "Explicitly reports UNSUPPORTED status 6; this Lua module does not link optional revision-8 PathMap symbols.", "returns": "Raises a Lua error."},
+        {"name": "suffix_index", "signature": "ld.suffix_index(...) (unsupported)", "description": "Explicitly reports UNSUPPORTED status 6; SCDAWG substring search is not a typed suffix-source snapshot.", "returns": "Raises a Lua error."},
+        {"name": "create_persistent_artrie", "signature": "ld.create_persistent_artrie(path[, domain])", "description": "Create a durable ARTrie for byte, Unicode, or u64 keys at path.", "returns": "Dictionary userdata."},
+        {"name": "open_persistent_artrie", "signature": "ld.open_persistent_artrie(path[, domain])", "description": "Reopen a durable ARTrie at path with the matching unit domain.", "returns": "Dictionary userdata."},
+        {"name": "create_persistent_vocabulary", "signature": "ld.create_persistent_vocabulary(path)", "description": "Create a durable Unicode vocabulary with reverse ID lookup.", "returns": "Dictionary userdata."},
+        {"name": "open_persistent_vocabulary", "signature": "ld.open_persistent_vocabulary(path)", "description": "Reopen a durable Unicode vocabulary at path.", "returns": "Dictionary userdata."}
+      ]
+    },
+    {
+      "title": "Dictionary methods",
+      "sourceArray": "dictionary_methods",
+      "entries": [
+        {"name": "close", "signature": "dictionary:close()", "description": "Release the handle; repeated calls are harmless. A consumer that already retained the resource keeps its independent revision.", "returns": "No value."},
+        {"name": "len", "signature": "dictionary:len()", "description": "Count terminal terms in the current dictionary revision.", "returns": "Nonnegative integer."},
+        {"name": "kind", "signature": "dictionary:kind()", "description": "Inspect backend kind: 1 DynamicDAWG, 2 DoubleArrayTrie, 3 SCDAWG, 4 ARTrie, 5 vocabulary.", "returns": "Integer kind."},
+        {"name": "capabilities", "signature": "dictionary:capabilities()", "description": "Inspect capability bits before using backend-specific mutation, substring, checkpoint, or compact operations.", "returns": "Integer bitmask."},
+        {"name": "put", "signature": "dictionary:put(term[, value])", "description": "Insert or update a byte/Unicode term; value may be nil, a nonnegative Lua integer, or a full-u64 decimal string.", "returns": "Boolean: true for new membership."},
+        {"name": "remove", "signature": "dictionary:remove(term)", "description": "Remove a byte/Unicode term when the backend supports deletion.", "returns": "Boolean: true if membership was removed."},
+        {"name": "get", "signature": "dictionary:get(term)", "description": "Look up a byte/Unicode term without conflating valueless membership with absence or zero.", "returns": "{found=boolean[, value=integer_or_decimal_string]}."},
+        {"name": "contains", "signature": "dictionary:contains(term)", "description": "Test byte/Unicode membership without retrieving a mapped value.", "returns": "Boolean."},
+        {"name": "put_u64", "signature": "dictionary:put_u64({token, ...}[, value])", "description": "Insert or update a u64-token key. Tokens and values above math.maxinteger are decimal strings.", "returns": "Boolean: true for new membership."},
+        {"name": "remove_u64", "signature": "dictionary:remove_u64({token, ...})", "description": "Remove a u64-token key.", "returns": "Boolean: true if removed."},
+        {"name": "get_u64", "signature": "dictionary:get_u64({token, ...})", "description": "Retrieve optional value for a u64-token key.", "returns": "{found=boolean[, value=integer_or_decimal_string]}."},
+        {"name": "contains_u64", "signature": "dictionary:contains_u64({token, ...})", "description": "Test u64-token membership.", "returns": "Boolean."},
+        {"name": "term", "signature": "dictionary:term(index)", "description": "Reverse-lookup a string term by vocabulary ID; unsupported on other backends.", "returns": "String or nil."},
+        {"name": "entries", "signature": "dictionary:entries([limits])", "description": "Materialize one immutable lexicographically ordered snapshot. limits may set positive max_entries, max_units, and max_values.", "returns": "Snapshot table with metadata and pairs(snapshot) yielding key, value, has_value."},
+        {"name": "entry_cursor", "signature": "dictionary:entry_cursor([limits])", "description": "Open a bounded snapshot cursor with the same positive limits; close after early stop.", "returns": "EntryCursor userdata."},
+        {"name": "entries_iter", "signature": "dictionary:entries_iter([limits])", "description": "Create a Lua 5.4 generic-for iterator over one captured revision. The closing variable owns the cursor on break or error.", "returns": "Generic-for iterator tuple."},
+        {"name": "algebra", "signature": "left:algebra(right, operation[, value_policy])", "description": "Apply union, intersection, difference, or symmetric_difference to independent input snapshots of the same unit domain.", "returns": "New mutable DynamicDAWG."},
+        {"name": "union", "signature": "left:union(right[, value_policy])", "description": "Union of independent snapshots; default collision policy last/right.", "returns": "New mutable DynamicDAWG."},
+        {"name": "intersection", "signature": "left:intersection(right[, value_policy])", "description": "Intersection of independent snapshots; default collision policy lattice_meet.", "returns": "New mutable DynamicDAWG."},
+        {"name": "difference", "signature": "left:difference(right)", "description": "Terms present in left but absent from right; values follow left.", "returns": "New mutable DynamicDAWG."},
+        {"name": "symmetric_difference", "signature": "left:symmetric_difference(right)", "description": "Terms present in exactly one input snapshot; values follow their source side.", "returns": "New mutable DynamicDAWG."},
+        {"name": "clear", "signature": "dictionary:clear()", "description": "Remove all terms when the backend advertises clear capability.", "returns": "No value."},
+        {"name": "compact", "signature": "dictionary:compact()", "description": "Reclaim obsolete representation space when supported; not a durability checkpoint.", "returns": "Number of reclaimed units."},
+        {"name": "checkpoint", "signature": "dictionary:checkpoint()", "description": "Flush a persistent backend to its durable checkpoint when supported.", "returns": "No value."},
+        {"name": "contains_substring", "signature": "dictionary:contains_substring(pattern)", "description": "Test substring occurrence in an SCDAWG dictionary.", "returns": "Boolean."},
+        {"name": "frequency", "signature": "dictionary:frequency(pattern)", "description": "Count substring occurrences in an SCDAWG dictionary.", "returns": "Nonnegative integer."}
+      ]
+    }
+  ],
+  "protocols": [
+    {"name": "local dictionary <close> = ...", "sourceMarker": "lua_setfield(state, -2, \"__close\")", "description": "Lua 5.4 lexical cleanup deterministically closes dictionary and entry-cursor userdata; __gc is only a fallback."},
+    {"name": "cursor:next()", "sourceMarker": "lua_setfield(state, -2, \"next\")", "description": "Returns key, value, has_value, or no values at end. Metadata includes unit_domain, value_domain, optional exact_length and snapshot_identity."},
+    {"name": "for key, value, has_value in dictionary:entries_iter() do", "sourceMarker": "lua_pushcfunction(state, next_entry_cursor)", "description": "The fourth generic-for result is a Lua 5.4 closing cursor, so early break and errors release the snapshot."},
+    {"name": "pairs(dictionary:entries())", "sourceMarker": "lua_setfield(state, -2, \"__pairs\")", "description": "Iterate a materialized immutable snapshot in native lexicographic order."},
+    {"name": "left | right; left & right; left - right; left ~ right", "sourceMarker": "lua_setfield(state, -2, \"__bxor\")", "description": "Operator aliases for union, intersection, difference, and symmetric difference, with the corresponding default value policies."},
+    {"name": "first / last / lattice_join / lattice_meet", "sourceMarker": "LDICT_VALUE_MERGE_LATTICE_JOIN", "description": "Optional-u64 collision policy for keys present in both inputs; valueless membership is distinct from absence."}
+  ]
+}

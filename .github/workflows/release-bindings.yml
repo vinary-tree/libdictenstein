@@ -521,6 +521,10 @@ jobs:
           name: native-x86_64-unknown-linux-gnu
           path: dist
       - run: luarocks lint bindings/lua/libdictenstein-4.0.0rc6-1.rockspec
+      - name: Check complete Lua API docs and stage immutable reference archive
+        run: |
+          python3 -m unittest scripts.test_lua_api_reference
+          python3 scripts/lua_docs_archive.py
       - name: Build the rock against the staged native SDK and run its public facade
         shell: bash
         run: |
@@ -533,10 +537,17 @@ jobs:
             LIBDICTENSTEIN_LIBDIR="$package_root/lib"
           LUA_CPATH="$rock_tree/lib/lua/5.4/?.so;;" \
             lua5.4 bindings/lua/test/conformance.lua
+          LUA_CPATH="$rock_tree/lib/lua/5.4/?.so;;" \
+            lua5.4 bindings/lua/examples/quickstart.lua
       - uses: actions/upload-artifact@v7
         with:
           name: luarocks-package
           path: bindings/lua/*.rockspec
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: lua-documentation-package
+          path: target/lua-docs-artifacts/*.tar.gz
           if-no-files-found: error
 
   crates-io:
@@ -726,13 +737,59 @@ jobs:
     runs-on: ubuntu-24.04
     environment: luarocks
     steps:
+      - uses: actions/checkout@v6
+        with: { persist-credentials: false }
       - run: sudo apt-get update && sudo apt-get install -y luarocks
       - name: Install LuaRocks' JSON transport dependency
         run: sudo luarocks install dkjson
       - uses: actions/download-artifact@v7
         with: { name: luarocks-package, path: dist }
-      - run: luarocks upload dist/*.rockspec --temp-key "$LUAROCKS_API_KEY"
+      - name: Require the published versioned Lua API before metadata upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -r '.canonical' release/version.json)"
+          docs="https://vinary-tree.github.io/libdictenstein/$version/lua/"
+          expected="dist/libdictenstein-$(jq -r '.registries.luaRocks' release/version.json).rockspec"
+          grep -Fq "$docs" "$expected"
+          curl --fail --silent --show-error --location "$docs" \
+            --output "$RUNNER_TEMP/libdictenstein-lua-docs.html"
+          grep -Fq 'ld.dynamic_dawg' "$RUNNER_TEMP/libdictenstein-lua-docs.html"
+          grep -Fq 'Common usage' "$RUNNER_TEMP/libdictenstein-lua-docs.html"
+          grep -Fq 'dictionary:entries_iter' "$RUNNER_TEMP/libdictenstein-lua-docs.html"
+      - name: Upload exact LuaRocks metadata
+        shell: bash
         env: { LUAROCKS_API_KEY: "${{ secrets.LUAROCKS_API_KEY }}" }
+        run: |
+          set -euo pipefail
+          rock_version="$(jq -r '.registries.luaRocks' release/version.json)"
+          luarocks upload "dist/libdictenstein-$rock_version.rockspec" \
+            --temp-key "$LUAROCKS_API_KEY"
+      - name: Read back public rockspec and linked guide
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -r '.canonical' release/version.json)"
+          rock_version="$(jq -r '.registries.luaRocks' release/version.json)"
+          expected="dist/libdictenstein-$rock_version.rockspec"
+          registry="https://luarocks.org/manifests/dylon/libdictenstein-$rock_version.rockspec"
+          page='https://luarocks.org/modules/dylon/libdictenstein'
+          docs="https://vinary-tree.github.io/libdictenstein/$version/lua/"
+          public="$RUNNER_TEMP/libdictenstein-public.rockspec"
+          html="$RUNNER_TEMP/libdictenstein-luarocks.html"
+          for attempt in $(seq 1 36); do
+            if curl --fail --silent --location "$registry" --output "$public" && \
+              cmp --silent "$expected" "$public" && \
+              curl --fail --silent --location "$page" --output "$html" && \
+              grep -Fq "$rock_version" "$html" && \
+              grep -Fq "$docs" "$html"; then
+              echo 'Public LuaRocks metadata and versioned guide verified.'
+              exit 0
+            fi
+            sleep 10
+          done
+          echo '::error::Public LuaRocks metadata or guide differs from the staged source.' >&2
+          exit 1
 
   github-release:
     name: Publish GitHub release and checksums
@@ -779,6 +836,8 @@ jobs:
         with: { name: hackage-package, path: staged-assets/hackage }
       - uses: actions/download-artifact@v7
         with: { name: luarocks-package, path: staged-assets/luarocks }
+      - uses: actions/download-artifact@v7
+        with: { name: lua-documentation-package, path: staged-assets/documentation }
       - uses: actions/download-artifact@v7
         with: { name: opam-package, path: staged-assets/opam }
       - uses: actions/download-artifact@v7

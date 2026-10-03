@@ -252,6 +252,12 @@ retained snapshot and closes it after full drain. For an early stop, obtain
 only contains an abandoned iterator."""
     else:
         raise AssertionError(f"collection documentation is missing for {g.name}")
+    retained_resource = (
+        "The dictionary userdata is the `vinary-tree.dictionary.v1` resource; "
+        "consumers retain and snapshot it independently. There is no `resource()` method."
+        if g.name == "Lua"
+        else "`resource()` lends `vt.dictionary.v1`; a consumer retains and snapshots it independently."
+    )
     return f"""{MARKER}
 
 ## Support and package contract
@@ -303,7 +309,7 @@ serialization.
 | Dictionary handle | Owns one mutable or immutable backend instance and exposes kind/capability introspection. |
 | CRUD and batch mutation | Text and `u64` operations preserve optional values; empty-batch and partial-failure behavior follows the C reference. |
 | Persistent maintenance | `checkpoint`, `compact`, and `clear` are capability-gated and report unsupported operations explicitly. |
-| Retained resource | `resource()` lends `vt.dictionary.v1`; a consumer retains and snapshots it independently. |
+| Retained resource | {retained_resource} |
 | Snapshot | Immutable revision with stable node identifiers, exact domains, bounded edge pages, and optional mapped values. |
 
 Dynamic DAWG supports mutable finite-term dictionaries; double-array tries are

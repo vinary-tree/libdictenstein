@@ -58,14 +58,15 @@ the checksummed GitHub prerelease. Later publication dispatches must choose one
 `registry` value; branch dispatches fail the contract job.
 
 ```bash
+tag=$(jq -er '.publication.sourceTag' release/version.json)
 gh workflow run release-bindings.yml \
   --repo vinary-tree/libdictenstein \
-  --ref v4.0.0-rc.6 \
+  --ref "$tag" \
   -f registry=validate-only
 
 gh workflow run release-bindings.yml \
   --repo vinary-tree/libdictenstein \
-  --ref v4.0.0-rc.6 \
+  --ref "$tag" \
   -f registry=npm
 ```
 
@@ -147,6 +148,28 @@ repository's protected `luarocks` environment; do not share the
 job uses `--temp-key`, which authenticates this invocation without persisting
 the secret in the runner's LuaRocks configuration. Required-reviewer protection
 remains the human authorization boundary for each upload.
+
+After `validate-only` has published the immutable release, run the protected
+Lua documentation deployment from that exact source tag and wait for its
+public-byte readback to pass **before** selecting the `luarocks` registry job:
+
+```bash
+tag=$(jq -er '.publication.sourceTag' release/version.json)
+gh workflow run lua-docs-release.yml \
+  --repo vinary-tree/libdictenstein --ref "$tag"
+# Review the workflow result and its exact public Pages readback first.
+gh workflow run release-bindings.yml \
+  --repo vinary-tree/libdictenstein --ref "$tag" -f registry=luarocks
+```
+
+The release stages `libdictenstein-lua-documentation-4.0.0-rc.6.tar.gz`
+before publication. The documentation workflow accepts only that asset from
+an immutable release, rebuilds it byte-for-byte from the tag, preserves the
+existing Julia development site and all prior version directories, and
+compares the served Lua index and manifest with the archive. The LuaRocks job
+then requires the exact versioned guide before upload and reads back the
+public rockspec bytes and package-page link; neither a successful upload nor
+an HTTP 200 alone is documentation evidence.
 
 The source rock deliberately treats the native SDK as an external dependency.
 Its module paths use `LIBDICTENSTEIN_INCDIR` and
