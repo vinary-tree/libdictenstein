@@ -576,6 +576,47 @@ def go_publication_wait_gate_failures(
     return failures
 
 
+def release_guide_identity_failures(
+    model: dict[str, object], versions: dict[str, str], guide: str
+) -> list[str]:
+    """Check the live operator identity, not historical release narratives."""
+
+    heading = "## Identity and prerequisites\n"
+    if guide.count(heading) != 1:
+        return ["release operator guide has no unique live identity section"]
+    preface, remainder = guide.split(heading, 1)
+    identity = remainder.split("\n## ", 1)[0]
+    canonical = str(model["canonical"])
+    publication = model["publication"]
+    assert isinstance(publication, dict)
+    source_tag = str(publication["sourceTag"])
+    go_tag = versions["goTag"]
+    checks = (
+        (
+            f"libdictenstein's `{canonical}` source" in preface,
+            "release operator guide uses a stale canonical version",
+        ),
+        (
+            re.search(rf"\bsource tag is\s+`{re.escape(source_tag)}`", identity)
+            is not None,
+            "release operator guide uses a stale source tag",
+        ),
+        (
+            re.search(
+                rf"\bGo module tag is\s+`bindings/go/{re.escape(go_tag)}`",
+                identity,
+            )
+            is not None,
+            "release operator guide uses a stale Go module tag",
+        ),
+        (
+            f"`@vinary-tree/libdictenstein@{versions['npm']}`" in guide,
+            "release operator guide uses a stale npm package version",
+        ),
+    )
+    return [message for valid, message in checks if not valid]
+
+
 def validate(model: dict[str, object], versions: dict[str, str]) -> list[str]:
     failures: list[str] = []
     if model.get("registries") != versions:
@@ -807,15 +848,9 @@ def validate(model: dict[str, object], versions: dict[str, str]) -> list[str]:
     failures.extend(
         go_publication_wait_gate_failures(model, versions, go_mod, release_workflow)
     )
-    release_guide = text("docs/releasing.md")
-    current_release_markers = (
-        f"libdictenstein's `{canonical}` source",
-        f"release tag is `{versions['goTag']}`",
-        f"additional subdirectory tag `bindings/go/{versions['goTag']}`",
-        f"`@vinary-tree/libdictenstein@{versions['npm']}`",
+    failures.extend(
+        release_guide_identity_failures(model, versions, text("docs/releasing.md"))
     )
-    if any(marker not in release_guide for marker in current_release_markers):
-        failures.append("release operator guide uses stale live release identity")
     cabal = text("bindings/haskell/libdictenstein.cabal")
     if f"x-release-candidate: rc.{candidate}" not in cabal:
         failures.append("Hackage source candidate marker is missing")

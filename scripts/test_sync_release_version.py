@@ -113,5 +113,52 @@ class GoPublicationWaitGateTests(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), original)
 
 
+class ReleaseGuideIdentityTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.model = json.loads(
+            (ROOT / "release/version.json").read_text(encoding="utf-8")
+        )
+        cls.versions = SYNC.derived(
+            str(cls.model["canonical"]),
+            cls.model["publication"]["luaRocksRevision"],
+        )
+        cls.guide = (ROOT / "docs/releasing.md").read_text(encoding="utf-8")
+
+    def failures(self, guide: str) -> list[str]:
+        return SYNC.release_guide_identity_failures(
+            self.model, self.versions, guide
+        )
+
+    def test_current_corrective_source_and_go_tags_are_distinct(self) -> None:
+        self.assertEqual(self.failures(self.guide), [])
+
+    def test_stale_source_tag_is_rejected_even_if_current_tag_appears_later(self) -> None:
+        source_tag = self.model["publication"]["sourceTag"]
+        changed = self.guide.replace(
+            f"source tag is\n`{source_tag}`",
+            "source tag is\n`v4.0.0-rc.6-release.0`",
+            1,
+        )
+        self.assertNotEqual(changed, self.guide)
+        self.assertIn("release operator guide uses a stale source tag", self.failures(changed))
+
+    def test_stale_go_module_tag_is_rejected(self) -> None:
+        changed = self.guide.replace(
+            f"Go module tag is\n`bindings/go/{self.versions['goTag']}`",
+            "Go module tag is\n`bindings/go/v4.0.0-rc.5`",
+            1,
+        )
+        self.assertNotEqual(changed, self.guide)
+        self.assertIn("release operator guide uses a stale Go module tag", self.failures(changed))
+
+    def test_missing_live_identity_section_is_rejected(self) -> None:
+        changed = self.guide.replace("## Identity and prerequisites", "## Prerequisites", 1)
+        self.assertIn(
+            "release operator guide has no unique live identity section",
+            self.failures(changed),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

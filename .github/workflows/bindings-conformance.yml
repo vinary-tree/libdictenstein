@@ -433,6 +433,7 @@ jobs:
         env:
           VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/../vinary-tree-interop
         run: |
+          mkdir -p "$GITHUB_WORKSPACE/target/managed-api-docs"
           swift package \
             --package-path bindings/swift/libdictenstein \
             --allow-writing-to-directory "$GITHUB_WORKSPACE/target/managed-api-docs/swift" \
