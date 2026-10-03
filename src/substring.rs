@@ -247,11 +247,13 @@ pub trait SubstringDictionary: Dictionary {
     /// Borrow the next complete term from one retained snapshot revision.
     ///
     /// Initialize `cursor` to zero, then pass the same root and cursor to
-    /// successive calls until this returns `None`. Terms appear once each in
-    /// the same order as `find_exact_substring_in_snapshot(root, "")`; removed
-    /// terms are skipped. The returned borrow is tied to the snapshot root,
-    /// not to a mutable dictionary or the cursor. This lets consumers reject
-    /// a candidate by length or distance before allocating its owned result.
+    /// successive calls until this returns `None`. Active source records appear
+    /// in the same order as `find_exact_substring_in_snapshot(root, "")`;
+    /// backends that retain duplicate source records may return the same text
+    /// more than once. Removed records are skipped. The returned borrow is tied
+    /// to the snapshot root, not to a mutable dictionary or the cursor. This
+    /// lets consumers reject a candidate by length or distance before
+    /// allocating its owned result.
     ///
     /// Implementations must advance in amortized constant time per stored
     /// record, retain no per-query collection of terms, and never visit a

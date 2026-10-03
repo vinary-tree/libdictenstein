@@ -116,6 +116,60 @@ mod persistent {
     }
 
     #[test]
+    fn suffix_tree_cursors_preserve_duplicate_source_records_in_snapshot_order() {
+        let byte =
+            PersistentSuffixTree::<()>::from_texts(["first", "duplicate", "duplicate", "last"]);
+        let byte_before = byte.root();
+        assert_borrowed_cursor_matches_empty_search::<PersistentSuffixTree<()>>(&byte_before);
+        let mut cursor = 0;
+        let before: Vec<_> = std::iter::from_fn(|| {
+            PersistentSuffixTree::<()>::next_complete_term_in_snapshot(&byte_before, &mut cursor)
+                .map(str::to_owned)
+        })
+        .collect();
+        assert_eq!(before, ["first", "duplicate", "duplicate", "last"]);
+        assert!(byte.remove("duplicate"));
+        let byte_after = byte.root();
+        assert_borrowed_cursor_matches_empty_search::<PersistentSuffixTree<()>>(&byte_after);
+        let mut cursor = 0;
+        let after: Vec<_> = std::iter::from_fn(|| {
+            PersistentSuffixTree::<()>::next_complete_term_in_snapshot(&byte_after, &mut cursor)
+                .map(str::to_owned)
+        })
+        .collect();
+        assert_eq!(after, ["first", "duplicate", "last"]);
+
+        let unicode = PersistentSuffixTreeChar::<()>::from_texts(["first", "βeta", "βeta", "last"]);
+        let unicode_before = unicode.root();
+        assert_borrowed_cursor_matches_empty_search::<PersistentSuffixTreeChar<()>>(
+            &unicode_before,
+        );
+        let mut cursor = 0;
+        let before: Vec<_> = std::iter::from_fn(|| {
+            PersistentSuffixTreeChar::<()>::next_complete_term_in_snapshot(
+                &unicode_before,
+                &mut cursor,
+            )
+            .map(str::to_owned)
+        })
+        .collect();
+        assert_eq!(before, ["first", "βeta", "βeta", "last"]);
+        assert!(unicode.remove("βeta"));
+        let unicode_after = unicode.root();
+        assert_borrowed_cursor_matches_empty_search::<PersistentSuffixTreeChar<()>>(&unicode_after);
+        let mut cursor = 0;
+        let after: Vec<_> = std::iter::from_fn(|| {
+            PersistentSuffixTreeChar::<()>::next_complete_term_in_snapshot(
+                &unicode_after,
+                &mut cursor,
+            )
+            .map(str::to_owned)
+        })
+        .collect();
+        assert_eq!(after, ["first", "βeta", "last"]);
+    }
+
+    #[test]
     fn byte_scdawg_searches_one_retained_revision() {
         let dictionary = PersistentScdawg::<()>::from_terms(["abcd"]);
         let snapshot = dictionary.root();
