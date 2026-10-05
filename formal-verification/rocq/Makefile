@@ -16,6 +16,7 @@ INVARIANT_FILES = Invariants/StructuralInvariants.v Invariants/TransitionInvaria
 OPERATION_FILES = # Operations/Lookup.v Operations/Insert.v Operations/Delete.v
 PROOF_FILES = Proofs/MapRefinement.v Proofs/StructuralPreservation.v Proofs/ByzantineRecovery.v Proofs/CertifiedReference.v Proofs/HotStuffSafety.v Proofs/ProofCarryingExtraction.v Proofs/FileSystemSafety.v # Proofs/TransitionCorrectness.v
 
+SPEC_FILES += Spec/OverlayArcOwnershipSpec.v
 # All source files
 VFILES = $(MODEL_FILES) $(SPEC_FILES) $(INVARIANT_FILES) $(OPERATION_FILES) $(PROOF_FILES) WorkerLifecycle.v
 
