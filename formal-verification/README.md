@@ -147,6 +147,7 @@ formal-verification/
     │   ├── MapSpec.v          # Abstract map specification
     │   ├── DictionaryLawSpec.v # Public dictionary/set/map/bijection laws
     │   ├── DynamicDawgMutationSpec.v # DynamicDawg mutation/compaction laws
+    │   ├── SortedDawgBuilderSpec.v # Sorted bulk-builder residual languages
     │   ├── DynamicDawgU64Spec.v # u64 sequence DAWG semantics and adapters
     │   ├── DoubleArrayTrieSpec.v # BASE/CHECK DAT construction/traversal laws
     │   ├── ZipperLanguageSpec.v # Traversal-language equivalence laws
@@ -436,6 +437,17 @@ RUN_MIRI=1 RUN_IO_URING=1 FORMAL_MIRI_TOOLCHAIN=nightly scripts/verify-formal-co
    insert-with-value, update-or-insert, remove, compact, minimize, extend, and
    remove-many preserve reference set/map semantics and return-value laws
    — see `Spec/DynamicDawgMutationSpec.v`
+   The sorted bulk builder additionally shares a state only when its finality
+   and labeled child identities agree. `Spec/SortedDawgBuilderSpec.v` proves
+   that this signature rule preserves the accepted suffix language, that
+   merging only valueless nodes preserves mapped lookup, and that prefixes
+   with different suffix languages cannot share a state in any correct
+   deterministic dictionary. The bounded property tests in
+   `tests/sorted_bulk_builder_properties.rs` compare both bulk constructors
+   against the input language and its number of distinct residual languages
+   for byte, Unicode-scalar, and packed-`u64` units. For packed `u64`, the
+   reference keys are encoded unit sequences because different strings can
+   have the same zero-padded encoding.
 8. **DynamicDawgU64 Sequence Semantics**: u64 sequence insert,
    insert-with-value, update-or-insert, remove, adapters, iterators, zippers,
    and bounded snapshot-concurrency checks refine reference set/map semantics
@@ -589,6 +601,7 @@ introduced in the L-campaign and eviction work.
 | MapSpec.v | Complete | Abstract map specification |
 | DictionaryLawSpec.v | Complete | Public exact-set, mapped-dictionary, zipper, trace replay, and bijective dictionary laws |
 | DynamicDawgMutationSpec.v | Complete | DynamicDawg insert/update/remove, batch, compaction, minimization, return-value, and valued-domain consistency laws |
+| SortedDawgBuilderSpec.v | Complete (focused Rocq check) | Equal signatures preserve right languages, valueless merges preserve mapped lookup, different residual languages require different deterministic states, and sorting and duplicates preserve set membership |
 | DynamicDawgU64Spec.v | Complete | u64 sequence set/map mutation laws, string/f64 adapter refinement, iterator/zipper exactness, and bounded snapshot-concurrency boundaries |
 | DoubleArrayTrieSpec.v | Complete | Generic BASE/CHECK transition, traversal, normalization, and lookup/domain refinement laws for byte and Unicode DATs |
 | ZipperLanguageSpec.v | Complete | Zipper traversal-language, valued lookup, prefix/excluding, and set-combinator laws |
@@ -694,6 +707,7 @@ This full spec↔Rust correspondence table is the authoritative source for the
 | `ReplicatedMapSpec.v` | command-log replay model exercised by trace correspondence tests |
 | `DictionaryLawSpec.v` | `tests/dictionary_law_correspondence.rs`, public `Dictionary` / `MappedDictionary` / zipper / bijective APIs, and SCDAWG exact-value storage |
 | `DynamicDawgMutationSpec.v` | `src/dynamic_dawg/core.rs`, `src/dynamic_dawg/{ascii,char}.rs`, and `tests/dynamic_dawg_mutation_correspondence.rs` for byte/Unicode DynamicDawg mutation, batch, compaction, minimization, value preservation, and copy-on-write shared-node updates |
+| `SortedDawgBuilderSpec.v` | `src/dynamic_dawg/lockfree.rs` (`SortedDawgBuilder`, `MergeSignature`) and `tests/sorted_bulk_builder_properties.rs` for byte/Unicode/packed-`u64` accepted-language and minimal-state correspondence; concrete Rust interning is checked on generated bounded inputs, not deductively proved by the abstract Rocq model |
 | `DynamicDawgU64Spec.v` | `src/dynamic_dawg/u64.rs`, `src/dynamic_dawg/u64_zipper.rs`, and `tests/dynamic_dawg_u64_correspondence.rs` for u64 sequence mutation, value preservation, string/f64 adapter refinement, iterator/zipper exactness, and bounded read-snapshot safety |
 | `DoubleArrayTrieSpec.v` | `tests/double_array_trie_correspondence.rs`, byte and Unicode `DoubleArrayTrie` construction, lookup, child traversal, zipper values, and duplicate normalization |
 | `ZipperLanguageSpec.v` | `tests/zipper_language_correspondence.rs`, public `DictZipper` / `ValuedDictZipper` traversal, iterator, prefix/excluding, set-combinator, value-diff, suffix, SCDAWG, and persistent zipper APIs |
