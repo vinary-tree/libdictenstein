@@ -1,0 +1,10 @@
+witness_id	domain	target	observation_boundary
+DAWG_PROP_ACYCLIC	rust	constructed_and_rewritten_byte_dawgs_admit_an_acyclic_rank	Checks source-created graphs, not manually fabricated invalid Arc cycles
+DAWG_PROP_SHARED_DAG	rust	separate_shared_dag_edges_own_separate_strong_tokens	Checks physical edge-token multiplicity; generated_shared_dag_retains_then_reclaims_each_payload_once checks destruction
+DAWG_PROP_RETAINED_ROOT	rust	published_and_captured_roots_remain_distinct_owners_across_clear	Checks published and captured strong owners across revision replacement
+DAWG_PROP_SHARED_RACE	rust	shared_edge_race_does_not_nest_child_drop_on_parent_stack	Channel-controlled actual-library shared-edge/last-owner interleaving
+DAWG_PROP_STACK_BOUND	rust	shared_edge_race_does_not_nest_child_drop_on_parent_stack	Checks same-thread Drop nesting for the disputed interleaving; existing 100000-depth tests cover sequential deep paths
+DAWG_PROP_COMPLETE_RECLAIM	rust	generated_shared_dag_retains_then_reclaims_each_payload_once	Checks complete destruction after all retained handles release
+DAWG_PROP_EXACT_ONCE	rust	generated_shared_dag_retains_then_reclaims_each_payload_once	Checks each generated payload is destroyed exactly once
+DAWG_PROP_MODEL_REPLAY	formal	scripts/verify-rsdict-byte-dawg-drop-formal.sh	Checks TLA state predicates; model state has no one-to-one public Rust observation
+DAWG_PROP_UNSAFE_CONTROL	rust	try_unwrap_err_drop_control_nests_after_concurrent_last_release	Permanent test-only negative control expects two nested frames; pre-fix actual-library log records the corresponding red assertion

@@ -5,14 +5,17 @@ repo_root="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 cd "$repo_root"
 sha256sum -c formal-verification/rocq/byte-dawg-drop-qualification.sources
 perl - formal-verification/rocq/byte-dawg-drop-qualification-ledger.tsv \
+  formal-verification/rocq/byte-dawg-drop-runtime-witnesses.tsv \
   formal-verification/rocq/Spec/LockFreeDawgDropSpec.v \
   formal-verification/tla+/LockFreeDawgDropRace.tla \
+  src/dynamic_dawg/lockfree.rs \
   formal-verification/tla+/LockFreeDawgDropRace_Safe.cfg \
   formal-verification/tla+/LockFreeDawgDropRace_SafeShared.cfg \
   formal-verification/tla+/LockFreeDawgDropRace_TryUnwrapUnsafe.cfg <<'PERL'
 use strict;
 use warnings;
-my ($ledger_path, $rocq_path, $tla_path, @configs) = @ARGV;
+my ($ledger_path, $witness_path, $rocq_path, $tla_path, $rust_path,
+    @configs) = @ARGV;
 sub fail { die "byte-DAWG ledger: $_[0]\n" }
 sub lines {
   my ($path) = @_;
@@ -44,6 +47,26 @@ for my $line (@ledger) {
   !$set->{$symbol}++ or fail("duplicate $kind $symbol");
   $witnesses{$witness}++; $controls{$control}++;
 }
+my %witness_map;
+my @witness_rows = lines($witness_path);
+shift(@witness_rows) eq join("\t", qw(witness_id domain target observation_boundary))
+  or fail('bad witness-map header');
+my $rust_source = join("\n", lines($rust_path));
+for my $line (@witness_rows) {
+  my @f = split /\t/, $line, -1;
+  @f == 4 or fail("wrong witness-map field count: $line");
+  my ($id, $domain, $target, $boundary) = @f;
+  !$witness_map{$id}++ or fail("duplicate witness-map ID $id");
+  $boundary =~ /[A-Za-z]/ or fail("unexplained witness-map ID $id");
+  if ($domain eq 'rust') {
+    $target =~ /^[a-z][a-z0-9_]*$/ or fail("bad Rust test name for $id");
+    $rust_source =~ /\bfn\s+\Q$target\E\s*\(/
+      or fail("Rust test $target for $id is absent");
+  } elsif ($domain eq 'formal') {
+    -x $target or fail("formal verifier $target for $id is absent or not executable");
+  } else { fail("unknown witness domain $domain for $id") }
+}
+equal_sets('runtime/formal witness IDs', \%witness_map, \%witnesses);
 my %rocq_source;
 for (lines($rocq_path)) {
   next unless /^(?:Theorem|Corollary)\s+(RSDICT_DAWG_\d{3}_[A-Za-z0-9_]+)\s*:/;
