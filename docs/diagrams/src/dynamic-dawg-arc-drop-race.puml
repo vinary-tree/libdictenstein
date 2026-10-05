@@ -1,0 +1,30 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam sequenceArrowColor #34495E
+skinparam sequenceLifeLineBorderColor #5D6D7E
+skinparam sequenceLifeLineBackgroundColor #F8F9F9
+skinparam noteBackgroundColor #FFF3CD
+skinparam noteBorderColor #B9770E
+title Concurrent child Arc release
+
+participant "Parent Drop\n(dropper thread)" as Parent #D6EAF8
+participant "Child Arc\n(strong count)" as Child #E8DAEF
+participant "Retained owner\n(releaser thread)" as Holder #D5F5E3
+
+alt Previous try_unwrap / Err
+  Parent -> Child: try_unwrap: 2 owners
+  Child --> Parent: Err(edge): token retained
+  Holder -> Child: drop retained: 2 to 1
+  Parent -> Child: drop Err: 1 to 0
+  Child -> Parent: enter child Drop here
+  note over Parent #FADBD8: Repetition grows the native stack.
+else Corrected into_inner
+  Parent -> Child: into_inner: 2 to 1
+  Child --> Parent: None: token consumed
+  Holder -> Child: drop retained: 1 to 0
+  Holder -> Holder: child Drop uses a work loop
+  note over Parent,Holder #D5F5E3: No nested child Drop on parent stack.
+end
+@enduml

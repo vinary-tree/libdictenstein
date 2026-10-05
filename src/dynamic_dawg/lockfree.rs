@@ -632,12 +632,15 @@ impl<U: CharUnit, V: DictionaryValue> Drop for LockFreeDawgNode<U, V> {
 impl<U: CharUnit, V: DictionaryValue> LockFreeDawgNode<U, V> {
     #[inline]
     fn take_child_for_drop(child: Arc<Self>) -> Option<Self> {
-        let result = Arc::try_unwrap(child);
+        // Unlike dropping Arc::try_unwrap's Err, the None branch consumes its
+        // strong token before returning. A concurrent last-owner release
+        // therefore cannot enter this child's Drop below the current frame.
+        let result = Arc::into_inner(child);
         #[cfg(test)]
-        if result.is_err() {
+        if result.is_none() {
             drop_test_shared_edge_decided();
         }
-        result.ok()
+        result
     }
 }
 
@@ -2118,6 +2121,31 @@ mod tests {
         assert_eq!(Arc::strong_count(&parent.edges.edges[0].1), 2);
         drop(parent);
         assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn shared_child_reclamation_uses_one_kernel_for_byte_char_and_u64() {
+        fn check<U: CharUnit>(first: U, second: U) {
+            let leaf = Arc::new(LockFreeDawgNode::<U, ()>::new(true));
+            let weak = Arc::downgrade(&leaf);
+            let mut edges = LockFreeEdges::new();
+            edges.push((first, leaf.clone()));
+            edges.push((second, leaf.clone()));
+            let root = Arc::new(LockFreeDawgNode {
+                edges: LockFreeEdgeList { edges },
+                is_final: false,
+                value: None,
+                snapshot_id: None,
+            });
+            assert_eq!(Arc::strong_count(&leaf), 3);
+            drop(leaf);
+            drop(root);
+            assert!(weak.upgrade().is_none());
+        }
+
+        check(b'a', b'b');
+        check('a', 'b');
+        check(1_u64, 2_u64);
     }
 
     #[derive(Clone, Default)]

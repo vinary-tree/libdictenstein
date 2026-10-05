@@ -52,6 +52,20 @@ my @witness_rows = lines($witness_path);
 shift(@witness_rows) eq join("\t", qw(witness_id domain target observation_boundary))
   or fail('bad witness-map header');
 my $rust_source = join("\n", lines($rust_path));
+my $drop_start = index($rust_source,
+  'impl<U: CharUnit, V: DictionaryValue> Drop for LockFreeDawgNode<U, V> {');
+$drop_start >= 0 or fail('LockFreeDawgNode Drop implementation is absent');
+my $drop_end = index($rust_source, 'struct PendingBuildNode', $drop_start);
+$drop_end > $drop_start or fail('Drop source boundary is absent');
+my $drop_seam = substr($rust_source, $drop_start, $drop_end - $drop_start);
+my @edge_calls = $drop_seam =~ /Self::take_child_for_drop\(child\)/g;
+@edge_calls == 2 or fail('both edge-drain loops must use the shared release helper');
+my @safe_calls = $drop_seam =~ /Arc::into_inner\(child\)/g;
+@safe_calls == 1 or fail('shared release helper must consume one child Arc with into_inner');
+$drop_seam !~ /Arc::try_unwrap\(child\)/
+  or fail('unsafe try_unwrap/Err-drop operation returned to the Drop path');
+my @detaches = $drop_seam =~ /std::mem::take\(&mut (?:self|node)\.edges\)/g;
+@detaches == 2 or fail('root and extracted node edges must both be detached before release');
 for my $line (@witness_rows) {
   my @f = split /\t/, $line, -1;
   @f == 4 or fail("wrong witness-map field count: $line");
