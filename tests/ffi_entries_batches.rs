@@ -5,6 +5,8 @@
 mod ffi_common;
 
 use ffi_common::{insert_text, insert_u64, vt_status, DictGuard, DOMAIN_BYTE, DOMAIN_U64};
+use proptest::prelude::*;
+use std::collections::BTreeMap;
 use std::ffi::c_void;
 use vinary_tree_interop::{
     dictionary_entries_info_flags, VtDictionaryEntriesCursor, VtDictionaryEntriesInfo,
@@ -78,6 +80,80 @@ unsafe fn raw_slice<'a, T>(pointer: *const T, len: usize) -> &'a [T] {
         assert!(!pointer.is_null());
         // SAFETY: a live batch owns `len` contiguous elements until release.
         unsafe { std::slice::from_raw_parts(pointer, len) }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn generated_entry_cursor_preserves_snapshot_bounds_and_lease_generation(
+        inserts in proptest::collection::vec(
+            (proptest::collection::vec(any::<u8>(), 0..8), proptest::option::of(any::<u64>())),
+            1..32,
+        ),
+        page_size in 1usize..8,
+        cancel_after in proptest::option::of(1usize..8),
+    ) {
+        let dictionary = DictGuard::dynamic(DOMAIN_BYTE);
+        let mut oracle = BTreeMap::new();
+        for (key, value) in &inserts {
+            prop_assert_eq!(insert_text(dictionary.ptr(), key, *value).0 as u32, 0);
+            oracle.insert(key.clone(), *value);
+        }
+        let (mut cursor, info) = open(&dictionary);
+        prop_assert_eq!(info.exact_len, oracle.len());
+        let post_capture = vec![0xff; 8];
+        prop_assert_eq!(insert_text(dictionary.ptr(), &post_capture, Some(97)).0 as u32, 0);
+
+        let expected: Vec<_> = oracle.into_iter().collect();
+        let mut got = Vec::new();
+        let mut last_generation = 0;
+        let mut pages = 0;
+        let mut cancelled = false;
+        loop {
+            let request = limits(page_size, page_size * 8, page_size);
+            let (status, batch) = next(&mut cursor, &request);
+            if status == VtStatus::End {
+                break;
+            }
+            prop_assert_eq!(status, VtStatus::Ok);
+            prop_assert!(batch.entry_count > 0);
+            prop_assert!(batch.entry_count <= request.max_entries);
+            prop_assert!(batch.unit_count <= request.max_units);
+            prop_assert!(batch.value_count <= request.max_values);
+            prop_assert!(batch.generation > last_generation);
+
+            let entries = unsafe { raw_slice(batch.entries, batch.entry_count) };
+            let units = unsafe { raw_slice(batch.units.cast::<u8>(), batch.unit_count) };
+            let values = unsafe { raw_slice(batch.values, batch.value_count) };
+            for entry in entries {
+                prop_assert!(entry.unit_offset + entry.unit_len <= units.len());
+                prop_assert!(entry.value_offset + entry.value_len <= values.len());
+                prop_assert!(entry.value_len <= 1);
+                let key = units[entry.unit_offset..entry.unit_offset + entry.unit_len].to_vec();
+                let value = (entry.value_len == 1).then(|| values[entry.value_offset]);
+                got.push((key, value));
+            }
+
+            // Wrong-generation release must leave the real provider lease live.
+            prop_assert_eq!(release(&mut cursor, batch.generation - 1), VtStatus::InvalidArgument);
+            prop_assert_eq!(next(&mut cursor, &request).0, VtStatus::BatchInUse);
+            pages += 1;
+            if cancel_after == Some(pages) {
+                let raw = unsafe { ((*cursor.vtable).cancel.unwrap())(&mut cursor.cursor) };
+                prop_assert_eq!(vt_status(raw), VtStatus::Ok);
+                cancelled = true;
+            }
+            prop_assert_eq!(release(&mut cursor, batch.generation), VtStatus::Ok);
+            prop_assert_eq!(release(&mut cursor, batch.generation), VtStatus::InvalidArgument);
+            last_generation = batch.generation;
+        }
+        if cancelled {
+            prop_assert!(got.len() <= expected.len());
+            prop_assert_eq!(&got, &expected[..got.len()]);
+        } else {
+            prop_assert_eq!(got, expected);
+        }
     }
 }
 
