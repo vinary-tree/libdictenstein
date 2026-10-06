@@ -154,7 +154,97 @@ proptest! {
         } else {
             prop_assert_eq!(got, expected);
         }
+        let table = cursor.vtable;
+        prop_assert_eq!(
+            vt_status(unsafe { ((*table).close.unwrap())(&mut cursor.cursor) }),
+            VtStatus::Ok
+        );
+        prop_assert!(cursor.cursor.is_null());
+        let mut closed_batch = VtDictionaryEntryBatchView::default();
+        let request = limits(page_size, page_size * 8, page_size);
+        prop_assert_eq!(
+            vt_status(unsafe {
+                ((*table).next_batch.unwrap())(&mut cursor.cursor, &request, &mut closed_batch)
+            }),
+            VtStatus::Closed
+        );
+        prop_assert_eq!(closed_batch.entry_count, 0);
+        prop_assert_eq!(closed_batch.generation, 0);
     }
+}
+
+unsafe extern "C" fn cancel_noop_mutant(_cursor: *mut VtDictionaryEntriesCursor) -> u32 {
+    VtStatus::Ok.to_raw()
+}
+
+unsafe extern "C" fn close_noop_mutant(_cursor: *mut VtDictionaryEntriesCursor) -> u32 {
+    VtStatus::Ok.to_raw()
+}
+
+#[test]
+#[should_panic(expected = "entry page exceeded capacity")]
+fn entry_page_capacity_mutant_is_detected() {
+    let dictionary = DictGuard::dynamic(DOMAIN_BYTE);
+    assert_eq!(insert_text(dictionary.ptr(), b"a", None).0 as u32, 0);
+    let (mut cursor, _) = open(&dictionary);
+    let (status, mut batch) = next(&mut cursor, &limits(1, 1, 1));
+    assert_eq!(status, VtStatus::Ok);
+    let generation = batch.generation;
+    batch.entry_count += 1;
+    assert_eq!(release(&mut cursor, generation), VtStatus::Ok);
+    assert!(batch.entry_count <= 1, "entry page exceeded capacity");
+}
+
+#[test]
+#[should_panic(expected = "cancelled cursor reopened")]
+fn entry_cancel_noop_mutant_is_detected() {
+    let dictionary = DictGuard::dynamic(DOMAIN_BYTE);
+    for key in [b"a", b"b"] {
+        assert_eq!(insert_text(dictionary.ptr(), key, None).0 as u32, 0);
+    }
+    let (mut cursor, _) = open(&dictionary);
+    let (status, batch) = next(&mut cursor, &limits(1, 1, 1));
+    assert_eq!(status, VtStatus::Ok);
+    assert_eq!(
+        vt_status(unsafe { cancel_noop_mutant(&mut cursor.cursor) }),
+        VtStatus::Ok
+    );
+    assert_eq!(release(&mut cursor, batch.generation), VtStatus::Ok);
+    let (after, batch) = next(&mut cursor, &limits(1, 1, 1));
+    if after == VtStatus::Ok {
+        assert_eq!(release(&mut cursor, batch.generation), VtStatus::Ok);
+    }
+    assert_eq!(after, VtStatus::End, "cancelled cursor reopened");
+}
+
+#[test]
+#[should_panic(expected = "closed cursor accepted a call")]
+fn entry_close_noop_mutant_is_detected() {
+    let dictionary = DictGuard::dynamic(DOMAIN_BYTE);
+    assert_eq!(insert_text(dictionary.ptr(), b"a", None).0 as u32, 0);
+    let (mut cursor, _) = open(&dictionary);
+    assert_eq!(
+        vt_status(unsafe { close_noop_mutant(&mut cursor.cursor) }),
+        VtStatus::Ok
+    );
+    let (after, batch) = next(&mut cursor, &limits(1, 1, 1));
+    if after == VtStatus::Ok {
+        assert_eq!(release(&mut cursor, batch.generation), VtStatus::Ok);
+    }
+    assert_eq!(after, VtStatus::Closed, "closed cursor accepted a call");
+}
+
+#[test]
+#[should_panic(expected = "cursor never closed")]
+fn entry_missing_lease_release_mutant_is_detected() {
+    let dictionary = DictGuard::dynamic(DOMAIN_BYTE);
+    assert_eq!(insert_text(dictionary.ptr(), b"a", None).0 as u32, 0);
+    let (mut cursor, _) = open(&dictionary);
+    let (status, batch) = next(&mut cursor, &limits(1, 1, 1));
+    assert_eq!(status, VtStatus::Ok);
+    let close_status = vt_status(unsafe { ((*cursor.vtable).close.unwrap())(&mut cursor.cursor) });
+    assert_eq!(release(&mut cursor, batch.generation), VtStatus::Ok);
+    assert_eq!(close_status, VtStatus::Ok, "cursor never closed");
 }
 
 #[test]
