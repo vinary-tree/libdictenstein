@@ -150,9 +150,9 @@ render_one() {  # $1=source path
       have "$PLANTUML_CMD" || { missing_tool plantuml; return; }
       echo "  plantuml  $src → $out"
       "$PLANTUML_CMD" -tsvg -nometadata -o "$REPO_ROOT/$OUT_DIR" "$src"
-      # Strip the volatile `<?plantuml $version$?>` processing instruction so the
-      # committed SVG is byte-identical across PlantUML versions / machines
-      # (keeps the CI freshness diff stable).
+      # Strip the volatile `<?plantuml $version$?>` instruction. Layout still
+      # depends on the renderer, JDK, and fonts, so freshness requires the
+      # pinned CI rendering environment.
       sed -i 's#<?plantuml[^>]*>##g' "$out"
       ;;
     mmd)

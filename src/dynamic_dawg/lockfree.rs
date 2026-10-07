@@ -17,6 +17,66 @@ use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 
+#[cfg(test)]
+struct DropTestProbe {
+    active: usize,
+    peak: Arc<std::sync::atomic::AtomicUsize>,
+    shared_edge_hook: Option<Box<dyn FnOnce()>>,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static DROP_TEST_PROBE: std::cell::RefCell<Option<DropTestProbe>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+struct DropTestFrame(bool);
+
+#[cfg(test)]
+impl DropTestFrame {
+    fn enter() -> Self {
+        let mut tracked = false;
+        DROP_TEST_PROBE.with(|slot| {
+            if let Some(probe) = slot.borrow_mut().as_mut() {
+                probe.active += 1;
+                probe
+                    .peak
+                    .fetch_max(probe.active, std::sync::atomic::Ordering::SeqCst);
+                tracked = true;
+            }
+        });
+        Self(tracked)
+    }
+}
+
+#[cfg(test)]
+impl Drop for DropTestFrame {
+    fn drop(&mut self) {
+        if self.0 {
+            DROP_TEST_PROBE.with(|slot| {
+                let mut borrowed = slot.borrow_mut();
+                let probe = borrowed
+                    .as_mut()
+                    .expect("installed Drop probe remains live");
+                probe.active -= 1;
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+fn drop_test_shared_edge_decided() {
+    let hook = DROP_TEST_PROBE.with(|slot| {
+        slot.borrow_mut()
+            .as_mut()
+            .and_then(|probe| probe.shared_edge_hook.take())
+    });
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 /// A node's outgoing edges: `(key unit, target)` pairs, inline up to four.
 ///
 /// Four covers the overwhelming majority of DAWG nodes without touching the heap;
@@ -547,11 +607,13 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawgNode<U, V> {
 
 impl<U: CharUnit, V: DictionaryValue> Drop for LockFreeDawgNode<U, V> {
     fn drop(&mut self) {
+        #[cfg(test)]
+        let _frame = DropTestFrame::enter();
         crate::causal_perf::record_nodes_dropped(1);
         let edges = std::mem::take(&mut self.edges);
         let mut stack = Vec::with_capacity(edges.edges.len());
         for (_, child) in edges.edges {
-            if let Ok(child) = Arc::try_unwrap(child) {
+            if let Some(child) = Self::take_child_for_drop(child) {
                 stack.push(child);
             }
         }
@@ -559,11 +621,26 @@ impl<U: CharUnit, V: DictionaryValue> Drop for LockFreeDawgNode<U, V> {
         while let Some(mut node) = stack.pop() {
             let edges = std::mem::take(&mut node.edges);
             for (_, child) in edges.edges {
-                if let Ok(child) = Arc::try_unwrap(child) {
+                if let Some(child) = Self::take_child_for_drop(child) {
                     stack.push(child);
                 }
             }
         }
+    }
+}
+
+impl<U: CharUnit, V: DictionaryValue> LockFreeDawgNode<U, V> {
+    #[inline]
+    fn take_child_for_drop(child: Arc<Self>) -> Option<Self> {
+        // Unlike dropping Arc::try_unwrap's Err, the None branch consumes its
+        // strong token before returning. A concurrent last-owner release
+        // therefore cannot enter this child's Drop below the current frame.
+        let result = Arc::into_inner(child);
+        #[cfg(test)]
+        if result.is_none() {
+            drop_test_shared_edge_decided();
+        }
+        result
     }
 }
 
@@ -1395,7 +1472,11 @@ impl<U: CharUnit, V: DictionaryValue> LockFreeDawg<U, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
+    use std::time::Duration;
 
     fn assert_send_sync<T: Send + Sync>() {}
 
@@ -1885,6 +1966,330 @@ mod tests {
         assert!(left_weak.upgrade().is_none());
         assert!(right_weak.upgrade().is_none());
         assert!(leaf_weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn shared_edge_race_does_not_nest_child_drop_on_parent_stack() {
+        let leaf = Arc::new(LockFreeDawgNode::<u8, ()>::new(true));
+        let leaf_weak = Arc::downgrade(&leaf);
+        let retained = leaf.clone();
+        let mut edges = LockFreeEdges::new();
+        edges.push((b'x', leaf));
+        let root = Arc::new(LockFreeDawgNode {
+            edges: LockFreeEdgeList { edges },
+            is_final: false,
+            value: None,
+            snapshot_id: None,
+        });
+
+        let peak = Arc::new(AtomicUsize::new(0));
+        let (decision_tx, decision_rx) = mpsc::sync_channel(0);
+        let (released_tx, released_rx) = mpsc::sync_channel(0);
+        let drop_peak = peak.clone();
+        let dropper = std::thread::spawn(move || {
+            DROP_TEST_PROBE.with(|slot| {
+                *slot.borrow_mut() = Some(DropTestProbe {
+                    active: 0,
+                    peak: drop_peak,
+                    shared_edge_hook: Some(Box::new(move || {
+                        decision_tx
+                            .send(())
+                            .expect("releaser receives edge decision");
+                        released_rx
+                            .recv_timeout(Duration::from_secs(10))
+                            .expect("releaser finishes before edge result leaves scope");
+                    })),
+                });
+            });
+            drop(root);
+            DROP_TEST_PROBE.with(|slot| {
+                let probe = slot.borrow_mut().take().expect("probe remains installed");
+                assert_eq!(probe.active, 0);
+                assert!(
+                    probe.shared_edge_hook.is_none(),
+                    "shared edge was not exercised"
+                );
+            });
+        });
+        let releaser = std::thread::spawn(move || {
+            decision_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("dropper reaches the shared edge");
+            drop(retained);
+            released_tx
+                .send(())
+                .expect("dropper receives release completion");
+        });
+
+        dropper.join().expect("dropper completes");
+        releaser.join().expect("releaser completes");
+        assert!(leaf_weak.upgrade().is_none(), "leaf is fully reclaimed");
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            1,
+            "a shared-edge decision must not enter child Drop on its parent stack"
+        );
+    }
+
+    #[test]
+    fn try_unwrap_err_drop_control_nests_after_concurrent_last_release() {
+        let child = Arc::new(LockFreeDawgNode::<u8, ()>::new(true));
+        let retained = child.clone();
+        let peak = Arc::new(AtomicUsize::new(0));
+        let (failed_tx, failed_rx) = mpsc::sync_channel(0);
+        let (released_tx, released_rx) = mpsc::sync_channel(0);
+        let releaser = std::thread::spawn(move || {
+            failed_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("failed unwrap has retained its Err Arc");
+            drop(retained);
+            released_tx
+                .send(())
+                .expect("caller receives last-owner release");
+        });
+
+        DROP_TEST_PROBE.with(|slot| {
+            *slot.borrow_mut() = Some(DropTestProbe {
+                active: 0,
+                peak: peak.clone(),
+                shared_edge_hook: None,
+            });
+        });
+        {
+            let _parent_frame = DropTestFrame::enter();
+            let failed = Arc::try_unwrap(child);
+            assert!(failed.is_err());
+            failed_tx
+                .send(())
+                .expect("releaser receives failed decision");
+            released_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("other owner releases before Err is dropped");
+            drop(failed);
+        }
+        releaser.join().expect("releaser completes");
+        DROP_TEST_PROBE.with(|slot| {
+            let probe = slot
+                .borrow_mut()
+                .take()
+                .expect("control probe remains live");
+            assert_eq!(probe.active, 0);
+        });
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            2,
+            "failed try_unwrap followed by last-owner Err drop must expose the unsafe nesting"
+        );
+    }
+
+    #[test]
+    fn published_and_captured_roots_remain_distinct_owners_across_clear() {
+        let dawg = LockFreeDawg::<u8, ()>::new();
+        assert!(dawg.insert_units(b"old"));
+        let captured = dawg.root_arc();
+        let second_capture = captured.clone();
+        let old_root = Arc::downgrade(&captured);
+
+        assert_eq!(Arc::strong_count(&captured), 3);
+        assert!(dawg.clear());
+        assert!(!dawg.contains_units(b"old"));
+        assert_eq!(Arc::strong_count(&captured), 2);
+        drop(dawg);
+        assert!(old_root.upgrade().is_some());
+        drop(second_capture);
+        assert!(old_root.upgrade().is_some());
+        drop(captured);
+        assert!(old_root.upgrade().is_none());
+    }
+
+    #[test]
+    fn separate_shared_dag_edges_own_separate_strong_tokens() {
+        let leaf = Arc::new(LockFreeDawgNode::<u8, ()>::new(true));
+        let weak = Arc::downgrade(&leaf);
+        let mut edges = LockFreeEdges::new();
+        edges.push((b'a', leaf.clone()));
+        edges.push((b'b', leaf.clone()));
+        let parent = Arc::new(LockFreeDawgNode {
+            edges: LockFreeEdgeList { edges },
+            is_final: false,
+            value: None,
+            snapshot_id: None,
+        });
+
+        assert_eq!(Arc::strong_count(&leaf), 3);
+        drop(leaf);
+        assert_eq!(Arc::strong_count(&parent.edges.edges[0].1), 2);
+        drop(parent);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn shared_child_reclamation_uses_one_kernel_for_byte_char_and_u64() {
+        fn check<U: CharUnit>(first: U, second: U) {
+            let leaf = Arc::new(LockFreeDawgNode::<U, ()>::new(true));
+            let weak = Arc::downgrade(&leaf);
+            let mut edges = LockFreeEdges::new();
+            edges.push((first, leaf.clone()));
+            edges.push((second, leaf.clone()));
+            let root = Arc::new(LockFreeDawgNode {
+                edges: LockFreeEdgeList { edges },
+                is_final: false,
+                value: None,
+                snapshot_id: None,
+            });
+            assert_eq!(Arc::strong_count(&leaf), 3);
+            drop(leaf);
+            drop(root);
+            assert!(weak.upgrade().is_none());
+        }
+
+        check(b'a', b'b');
+        check('a', 'b');
+        check(1_u64, 2_u64);
+    }
+
+    #[derive(Clone, Default)]
+    #[cfg_attr(
+        feature = "persistent-artrie",
+        derive(serde::Serialize, serde::Deserialize)
+    )]
+    struct DropCountedValue {
+        #[cfg_attr(feature = "persistent-artrie", serde(skip))]
+        counter: Arc<AtomicUsize>,
+    }
+
+    impl DictionaryValue for DropCountedValue {}
+
+    impl Drop for DropCountedValue {
+        fn drop(&mut self) {
+            self.counter.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+        #[test]
+        fn generated_shared_dag_retains_then_reclaims_each_payload_once(
+            shortcuts in proptest::collection::vec(any::<bool>(), 1..65),
+            retained_seed in any::<usize>(),
+        ) {
+            let counters: Vec<_> = (0..=shortcuts.len())
+                .map(|_| Arc::new(AtomicUsize::new(0)))
+                .collect();
+            let node = |edges, index: usize| Arc::new(LockFreeDawgNode {
+                edges: LockFreeEdgeList { edges },
+                is_final: true,
+                value: Some(Arc::new(DropCountedValue {
+                    counter: counters[index].clone(),
+                })),
+                snapshot_id: None,
+            });
+            let mut nodes = vec![node(LockFreeEdges::new(), 0)];
+            for (index, shortcut) in shortcuts.iter().enumerate() {
+                let mut edges = LockFreeEdges::new();
+                edges.push((b'a', nodes[index].clone()));
+                if *shortcut && index > 0 {
+                    edges.push((b'b', nodes[index - 1].clone()));
+                }
+                nodes.push(node(edges, index + 1));
+            }
+
+            let weak: Vec<_> = nodes.iter().map(Arc::downgrade).collect();
+            let retained_index = retained_seed % nodes.len();
+            let retained = nodes[retained_index].clone();
+            let root = nodes.last().expect("generated graph has a root").clone();
+            let peak = Arc::new(AtomicUsize::new(0));
+            DROP_TEST_PROBE.with(|slot| {
+                *slot.borrow_mut() = Some(DropTestProbe {
+                    active: 0,
+                    peak: peak.clone(),
+                    shared_edge_hook: None,
+                });
+            });
+
+            drop(nodes);
+            drop(root);
+            prop_assert!(weak[retained_index].upgrade().is_some());
+            prop_assert_eq!(counters[retained_index].load(Ordering::SeqCst), 0);
+            drop(retained);
+            for (reference, counter) in weak.iter().zip(&counters) {
+                prop_assert!(reference.upgrade().is_none());
+                prop_assert_eq!(counter.load(Ordering::SeqCst), 1);
+            }
+            DROP_TEST_PROBE.with(|slot| {
+                let probe = slot.borrow_mut().take().expect("probe remains installed");
+                prop_assert_eq!(probe.active, 0);
+                Ok(())
+            })?;
+            prop_assert!(peak.load(Ordering::SeqCst) <= 2);
+        }
+    }
+
+    fn admitted_rank_witness(root: &Arc<LockFreeDawgNode<u8, ()>>) -> Option<usize> {
+        type NodePointer = *const LockFreeDawgNode<u8, ()>;
+        let mut state = HashMap::<NodePointer, u8>::new();
+        let mut rank = HashMap::<NodePointer, usize>::new();
+        let root_id = Arc::as_ptr(root);
+        state.insert(root_id, 1);
+        let mut frames = vec![(root.clone(), 0usize)];
+        while let Some((node, next)) = frames.last_mut() {
+            let node_id = Arc::as_ptr(node);
+            if *next < node.edges.edges.len() {
+                let child = node.edges.edges[*next].1.clone();
+                *next += 1;
+                let child_id = Arc::as_ptr(&child);
+                match state.get(&child_id) {
+                    Some(1) => return None,
+                    Some(2) => continue,
+                    Some(_) => unreachable!("only grey and black states are used"),
+                    None => {
+                        state.insert(child_id, 1);
+                        frames.push((child, 0));
+                    }
+                }
+            } else {
+                let height = node
+                    .edges
+                    .edges
+                    .iter()
+                    .map(|(_, child)| rank[&Arc::as_ptr(child)] + 1)
+                    .max()
+                    .unwrap_or(0);
+                rank.insert(node_id, height);
+                state.insert(node_id, 2);
+                frames.pop();
+            }
+        }
+        Some(rank.len())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn constructed_and_rewritten_byte_dawgs_admit_an_acyclic_rank(
+            mut terms in proptest::collection::vec(
+                proptest::collection::vec(any::<u8>(), 0..9), 0..33),
+        ) {
+            terms.sort();
+            terms.dedup();
+            let dawg = LockFreeDawg::<u8, ()>::from_sorted_terms_by(
+                terms.iter(), |term, units| units.extend_from_slice(term));
+            let built_rank = admitted_rank_witness(&dawg.root_arc());
+            prop_assert_eq!(built_rank, Some(dawg.node_count()));
+
+            for term in terms.iter().step_by(2) {
+                prop_assert!(dawg.remove_units(term));
+                prop_assert!(dawg.insert_units(term));
+            }
+            let rewritten_rank = admitted_rank_witness(&dawg.root_arc());
+            prop_assert_eq!(rewritten_rank, Some(dawg.node_count()));
+            dawg.compact();
+            let compacted_rank = admitted_rank_witness(&dawg.root_arc());
+            prop_assert_eq!(compacted_rank, Some(dawg.node_count()));
+            for term in &terms {
+                prop_assert!(dawg.contains_units(term));
+            }
+        }
     }
 
     #[test]

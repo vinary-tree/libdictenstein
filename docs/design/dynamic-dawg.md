@@ -56,6 +56,16 @@ Unicode-scalar, and 64-bit-token alphabets. All three now reuse `LockFreeDawg<U,
 revision, path-copy, compaction, and snapshot semantics; the separate public types retain their
 alphabet-specific convenience methods and compatibility formats.
 
+### Shared, stack-safe reclamation
+
+Every outgoing edge owns a separate `Arc` token, even when suffix minimization
+shares its target. The shared destructor drains child edges through a
+heap-backed worklist and consumes each edge with `Arc::into_inner`, so a
+concurrent last-owner release cannot recurse into the child from a failed
+`try_unwrap` result. The proof assumptions, failing control, exact source
+correspondence, and limits of the native-stack claim are in
+[stack-safe dynamic-DAWG reclamation](dynamic-dawg-reclamation.md).
+
 ### The Bloom-filter knob is vestigial
 
 `with_config` accepts a `bloom_filter_capacity`, a remnant of an earlier design that pre-filtered
