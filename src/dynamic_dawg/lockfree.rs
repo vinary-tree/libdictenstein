@@ -2226,17 +2226,18 @@ mod tests {
     }
 
     fn admitted_rank_witness(root: &Arc<LockFreeDawgNode<u8, ()>>) -> Option<usize> {
-        let mut state = HashMap::<usize, u8>::new();
-        let mut rank = HashMap::<usize, usize>::new();
-        let root_id = Arc::as_ptr(root) as usize;
+        type NodePointer = *const LockFreeDawgNode<u8, ()>;
+        let mut state = HashMap::<NodePointer, u8>::new();
+        let mut rank = HashMap::<NodePointer, usize>::new();
+        let root_id = Arc::as_ptr(root);
         state.insert(root_id, 1);
         let mut frames = vec![(root.clone(), 0usize)];
         while let Some((node, next)) = frames.last_mut() {
-            let node_id = Arc::as_ptr(node) as usize;
+            let node_id = Arc::as_ptr(node);
             if *next < node.edges.edges.len() {
                 let child = node.edges.edges[*next].1.clone();
                 *next += 1;
-                let child_id = Arc::as_ptr(&child) as usize;
+                let child_id = Arc::as_ptr(&child);
                 match state.get(&child_id) {
                     Some(1) => return None,
                     Some(2) => continue,
@@ -2251,7 +2252,7 @@ mod tests {
                     .edges
                     .edges
                     .iter()
-                    .map(|(_, child)| rank[&(Arc::as_ptr(child) as usize)] + 1)
+                    .map(|(_, child)| rank[&Arc::as_ptr(child)] + 1)
                     .max()
                     .unwrap_or(0);
                 rank.insert(node_id, height);
