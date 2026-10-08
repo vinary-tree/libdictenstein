@@ -79,6 +79,20 @@ The native engine captures one immutable revision from each input, performs a
 linear lexicographic merge, and freezes the sorted result directly into a
 minimal mutable DynamicDAWG. No Julia hash table or per-key FFI loop is used.
 
+For a result that can be consumed without building a new dictionary, use
+`algebra_entries(left, right; operation=ALGEBRA_UNION, page_size=256)`. It owns
+both captured revisions, yields Julia-owned `Pair`s in lexicographic order,
+and closes automatically at exhaustion. `prefix_entries(dictionary, prefix)`
+uses the same bounded native cursor; `fold_entries(f, initial, stream)` sends
+pages through the native reducer and closes the stream even if `f` throws.
+Call `close(stream)` when stopping iteration early.
+
+`lookup_batch(dictionary, keys)` returns one `(found, value)` tuple per key;
+`remove_batch!(dictionary, keys)` returns one Boolean per key. Both preserve
+input order and duplicates. A present valueless key is `(true, nothing)`,
+distinct from `(false, nothing)` for an absent key. `insert_batch!` remains the
+single-call bulk mutation path.
+
 See the [full guide](docs/src/index.md) for domains, snapshots, persistence,
 ownership, algebraic value policies, performance, and security boundaries.
 The [live development guide](https://vinary-tree.github.io/libdictenstein/dev/)
@@ -87,7 +101,7 @@ documents the current source branch; it is not a claim of RC.6 registry publicat
 ## ABI maintenance
 
 The package does not maintain a second handwritten native ABI. Its constants,
-layouts, and 42 typed call wrappers are generated from the repository's
+layouts, and typed call wrappers are generated from the repository's
 authoritative `bindings/api.json`, checked exactly against the public C header,
 and covered by freshness and mutation-based negative controls. Maintainers
 should follow the [full Julia binding guide](../README.md#generated-abi-boundary)

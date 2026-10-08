@@ -12,7 +12,8 @@ not necessarily an inserted key. It therefore has separate
 `LdictSuffixIndex` and `LdictSuffixSnapshot` handles and is **not** a
 `LdictDictionary`, `AbstractDict`, or `vt.dictionary.v1` resource.
 
-The stable ABI major remains `1`; the additive `LDICT_API_REVISION` is `8`.
+The stable ABI major remains `1`. These symbols first appeared at additive
+revision `8`; the current library reports revision `9`.
 Clients written against revision 7 may keep using their existing symbols.
 Optional clients that load a revision-8 symbol dynamically must check
 `ldict_api_revision() >= 8` *before resolving that symbol*. This matters for

@@ -5,7 +5,7 @@
 [FFI boundary analysis](../security/ffi-boundary.md) ·
 [Findings ledger](FINDINGS_LEDGER.md)
 
-This is the normative reference for the **70-function `ldict_*` C ABI** exported
+This is the normative reference for the **75-function `ldict_*` C ABI** exported
 by the libdictenstein cdylib — the project-owned surface above the family
 resource ABI. Every function is documented with its exact header signature, its
 preconditions, the **exact** set of statuses it can return (derived from the
@@ -32,7 +32,7 @@ Authoritative sources, in precedence order:
 The Julia facade consumes the first source mechanically through
 [`scripts/generate-julia-abi.py`](../../scripts/generate-julia-abi.py). Its
 [`signature inventory`](../../bindings/generated/julia-abi-capabilities.tsv)
-makes all 70 generated calls and their lifetime metadata reviewable, while the
+makes all 75 generated calls and their lifetime metadata reviewable, while the
 public header remains an independent exact-signature oracle.
 
 The family layer underneath (two-word `VtResource`, retain/release,
@@ -76,7 +76,7 @@ evolution model (see the canonical
 | Constant | Value | Meaning | Caller check |
 |---|---|---|---|
 | `LDICT_ABI_VERSION` | 1 | Breaking-change counter for the `ldict_*` surface: layouts, ownership rules, status meanings. | **Exact equality** — refuse any other value. |
-| `LDICT_API_REVISION` | 8 | Additive counter: revision 5 added bounded entries; revision 6 added algebra; revision 7 added byte-valued DAWGs/entries; revision 8 adds PathMap and a separate typed suffix-source index. | **At least** — a facade checks $`n`$ before resolving a symbol added in revision $`n`$. Older calls remain usable against newer libraries. |
+| `LDICT_API_REVISION` | 9 | Additive counter: revision 5 added bounded entries; revision 6 added algebra; revision 7 added byte-valued DAWGs/entries; revision 8 added PathMap and a separate typed suffix-source index; revision 9 adds lazy algebra cursors and ordered batch lookup/removal. | **At least** — a facade checks $`n`$ before resolving a symbol added in revision $`n`$. Older calls remain usable against newer libraries. |
 
 Every fallible function reports failure twice: as an `LdictStatus` return value
 (the machine channel) and as a human-readable message retrievable through
@@ -104,7 +104,7 @@ Returns `LDICT_ABI_VERSION` (currently `1`).
 LDICT_API uint32_t ldict_api_revision(void);
 ```
 
-Returns `LDICT_API_REVISION` (currently `8`).
+Returns `LDICT_API_REVISION` (currently `9`).
 
 - **Preconditions**: none.
 - **Statuses**: none — cannot fail.
@@ -1042,6 +1042,8 @@ Scalar twin of `ldict_dictionary_get_u64`.
 
 ## 11. Batch mutation
 
+Revision 9 also adds [ordered batch lookup and removal](#111-revision-9-ordered-batch-lookup-and-removal).
+
 For dictionary backends other than PathMap, both batch functions apply entries
 **sequentially, fail-fast**:
 
@@ -1098,6 +1100,43 @@ The `u64` mirror of the text batch, with the same fail-fast prefix semantics.
 - **Ownership**: all buffers caller-owned.
 - **Thread-safety**: safe concurrently; not atomic as a batch.
 - **Complexity**: amortized $`\mathcal{O}\!\left(\sum_i \lvert t_i \rvert\right)`$ in tokens.
+
+### 11.1 Revision-9 ordered batch lookup and removal
+
+```c
+typedef struct LdictTextKey { const uint8_t* data; size_t len; } LdictTextKey;
+typedef struct LdictU64Key { const uint64_t* data; size_t len; } LdictU64Key;
+
+LDICT_API LdictStatus ldict_dictionary_get_text_batch(
+    const LdictDictionary* dictionary, const LdictTextKey* keys,
+    size_t key_count, uint8_t* out_found, LdictOptionalU64* out_values);
+LDICT_API LdictStatus ldict_dictionary_get_u64_batch(
+    const LdictDictionary* dictionary, const LdictU64Key* keys,
+    size_t key_count, uint8_t* out_found, LdictOptionalU64* out_values);
+LDICT_API LdictStatus ldict_dictionary_remove_text_batch(
+    LdictDictionary* dictionary, const LdictTextKey* keys,
+    size_t key_count, uint8_t* out_removed);
+LDICT_API LdictStatus ldict_dictionary_remove_u64_batch(
+    LdictDictionary* dictionary, const LdictU64Key* keys,
+    size_t key_count, uint8_t* out_removed);
+```
+
+These calls preserve input order and duplicate positions. Lookup writes
+`out_found[i]=1` for a present key, including a valueless key, and encodes
+its optional value in `out_values[i]`; absent and valueless keys both have
+`has_value=0` but differ in `out_found`. Lookup stages all results and writes
+no result array on failure. Removal validates the entire key array, including
+Unicode UTF-8, before the first mutation. It then removes sequentially:
+`out_removed[i]=1` only when that key existed at its turn. A backend failure
+can leave the completed prefix removed; completed output positions are valid
+and remaining positions are zero. Batch lookup is a sequence of reads, rather
+than one cross-key snapshot; use an entry cursor for a pinned revision.
+
+- **Preconditions**: `dictionary` live; `keys`, `out_found`, `out_values`, and `out_removed` non-null when `key_count > 0`; each nonempty key has non-null data; text APIs require a byte or Unicode-scalar dictionary, u64 APIs require a u64 dictionary; inputs and outputs do not overlap.
+- **Statuses**: `OK` · `NULL_POINTER` · `DOMAIN_MISMATCH` · `INVALID_UTF8` (text API) · `UNSUPPORTED` (backend lacks value lookup or removal) · `IO_ERROR` (persistent backend) · `PANIC`.
+- **Ownership**: caller retains all arrays and key buffers; no pointer is retained after the call.
+- **Thread-safety**: safe with concurrent operations on live handles, subject to each backend's published revision and durability semantics. Removal is sequential, not a cross-key transaction.
+- **Complexity**: one ABI crossing plus the sum of backend key-operation costs; output storage is $`\mathcal{O}(\text{key_count})`$.
 
 ---
 
@@ -1161,6 +1200,10 @@ LDICT_API LdictStatus ldict_dictionary_entries_open(
     const LdictDictionary* dictionary,
     LdictEntryCursor** out_cursor,
     LdictEntriesInfo* out_info);
+LDICT_API LdictStatus ldict_dictionary_algebra_entries_open(
+    const LdictDictionary* left, const LdictDictionary* right,
+    uint32_t operation, uint32_t value_merge,
+    LdictEntryCursor** out_cursor, LdictEntriesInfo* out_info);
 LDICT_API LdictStatus ldict_entry_cursor_next(
     LdictEntryCursor* cursor,
     const LdictEntryBatchLimits* limits,
@@ -1181,6 +1224,24 @@ LDICT_API LdictStatus ldict_entry_cursor_free(LdictEntryCursor* cursor);
 lexicographic order, optional exact cardinality, and snapshot identity, and
 returns a cursor that may outlive the source dictionary. Failed opens leave
 `*out_cursor == NULL` and zero the metadata output.
+
+Revision 9's `ldict_dictionary_algebra_entries_open` captures one revision
+from each input and shares the iterative generic zipper with eager
+`ldict_dictionary_algebra`. It supports union, intersection, left difference,
+and symmetric difference with all four shared-value policies. Equal key
+domains and valid operation/policy enums are required. The composite cursor
+owns both snapshots and can outlive both source handles; its metadata reports
+the common unit domain and lexicographic order, without a single-source
+identity or exact result count. Failed opens null the handle and zero the
+metadata. It returns `NULL_POINTER`, `INVALID_ARGUMENT`, `DOMAIN_MISMATCH`,
+mapped provider errors, or `PANIC` on failure. Traversal takes
+$`\mathcal{O}(|L|+|R|)`$ time and retains only two source lookaheads plus the
+active iterative traversal frames and bounded output page. Frames can contain
+all outgoing edges of an active node; no memory bound independent of node
+degree is promised. The ordinary cursor
+lease, reducer, cancellation, and close rules below apply unchanged.
+
+<img src="../diagrams/algebra-cursor-sequence.svg" alt="Sequence diagram of revision-9 lazy algebra: the C cursor captures two immutable source revisions, the native zipper merges keys on demand with one lookahead per source, bounded pages are leased and released, and freeing the cursor releases both captured revisions." width="100%"/>
 
 `next` accepts hard bounds for descriptors, unit-arena elements, and values.
 On `OK` it returns one nonempty cursor-owned batch. Descriptor offsets and

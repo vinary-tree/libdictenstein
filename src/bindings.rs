@@ -40,15 +40,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::sync::{Arc, OnceLock};
 use vinary_tree_interop::{
-    dictionary_flags, VtDictionaryBytesVTable, VtDictionaryEdge, VtDictionaryGraphEdge,
-    VtDictionaryGraphNode, VtDictionaryGraphVTable, VtDictionaryGraphView, VtDictionaryVTable,
-    VtDictionaryVisitVTable, VtInterfaceId, VtOptionalU64, VtResource, VtResourceVTable,
-    VtSnapshotIdentity, VtSnapshotIdentityVTable, VtStatus, VtUnitDomain, VtValueDomain,
-    VT_ABI_VERSION, VT_DICTIONARY_BYTES_INTERFACE_ID, VT_DICTIONARY_BYTES_INTERFACE_VERSION,
-    VT_DICTIONARY_BYTE_ENTRIES_INTERFACE_ID, VT_DICTIONARY_BYTE_ENTRIES_INTERFACE_VERSION,
-    VT_DICTIONARY_ENTRIES_INTERFACE_ID, VT_DICTIONARY_ENTRIES_INTERFACE_VERSION,
-    VT_DICTIONARY_GRAPH_INTERFACE_ID, VT_DICTIONARY_GRAPH_INTERFACE_VERSION,
-    VT_DICTIONARY_INTERFACE_ID, VT_DICTIONARY_INTERFACE_VERSION, VT_DICTIONARY_VISIT_INTERFACE_ID,
+    dictionary_flags, VtDictionaryBytesVTable, VtDictionaryEdge, VtDictionaryEntriesCursor,
+    VtDictionaryEntriesInfo, VtDictionaryGraphEdge, VtDictionaryGraphNode, VtDictionaryGraphVTable,
+    VtDictionaryGraphView, VtDictionaryVTable, VtDictionaryVisitVTable, VtInterfaceId,
+    VtOptionalU64, VtResource, VtResourceVTable, VtSnapshotIdentity, VtSnapshotIdentityVTable,
+    VtStatus, VtUnitDomain, VtValueDomain, VT_ABI_VERSION, VT_DICTIONARY_BYTES_INTERFACE_ID,
+    VT_DICTIONARY_BYTES_INTERFACE_VERSION, VT_DICTIONARY_BYTE_ENTRIES_INTERFACE_ID,
+    VT_DICTIONARY_BYTE_ENTRIES_INTERFACE_VERSION, VT_DICTIONARY_ENTRIES_INTERFACE_ID,
+    VT_DICTIONARY_ENTRIES_INTERFACE_VERSION, VT_DICTIONARY_GRAPH_INTERFACE_ID,
+    VT_DICTIONARY_GRAPH_INTERFACE_VERSION, VT_DICTIONARY_INTERFACE_ID,
+    VT_DICTIONARY_INTERFACE_VERSION, VT_DICTIONARY_VISIT_INTERFACE_ID,
     VT_DICTIONARY_VISIT_INTERFACE_VERSION, VT_SNAPSHOT_IDENTITY_INTERFACE_ID,
     VT_SNAPSHOT_IDENTITY_INTERFACE_VERSION,
 };
@@ -3100,6 +3101,11 @@ impl OwnedDictionaryResource {
         self.raw
     }
 
+    fn domain(&self) -> VtUnitDomain {
+        let context = unsafe { &*self.raw.context.cast::<ResourceContext>() };
+        context.domain()
+    }
+
     /// Traverse one immutable revision without crossing the C ABI.
     ///
     /// The returned iterator owns the snapshot and remains coherent if the
@@ -3124,6 +3130,200 @@ fn merge_binding_values(
     }
 }
 
+/// Lazy, snapshot-pinned merge of two lexicographic native entry streams.
+///
+/// Each source owns an immutable revision and uses the same iterative traversal
+/// engine as the family entry ABI. At most one lookahead record per side is
+/// retained. In particular, opening this stream never enumerates either input.
+pub struct BindingAlgebraEntries {
+    left: BindingEntries,
+    right: BindingEntries,
+    left_entry: Option<BindingEntry>,
+    right_entry: Option<BindingEntry>,
+    left_done: bool,
+    right_done: bool,
+    ended: bool,
+    domain: BindingUnitDomain,
+    operation: BindingAlgebraOperation,
+    value_merge: BindingValueMerge,
+    capacity_upper_bound: Option<usize>,
+}
+
+impl BindingAlgebraEntries {
+    /// Capture both operands once and reject unlike term domains before work.
+    pub fn new(
+        left: &OwnedDictionaryResource,
+        right: &OwnedDictionaryResource,
+        operation: BindingAlgebraOperation,
+        value_merge: BindingValueMerge,
+    ) -> Result<Self, BindingAlgebraError> {
+        if left.domain() != right.domain() {
+            return Err(BindingAlgebraError::DomainMismatch);
+        }
+        let left = left.entries();
+        let right = right.entries();
+        let domain = left.domain();
+        let left_len = left.size_hint().1;
+        let right_len = right.size_hint().1;
+        let capacity_upper_bound = match operation {
+            BindingAlgebraOperation::Union | BindingAlgebraOperation::SymmetricDifference => {
+                left_len
+                    .zip(right_len)
+                    .map(|(left, right)| left.saturating_add(right))
+            }
+            BindingAlgebraOperation::Intersection => match (left_len, right_len) {
+                (Some(left), Some(right)) => Some(left.min(right)),
+                (Some(known), None) | (None, Some(known)) => Some(known),
+                (None, None) => None,
+            },
+            BindingAlgebraOperation::Difference => left_len,
+        };
+        Ok(Self {
+            left,
+            right,
+            left_entry: None,
+            right_entry: None,
+            left_done: false,
+            right_done: false,
+            ended: false,
+            domain,
+            operation,
+            value_merge,
+            capacity_upper_bound,
+        })
+    }
+
+    /// Exact unit domain of both captured inputs.
+    pub fn domain(&self) -> BindingUnitDomain {
+        self.domain
+    }
+
+    fn fill_lookahead(&mut self) -> Result<(), BindingAlgebraError> {
+        if self.left_entry.is_none() && !self.left_done {
+            self.left_entry = self
+                .left
+                .next()
+                .transpose()
+                .map_err(BindingAlgebraError::Provider)?;
+            self.left_done = self.left_entry.is_none();
+        }
+        if self.right_entry.is_none() && !self.right_done {
+            self.right_entry = self
+                .right
+                .next()
+                .transpose()
+                .map_err(BindingAlgebraError::Provider)?;
+            self.right_done = self.right_entry.is_none();
+        }
+        Ok(())
+    }
+
+    fn step(&mut self) -> Result<Option<BindingEntry>, BindingAlgebraError> {
+        loop {
+            self.fill_lookahead()?;
+            match (self.left_entry.as_ref(), self.right_entry.as_ref()) {
+                (Some(left), Some(right)) => match left.term.cmp(&right.term) {
+                    std::cmp::Ordering::Less => {
+                        let entry = self.left_entry.take();
+                        if matches!(
+                            self.operation,
+                            BindingAlgebraOperation::Union
+                                | BindingAlgebraOperation::Difference
+                                | BindingAlgebraOperation::SymmetricDifference
+                        ) {
+                            return Ok(entry);
+                        }
+                    }
+                    std::cmp::Ordering::Greater => {
+                        let entry = self.right_entry.take();
+                        if matches!(
+                            self.operation,
+                            BindingAlgebraOperation::Union
+                                | BindingAlgebraOperation::SymmetricDifference
+                        ) {
+                            return Ok(entry);
+                        }
+                    }
+                    std::cmp::Ordering::Equal => {
+                        let mut left = self.left_entry.take().expect("lookahead is present");
+                        let right = self.right_entry.take().expect("lookahead is present");
+                        if matches!(
+                            self.operation,
+                            BindingAlgebraOperation::Union | BindingAlgebraOperation::Intersection
+                        ) {
+                            left.value =
+                                merge_binding_values(left.value, right.value, self.value_merge);
+                            return Ok(Some(left));
+                        }
+                    }
+                },
+                (Some(_), None) => {
+                    let entry = self.left_entry.take();
+                    if matches!(
+                        self.operation,
+                        BindingAlgebraOperation::Union
+                            | BindingAlgebraOperation::Difference
+                            | BindingAlgebraOperation::SymmetricDifference
+                    ) {
+                        return Ok(entry);
+                    }
+                }
+                (None, Some(_)) => {
+                    let entry = self.right_entry.take();
+                    if matches!(
+                        self.operation,
+                        BindingAlgebraOperation::Union
+                            | BindingAlgebraOperation::SymmetricDifference
+                    ) {
+                        return Ok(entry);
+                    }
+                }
+                (None, None) => return Ok(None),
+            }
+        }
+    }
+}
+
+impl Iterator for BindingAlgebraEntries {
+    type Item = Result<BindingEntry, BindingAlgebraError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.ended {
+            return None;
+        }
+        match self.step() {
+            Ok(Some(entry)) => Some(Ok(entry)),
+            Ok(None) => {
+                self.ended = true;
+                None
+            }
+            Err(error) => {
+                self.ended = true;
+                Some(Err(error))
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, self.capacity_upper_bound)
+    }
+}
+
+/// Open the family entry ABI's bounded page cursor over a lazy algebra stream.
+///
+/// The returned cursor owns both captured revisions. Its existing vtable
+/// supplies batch leases, reducers, cancellation, and close without a second
+/// page-packing implementation.
+pub fn dictionary_algebra_entries_open(
+    left: &OwnedDictionaryResource,
+    right: &OwnedDictionaryResource,
+    operation: BindingAlgebraOperation,
+    value_merge: BindingValueMerge,
+) -> Result<(VtDictionaryEntriesCursor, VtDictionaryEntriesInfo), BindingAlgebraError> {
+    let algebra = BindingAlgebraEntries::new(left, right, operation, value_merge)?;
+    Ok(entries::open_algebra(algebra))
+}
+
 /// Materialize an algebraic combination of two immutable dictionary revisions.
 ///
 /// Each input is captured once through its snapshot-owning lexicographic entry
@@ -3142,119 +3342,12 @@ pub fn dictionary_algebra(
     operation: BindingAlgebraOperation,
     value_merge: BindingValueMerge,
 ) -> Result<DynamicDawgBinding, BindingAlgebraError> {
-    let mut left_entries = left.entries();
-    let mut right_entries = right.entries();
-    let domain = left_entries.domain();
-    if domain != right_entries.domain() {
-        return Err(BindingAlgebraError::DomainMismatch);
+    let entries = BindingAlgebraEntries::new(left, right, operation, value_merge)?;
+    let domain = entries.domain();
+    let mut result = Vec::with_capacity(entries.capacity_upper_bound.unwrap_or(0));
+    for entry in entries {
+        result.push(entry?);
     }
-
-    let left_len = left_entries.size_hint().1.unwrap_or(0);
-    let right_len = right_entries.size_hint().1.unwrap_or(0);
-    let capacity = match operation {
-        BindingAlgebraOperation::Union | BindingAlgebraOperation::SymmetricDifference => {
-            left_len.saturating_add(right_len)
-        }
-        BindingAlgebraOperation::Intersection => left_len.min(right_len),
-        BindingAlgebraOperation::Difference => left_len,
-    };
-    let mut result = Vec::with_capacity(capacity);
-    let mut left_entry = left_entries
-        .next()
-        .transpose()
-        .map_err(BindingAlgebraError::Provider)?;
-    let mut right_entry = right_entries
-        .next()
-        .transpose()
-        .map_err(BindingAlgebraError::Provider)?;
-
-    loop {
-        match (left_entry.as_ref(), right_entry.as_ref()) {
-            (Some(left_current), Some(right_current)) => {
-                match left_current.term.cmp(&right_current.term) {
-                    std::cmp::Ordering::Less => {
-                        if matches!(
-                            operation,
-                            BindingAlgebraOperation::Union
-                                | BindingAlgebraOperation::Difference
-                                | BindingAlgebraOperation::SymmetricDifference
-                        ) {
-                            result.push(left_entry.take().expect("left entry is present"));
-                        }
-                        left_entry = left_entries
-                            .next()
-                            .transpose()
-                            .map_err(BindingAlgebraError::Provider)?;
-                    }
-                    std::cmp::Ordering::Greater => {
-                        if matches!(
-                            operation,
-                            BindingAlgebraOperation::Union
-                                | BindingAlgebraOperation::SymmetricDifference
-                        ) {
-                            result.push(right_entry.take().expect("right entry is present"));
-                        }
-                        right_entry = right_entries
-                            .next()
-                            .transpose()
-                            .map_err(BindingAlgebraError::Provider)?;
-                    }
-                    std::cmp::Ordering::Equal => {
-                        if matches!(
-                            operation,
-                            BindingAlgebraOperation::Union | BindingAlgebraOperation::Intersection
-                        ) {
-                            let left_current = left_entry.take().expect("left entry is present");
-                            result.push(BindingEntry {
-                                term: left_current.term,
-                                value: merge_binding_values(
-                                    left_current.value,
-                                    right_current.value,
-                                    value_merge,
-                                ),
-                            });
-                        }
-                        left_entry = left_entries
-                            .next()
-                            .transpose()
-                            .map_err(BindingAlgebraError::Provider)?;
-                        right_entry = right_entries
-                            .next()
-                            .transpose()
-                            .map_err(BindingAlgebraError::Provider)?;
-                    }
-                }
-            }
-            (Some(_), None) => {
-                if matches!(
-                    operation,
-                    BindingAlgebraOperation::Union
-                        | BindingAlgebraOperation::Difference
-                        | BindingAlgebraOperation::SymmetricDifference
-                ) {
-                    result.push(left_entry.take().expect("left entry is present"));
-                }
-                left_entry = left_entries
-                    .next()
-                    .transpose()
-                    .map_err(BindingAlgebraError::Provider)?;
-            }
-            (None, Some(_)) => {
-                if matches!(
-                    operation,
-                    BindingAlgebraOperation::Union | BindingAlgebraOperation::SymmetricDifference
-                ) {
-                    result.push(right_entry.take().expect("right entry is present"));
-                }
-                right_entry = right_entries
-                    .next()
-                    .transpose()
-                    .map_err(BindingAlgebraError::Provider)?;
-            }
-            (None, None) => break,
-        }
-    }
-
     Ok(DynamicDawgBinding::from_sorted_binding_entries(
         domain, result,
     ))
@@ -4291,6 +4384,47 @@ mod tests {
             )
             .unwrap_err(),
             BindingAlgebraError::DomainMismatch
+        );
+    }
+
+    #[test]
+    fn lazy_algebra_retains_revisions_and_merges_optional_values() {
+        let left = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
+        left.insert_text(b"a", Some(2)).unwrap();
+        left.insert_text(b"b", None).unwrap();
+        let right = DynamicDawgBinding::new(BindingUnitDomain::UnicodeScalar);
+        right.insert_text(b"a", Some(7)).unwrap();
+        right.insert_text(b"c", Some(11)).unwrap();
+
+        let stream = BindingAlgebraEntries::new(
+            &left.resource(),
+            &right.resource(),
+            BindingAlgebraOperation::Union,
+            BindingValueMerge::LatticeJoin,
+        )
+        .unwrap();
+        left.insert_text(b"later", Some(13)).unwrap();
+        right.insert_text(b"newer", Some(17)).unwrap();
+        drop(left);
+        drop(right);
+
+        let entries = stream.collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                BindingEntry {
+                    term: BindingTerm::Unicode("a".into()),
+                    value: Some(7),
+                },
+                BindingEntry {
+                    term: BindingTerm::Unicode("b".into()),
+                    value: None,
+                },
+                BindingEntry {
+                    term: BindingTerm::Unicode("c".into()),
+                    value: Some(11),
+                },
+            ]
         );
     }
 

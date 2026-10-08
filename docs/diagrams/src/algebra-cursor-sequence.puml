@@ -1,0 +1,65 @@
+@startuml algebra-cursor-sequence
+' Revision-9 lazy algebra, bounded pages, and synchronous reducer lifecycle.
+' Source: src/bindings.rs, src/bindings/entries.rs, src/ffi.rs, and
+' bindings/julia/Libdictenstein/src/AlgebraEntries.jl.
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam sequenceArrowColor #37474F
+skinparam sequenceLifeLineBorderColor #607D8B
+skinparam participantBorderColor #37474F
+skinparam noteBorderColor #607D8B
+skinparam noteBackgroundColor #ECEFF1
+skinparam sequenceGroupBorderColor #455A64
+skinparam sequenceGroupBackgroundColor #F5F7F8
+
+title Lazy algebra cursor: capture two revisions, merge on demand, settle each page
+
+participant "Julia caller\nAlgebraEntries" as J #FADBD8
+participant "ldict_* C ABI\nopaque cursor" as C #D5F5E3
+participant "BindingAlgebraEntries\ntwo-way zipper" as Z #DCEDC8
+participant "left immutable\nrevision" as L #FFECB3
+participant "right immutable\nrevision" as R #FFECB3
+
+J -> C : algebra_entries_open(left, right, op, value policy)
+C -> Z : new(left.resource, right.resource)
+Z -> L : capture ordered snapshot
+L --> Z : owned left revision
+Z -> R : capture ordered snapshot
+R --> Z : owned right revision
+Z --> C : iterator with one lookahead per input
+C --> J : cursor + common unit domain; no exact result count
+note over J,R #E8F5E9
+  Source dictionary handles may now change or close.
+  No input key has been traversed yet.
+end note
+
+loop each bounded page
+  J -> C : next(limits) or reduce(limits, callback)
+  C -> Z : request next result entry
+  Z -> L : pull only when left lookahead is empty
+  Z -> R : pull only when right lookahead is empty
+  Z -> Z : compare keys; retain selected key; merge shared values
+  Z --> C : one ordered key/value, or exhaustion
+  alt explicit next and release
+    C --> J : leased page: entries, units, values, generation
+    J -> J : copy key/value into Julia-owned storage
+    J -> C : release(generation)
+  else synchronous native reduce
+    C -> J : callback(borrowed page)
+    J --> C : OK, END, or error status
+    C -> C : settle lease before returning
+    C --> J : result status and completed count
+  end
+  note over C,J #FFF8E1
+    Page limits bound published entries, units, and values.
+    A live lease blocks next, reduce, and free until release.
+  end note
+end
+
+J -> C : free(cursor)
+C -> Z : drop zipper
+Z -> L : release left revision
+Z -> R : release right revision
+C --> J : OK
+@enduml

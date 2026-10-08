@@ -1,6 +1,8 @@
 //! Lock-free finite entry streaming for `vt.dict.entry.v1`.
 
-use super::{ResourceContext, SnapshotOps};
+use super::{
+    BindingAlgebraEntries, BindingAlgebraError, BindingTerm, ResourceContext, SnapshotOps,
+};
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::Arc;
@@ -113,7 +115,8 @@ pub(super) fn slice_ptr<T>(slice: &[T]) -> *const T {
 }
 
 pub(super) struct EntryCursorState {
-    snapshot: Arc<dyn SnapshotOps>,
+    snapshot: Option<Arc<dyn SnapshotOps>>,
+    algebra: Option<Box<BindingAlgebraEntries>>,
     records: Option<super::SnapshotEntryStream>,
     stack: Vec<TraversalFrame>,
     path: Vec<u64>,
@@ -133,7 +136,8 @@ impl EntryCursorState {
         let records = snapshot.entries();
         Self {
             units: UnitArena::new(snapshot.domain()),
-            snapshot,
+            snapshot: Some(snapshot),
+            algebra: None,
             records,
             stack: vec![TraversalFrame::lazy(root, 0)],
             path: Vec::with_capacity(16),
@@ -147,18 +151,41 @@ impl EntryCursorState {
         }
     }
 
+    fn from_algebra(algebra: BindingAlgebraEntries) -> Self {
+        let domain = algebra.domain().into();
+        Self {
+            snapshot: None,
+            algebra: Some(Box::new(algebra)),
+            records: None,
+            stack: Vec::new(),
+            path: Vec::new(),
+            pending: None,
+            descriptors: Vec::new(),
+            units: UnitArena::new(domain),
+            values: Vec::new(),
+            generation: 0,
+            leased_generation: None,
+            cancelled: false,
+            ended: false,
+        }
+    }
+
     fn load_top(&mut self) -> Result<(), VtStatus> {
         let frame = self.stack.last_mut().ok_or(VtStatus::ProviderError)?;
         if frame.loaded {
             return Ok(());
         }
-        let (is_final, _, total) = self.snapshot.copy_node(frame.node, 0, &mut [])?;
+        let snapshot = self
+            .snapshot
+            .as_ref()
+            .expect("graph traversal owns a snapshot");
+        let (is_final, _, total) = snapshot.copy_node(frame.node, 0, &mut [])?;
         if total > isize::MAX as usize / std::mem::size_of::<VtDictionaryEdge>() {
             return Err(VtStatus::LimitExceeded);
         }
         frame.edges.resize(total, VtDictionaryEdge::default());
         let (confirmed_final, written, confirmed_total) =
-            self.snapshot.copy_node(frame.node, 0, &mut frame.edges)?;
+            snapshot.copy_node(frame.node, 0, &mut frame.edges)?;
         if confirmed_final != is_final || confirmed_total != total || written != total {
             return Err(VtStatus::ProviderError);
         }
@@ -176,6 +203,26 @@ impl EntryCursorState {
     }
 
     pub(super) fn next_entry(&mut self) -> Result<Option<PendingEntry>, VtStatus> {
+        if let Some(algebra) = &mut self.algebra {
+            return match algebra.next() {
+                Some(Ok(entry)) => {
+                    let units = match entry.term {
+                        BindingTerm::Bytes(bytes) => bytes.into_iter().map(u64::from).collect(),
+                        BindingTerm::Unicode(text) => {
+                            text.chars().map(|unit| unit as u64).collect()
+                        }
+                        BindingTerm::U64(units) => units,
+                    };
+                    Ok(Some(PendingEntry {
+                        units,
+                        value: entry.value,
+                    }))
+                }
+                Some(Err(BindingAlgebraError::Provider(status))) => Err(status),
+                Some(Err(BindingAlgebraError::DomainMismatch)) => Err(VtStatus::InvalidArgument),
+                None => Ok(None),
+            };
+        }
         if let Some(records) = &mut self.records {
             return Ok(records
                 .next()
@@ -192,7 +239,11 @@ impl EntryCursorState {
                 if frame.is_final {
                     return Ok(Some(PendingEntry {
                         units: self.path.clone(),
-                        value: self.snapshot.value(frame.node)?,
+                        value: self
+                            .snapshot
+                            .as_ref()
+                            .expect("graph traversal owns a snapshot")
+                            .value(frame.node)?,
                     }));
                 }
             } else if let Some(edge) = frame.edges.get(frame.next_edge).copied() {
@@ -273,6 +324,34 @@ impl EntryCursorState {
             reserved: 0,
         }
     }
+}
+
+/// Reuse the existing bounded entry page/reducer lifecycle for a lazy algebra
+/// stream. A composite has no single-source snapshot identity or exact count.
+pub(super) fn open_algebra(
+    algebra: BindingAlgebraEntries,
+) -> (VtDictionaryEntriesCursor, VtDictionaryEntriesInfo) {
+    let domain: VtUnitDomain = algebra.domain().into();
+    let state = Box::new(EntryCursorState::from_algebra(algebra));
+    (
+        VtDictionaryEntriesCursor {
+            context: Box::into_raw(state).cast(),
+            vtable: &DICTIONARY_ENTRIES_VTABLE,
+        },
+        VtDictionaryEntriesInfo {
+            unit_domain: domain as u32,
+            value_domain: VtValueDomain::OptionalU64 as u32,
+            order: VtDictionaryEntryOrder::Lexicographic as u32,
+            reserved0: 0,
+            flags: 0,
+            exact_len: 0,
+            identity: VtSnapshotIdentity {
+                producer: 0,
+                revision: 0,
+            },
+            reserved: [0; 2],
+        },
+    )
 }
 
 unsafe fn state_mut<'a>(

@@ -216,7 +216,7 @@
     "_source": "release pins in .github/workflows/release-bindings.yml; dev facade pins in bindings/go/go.mod, Package.swift, bindings/jvm/build.gradle.kts (test scope), bindings/clojure/project.clj (:test profile), and bindings/javascript/package.json (@vinary-tree/javascript-runtime). Recorded verbatim; tag existence is a release concern tracked in docs/bindings/FINDINGS_LEDGER.md (LDICT-B1)."
   },
   "abiVersion": 1,
-  "apiRevision": 8,
+  "apiRevision": 9,
   "cPrefix": "ldict_",
   "cHeader": "include/libdictenstein.h",
   "featureGates": {
@@ -296,6 +296,18 @@
           "name": "value",
           "type": "LdictOptionalU64"
         }
+      ]
+    },
+    "LdictTextKey": {
+      "fields": [
+        {"name": "data", "type": "*const u8"},
+        {"name": "len", "type": "usize"}
+      ]
+    },
+    "LdictU64Key": {
+      "fields": [
+        {"name": "data", "type": "*const u64"},
+        {"name": "len", "type": "usize"}
       ]
     },
     "LdictSuffixSourceRecord": {
@@ -817,6 +829,19 @@
       ]
     },
     {
+      "name": "ldict_dictionary_algebra_entries_open",
+      "group": "collection",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "left", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "right", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "operation", "cType": "uint32_t", "direction": "input", "ownership": "value"},
+        {"name": "value_merge", "cType": "uint32_t", "direction": "input", "ownership": "value"},
+        {"name": "out_cursor", "cType": "LdictEntryCursor**", "direction": "output", "ownership": "caller-owned-handle"},
+        {"name": "out_info", "cType": "LdictEntriesInfo*", "direction": "output", "ownership": "caller-owned-storage"}
+      ]
+    },
+    {
       "name": "ldict_entry_cursor_next",
       "group": "collection",
       "returnType": "LdictStatus",
@@ -1099,6 +1124,52 @@
         {"name": "entry_count", "cType": "size_t", "direction": "input", "ownership": "value"},
         {"name": "out_inserted", "cType": "size_t*", "direction": "output", "ownership": "caller-owned-storage"}
       ]
+    },
+    {
+      "name": "ldict_dictionary_get_text_batch",
+      "group": "batch",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "keys", "cType": "const LdictTextKey*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "key_count", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_found", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-array"},
+        {"name": "out_values", "cType": "LdictOptionalU64*", "direction": "output", "ownership": "caller-owned-array"}
+      ]
+    },
+    {
+      "name": "ldict_dictionary_get_u64_batch",
+      "group": "batch",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "const LdictDictionary*", "direction": "input", "ownership": "borrowed-handle"},
+        {"name": "keys", "cType": "const LdictU64Key*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "key_count", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_found", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-array"},
+        {"name": "out_values", "cType": "LdictOptionalU64*", "direction": "output", "ownership": "caller-owned-array"}
+      ]
+    },
+    {
+      "name": "ldict_dictionary_remove_text_batch",
+      "group": "batch",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "LdictDictionary*", "direction": "input-output", "ownership": "borrowed-handle"},
+        {"name": "keys", "cType": "const LdictTextKey*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "key_count", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_removed", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-array"}
+      ]
+    },
+    {
+      "name": "ldict_dictionary_remove_u64_batch",
+      "group": "batch",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "dictionary", "cType": "LdictDictionary*", "direction": "input-output", "ownership": "borrowed-handle"},
+        {"name": "keys", "cType": "const LdictU64Key*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "key_count", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_removed", "cType": "uint8_t*", "direction": "output", "ownership": "caller-owned-array"}
+      ]
     }
   ],
   "facades": {
@@ -1253,6 +1324,7 @@
         "revision8-typed-backends": "Revision-8 typed suffix C calls are available as low-level declarations only; the idiomatic Raku suffix-source facade requires a separately qualified wrapper and an api_revision >= 8 gate. PathMap is exposed by the revision-gated Dictionary facade.",
         "byte-values": "The revision-7 byte-value C ABI is declared, but the idiomatic Raku byte-value dictionary and cursor facade is a separate parity task; no u64 reinterpretation is allowed.",
         "entry-cursor": "The idiomatic facade traverses retained Vinary-Tree-Interop snapshots; the project-owned cursor ABI remains available only as a low-level declaration.",
+        "batch-collections": "The Raku collection facade has its own parity task for native batch lookup and removal; declarations remain available at the raw ABI boundary.",
         "legacy-optional-insert": "The facade uses the explicit scalar-value insertion call to preserve valueless versus zero semantics.",
         "legacy-scalar-getter": "The facade uses the optional-value output struct and membership flag instead of the older scalar getter."
       },
@@ -1285,11 +1357,16 @@
         "ldict_byte_entry_cursor_cancel": "byte-values",
         "ldict_byte_entry_cursor_free": "byte-values",
         "ldict_dictionary_entries_open": "entry-cursor",
+        "ldict_dictionary_algebra_entries_open": "entry-cursor",
         "ldict_entry_cursor_next": "entry-cursor",
         "ldict_entry_cursor_release": "entry-cursor",
         "ldict_entry_cursor_reduce": "entry-cursor",
         "ldict_entry_cursor_cancel": "entry-cursor",
         "ldict_entry_cursor_free": "entry-cursor",
+        "ldict_dictionary_get_text_batch": "batch-collections",
+        "ldict_dictionary_get_u64_batch": "batch-collections",
+        "ldict_dictionary_remove_text_batch": "batch-collections",
+        "ldict_dictionary_remove_u64_batch": "batch-collections",
         "ldict_dictionary_insert_text": "legacy-optional-insert",
         "ldict_dictionary_insert_u64": "legacy-optional-insert",
         "ldict_dictionary_get_text_value": "legacy-scalar-getter",

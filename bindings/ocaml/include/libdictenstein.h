@@ -32,7 +32,7 @@ extern "C" {
 #endif
 
 #define LDICT_ABI_VERSION 1u
-#define LDICT_API_REVISION 8u
+#define LDICT_API_REVISION 9u
 
 #define LDICT_KIND_DYNAMIC_DAWG 1u
 #define LDICT_KIND_DOUBLE_ARRAY_TRIE 2u
@@ -98,6 +98,18 @@ typedef struct LdictU64Entry {
     size_t len;
     LdictOptionalU64 value;
 } LdictU64Entry;
+
+/* Borrowed key descriptors for ordered batch lookup and removal. len counts
+ * bytes for text/byte dictionaries and tokens for u64 dictionaries. */
+typedef struct LdictTextKey {
+    const uint8_t* data;
+    size_t len;
+} LdictTextKey;
+
+typedef struct LdictU64Key {
+    const uint64_t* data;
+    size_t len;
+} LdictU64Key;
 
 /* Typed suffix-source records are not generic dictionary entries. Source IDs
  * are stable within a captured revision but may be reused after clear; the
@@ -252,6 +264,20 @@ LDICT_API LdictStatus ldict_dictionary_algebra(
     uint32_t operation,
     uint32_t value_merge,
     LdictDictionary** out_dictionary);
+
+/* Revision 9: lazily merge two captured immutable revisions through the
+ * ordinary bounded entry cursor. The cursor owns both snapshots; source
+ * dictionary handles may be freed immediately after open. The composite
+ * reports lexicographic order and its unit domain, but has no single-source
+ * snapshot identity or exact count. All ordinary cursor lease, reducer,
+ * cancellation, and close rules apply. */
+LDICT_API LdictStatus ldict_dictionary_algebra_entries_open(
+    const LdictDictionary* left,
+    const LdictDictionary* right,
+    uint32_t operation,
+    uint32_t value_merge,
+    LdictEntryCursor** out_cursor,
+    LdictEntriesInfo* out_info);
 
 /* Open one immutable lexicographic revision. The opaque cursor owns that
  * snapshot and may outlive the source dictionary. */
@@ -423,6 +449,25 @@ LDICT_API LdictStatus ldict_dictionary_insert_u64_batch(
     const LdictU64Entry* entries,
     size_t entry_count,
     size_t* out_inserted);
+
+/* Revision 9 batch operations preserve caller key order, including duplicates.
+ * Outputs contain one result per key. A found key with no mapped value writes
+ * found=1 and has_value=0. The whole input is validated before removal begins.
+ * On a backend failure during removal, the completed prefix of out_removed is
+ * valid and the remaining positions are zero. Input and output storage must
+ * not overlap. Null key arrays and outputs are allowed only for zero keys. */
+LDICT_API LdictStatus ldict_dictionary_get_text_batch(
+    const LdictDictionary* dictionary, const LdictTextKey* keys,
+    size_t key_count, uint8_t* out_found, LdictOptionalU64* out_values);
+LDICT_API LdictStatus ldict_dictionary_get_u64_batch(
+    const LdictDictionary* dictionary, const LdictU64Key* keys,
+    size_t key_count, uint8_t* out_found, LdictOptionalU64* out_values);
+LDICT_API LdictStatus ldict_dictionary_remove_text_batch(
+    LdictDictionary* dictionary, const LdictTextKey* keys,
+    size_t key_count, uint8_t* out_removed);
+LDICT_API LdictStatus ldict_dictionary_remove_u64_batch(
+    LdictDictionary* dictionary, const LdictU64Key* keys,
+    size_t key_count, uint8_t* out_removed);
 
 LDICT_API LdictStatus ldict_scdawg_contains_substring(
     const LdictDictionary* dictionary,

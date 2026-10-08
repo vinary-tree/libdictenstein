@@ -24,7 +24,10 @@ use ffi_common::{
     DOMAIN_U64, DOMAIN_UNICODE,
 };
 use libdictenstein::ffi::{
-    ldict_dictionary_algebra, LdictAlgebraOperation, LdictDictionary, LdictStatus, LdictValueMerge,
+    ldict_dictionary_algebra, ldict_dictionary_algebra_entries_open, ldict_entry_cursor_cancel,
+    ldict_entry_cursor_free, ldict_entry_cursor_next, ldict_entry_cursor_release,
+    LdictAlgebraOperation, LdictDictionary, LdictEntriesInfo, LdictEntryBatch,
+    LdictEntryBatchLimits, LdictEntryCursor, LdictStatus, LdictValueMerge,
 };
 use proptest::prelude::*;
 
@@ -121,6 +124,94 @@ fn dictionary(domain: u32, entries: &FiniteMap) -> DictGuard {
     dictionary
 }
 
+fn streamed_algebra(
+    left: *const LdictDictionary,
+    right: *const LdictDictionary,
+    operation: LdictAlgebraOperation,
+    policy: LdictValueMerge,
+    domain: u32,
+) -> FiniteMap {
+    let mut cursor: *mut LdictEntryCursor = std::ptr::null_mut();
+    let mut info = LdictEntriesInfo::default();
+    assert_eq!(
+        unsafe {
+            ldict_dictionary_algebra_entries_open(
+                left,
+                right,
+                operation as u32,
+                policy as u32,
+                &mut cursor,
+                &mut info,
+            )
+        },
+        LdictStatus::Ok
+    );
+    assert!(!cursor.is_null());
+    assert_eq!(info.unit_domain, domain);
+    assert_eq!(info.flags, 0);
+    let limits = LdictEntryBatchLimits {
+        max_entries: 2,
+        max_units: 2,
+        max_values: 2,
+        reserved: 0,
+    };
+    let mut output = FiniteMap::new();
+    loop {
+        let mut batch = LdictEntryBatch::default();
+        match unsafe { ldict_entry_cursor_next(cursor, &limits, &mut batch) } {
+            LdictStatus::End => break,
+            LdictStatus::Ok => {}
+            status => panic!("algebra page returned {status:?}"),
+        }
+        let descriptors = unsafe { std::slice::from_raw_parts(batch.entries, batch.entry_count) };
+        for descriptor in descriptors {
+            let offset = descriptor.unit_offset;
+            let len = descriptor.unit_len;
+            let units: Vec<u64> = if len == 0 {
+                Vec::new()
+            } else {
+                match domain {
+                    DOMAIN_BYTE => unsafe {
+                        std::slice::from_raw_parts(batch.units.cast::<u8>().add(offset), len)
+                    }
+                    .iter()
+                    .copied()
+                    .map(u64::from)
+                    .collect(),
+                    DOMAIN_UNICODE => unsafe {
+                        std::slice::from_raw_parts(batch.units.cast::<u32>().add(offset), len)
+                    }
+                    .iter()
+                    .copied()
+                    .map(u64::from)
+                    .collect(),
+                    DOMAIN_U64 => unsafe {
+                        std::slice::from_raw_parts(batch.units.cast::<u64>().add(offset), len)
+                    }
+                    .to_vec(),
+                    _ => unreachable!(),
+                }
+            };
+            let value = if descriptor.value_len == 0 {
+                None
+            } else {
+                assert_eq!(descriptor.value_len, 1);
+                Some(unsafe { *batch.values.add(descriptor.value_offset) })
+            };
+            assert!(
+                output.insert(units, value).is_none(),
+                "duplicate algebra key"
+            );
+        }
+        assert_eq!(
+            unsafe { ldict_entry_cursor_release(cursor, batch.generation) },
+            LdictStatus::Ok
+        );
+    }
+    assert_eq!(unsafe { ldict_entry_cursor_free(cursor) }, LdictStatus::Ok);
+    output
+}
+
 fn fixtures(domain: u32) -> FixturePair {
     let base = match domain {
         DOMAIN_BYTE => u64::from(b'a'),
@@ -174,9 +265,74 @@ fn every_operation_and_value_policy_matches_all_unit_domains() {
                     model(&left_model, &right_model, operation, policy),
                     "domain={domain}, operation={operation:?}, policy={policy:?}"
                 );
+                assert_eq!(
+                    streamed_algebra(left.ptr(), right.ptr(), operation, policy, domain),
+                    model(&left_model, &right_model, operation, policy),
+                    "lazy domain={domain}, operation={operation:?}, policy={policy:?}"
+                );
             }
         }
     }
+}
+
+#[test]
+fn algebra_cursor_retains_sources_and_obeys_lease_cancellation() {
+    let (left_model, right_model) = fixtures(DOMAIN_UNICODE);
+    let left = dictionary(DOMAIN_UNICODE, &left_model);
+    let right = dictionary(DOMAIN_UNICODE, &right_model);
+    let mut cursor: *mut LdictEntryCursor = std::ptr::null_mut();
+    let mut info = LdictEntriesInfo::default();
+    assert_eq!(
+        unsafe {
+            ldict_dictionary_algebra_entries_open(
+                left.ptr(),
+                right.ptr(),
+                LdictAlgebraOperation::Union as u32,
+                LdictValueMerge::First as u32,
+                &mut cursor,
+                &mut info,
+            )
+        },
+        LdictStatus::Ok
+    );
+    assert_eq!(
+        insert_text(left.ptr(), "ω".as_bytes(), Some(9)).0,
+        LdictStatus::Ok
+    );
+    drop(left);
+    drop(right);
+    let limits = LdictEntryBatchLimits {
+        max_entries: 1,
+        max_units: 1,
+        max_values: 1,
+        reserved: 0,
+    };
+    let mut batch = LdictEntryBatch::default();
+    assert_eq!(
+        unsafe { ldict_entry_cursor_next(cursor, &limits, &mut batch) },
+        LdictStatus::Ok
+    );
+    assert_eq!(
+        unsafe { ldict_entry_cursor_cancel(cursor) },
+        LdictStatus::Ok
+    );
+    assert_eq!(
+        unsafe { ldict_entry_cursor_next(cursor, &limits, &mut LdictEntryBatch::default()) },
+        LdictStatus::BatchInUse
+    );
+    assert_eq!(
+        unsafe { ldict_entry_cursor_free(cursor) },
+        LdictStatus::BatchInUse
+    );
+    assert_eq!(
+        unsafe { ldict_entry_cursor_release(cursor, batch.generation) },
+        LdictStatus::Ok
+    );
+    assert_eq!(
+        unsafe { ldict_entry_cursor_next(cursor, &limits, &mut LdictEntryBatch::default()) },
+        LdictStatus::End
+    );
+    assert_eq!(unsafe { ldict_entry_cursor_free(cursor) }, LdictStatus::Ok);
 }
 
 #[test]

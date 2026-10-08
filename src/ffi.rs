@@ -10,9 +10,10 @@ use crate::bindings::PathMapBinding;
 #[cfg(feature = "persistent-artrie")]
 use crate::bindings::PersistentARTrieBinding;
 use crate::bindings::{
-    dictionary_algebra, BindingAlgebraError, BindingAlgebraOperation, BindingError,
-    BindingUnitDomain, BindingValueMerge, ByteValueDawgBinding, DoubleArrayTrieBinding,
-    DynamicDawgBinding, OwnedDictionaryResource, ScdawgBinding,
+    dictionary_algebra, dictionary_algebra_entries_open, BindingAlgebraError,
+    BindingAlgebraOperation, BindingError, BindingUnitDomain, BindingValueMerge,
+    ByteValueDawgBinding, DoubleArrayTrieBinding, DynamicDawgBinding, OwnedDictionaryResource,
+    ScdawgBinding,
 };
 use std::cell::RefCell;
 use std::ffi::{c_char, CString};
@@ -28,7 +29,7 @@ use vinary_tree_interop::{
 /// ABI version for the libdictenstein project API.
 pub const LDICT_ABI_VERSION: u32 = 1;
 /// Additive project API revision.
-pub const LDICT_API_REVISION: u32 = 8;
+pub const LDICT_API_REVISION: u32 = 9;
 
 /// DynamicDAWG backend identifier.
 pub const LDICT_KIND_DYNAMIC_DAWG: u32 = 1;
@@ -179,6 +180,26 @@ pub struct LdictU64Entry {
     pub len: usize,
     /// Optional mapped value.
     pub value: LdictOptionalU64,
+}
+
+/// One borrowed text or byte key in an ordered batch.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LdictTextKey {
+    /// UTF-8 or raw byte data.
+    pub data: *const u8,
+    /// Number of bytes at `data`.
+    pub len: usize,
+}
+
+/// One borrowed u64-token key in an ordered batch.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LdictU64Key {
+    /// Token data.
+    pub data: *const u64,
+    /// Number of tokens at `data`.
+    pub len: usize,
 }
 
 /// One streamed entry descriptor into a leased batch's parallel arenas.
@@ -588,6 +609,21 @@ fn value_merge_policy(value: u32) -> Result<BindingValueMerge, (LdictStatus, Str
             LdictStatus::InvalidArgument,
             format!("unknown dictionary value-merge policy {value}"),
         )),
+    }
+}
+
+fn algebra_error(error: BindingAlgebraError, operation: &str) -> (LdictStatus, String) {
+    match error {
+        BindingAlgebraError::DomainMismatch => (
+            LdictStatus::DomainMismatch,
+            "dictionary algebra requires equal unit domains".into(),
+        ),
+        BindingAlgebraError::Provider(status) => provider_status(status.to_raw(), operation)
+            .err()
+            .unwrap_or((
+                LdictStatus::ProviderError,
+                format!("{operation} returned unexpected status {status:?}"),
+            )),
     }
 }
 
@@ -1150,23 +1186,63 @@ pub unsafe extern "C" fn ldict_dictionary_algebra(
         }
 
         let result = dictionary_algebra(&left.resource, &right.resource, operation, value_merge)
-            .map_err(|error| match error {
-                BindingAlgebraError::DomainMismatch => (
-                    LdictStatus::DomainMismatch,
-                    "dictionary algebra requires equal unit domains".into(),
-                ),
-                BindingAlgebraError::Provider(status) => {
-                    provider_status(status.to_raw(), "dictionary algebra")
-                        .err()
-                        .unwrap_or((
-                            LdictStatus::ProviderError,
-                            format!("dictionary algebra returned unexpected status {status:?}"),
-                        ))
-                }
-            })?;
+            .map_err(|error| algebra_error(error, "dictionary algebra"))?;
         out_dictionary.write(Box::into_raw(Box::new(LdictDictionary::new(
             LdictBinding::Dynamic(result),
         ))));
+        Ok(LdictStatus::Ok)
+    })
+}
+
+/// Open a bounded lazy algebra cursor over two captured immutable revisions.
+///
+/// The returned handle uses the same next/release/reduce/cancel/free functions
+/// as a one-source entry cursor. No terms are traversed until the first page
+/// request, and no source handle must remain alive after this call.
+///
+/// # Safety
+/// The two dictionary handles and output pointers must be valid. On failure,
+/// both outputs are zeroed and no cursor ownership is transferred.
+#[no_mangle]
+pub unsafe extern "C" fn ldict_dictionary_algebra_entries_open(
+    left: *const LdictDictionary,
+    right: *const LdictDictionary,
+    operation: u32,
+    value_merge: u32,
+    out_cursor: *mut *mut LdictEntryCursor,
+    out_info: *mut LdictEntriesInfo,
+) -> LdictStatus {
+    boundary(|| {
+        if out_cursor.is_null() || out_info.is_null() {
+            return Err((
+                LdictStatus::NullPointer,
+                "algebra cursor output is null".into(),
+            ));
+        }
+        out_cursor.write(ptr::null_mut());
+        out_info.write(LdictEntriesInfo::default());
+        let left = left
+            .as_ref()
+            .ok_or((LdictStatus::NullPointer, "left dictionary is null".into()))?;
+        let right = right
+            .as_ref()
+            .ok_or((LdictStatus::NullPointer, "right dictionary is null".into()))?;
+        let operation = algebra_operation(operation)?;
+        let value_merge = value_merge_policy(value_merge)?;
+        let (raw, info) = dictionary_algebra_entries_open(
+            &left.resource,
+            &right.resource,
+            operation,
+            value_merge,
+        )
+        .map_err(|error| algebra_error(error, "dictionary algebra entries"))?;
+        let vtable = raw.vtable;
+        out_info.write(info);
+        out_cursor.write(Box::into_raw(Box::new(LdictEntryCursor {
+            raw,
+            vtable,
+            leased_generation: None,
+        })));
         Ok(LdictStatus::Ok)
     })
 }
@@ -2177,6 +2253,178 @@ pub unsafe extern "C" fn ldict_dictionary_insert_u64_batch(
             inserted
         };
         out_inserted.write(inserted);
+        Ok(LdictStatus::Ok)
+    })
+}
+
+unsafe fn text_batch_keys<'a>(
+    dictionary: &LdictDictionary,
+    keys: *const LdictTextKey,
+    key_count: usize,
+) -> Result<Vec<&'a [u8]>, (LdictStatus, String)> {
+    let domain = dictionary.binding.domain();
+    if domain == BindingUnitDomain::U64 {
+        return Err((
+            LdictStatus::DomainMismatch,
+            BindingError::DomainMismatch.to_string(),
+        ));
+    }
+    let mut decoded = Vec::with_capacity(key_count);
+    for key in slice(keys, key_count, "keys")? {
+        let term = slice(key.data, key.len, "key data")?;
+        if domain == BindingUnitDomain::UnicodeScalar {
+            std::str::from_utf8(term)
+                .map_err(|error| (LdictStatus::InvalidUtf8, error.to_string()))?;
+        }
+        decoded.push(term);
+    }
+    Ok(decoded)
+}
+
+unsafe fn u64_batch_keys<'a>(
+    dictionary: &LdictDictionary,
+    keys: *const LdictU64Key,
+    key_count: usize,
+) -> Result<Vec<&'a [u64]>, (LdictStatus, String)> {
+    if dictionary.binding.domain() != BindingUnitDomain::U64 {
+        return Err((
+            LdictStatus::DomainMismatch,
+            BindingError::DomainMismatch.to_string(),
+        ));
+    }
+    let mut decoded = Vec::with_capacity(key_count);
+    for key in slice(keys, key_count, "keys")? {
+        decoded.push(slice(key.data, key.len, "key data")?);
+    }
+    Ok(decoded)
+}
+
+/// Look up optional values for text or byte keys in caller order.
+///
+/// # Safety
+/// All nonempty input and output arrays must be valid, nonoverlapping storage.
+#[no_mangle]
+pub unsafe extern "C" fn ldict_dictionary_get_text_batch(
+    dictionary: *const LdictDictionary,
+    keys: *const LdictTextKey,
+    key_count: usize,
+    out_found: *mut u8,
+    out_values: *mut LdictOptionalU64,
+) -> LdictStatus {
+    boundary(|| {
+        let dictionary = dictionary
+            .as_ref()
+            .ok_or((LdictStatus::NullPointer, "dictionary is null".into()))?;
+        if key_count != 0 && (out_found.is_null() || out_values.is_null()) {
+            return Err((LdictStatus::NullPointer, "batch output is null".into()));
+        }
+        let keys = text_batch_keys(dictionary, keys, key_count)?;
+        let mut results = Vec::with_capacity(key_count);
+        for key in keys {
+            results.push(binding(dictionary.binding.value_text(key))?);
+        }
+        for (index, result) in results.into_iter().enumerate() {
+            out_found.add(index).write(u8::from(result.is_some()));
+            out_values
+                .add(index)
+                .write(LdictOptionalU64::encode(result.flatten()));
+        }
+        Ok(LdictStatus::Ok)
+    })
+}
+
+/// Look up optional values for u64-token keys in caller order.
+///
+/// # Safety
+/// All nonempty input and output arrays must be valid, nonoverlapping storage.
+#[no_mangle]
+pub unsafe extern "C" fn ldict_dictionary_get_u64_batch(
+    dictionary: *const LdictDictionary,
+    keys: *const LdictU64Key,
+    key_count: usize,
+    out_found: *mut u8,
+    out_values: *mut LdictOptionalU64,
+) -> LdictStatus {
+    boundary(|| {
+        let dictionary = dictionary
+            .as_ref()
+            .ok_or((LdictStatus::NullPointer, "dictionary is null".into()))?;
+        if key_count != 0 && (out_found.is_null() || out_values.is_null()) {
+            return Err((LdictStatus::NullPointer, "batch output is null".into()));
+        }
+        let keys = u64_batch_keys(dictionary, keys, key_count)?;
+        let mut results = Vec::with_capacity(key_count);
+        for key in keys {
+            results.push(binding(dictionary.binding.value_u64(key))?);
+        }
+        for (index, result) in results.into_iter().enumerate() {
+            out_found.add(index).write(u8::from(result.is_some()));
+            out_values
+                .add(index)
+                .write(LdictOptionalU64::encode(result.flatten()));
+        }
+        Ok(LdictStatus::Ok)
+    })
+}
+
+/// Remove text or byte keys in caller order after validating the full input.
+///
+/// # Safety
+/// All nonempty input and output arrays must be valid, nonoverlapping storage.
+#[no_mangle]
+pub unsafe extern "C" fn ldict_dictionary_remove_text_batch(
+    dictionary: *mut LdictDictionary,
+    keys: *const LdictTextKey,
+    key_count: usize,
+    out_removed: *mut u8,
+) -> LdictStatus {
+    boundary(|| {
+        let dictionary = dictionary
+            .as_ref()
+            .ok_or((LdictStatus::NullPointer, "dictionary is null".into()))?;
+        if key_count != 0 && out_removed.is_null() {
+            return Err((LdictStatus::NullPointer, "batch output is null".into()));
+        }
+        let keys = text_batch_keys(dictionary, keys, key_count)?;
+        for index in 0..key_count {
+            out_removed.add(index).write(0);
+        }
+        for (index, key) in keys.into_iter().enumerate() {
+            out_removed
+                .add(index)
+                .write(u8::from(binding(dictionary.binding.remove_text(key))?));
+        }
+        Ok(LdictStatus::Ok)
+    })
+}
+
+/// Remove u64-token keys in caller order after validating the full input.
+///
+/// # Safety
+/// All nonempty input and output arrays must be valid, nonoverlapping storage.
+#[no_mangle]
+pub unsafe extern "C" fn ldict_dictionary_remove_u64_batch(
+    dictionary: *mut LdictDictionary,
+    keys: *const LdictU64Key,
+    key_count: usize,
+    out_removed: *mut u8,
+) -> LdictStatus {
+    boundary(|| {
+        let dictionary = dictionary
+            .as_ref()
+            .ok_or((LdictStatus::NullPointer, "dictionary is null".into()))?;
+        if key_count != 0 && out_removed.is_null() {
+            return Err((LdictStatus::NullPointer, "batch output is null".into()));
+        }
+        let keys = u64_batch_keys(dictionary, keys, key_count)?;
+        for index in 0..key_count {
+            out_removed.add(index).write(0);
+        }
+        for (index, key) in keys.into_iter().enumerate() {
+            out_removed
+                .add(index)
+                .write(u8::from(binding(dictionary.binding.remove_u64(key))?));
+        }
         Ok(LdictStatus::Ok)
     })
 }

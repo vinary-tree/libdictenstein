@@ -19,6 +19,8 @@ PersistentVocabulary
 
 ```@docs
 insert_batch!
+lookup_batch
+remove_batch!
 compact!
 checkpoint!
 snapshot
@@ -35,6 +37,11 @@ close!
 
 ```@docs
 algebra
+AlgebraEntries
+algebra_entries
+prefix_entries
+next_page!
+fold_entries
 intersection
 difference
 symmetric_difference

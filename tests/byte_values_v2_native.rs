@@ -290,7 +290,7 @@ fn c_crud_preserves_three_presence_states_and_unit_domains() {
             },
             LdictStatus::InvalidArgument
         );
-        assert_eq!(ldict_api_revision(), 8);
+        assert!(ldict_api_revision() >= 8);
     }
 }
 
