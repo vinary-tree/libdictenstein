@@ -11,7 +11,7 @@ src/bindings.rs	unsafe_block	let (is_final, total) = unsafe {	1	abi-snapshot-cur
 src/bindings.rs	unsafe_block	let captured_context = unsafe { &*captured.raw.context.cast::<ResourceContext>() };	1	abi-test-context-probe
 src/bindings.rs	unsafe_block	let captured_observer = unsafe { context_weak_observer(captured) };	1	abi-test-context-probe
 src/bindings.rs	unsafe_block	let context = unsafe { &*context.cast::<ResourceContext>() };	1	abi-byte-value-copy
-src/bindings.rs	unsafe_block	let context = unsafe { &*self.raw.context.cast::<ResourceContext>() };	1	abi-owned-resource-release-once
+src/bindings.rs	unsafe_block	let context = unsafe { &*self.raw.context.cast::<ResourceContext>() };	2	abi-owned-resource-release-once
 src/bindings.rs	unsafe_block	let graph_vtable = unsafe { &*graph_vtable.cast::<VtDictionaryGraphVTable>() };	1	abi-test-context-probe
 src/bindings.rs	unsafe_block	let live = unsafe { &*dynamic_resource.raw.context.cast::<ResourceContext>() };	1	abi-test-context-probe
 src/bindings.rs	unsafe_block	let live = unsafe { &*resource.raw.context.cast::<ResourceContext>() };	11	abi-test-context-probe
@@ -282,6 +282,7 @@ src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn snapshot_cursor_value(	1	snapshot-da
 src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn snapshot_graph_cursor_value(	1	snapshot-dawg-native-cursor-ownership
 src/dynamic_dawg/u64.rs	unsafe_fn	unsafe fn visit_snapshot_cursor_edge_page<F>(	1	snapshot-dawg-native-cursor-ownership
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_algebra(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_algebra_entries_open(	1	ffi-entry-cursor-handle-ownership
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_capabilities(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_checkpoint(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_clear(dictionary: *mut LdictDictionary) -> LdictStatus {	1	ffi-caller-pointer-contracts
@@ -291,8 +292,10 @@ src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_contains_u
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_entries_open(	1	ffi-entry-cursor-handle-ownership
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_free(dictionary: *mut LdictDictionary) {	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_get_text(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_get_text_batch(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_get_text_value(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_get_u64(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_get_u64_batch(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_get_u64_value(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_insert_text(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_insert_text_batch(	1	ffi-caller-pointer-contracts
@@ -303,7 +306,9 @@ src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_insert_u64
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_kind(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_len(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_remove_text(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_remove_text_batch(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_remove_u64(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_remove_u64_batch(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_resource(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_double_array_trie_new(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dynamic_dawg_new(	1	ffi-caller-pointer-contracts
@@ -326,7 +331,9 @@ src/ffi.rs	unsafe_fn	unsafe fn entry_cursor_mut<'a>(	1	ffi-entry-cursor-handle-o
 src/ffi.rs	unsafe_fn	unsafe fn persistent_open_or_create(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn persistent_path<'a>(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn slice<'a, T>(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_fn	unsafe fn text_batch_keys<'a>(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn text_operation(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_fn	unsafe fn u64_batch_keys<'a>(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn u64_operation(	1	ffi-caller-pointer-contracts
 src/ffi/bytes.rs	unsafe_block	Ok(Some(unsafe { slice(data, len, "value bytes")? }))	1	ffi-byte-value-facade-contract
 src/ffi/bytes.rs	unsafe_block	Ok(unsafe { &mut *cursor })	1	ffi-byte-value-facade-contract

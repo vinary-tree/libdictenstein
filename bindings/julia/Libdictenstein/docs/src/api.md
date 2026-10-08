@@ -37,6 +37,7 @@ close!
 
 ```@docs
 algebra
+AlgebraEntries
 algebra_entries
 prefix_entries
 next_page!
