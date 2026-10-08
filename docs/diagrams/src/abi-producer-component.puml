@@ -5,7 +5,7 @@
 ' Source of truth: src/bindings.rs (five backend bindings, ResourceContext,
 ' TraversalSnapshot graph/fallback views, 'static vtables,
 ' OwnedDictionaryResource) and
-' src/ffi.rs and src/ffi/suffix.rs (the 70-function ldict_* C ABI). Model:
+' src/ffi.rs and src/ffi/suffix.rs (the 75-function ldict_* C ABI). Model:
 ' bindings/api.json.
 ' Color key (family palette + ABI concept colors):
 '   #D5F5E3 libdictenstein (producer)   #FADBD8 liblevenshtein / interop host

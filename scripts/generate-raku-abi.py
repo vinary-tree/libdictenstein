@@ -52,6 +52,8 @@ LOCAL_LAYOUTS = {
         ("len", "usize"),
         ("value", "LdictOptionalU64"),
     ],
+    "LdictTextKey": [("data", "*const u8"), ("len", "usize")],
+    "LdictU64Key": [("data", "*const u64"), ("len", "usize")],
     "LdictSuffixSourceRecord": [
         ("source_id", "u64"),
         ("data", "*const u8"),
@@ -196,13 +198,13 @@ def nativecall_parameter(parameter: dict) -> str:
     if c_type in SCALARS:
         return SCALARS[c_type]
     if c_type in {"uint8_t*", "uint32_t*", "uint64_t*", "size_t*"}:
-        if name in {"out_bytes", "out_data"}:
+        if name in {"out_bytes", "out_data"} or parameter.get("ownership") == "caller-owned-array":
             return "Pointer"
         return SCALARS[c_type[:-1]] + " is rw"
     if c_type == "LdictOptionalU64":
         return "OptionalValue"
     if c_type == "LdictOptionalU64*":
-        return "OptionalValue"
+        return "Pointer" if parameter.get("ownership") == "caller-owned-array" else "OptionalValue"
     if c_type == "VtResource*":
         return "RawResource"
     if c_type in {"LdictDictionary**", "LdictEntryCursor**", "LdictByteEntryCursor**", "LdictSuffixIndex**", "LdictSuffixSnapshot**"}:
@@ -221,6 +223,8 @@ def nativecall_parameter(parameter: dict) -> str:
         "const uint64_t*",
         "const LdictTextEntry*",
         "const LdictU64Entry*",
+        "const LdictTextKey*",
+        "const LdictU64Key*",
         "const LdictEntryBatchLimits*",
         "LdictEntryBatch*",
         "LdictEntriesInfo*",
@@ -321,6 +325,14 @@ def render_layouts(model: dict) -> str:
         "",
         "class TextEntry is repr('CStruct') does EntryDescriptor is export { }",
         "class U64Entry is repr('CStruct') does EntryDescriptor is export { }",
+        "class TextKey is repr('CStruct') is export {",
+        "    has Pointer $.data;",
+        "    has size_t $.len;",
+        "}",
+        "class U64Key is repr('CStruct') is export {",
+        "    has Pointer $.data;",
+        "    has size_t $.len;",
+        "}",
         "class SuffixSourceRecord is repr('CStruct') is export {",
         "    has uint64 $.source-id;",
         "    has Pointer $.data;",

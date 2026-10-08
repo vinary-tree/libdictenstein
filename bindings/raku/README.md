@@ -40,7 +40,7 @@ models its symbols, numeric constants, layouts, and the Raku facade's
 intentional coverage. `scripts/generate-raku-abi.py` compares the two
 independently maintained sources and generates three delimited regions of
 [`Libdictenstein.rakumod`](lib/Libdictenstein.rakumod): constants and enums,
-the four local C-compatible layouts, and all 70 revision-8 NativeCall
+the six local C-compatible layouts, and all 75 revision-9 NativeCall
 declarations. The [reviewable inventory](../generated/raku-abi-capabilities.tsv)
 records each C and Raku signature, the package mapping, and whether the
 idiomatic facade calls it. Run this after changing the model or C header:

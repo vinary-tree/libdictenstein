@@ -3,7 +3,7 @@
 **Navigation**: [← Documentation index](../README.md)
 
 libdictenstein is the **producer** half of the family's dictionary ABI: it
-owns the concrete dictionaries and their CRUD, exports a 70-function `ldict_*`
+owns the concrete dictionaries and their CRUD, exports a 75-function `ldict_*`
 C surface, and hands consumers a two-word, retained `vt.dictionary.v1`
 resource whose snapshots they walk. The **consumer** half (cursor model, lease
 protocol, language-facade query APIs) lives in
@@ -14,7 +14,7 @@ corpus documents everything on the producing side of that boundary.
 
 | Artifact | Path | What it is |
 |---|---|---|
-| **C ABI reference** | [`c-abi-reference.md`](c-abi-reference.md) | The normative reference for all 70 `ldict_*` functions, with the [revision-8 PathMap and suffix supplement](backend-api-revision8.md) for the new typed surface. |
+| **C ABI reference** | [`c-abi-reference.md`](c-abi-reference.md) | The normative reference for all 75 `ldict_*` functions, including revision-9 lazy algebra and batch collections, with the [revision-8 PathMap and suffix supplement](backend-api-revision8.md) for the typed suffix surface. |
 | **Revision-8 capability matrix** | [`revision8-capability-matrix.md`](revision8-capability-matrix.md) | Evidence-backed supported, explicitly unsupported, and unqualified PathMap/suffix-index host surfaces. |
 | **Resource-producer architecture** | [`resource-producer.md`](resource-producer.md) | How the producer side works: backend bindings, `OwnedDictionaryResource` and the retain ledger, per-backend $`\mathcal{O}(1)`$ snapshot capture, lazy ABI-local node ids, the flag truth table, and the new-backend checklist. |
 | **Native Rust idioms** | [`rust-api-idioms.md`](rust-api-idioms.md) | Confirmed iterator/construction gaps in the pure Rust producer and the optimized, generic target for `Iterator`, `IntoIterator`, `FromIterator`, `Extend`, fallible bulk construction, folds, snapshots, and every automaton/unit domain. |
@@ -23,13 +23,13 @@ corpus documents everything on the producing side of that boundary.
 | **Machine-readable model** | [`../../bindings/api.json`](../../bindings/api.json) | The source of truth for the binding surface: exact C signatures and parameter lifetimes, symbols, enums, kinds, capabilities, marshalling and snapshot laws, facade layout, registry coordinates. |
 | **Contract gates** | [`../../scripts/check-bindings.py`](../../scripts/check-bindings.py), [`../../scripts/check-binding-docs.py`](../../scripts/check-binding-docs.py) | Enforce the ABI model and reject a declared facade whose guide, executable evidence, required operational topics, or local links are missing or stale. CI job `binding-contract`. |
 | **Julia ABI generator** | [`../../scripts/generate-julia-abi.py`](../../scripts/generate-julia-abi.py), [`../../bindings/generated/julia-abi-capabilities.tsv`](../../bindings/generated/julia-abi-capabilities.tsv) | Generates Julia constants, layouts, and typed calls from the model; independently proves exact header parity, freshness, and negative controls; emits the reviewable signature/direction/ownership inventory. |
-| **Raku ABI generator** | [`../../scripts/generate-raku-abi.py`](../../scripts/generate-raku-abi.py), [`../../bindings/generated/raku-abi-capabilities.tsv`](../../bindings/generated/raku-abi-capabilities.tsv) | Generates all revision-8 NativeCall declarations and local layouts from the same model, checks the independent C header, and requires exact reasons for low-level symbols not wrapped by the idiomatic facade. |
-| **Diagrams** | [`../diagrams/`](../diagrams/) | `abi-producer-component` (layer map), `snapshot-capture-sequence` (the walk protocol), `owned-resource-lifecycle-state` (the retain ledger); sources under [`../diagrams/src/`](../diagrams/src/). |
+| **Raku ABI generator** | [`../../scripts/generate-raku-abi.py`](../../scripts/generate-raku-abi.py), [`../../bindings/generated/raku-abi-capabilities.tsv`](../../bindings/generated/raku-abi-capabilities.tsv) | Generates all revision-9 NativeCall declarations and local layouts from the same model, checks the independent C header, and requires exact reasons for low-level symbols not wrapped by the idiomatic facade. |
+| **Diagrams** | [`../diagrams/`](../diagrams/) | `abi-producer-component` (layer map), `snapshot-capture-sequence` (the walk protocol), `algebra-cursor-sequence` (revision-9 bounded merge and lease lifecycle), `owned-resource-lifecycle-state` (the retain ledger); sources under [`../diagrams/src/`](../diagrams/src/). |
 | **Language facades** | [`../../bindings/`](../../bindings/) | Sixteen governed guides over the `ldict_*` surface, including the native C contract and grouped JVM/JavaScript language families. |
 | **Guide generator** | [`../../scripts/generate-binding-guides.py`](../../scripts/generate-binding-guides.py) | Owns the uniform support, loading, ownership, error, concurrency, performance, security, compatibility, and maintainer sections while preserving each facade's handwritten tutorial. |
 
-Collection interfaces are shipped across the packages in the matrix. Six of
-six of the 42 C functions form the shared bounded-entry cursor and reducer substrate;
+Collection interfaces are shipped across the packages in the matrix. Six C
+functions form the shared bounded-entry cursor and reducer substrate;
 the optimized [pure Rust surface](rust-api-idioms.md) bypasses that ABI, and
 each foreign facade maps the same snapshot, ordering, value, and cancellation
 laws to its own familiar protocols. The family

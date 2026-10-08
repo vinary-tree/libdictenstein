@@ -46,10 +46,12 @@ julia> sort!(collect(keys(d)))
 julia> close(d)
 ```
 
-Dictionary iteration opens a native immutable entry cursor. Batches are bounded, copied
-into Julia-owned keys, and released before iteration advances. Consequently,
-the iterator observes one coherent revision even while writers publish later
-revisions.
+Dictionary iteration captures an immutable Vinary Tree Interop snapshot.
+Consequently, the iterator observes one coherent revision even while writers
+publish later revisions. `algebra_entries` and `prefix_entries` use the native
+bounded entry cursor described below.
+`keys(dictionary)` is Julia's `Base.KeySet`, an `AbstractSet` that supports
+ordinary `in`, `union`, and `intersect` operations over dictionary keys.
 
 `PathMap(UNIT_BYTE)` keeps byte keys as `Vector{UInt8}` without interpreting
 invalid UTF-8. The separate suffix index accepts valid UTF-8 sources in both
@@ -112,6 +114,59 @@ This takes linear merge time $`O(|A| + |B|)`$ plus the linear minimal-graph
 builder. It uses $`O(|result|)`$ owned result storage and does not construct a
 host-language `Dict`.
 
+### Bounded algebra and prefix streams
+
+`algebra_entries` runs the same iterative two-way merge without constructing
+the result dictionary. Its cursor owns both captured input revisions. The
+source handles can be mutated or closed after the cursor opens. It yields
+lexicographically ordered `Pair{key,Union{Nothing,UInt64}}` values; zero and
+`nothing` remain distinct. `prefix_entries` traverses one captured revision.
+The optional `prefix` argument to `algebra_entries` restricts the merged
+stream. Byte and token prefixes are vectors of their corresponding unit type.
+
+```julia
+left = DynamicDawg()
+right = DynamicDawg()
+try
+    insert_batch!(left, ["alfa" => 1, "alpine" => nothing])
+    insert_batch!(right, ["alfa" => 2, "beta" => 3])
+    stream = algebra_entries(left, right;
+        operation=ALGEBRA_UNION,
+        value_merge=VALUE_MERGE_LATTICE_JOIN,
+        prefix="al", page_size=2, max_units=32)
+    @assert fold_entries((result, entry) -> (push!(result, entry); result),
+        Pair{String,Union{Nothing,UInt64}}[], stream) ==
+        ["alfa" => UInt64(2), "alpine" => nothing]
+finally
+    close(left)
+    close(right)
+end
+```
+
+`next_page!(stream)` returns at most `page_size` copied entries and releases
+the native page before returning. `max_units` bounds the unit arena in each
+page. A key longer than that bound raises `STATUS_LIMIT_EXCEEDED`; reopen the
+stream with a larger `max_units` to read it. The native cursor itself preserves
+the pending key for a larger-bound retry. `fold_entries` passes pages
+through the synchronous native reducer, catches Julia callback exceptions
+before returning to C, and closes the stream in every outcome. Ordinary
+iteration closes at exhaustion; call `close(stream)` when stopping early.
+Traversal uses an iterative stack and one lookahead per input. It does not
+accumulate the emitted result; the native traversal stack retains outgoing
+edges of active nodes, while output pages obey the requested bounds. The
+prefix filter stops once ordered keys pass the prefix range.
+
+### Ordered batch lookup and removal
+
+`lookup_batch(dictionary, keys)` makes one native call and returns one
+`(found, value)` result per key. `(true, nothing)` is a present valueless key;
+`(false, nothing)` is absent. `remove_batch!(dictionary, keys)` also uses one
+native call and returns one Boolean per key. Duplicate keys preserve input
+order; only the first successful removal reports `true`. The native boundary
+validates every key and its domain before starting a removal. A backend I/O
+failure can leave the completed prefix removed; this has the same mutation
+semantics as repeated `delete!` calls.
+
 ## Ownership and concurrency
 
 ```julia
@@ -139,8 +194,9 @@ objects.
 
 ## Performance and security
 
-- Prefer `insert_batch!` to amortize the FFI boundary and activate the
-  freeze-once sorted builder on an empty DynamicDAWG.
+- Prefer `insert_batch!`, `lookup_batch`, and `remove_batch!` to amortize the
+  FFI boundary. Sorted insertion into an empty DynamicDAWG can activate its
+  freeze-once minimal-graph builder.
 - Keep byte keys as `Vector{UInt8}` and token keys as `Vector{UInt64}`; implicit
   string coercion would change their domains.
 - Native errors are copied immediately into `NativeError`, because the C
@@ -149,7 +205,8 @@ objects.
   same filesystem authorization and sandboxing policy as native Julia code.
 - Existing dictionary calls require ABI major 1; `PathMap` and `SuffixIndex`
   check API revision at least 8 before resolving their additive symbols.
-  Earlier revision-7 consumers remain compatible with a revision-8 library.
+  Earlier revision-7 and revision-8 consumers remain compatible with a
+  revision-9 library. Lazy algebra and ordered batch calls require revision 9.
 
 The finite-map algebra follows the library's `llattice` optional-value laws.
 For the underlying ordered-automaton construction, see Daciuk et al.,

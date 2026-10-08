@@ -66,7 +66,7 @@ def julia_parameter_type(parameter: dict) -> str:
     if c_type == "const uint64_t*":
         return "Ptr{UInt64}"
     if c_type == "uint8_t*":
-        return "Ptr{UInt8}" if name in {"out_data", "out_bytes"} else "Ref{UInt8}"
+        return "Ptr{UInt8}" if name in {"out_data", "out_bytes"} or parameter.get("ownership") == "caller-owned-array" else "Ref{UInt8}"
     if c_type == "uint32_t*":
         return "Ref{UInt32}"
     if c_type == "uint64_t*":
@@ -76,11 +76,15 @@ def julia_parameter_type(parameter: dict) -> str:
     if c_type == "LdictOptionalU64":
         return "OptionalU64"
     if c_type == "LdictOptionalU64*":
-        return "Ref{OptionalU64}"
+        return "Ptr{OptionalU64}" if parameter.get("ownership") == "caller-owned-array" else "Ref{OptionalU64}"
     if c_type == "const LdictTextEntry*":
         return "Ptr{TextEntry}"
     if c_type == "const LdictU64Entry*":
         return "Ptr{U64Entry}"
+    if c_type == "const LdictTextKey*":
+        return "Ptr{TextKey}"
+    if c_type == "const LdictU64Key*":
+        return "Ptr{U64Key}"
     if c_type == "LdictSuffixSourceRecord*":
         return "Ptr{SuffixSourceRecord}"
     if c_type == "VtResource*":
@@ -155,6 +159,8 @@ def render_layouts(model: dict) -> str:
             ("len", "usize"),
             ("value", "LdictOptionalU64"),
         ],
+        "LdictTextKey": [("data", "*const u8"), ("len", "usize")],
+        "LdictU64Key": [("data", "*const u64"), ("len", "usize")],
         "LdictSuffixSourceRecord": [
             ("source_id", "u64"),
             ("data", "*const u8"),
@@ -185,6 +191,16 @@ def render_layouts(model: dict) -> str:
         "    data::Ptr{UInt64}",
         "    len::Csize_t",
         "    value::OptionalU64",
+        "end",
+        "",
+        "struct TextKey",
+        "    data::Ptr{UInt8}",
+        "    len::Csize_t",
+        "end",
+        "",
+        "struct U64Key",
+        "    data::Ptr{UInt64}",
+        "    len::Csize_t",
         "end",
         "",
         "struct SuffixSourceRecord",

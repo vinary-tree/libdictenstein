@@ -5,7 +5,7 @@ const LD = Libdictenstein
 
 @testset "ABI identity and layouts" begin
     @test LD.abi_version() == LD.ABI_VERSION == 1
-    @test LD.API_REVISION == 8
+    @test LD.API_REVISION == 9
     @test LD.api_revision() >= LD.API_REVISION
     @test fieldnames(LD.OptionalU64) == (:value, :has_value, :reserved)
     @test fieldnames(LD.TextEntry) == (:data, :len, :value)
@@ -40,6 +40,123 @@ const LD = Libdictenstein
     @test all(isdefined(LD, Symbol(row[6])) for row in rows)
     @test all(row[9] == string(LD.ABI_VERSION) &&
               row[10] == string(LD.API_REVISION) for row in rows)
+end
+
+@testset "revision-9 bounded lazy dictionary algebra" begin
+    fixtures = (
+        (LD.UNIT_UNICODE_SCALAR, "", "a", "ab", "ac", "b", "a"),
+        (LD.UNIT_BYTE, UInt8[], UInt8[0x00], UInt8[0x00, 0xff],
+            UInt8[0x01], UInt8[0xff], UInt8[0x00]),
+        (LD.UNIT_U64, UInt64[], UInt64[0], UInt64[0, 2],
+            UInt64[1], UInt64[2], UInt64[0]),
+    )
+    for (domain, empty_key, a, ab, ac, b, prefix) in fixtures
+        left = LD.DynamicDawg(domain)
+        right = LD.DynamicDawg(domain)
+        try
+            LD.insert_batch!(left, [empty_key => nothing, a => 0, ab => 4])
+            LD.insert_batch!(right, [a => 7, ac => nothing, b => 9])
+
+            joined = LD.algebra_entries(left, right;
+                operation=LD.ALGEBRA_UNION,
+                value_merge=LD.VALUE_MERGE_LATTICE_JOIN,
+                page_size=2, max_units=64)
+            left[a] = 100
+            delete!(right, ac)
+            close(left)
+            close(right)
+            try
+                first_page = LD.next_page!(joined)
+                @test length(first_page) <= 2
+                @test first_page == [empty_key => nothing, a => UInt64(7)]
+                rest = collect(joined)
+                @test rest == [ab => UInt64(4), ac => nothing, b => UInt64(9)]
+                @test !isopen(joined)
+                @test LD.next_page!(joined) === nothing
+            finally
+                close(joined)
+            end
+        finally
+            close(left)
+            close(right)
+        end
+
+        left = LD.DynamicDawg(domain)
+        right = LD.DynamicDawg(domain)
+        try
+            LD.insert_batch!(left, [empty_key => nothing, a => 0, ab => 4])
+            LD.insert_batch!(right, [a => 7, ac => nothing, b => 9])
+            expected = (
+                (LD.ALGEBRA_UNION, [empty_key => nothing, a => UInt64(7),
+                    ab => UInt64(4), ac => nothing, b => UInt64(9)]),
+                (LD.ALGEBRA_INTERSECTION, [a => UInt64(7)]),
+                (LD.ALGEBRA_DIFFERENCE, [empty_key => nothing, ab => UInt64(4)]),
+                (LD.ALGEBRA_SYMMETRIC_DIFFERENCE,
+                    [empty_key => nothing, ab => UInt64(4), ac => nothing, b => UInt64(9)]),
+            )
+            for (operation, entries) in expected
+                stream = LD.algebra_entries(left, right;
+                    operation, value_merge=LD.VALUE_MERGE_LAST,
+                    page_size=1, max_units=64)
+                @test collect(stream) == entries
+                @test !isopen(stream)
+            end
+            prefixed = LD.prefix_entries(left, prefix;
+                page_size=1, max_units=64)
+            @test collect(prefixed) == [a => UInt64(0), ab => UInt64(4)]
+            @test !isopen(prefixed)
+            joined_prefix = LD.algebra_entries(left, right;
+                prefix, page_size=1, max_units=64)
+            expected_prefix = domain == LD.UNIT_UNICODE_SCALAR ?
+                [a => UInt64(7), ab => UInt64(4), ac => nothing] :
+                [a => UInt64(7), ab => UInt64(4)]
+            @test collect(joined_prefix) == expected_prefix
+            reduced_prefix = LD.algebra_entries(left, right;
+                prefix, page_size=1, max_units=64)
+            @test LD.fold_entries((count, _) -> count + 1, 0,
+                reduced_prefix) == length(expected_prefix)
+            @test !isopen(reduced_prefix)
+            folded = LD.algebra_entries(left, right;
+                page_size=1, max_units=64)
+            @test LD.fold_entries((count, _) -> count + 1, 0, folded) == 5
+            @test !isopen(folded)
+            failed = LD.algebra_entries(left, right)
+            @test_throws ErrorException LD.fold_entries((_, _) -> error("stop"), 0,
+                failed)
+            @test !isopen(failed)
+            early = LD.algebra_entries(left, right)
+            @test first(early) == (empty_key => nothing)
+            close(early)
+            @test_throws LD.NativeError LD.next_page!(early)
+        finally
+            close(left)
+            close(right)
+        end
+    end
+end
+
+@testset "revision-9 one-crossing batch lookup and removal" begin
+    for (domain, empty_key, key, missing) in (
+        (LD.UNIT_UNICODE_SCALAR, "", "é", "absent"),
+        (LD.UNIT_BYTE, UInt8[], UInt8[0x00, 0xff], UInt8[0x7f]),
+        (LD.UNIT_U64, UInt64[], UInt64[0, typemax(UInt64)], UInt64[1]),
+    )
+        dictionary = LD.DynamicDawg(domain)
+        try
+            LD.insert_batch!(dictionary, [empty_key => nothing, key => 0])
+            @test LD.lookup_batch(dictionary, [key, missing, empty_key, key]) ==
+                [(true, UInt64(0)), (false, nothing), (true, nothing),
+                    (true, UInt64(0))]
+            @test LD.lookup_batch(dictionary, ()) == Tuple{Bool,Union{Nothing,UInt64}}[]
+            @test LD.remove_batch!(dictionary, [key, missing, empty_key, key]) ==
+                [true, false, true, false]
+            @test LD.remove_batch!(dictionary, ()) == Bool[]
+            @test isempty(dictionary)
+        finally
+            close(dictionary)
+        end
+        @test_throws LD.NativeError LD.lookup_batch(dictionary, [key])
+    end
 end
 
 @testset "revision-8 PathMap dictionary" begin
@@ -157,6 +274,9 @@ end
         @test get(dictionary, "missing", :absent) === :absent
         @test_throws KeyError dictionary["missing"]
         @test Set(keys(dictionary)) == Set(["cat", "cot", "zero"])
+        @test keys(dictionary) isa AbstractSet{String}
+        @test union(keys(dictionary), Set(["new"])) ==
+            Set(["cat", "cot", "zero", "new"])
 
         view = LD.snapshot(dictionary)
         delete!(dictionary, "cat")
