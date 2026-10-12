@@ -5,6 +5,11 @@
 use libdictenstein::ffi::*;
 use std::ptr;
 
+#[cfg(unix)]
+unsafe extern "C" {
+    fn _exit(status: std::ffi::c_int) -> !;
+}
+
 #[test]
 fn suffix_crash_writer_process() {
     let Some(directory) = std::env::var_os("LIBDICT_TEST_SUFFIX_CRASH_DIR") else {
@@ -31,7 +36,13 @@ fn suffix_crash_writer_process() {
             }
         }
     }
-    // No destructors or checkpoint calls run on this exit path.
+    // Model abrupt process death: skip both Rust destructors and C atexit
+    // handlers, including LeakSanitizer's check of intentionally live handles.
+    #[cfg(unix)]
+    unsafe {
+        _exit(0);
+    }
+    #[cfg(not(unix))]
     std::process::exit(0);
 }
 
