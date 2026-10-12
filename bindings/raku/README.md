@@ -210,6 +210,41 @@ LEAVE $joined.close;
 die 'join failed' unless $joined{'shared'} == 9;
 ```
 
+`union-view`, `intersection-view`, `difference-view`, and
+`symmetric-difference-view` return one-shot lazy native entry cursors. Each
+cursor captures both input revisions, so it remains usable after the source
+handles close. `prefix-view($prefix, excluding => @prefixes)` seeks a native
+subtree and prunes the excluded subtrees; `excluding-prefix-view($prefix)`
+selects the entire dictionary except that subtree. These views support
+`next-batch(BatchLimits.new(...))`, `reduce(&callback, $limits)`, `cancel`,
+`close`, and ordinary Raku iteration. Release each borrowed page before the
+next page or reducer call. The iterator copies entries before releasing a page
+and closes its cursor when exhausted. Native API revision 13 is required for
+prefix views.
+
+`lookup-batch(@keys)` returns ordered `LookupResult` objects with separate
+`.found` and `.value` fields, preserving missing, valueless, and mapped-zero
+keys. `remove-batch(@keys)` returns ordered Boolean outcomes. Both operations
+use one native batch call and preserve duplicate-key order.
+
+`value-difference-view($right)` streams shared keys whose optional values
+changed. Each `ValueDifference` has `.key`, `.left`, and `.right`; `Nil` means
+the member is present without a mapped value. Its `next-batch($limits)` copies
+one bounded native page and releases the lease before returning Raku objects.
+It also supports iteration, `reduce`, `cancel`, and `close`, and keeps both
+captured revisions alive after their source handles close. The native cursor
+requires API revision 13.
+
+Run `raku -Ibindings/raku/lib -I../vinary-tree-interop/bindings/raku/lib
+bindings/raku/bench/zipper-crossings.raku 512 64` with
+`LIBDICTENSTEIN_LIBRARY` set to a revision-13 build to compare scalar lookup,
+one-call batch lookup, and bounded union, prefix, and value-difference pages.
+The CSV output reports native page calls and elapsed milliseconds; each cursor
+includes one final end-of-stream call. In the 512-entry, 64-entry-page smoke
+run, scalar lookup crossed 512 times, batch lookup once, and each zipper nine
+times. Timing depends on the runtime and native build profile; the benchmark
+prints it rather than assuming fewer crossings are faster.
+
 The native boundary copies diagnostics before the next call, rejects invalid
 UTF-8 and out-of-range `UInt` values, contains Rust panics as status values,
 and packs batch descriptors into one inline C arena to avoid per-key foreign

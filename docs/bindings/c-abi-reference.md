@@ -76,7 +76,7 @@ evolution model (see the canonical
 | Constant | Value | Meaning | Caller check |
 |---|---|---|---|
 | `LDICT_ABI_VERSION` | 1 | Breaking-change counter for the `ldict_*` surface: layouts, ownership rules, status meanings. | **Exact equality** — refuse any other value. |
-| `LDICT_API_REVISION` | 12 | Additive counter: revision 5 added bounded entries; revision 6 added algebra; revision 7 added byte-valued DAWGs/entries; revision 8 added PathMap and a separate typed suffix-source index; revision 9 added lazy algebra cursors and ordered batch lookup/removal; revision 10 added scalar-argument suffix insertion for by-reference FFI runtimes; revision 11 added persistent u64 CX profiles, Unicode ARTrie WAL archive configuration, and owned recovery reports; revision 12 adds native persistent suffix families and direct vocabulary index assignment. | **At least** — a facade checks $`n`$ before resolving a symbol added in revision $`n`$. Older calls remain usable against newer libraries. |
+| `LDICT_API_REVISION` | 13 | Additive counter: revision 5 added bounded entries; revision 6 added algebra; revision 7 added byte-valued DAWGs/entries; revision 8 added PathMap and a separate typed suffix-source index; revision 9 added lazy algebra cursors and ordered batch lookup/removal; revision 10 added scalar-argument suffix insertion for by-reference FFI runtimes; revision 11 added persistent u64 CX profiles, Unicode ARTrie WAL archive configuration, and owned recovery reports; revision 12 added native persistent suffix families and direct vocabulary index assignment; revision 13 adds typed prefix cursors and bounded value-difference cursors. | **At least** — a facade checks $`n`$ before resolving a symbol added in revision $`n`$. Older calls remain usable against newer libraries. |
 
 Every fallible function reports failure twice: as an `LdictStatus` return value
 (the machine channel) and as a human-readable message retrievable through
@@ -104,7 +104,7 @@ Returns `LDICT_ABI_VERSION` (currently `1`).
 LDICT_API uint32_t ldict_api_revision(void);
 ```
 
-Returns `LDICT_API_REVISION` (currently `12`).
+Returns `LDICT_API_REVISION` (currently `13`).
 
 - **Preconditions**: none.
 - **Statuses**: none — cannot fail.
@@ -1358,6 +1358,35 @@ LDICT_API LdictStatus ldict_dictionary_algebra_entries_open(
     const LdictDictionary* left, const LdictDictionary* right,
     uint32_t operation, uint32_t value_merge,
     LdictEntryCursor** out_cursor, LdictEntriesInfo* out_info);
+typedef struct LdictUnitKey { const void* data; size_t len; } LdictUnitKey;
+LDICT_API LdictStatus ldict_dictionary_prefix_entries_open(
+    const LdictDictionary* dictionary, const LdictUnitKey* prefix,
+    const LdictUnitKey* excluded, size_t excluded_count,
+    LdictEntryCursor** out_cursor, LdictEntriesInfo* out_info);
+typedef struct LdictValueDiffEntry {
+    size_t unit_offset, unit_len;
+    LdictOptionalU64 left, right;
+} LdictValueDiffEntry;
+typedef struct LdictValueDiffBatch {
+    const LdictValueDiffEntry* entries;
+    size_t entry_count;
+    const void* units;
+    size_t unit_count;
+    uint64_t generation;
+} LdictValueDiffBatch;
+typedef struct LdictValueDiffCursor LdictValueDiffCursor;
+LDICT_API LdictStatus ldict_dictionary_value_diff_open(
+    const LdictDictionary* left, const LdictDictionary* right,
+    LdictValueDiffCursor** out_cursor, uint32_t* out_unit_domain);
+LDICT_API LdictStatus ldict_value_diff_cursor_next(
+    LdictValueDiffCursor* cursor, const LdictEntryBatchLimits* limits,
+    LdictValueDiffBatch* out_batch);
+LDICT_API LdictStatus ldict_value_diff_cursor_release(
+    LdictValueDiffCursor* cursor, uint64_t generation);
+LDICT_API LdictStatus ldict_value_diff_cursor_cancel(
+    LdictValueDiffCursor* cursor);
+LDICT_API LdictStatus ldict_value_diff_cursor_free(
+    LdictValueDiffCursor* cursor);
 LDICT_API LdictStatus ldict_entry_cursor_next(
     LdictEntryCursor* cursor,
     const LdictEntryBatchLimits* limits,
@@ -1394,6 +1423,29 @@ active iterative traversal frames and bounded output page. Frames can contain
 all outgoing edges of an active node; no memory bound independent of node
 degree is promised. The ordinary cursor
 lease, reducer, cancellation, and close rules below apply unchanged.
+
+Revision 13's prefix cursor decodes the inclusion and exclusion descriptors in
+the dictionary's unit domain. Bytes are arbitrary; Unicode descriptors are
+UTF-8 decoded to scalar units; `u64` descriptors contain aligned tokens and
+count tokens in `len`. A zero-length inclusion selects the entire dictionary,
+and a zero-length exclusion selects no entries. The native provider seeks the
+inclusion in O(prefix length) and prunes each excluded subtree during traversal.
+The returned cursor owns one captured revision, may outlive its source handle,
+and follows the ordinary page lease, reducer, cancellation, and close rules.
+Its metadata reports snapshot identity and lexicographic order, without an
+exact result count. Descriptor storage is borrowed only during the open call.
+
+The revision-13 value-difference cursor captures two matching-domain
+revisions and performs a lazy, ordered native merge with one lookahead per
+side. It emits only shared keys whose `Option<u64>` values differ. Each page
+contains inline left and right `LdictOptionalU64` values and a typed unit
+arena; `unit_offset` and `unit_len` count domain units. `max_values` in the
+ordinary entry limits counts present mapped values on both sides. A record
+larger than an empty page returns `LIMIT_EXCEEDED` without consuming it. A
+successful page is borrowed until its exact generation is released; another
+`next` or `free` during that lease returns `BATCH_IN_USE`. `cancel` stops future
+pages and leaves a current lease intact. Both captured revisions outlive their
+source dictionary handles until cursor free.
 
 <img src="../diagrams/algebra-cursor-sequence.svg" alt="Sequence diagram of revision-9 lazy algebra: the C cursor captures two immutable source revisions, the native zipper merges keys on demand with one lookahead per source, bounded pages are leased and released, and freeing the cursor releases both captured revisions." width="100%"/>
 

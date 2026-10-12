@@ -138,6 +138,145 @@ subtest 'native algebra and optional-value lattices' => {
     .close for $joined, $met, $only-left, $exclusive, $left, $right;
 };
 
+subtest 'bounded native algebra views and ordered batch operations' => {
+    my $left = dynamic-dawg;
+    my $right = dynamic-dawg;
+    $left.insert-batch([alpha => Nil, shared => 4, zero => 0]);
+    $right.insert-batch([beta => 2, shared => 9]);
+
+    my @lookups = $left.lookup-batch(['alpha', 'missing', 'zero', 'alpha']);
+    is-deeply @lookups.map(*.found).Array, [True, False, True, True],
+        'batch lookup preserves key order and duplicates';
+    ok !@lookups[0].value.defined, 'present valueless key remains distinct';
+    ok !@lookups[1].value.defined, 'missing key has no value';
+    is @lookups[2].value, 0, 'mapped zero is preserved';
+
+    my $view = $left.union-view($right,
+        merge => VALUE-MERGE-LATTICE-JOIN);
+    ok !$view.known-length.defined, 'lazy merge does not invent an exact count';
+    $left.close;
+    $right.close;
+    my $limits = BatchLimits.new(max-entries => 1,
+        max-units => 16, max-values => 1);
+    my $first = $view.next-batch($limits);
+    is-deeply $first.entries.map(*.units.map(*.chr).join).Array,
+        ['alpha'], 'one-entry page is lexicographic';
+    dies-ok { $view.next-batch($limits) }, 'live batch lease blocks next page';
+    $first.release;
+    my @tail;
+    my $count = $view.reduce(-> @entries {
+        @tail.append(@entries.map(*.units.map(*.chr).join));
+        True
+    }, $limits);
+    is $count, 3, 'reducer drains the remaining bounded pages';
+    is-deeply @tail.Array, <beta shared zero>.Array,
+        'native cursor preserves sorted merge after producers close';
+    $view.close;
+    ok !$view.opened, 'cursor closes deterministically';
+    dies-ok { $view.next-batch }, 'closed cursor rejects pages';
+
+    my $a = dynamic-dawg;
+    my $b = dynamic-dawg;
+    $a.insert-batch([a => 1, common => 3, only-a => Nil]);
+    $b.insert-batch([b => 2, common => 7]);
+    is-deeply $a.intersection-view($b).list.map(*.key).Array,
+        ['common'], 'intersection view is lazy and iterable';
+    is-deeply $a.difference-view($b).list.map(*.key).Array,
+        <a only-a>.Array, 'difference view keeps only left keys';
+    is-deeply $a.symmetric-difference-view($b).list.map(*.key).Array,
+        <a b only-a>.Array, 'symmetric difference view keeps exclusive keys';
+    is-deeply $a.remove-batch(['a', 'a', 'missing']).Array,
+        [True, False, False], 'batch removal preserves ordered outcomes';
+    .close for $a, $b;
+
+    my $tokens = dynamic-dawg(U64);
+    $tokens.insert-batch([Pair.new([1, 2], Nil), Pair.new([3], 0)]);
+    my @token-lookup = $tokens.lookup-batch([[1, 2], [3], [4]]);
+    is-deeply @token-lookup.map(*.found).Array, [True, True, False],
+        'u64 batch lookup is typed';
+    is @token-lookup[1].value, 0, 'u64 batch preserves mapped zero';
+    is-deeply $tokens.remove-batch([[1, 2], [1, 2]]).Array,
+        [True, False], 'u64 batch removal preserves duplicates';
+    $tokens.close;
+};
+
+subtest 'native prefix and excluding-prefix views' => {
+    my $words = dynamic-dawg;
+    $words.insert-batch([ape => 1, apex => Nil, app => 0,
+        apple => 4, bat => 5]);
+    my $prefix = $words.prefix-view('ap', excluding => ['app']);
+    $words.close;
+    is-deeply $prefix.list.map(*.key).Array, <ape apex>.Array,
+        'prefix seeks native subtree and prunes excluded branch';
+    dies-ok { $prefix.list }, 'view is a one-shot lazy iterator';
+    $prefix.close;
+
+    my $unicode = dynamic-dawg(UNICODE-SCALAR);
+    $unicode.insert-batch(['école' => 1, 'écran' => 2, 'été' => 3]);
+    is-deeply $unicode.prefix-view('é', excluding => ['éc']).list
+        .map(*.key).Array, ['été'],
+        'Unicode prefix is decoded as scalar units';
+    is-deeply $unicode.excluding-prefix-view('éc').list
+        .map(*.key).Array, ['été'], 'exclusion without inclusion';
+    $unicode.close;
+
+    my $tokens = dynamic-dawg(U64);
+    $tokens.insert-batch([Pair.new([1, 2], Nil),
+        Pair.new([1, 3], 0), Pair.new([2], 5)]);
+    my $view = $tokens.prefix-view([1], excluding => [$([1, 2])]);
+    is-deeply $view.list.map(*.key).Array, [$([1, 3])],
+        'u64 prefix descriptors count tokens';
+    $view.close;
+    is-deeply $tokens.excluding-prefix-view([1, 2]).list
+        .map(*.key).Array, [$([1, 3]), $([2])],
+        'u64 exclusion retains distinct token branches';
+    is $tokens.prefix-view([], excluding => [$([])]).list.elems, 0,
+        'empty exclusion suppresses the whole dictionary';
+    $tokens.close;
+};
+
+subtest 'bounded native value-difference zipper' => {
+    my $left = dynamic-dawg;
+    my $right = dynamic-dawg;
+    $left.insert-batch([same => 3, absent-right => 8,
+        changed => Nil, zero => 0, reverse => 5]);
+    $right.insert-batch([same => 3, absent-left => 9,
+        changed => 7, zero => Nil, reverse => 0]);
+    my $view = $left.value-difference-view($right);
+    $left.close;
+    $right.close;
+    my $limits = BatchLimits.new(max-entries => 1,
+        max-units => 32, max-values => 2);
+    my $first = $view.next-batch($limits);
+    is $first.elems, 1, 'value diff obeys descriptor bound';
+    is $first[0].key, 'changed', 'value diff is lexicographic';
+    ok !$first[0].left.defined, 'left valueless member is preserved';
+    is $first[0].right, 7, 'right mapped value is preserved';
+    my @rest;
+    is $view.reduce(-> @page { @rest.append(@page); True }, $limits), 2,
+        'reducer visits the remaining bounded pages';
+    is-deeply @rest.map(*.key).Array, <reverse zero>.Array,
+        'equal and one-sided keys are excluded';
+    is-deeply @rest.map(*.left).Array, [5, 0],
+        'left values retain zero';
+    is @rest[0].right, 0, 'right mapped zero survives';
+    ok !@rest[1].right.defined, 'right valueless member remains undefined';
+    $view.close;
+    ok !$view.opened, 'value diff cursor closes deterministically';
+
+    my $a = dynamic-dawg(U64);
+    my $b = dynamic-dawg(U64);
+    $a.insert-batch([Pair.new([1], 0), Pair.new([2], 2)]);
+    $b.insert-batch([Pair.new([1], 1), Pair.new([2], 3)]);
+    my $tokens = $a.value-difference-view($b);
+    is-deeply $tokens.next-batch($limits).map(*.key).Array,
+        [$([1])], 'u64 value-difference keys preserve token arrays';
+    $tokens.cancel;
+    ok !$tokens.next-batch.defined, 'early cancellation stops traversal';
+    $tokens.close;
+    .close for $a, $b;
+};
+
 subtest 'persistent checkpoint and reopen' => {
     my $scratch = IO::Path.new(
         %*ENV<LIBDICTENSTEIN_TEST_SCRATCH> // $*CWD.add('target/raku-test'));

@@ -14,13 +14,14 @@ use crate::bindings::PathMapBinding;
 #[cfg(feature = "persistent-artrie")]
 use crate::bindings::PersistentARTrieBinding;
 use crate::bindings::{
-    dictionary_algebra, dictionary_algebra_entries_open, BindingAlgebraError,
+    dictionary_algebra, dictionary_algebra_entries_open,
+    dictionary_prefix_entries_open as open_prefix_entries, BindingAlgebraError,
     BindingAlgebraOperation, BindingError, BindingUnitDomain, BindingValueMerge,
     ByteValueDawgBinding, DoubleArrayTrieBinding, DynamicDawgBinding, OwnedDictionaryResource,
     ScdawgBinding,
 };
 use std::cell::RefCell;
-use std::ffi::{c_char, CString};
+use std::ffi::{c_char, c_void, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use vinary_tree_interop::{
@@ -30,10 +31,17 @@ use vinary_tree_interop::{
     VtValueDomain, VT_DICTIONARY_ENTRIES_INTERFACE_ID, VT_DICTIONARY_ENTRIES_INTERFACE_VERSION,
 };
 
+mod value_diff;
+pub use value_diff::{
+    ldict_dictionary_value_diff_open, ldict_value_diff_cursor_cancel, ldict_value_diff_cursor_free,
+    ldict_value_diff_cursor_next, ldict_value_diff_cursor_release, LdictValueDiffBatch,
+    LdictValueDiffCursor, LdictValueDiffEntry,
+};
+
 /// ABI version for the libdictenstein project API.
 pub const LDICT_ABI_VERSION: u32 = 1;
 /// Additive project API revision.
-pub const LDICT_API_REVISION: u32 = 12;
+pub const LDICT_API_REVISION: u32 = 13;
 
 /// DynamicDAWG backend identifier.
 pub const LDICT_KIND_DYNAMIC_DAWG: u32 = 1;
@@ -203,6 +211,17 @@ pub struct LdictU64Key {
     /// Token data.
     pub data: *const u64,
     /// Number of tokens at `data`.
+    pub len: usize,
+}
+
+/// One domain-typed prefix. Length counts bytes for byte/Unicode inputs and
+/// tokens for u64 inputs; Unicode bytes must form valid UTF-8.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct LdictUnitKey {
+    /// Borrowed data, interpreted through the dictionary unit domain.
+    pub data: *const c_void,
+    /// Number of bytes or u64 tokens at `data`.
     pub len: usize,
 }
 
@@ -651,6 +670,27 @@ unsafe fn slice<'a, T>(
         return Err((LdictStatus::NullPointer, format!("{name} is null")));
     }
     Ok(std::slice::from_raw_parts(data, len))
+}
+
+unsafe fn prefix_units(
+    key: LdictUnitKey,
+    domain: BindingUnitDomain,
+    name: &str,
+) -> Result<Vec<u64>, (LdictStatus, String)> {
+    match domain {
+        BindingUnitDomain::Byte => Ok(slice(key.data.cast::<u8>(), key.len, name)?
+            .iter()
+            .copied()
+            .map(u64::from)
+            .collect()),
+        BindingUnitDomain::UnicodeScalar => {
+            let bytes = slice(key.data.cast::<u8>(), key.len, name)?;
+            let text = std::str::from_utf8(bytes)
+                .map_err(|error| (LdictStatus::InvalidUtf8, error.to_string()))?;
+            Ok(text.chars().map(|unit| unit as u64).collect())
+        }
+        BindingUnitDomain::U64 => Ok(slice(key.data.cast::<u64>(), key.len, name)?.to_vec()),
+    }
 }
 
 fn domain(value: u32) -> Result<BindingUnitDomain, (LdictStatus, String)> {
@@ -1440,6 +1480,66 @@ pub unsafe extern "C" fn ldict_dictionary_algebra_entries_open(
             value_merge,
         )
         .map_err(|error| algebra_error(error, "dictionary algebra entries"))?;
+        let vtable = raw.vtable;
+        out_info.write(info);
+        out_cursor.write(Box::into_raw(Box::new(LdictEntryCursor {
+            raw,
+            vtable,
+            leased_generation: None,
+        })));
+        Ok(LdictStatus::Ok)
+    })
+}
+
+/// Open one captured revision under a typed prefix, pruning any excluded
+/// prefix subtrees before visiting their entries. Empty inclusion means the
+/// whole dictionary; an empty exclusion suppresses all entries.
+///
+/// # Safety
+/// The dictionary, prefix descriptor, exclusion array and output pointers
+/// must be valid. Each nonempty descriptor must address its declared byte or
+/// aligned u64-token range for the dictionary domain. Both output slots must
+/// be distinct and writable. The cursor owns its captured revision on success.
+#[no_mangle]
+pub unsafe extern "C" fn ldict_dictionary_prefix_entries_open(
+    dictionary: *const LdictDictionary,
+    prefix: *const LdictUnitKey,
+    excluded: *const LdictUnitKey,
+    excluded_count: usize,
+    out_cursor: *mut *mut LdictEntryCursor,
+    out_info: *mut LdictEntriesInfo,
+) -> LdictStatus {
+    boundary(|| {
+        if out_cursor.is_null() || out_info.is_null() {
+            return Err((
+                LdictStatus::NullPointer,
+                "prefix cursor output is null".into(),
+            ));
+        }
+        out_cursor.write(ptr::null_mut());
+        out_info.write(LdictEntriesInfo::default());
+        let dictionary = dictionary
+            .as_ref()
+            .ok_or((LdictStatus::NullPointer, "dictionary is null".into()))?;
+        let prefix = prefix
+            .as_ref()
+            .ok_or((LdictStatus::NullPointer, "prefix descriptor is null".into()))?;
+        let domain = dictionary.binding.domain();
+        let prefix = prefix_units(*prefix, domain, "prefix")?;
+        let excluded = slice(excluded, excluded_count, "excluded prefixes")?;
+        let mut excluded_prefixes = Vec::with_capacity(excluded.len());
+        for key in excluded {
+            excluded_prefixes.push(prefix_units(*key, domain, "excluded prefix")?);
+        }
+        let (raw, info) = open_prefix_entries(&dictionary.resource, prefix, excluded_prefixes)
+            .map_err(|status| {
+                provider_status(status.to_raw(), "prefix entries")
+                    .err()
+                    .unwrap_or((
+                        LdictStatus::ProviderError,
+                        format!("prefix entries returned unexpected status {status:?}"),
+                    ))
+            })?;
         let vtable = raw.vtable;
         out_info.write(info);
         out_cursor.write(Box::into_raw(Box::new(LdictEntryCursor {
