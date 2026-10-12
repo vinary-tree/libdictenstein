@@ -196,7 +196,11 @@ subtest 'Unicode persistent WAL archive policy' => {
         'byte ARTrie rejects Unicode-only custom WAL policy';
     my $created = persistent-artrie($path, wal-config => $wal);
     $created.ASSIGN-KEY('durable🙂', 17);
-    $created.checkpoint;
+    my $checkpoint = $created.checkpoint-report;
+    is $checkpoint.visible-count-before, 1,
+        'checkpoint report samples one visible term before persistence';
+    is $checkpoint.visible-count-after, 1,
+        'checkpoint report samples one visible term afterward';
     $created.close;
     my $reopened = persistent-artrie($path, wal-config => $wal, :!create);
     is $reopened.AT-KEY('durable🙂'), 17,
@@ -219,7 +223,58 @@ subtest 'persistent vocabulary recovery report' => {
     my $vocab = persistent-vocabulary($path, :!create, :recover);
     is $vocab.recovery-report.mode, RECOVERY-CREATED-NEW,
         'missing vocabulary is created with an explicit recovery report';
+    is $vocab.vocabulary-insert('alpha'), 0,
+        'vocabulary auto-assignment returns the stable native index';
+    is $vocab.vocabulary-insert('alpha'), 0,
+        'repeated term keeps its index';
+    is-deeply $vocab.vocabulary-insert-batch(['β', 'alpha', 'gamma']),
+        (1, 0, 2).List, 'ordered vocabulary batch returns assigned indices';
+    is $vocab.vocabulary-term(2), 'gamma',
+        'reverse vocabulary lookup follows batch insertion';
     $vocab.close;
+};
+
+subtest 'six native persistent suffix variants and retained source revisions' => {
+    my $scratch = IO::Path.new(
+        %*ENV<LIBDICTENSTEIN_TEST_SCRATCH> // $*CWD.add('target/raku-test'));
+    $scratch.mkdir;
+    for (PERSISTENT-SUFFIX-AUTOMATON, PERSISTENT-SUFFIX-TREE,
+         PERSISTENT-SCDAWG) -> $family {
+        for (BYTE, UNICODE-SCALAR) -> $domain {
+            my $path = $scratch.add(
+                "persistent-suffix-{$family.Int}-{$domain.Int}-{$*PID}-{now.Int}");
+            my $index = persistent-suffix-index($path, :$family, :$domain);
+            ok $index.persistent, "family {$family.Int} domain {$domain.Int} is persistent";
+            $index.insert-source('banana', 0);
+            $index.insert-source('banané', 7);
+            my $old = $index.snapshot;
+            is $old.source-count, 2, 'native view captures both source records';
+            ok $index.remove-source('banana'), 'source removal succeeds';
+            ok $old.contains-source('banana'), 'old native view retains removed source';
+            my $fresh = $index.snapshot;
+            nok $fresh.contains-source('banana'), 'new view excludes removed source';
+            $fresh.close;
+            $index.compact;
+            my $checkpoint = $index.checkpoint-report;
+            is $checkpoint.visible-count-after, 1,
+                'suffix checkpoint report samples the remaining record';
+            $index.close;
+            ok $old.contains-source('banana'), 'view survives persistent index close';
+            $old.close;
+            my $reopened = persistent-suffix-index($path, :$family, :$domain, :!create);
+            ok $reopened.recovery-report ~~ PersistentRecoveryReport,
+                'reopen exposes a typed native recovery report';
+            my $view = $reopened.snapshot;
+            nok $view.contains-source('banana'), 'removed source stays absent after reopen';
+            ok $view.contains-source('banané'), 'remaining source survives checkpoint';
+            is $view.source-records.list[0].value, 7,
+                'mapped value survives persistent suffix reopen';
+            $view.close;
+            $reopened.close;
+        }
+    }
+    dies-ok { persistent-suffix-index($scratch.add('u64-invalid'), :domain(U64)) },
+        'u64 token sources are inapplicable to persistent suffix families';
 };
 
 done-testing;

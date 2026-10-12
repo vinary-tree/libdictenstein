@@ -2,9 +2,9 @@
 
 High-performance dictionaries and trie-maps for approximate string matching,
 with Raku-native `Associative` and `Iterable` behavior. `Libdictenstein`
-exposes DynamicDAWG, PathMap, DoubleArrayTrie, SCDAWG, and persistent ARTrie
-and vocabulary backends through NativeCall. A separate typed suffix-source
-index retains duplicate records. `Vinary-Tree-Interop` owns dictionary
+exposes DynamicDAWG, PathMap, DoubleArrayTrie, SCDAWG, persistent ARTrie,
+vocabulary, and six persistent suffix backends through NativeCall. A separate
+typed suffix-source index retains source records. `Vinary-Tree-Interop` owns dictionary
 snapshots; suffix snapshots have their own typed lifetime.
 
 ## Quick start
@@ -41,7 +41,7 @@ models its symbols, numeric constants, layouts, and the Raku facade's
 intentional coverage. `scripts/generate-raku-abi.py` compares the two
 independently maintained sources and generates three delimited regions of
 [`Libdictenstein.rakumod`](lib/Libdictenstein.rakumod): constants and enums,
-the six local C-compatible layouts, and all 86 revision-11 NativeCall
+the six local C-compatible layouts, and all 92 revision-12 NativeCall
 declarations. The [reviewable inventory](../generated/raku-abi-capabilities.tsv)
 records each C and Raku signature, the package mapping, and whether the
 idiomatic facade calls it. Run this after changing the model or C header:
@@ -96,6 +96,48 @@ counts, duration, optional corruption fields, and archive-segment paths are
 copied before the native report is freed. A missing store reports
 `RECOVERY-CREATED-NEW`; ordinary reopening reports the mode returned by the
 native engine. `persistent-vocabulary` accepts the same `:recover` option.
+On a vocabulary dictionary, `vocabulary-insert($term)` returns the assigned
+native index in one call, and `vocabulary-insert-batch(@terms)` returns indices
+in caller order while preserving existing IDs for repeated terms.
+`vocabulary-term($index)` performs the reverse lookup.
+
+`persistent-suffix-index` selects a native suffix automaton, suffix tree, or
+SCDAWG using `PersistentSuffixFamily`; each supports byte or Unicode-scalar
+transitions over UTF-8 source text. U64 source tokens are unsupported. The
+returned `SuffixIndex` has the same source and snapshot methods as the
+in-memory index, plus `checkpoint`, `checkpoint-report`,
+`needs-compaction`, and a `persistent`
+flag. Reopening with `:!create` attaches an owned `PersistentRecoveryReport`.
+The native index publishes immutable revisions; `snapshot` captures one in
+constant time, and its borrowed records are copied into Raku values before
+they leave a page. An old view stays valid after mutation, checkpoint,
+compaction, close, or free of its producer.
+
+| Family | Byte transitions | Unicode-scalar transitions | U64 tokens |
+|---|---|---|---|
+| Persistent suffix automaton | Supported over UTF-8 source text | Supported | Unsupported |
+| Persistent suffix tree | Supported over UTF-8 source text | Supported | Unsupported |
+| Persistent SCDAWG | Supported over UTF-8 source text | Supported | Unsupported |
+
+`checkpoint-report` measures host elapsed milliseconds and samples visible
+counts immediately before and after the native checkpoint. Under concurrent
+writers these samples need not equal the exact committed checkpoint contents.
+The same report method is available on persistent ARTrie dictionaries.
+
+The native constructor branches, six-variant checkpoint/reopen and process-exit
+recovery tests, and Raku conformance suite establish each supported cell.
+
+```raku
+my $path = $*CWD.add('suffix-data.ldict');
+my $index = persistent-suffix-index($path,
+    family => PERSISTENT-SUFFIX-TREE, domain => UNICODE-SCALAR);
+LEAVE $index.close;
+$index.insert-source('é🙂é', 7);
+$index.checkpoint;
+my $view = $index.snapshot;
+LEAVE $view.close;
+say $view.substring-frequency('é');
+```
 
 ## In-memory backends and suffix records
 

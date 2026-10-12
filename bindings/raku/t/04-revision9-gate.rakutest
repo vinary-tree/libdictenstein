@@ -9,5 +9,8 @@ throws-like { suffix-index }, X::Libdictenstein,
 throws-like { persistent-artrie(IO::Path.new('revision9-probe')) },
     X::Libdictenstein, status => STATUS-UNSUPPORTED,
     'persistent facade rejects revision 9 before resolving the revision-11 symbol';
+throws-like { persistent-suffix-index(IO::Path.new('revision9-probe')) },
+    X::Libdictenstein, status => STATUS-UNSUPPORTED,
+    'persistent suffix facade rejects revision 9 before resolving the revision-12 symbol';
 
 done-testing;

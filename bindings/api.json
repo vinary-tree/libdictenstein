@@ -216,7 +216,7 @@
     "_source": "release pins in .github/workflows/release-bindings.yml; dev facade pins in bindings/go/go.mod, Package.swift, bindings/jvm/build.gradle.kts (test scope), bindings/clojure/project.clj (:test profile), and bindings/javascript/package.json (@vinary-tree/javascript-runtime). Recorded verbatim; tag existence is a release concern tracked in docs/bindings/FINDINGS_LEDGER.md (LDICT-B1)."
   },
   "abiVersion": 1,
-  "apiRevision": 11,
+  "apiRevision": 12,
   "cPrefix": "ldict_",
   "cHeader": "include/libdictenstein.h",
   "featureGates": {
@@ -710,6 +710,8 @@
       ]
     },
     {"name":"ldict_suffix_index_new","group":"constructor","returnType":"LdictStatus","parameters":[{"name":"unit_domain","cType":"uint32_t","direction":"input","ownership":"value"},{"name":"out_index","cType":"LdictSuffixIndex**","direction":"output","ownership":"caller-owned-handle"}]},
+    {"name":"ldict_suffix_index_persistent_create","group":"constructor","feature":"persistent-artrie","returnType":"LdictStatus","parameters":[{"name":"family","cType":"uint32_t","direction":"input","ownership":"value"},{"name":"unit_domain","cType":"uint32_t","direction":"input","ownership":"value"},{"name":"path_data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},{"name":"path_len","cType":"size_t","direction":"input","ownership":"value"},{"name":"out_index","cType":"LdictSuffixIndex**","direction":"output","ownership":"caller-owned-handle"}]},
+    {"name":"ldict_suffix_index_persistent_open_with_recovery","group":"constructor","feature":"persistent-artrie","returnType":"LdictStatus","parameters":[{"name":"family","cType":"uint32_t","direction":"input","ownership":"value"},{"name":"unit_domain","cType":"uint32_t","direction":"input","ownership":"value"},{"name":"path_data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},{"name":"path_len","cType":"size_t","direction":"input","ownership":"value"},{"name":"out_index","cType":"LdictSuffixIndex**","direction":"output","ownership":"caller-owned-handle"},{"name":"out_report","cType":"LdictRecoveryReport**","direction":"output","ownership":"caller-owned-handle"}]},
     {"name":"ldict_suffix_index_close","group":"suffix-index","returnType":"LdictStatus","parameters":[{"name":"index","cType":"LdictSuffixIndex*","direction":"input","ownership":"borrowed-handle"}]},
     {"name":"ldict_suffix_index_free","group":"suffix-index","returnType":"void","parameters":[{"name":"index","cType":"LdictSuffixIndex*","direction":"input","ownership":"consumed-handle"}]},
     {"name":"ldict_suffix_index_insert_text","group":"suffix-index","returnType":"LdictStatus","parameters":[{"name":"index","cType":"LdictSuffixIndex*","direction":"input","ownership":"borrowed-handle"},{"name":"data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},{"name":"len","cType":"size_t","direction":"input","ownership":"value"},{"name":"value","cType":"LdictOptionalU64","direction":"input","ownership":"value"}]},
@@ -717,6 +719,8 @@
     {"name":"ldict_suffix_index_remove_text","group":"suffix-index","returnType":"LdictStatus","parameters":[{"name":"index","cType":"LdictSuffixIndex*","direction":"input","ownership":"borrowed-handle"},{"name":"data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},{"name":"len","cType":"size_t","direction":"input","ownership":"value"},{"name":"out_removed","cType":"uint8_t*","direction":"output","ownership":"caller-owned-storage"}]},
     {"name":"ldict_suffix_index_clear","group":"suffix-index","returnType":"LdictStatus","parameters":[{"name":"index","cType":"LdictSuffixIndex*","direction":"input","ownership":"borrowed-handle"}]},
     {"name":"ldict_suffix_index_compact","group":"suffix-index","returnType":"LdictStatus","parameters":[{"name":"index","cType":"LdictSuffixIndex*","direction":"input","ownership":"borrowed-handle"}]},
+    {"name":"ldict_suffix_index_checkpoint","group":"suffix-index","feature":"persistent-artrie","returnType":"LdictStatus","parameters":[{"name":"index","cType":"const LdictSuffixIndex*","direction":"input","ownership":"borrowed-handle"}]},
+    {"name":"ldict_suffix_index_needs_compaction","group":"suffix-index","feature":"persistent-artrie","returnType":"LdictStatus","parameters":[{"name":"index","cType":"const LdictSuffixIndex*","direction":"input","ownership":"borrowed-handle"},{"name":"out_needed","cType":"uint8_t*","direction":"output","ownership":"caller-owned-storage"}]},
     {"name":"ldict_suffix_index_snapshot","group":"suffix-index","returnType":"LdictStatus","parameters":[{"name":"index","cType":"const LdictSuffixIndex*","direction":"input","ownership":"borrowed-handle"},{"name":"out_snapshot","cType":"LdictSuffixSnapshot**","direction":"output","ownership":"caller-owned-handle"}]},
     {"name":"ldict_suffix_snapshot_close","group":"suffix-snapshot","returnType":"LdictStatus","parameters":[{"name":"snapshot","cType":"LdictSuffixSnapshot*","direction":"input","ownership":"borrowed-handle"}]},
     {"name":"ldict_suffix_snapshot_free","group":"suffix-snapshot","returnType":"void","parameters":[{"name":"snapshot","cType":"LdictSuffixSnapshot*","direction":"input","ownership":"consumed-handle"}]},
@@ -1009,6 +1013,19 @@
         {"name": "dictionary", "cType": "LdictDictionary*", "direction": "input-output", "ownership": "borrowed-handle"}
       ]
     },
+    {"name":"ldict_vocab_insert_term","group":"vocabulary","feature":"persistent-artrie","returnType":"LdictStatus","parameters":[
+      {"name":"dictionary","cType":"LdictDictionary*","direction":"input-output","ownership":"borrowed-handle"},
+      {"name":"data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},
+      {"name":"len","cType":"size_t","direction":"input","ownership":"value"},
+      {"name":"out_index","cType":"uint64_t*","direction":"output","ownership":"caller-owned-storage"}
+    ]},
+    {"name":"ldict_vocab_insert_batch","group":"vocabulary","feature":"persistent-artrie","returnType":"LdictStatus","parameters":[
+      {"name":"dictionary","cType":"LdictDictionary*","direction":"input-output","ownership":"borrowed-handle"},
+      {"name":"keys","cType":"const LdictTextKey*","direction":"input","ownership":"call-borrowed"},
+      {"name":"key_count","cType":"size_t","direction":"input","ownership":"value"},
+      {"name":"out_indices","cType":"uint64_t*","direction":"output","ownership":"caller-owned-array"},
+      {"name":"out_completed","cType":"size_t*","direction":"output","ownership":"caller-owned-storage"}
+    ]},
     {
       "name": "ldict_vocab_get_term",
       "group": "vocabulary",

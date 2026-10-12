@@ -1367,6 +1367,51 @@ pub struct PersistentSuffixAutomatonCharEntryIterator<V: DictionaryValue = ()> {
     index: usize,
 }
 
+/// A constant-time capture of one immutable native source revision for the
+/// typed foreign facade. Returned text and values borrow this view.
+pub(crate) struct PersistentSuffixAutomatonSourceView<U: PersistentSuffixUnit, V: DictionaryValue> {
+    graph: Arc<NativeSuffixGraph<U, V>>,
+}
+
+impl<U: PersistentSuffixUnit, V: DictionaryValue> PersistentSuffixAutomatonSourceView<U, V> {
+    pub(crate) fn source_count(&self) -> usize {
+        self.graph.sorted_active_source_indices.len()
+    }
+
+    pub(crate) fn source_at(&self, rank: usize) -> Option<(u64, &str, Option<&V>)> {
+        let index = *self.graph.sorted_active_source_indices.get(rank)?;
+        let record = self.graph.sources.get(index)?;
+        Some((record.id, &record.text, record.value.as_ref()))
+    }
+
+    pub(crate) fn contains_source(&self, text: &str) -> bool {
+        self.graph
+            .sorted_active_source_indices
+            .iter()
+            .any(|&index| self.graph.sources[index].text == text)
+    }
+
+    pub(crate) fn contains_substring(&self, pattern: &str) -> bool {
+        self.graph.contains_live_text(pattern)
+    }
+
+    pub(crate) fn substring_frequency(&self, pattern: &str) -> usize {
+        if pattern.is_empty() {
+            return self
+                .graph
+                .sorted_active_source_indices
+                .iter()
+                .map(|&index| U::term_units(&self.graph.sources[index].text).len() + 1)
+                .sum();
+        }
+        self.graph.match_positions(pattern).len()
+    }
+
+    pub(crate) fn revision_token(&self) -> u64 {
+        Arc::as_ptr(&self.graph) as usize as u64
+    }
+}
+
 macro_rules! impl_suffix_record_iterator {
     ($iterator:ident, $unit:ty) => {
         impl<V: DictionaryValue> Iterator for $iterator<V> {
@@ -1598,6 +1643,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomaton<V, S> {
         }
     }
 
+    pub(crate) fn source_view(&self) -> PersistentSuffixAutomatonSourceView<u8, V> {
+        PersistentSuffixAutomatonSourceView {
+            graph: self.index.load(),
+        }
+    }
+
     pub fn checkpoint(&self) -> Result<()> {
         self.index.checkpoint()
     }
@@ -1775,6 +1826,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentSuffixAutomatonChar<V, S> {
         PersistentSuffixAutomatonCharEntryIterator {
             graph: self.index.load(),
             index: 0,
+        }
+    }
+
+    pub(crate) fn source_view(&self) -> PersistentSuffixAutomatonSourceView<char, V> {
+        PersistentSuffixAutomatonSourceView {
+            graph: self.index.load(),
         }
     }
 

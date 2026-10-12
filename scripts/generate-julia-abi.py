@@ -74,7 +74,7 @@ def julia_parameter_type(parameter: dict) -> str:
     if c_type == "uint32_t*":
         return "Ref{UInt32}"
     if c_type == "uint64_t*":
-        return "Ref{UInt64}"
+        return "Ptr{UInt64}" if parameter.get("ownership") == "caller-owned-array" else "Ref{UInt64}"
     if c_type == "size_t*":
         return "Ref{Csize_t}"
     if c_type == "LdictOptionalU64":

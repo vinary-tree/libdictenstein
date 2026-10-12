@@ -32,7 +32,7 @@ extern "C" {
 #endif
 
 #define LDICT_ABI_VERSION 1u
-#define LDICT_API_REVISION 11u
+#define LDICT_API_REVISION 12u
 
 #define LDICT_KIND_DYNAMIC_DAWG 1u
 #define LDICT_KIND_DOUBLE_ARRAY_TRIE 2u
@@ -51,6 +51,9 @@ extern "C" {
 #define LDICT_RECOVERY_TEXT_CORRUPTED_FILE 1u
 #define LDICT_RECOVERY_TEXT_CORRUPTION_REASON 2u
 #define LDICT_RECOVERY_TEXT_ARCHIVE_SEGMENT 3u
+#define LDICT_PERSISTENT_SUFFIX_AUTOMATON 1u
+#define LDICT_PERSISTENT_SUFFIX_TREE 2u
+#define LDICT_PERSISTENT_SUFFIX_SCDAWG 3u
 
 #define LDICT_CAP_READ (UINT64_C(1) << 0)
 #define LDICT_CAP_INSERT (UINT64_C(1) << 1)
@@ -195,12 +198,23 @@ LDICT_API LdictStatus ldict_pathmap_new(
 
 /* Revision-8 typed suffix-source API. Byte and Unicode-scalar modes accept
  * valid UTF-8 source text/patterns; byte mode counts UTF-8 transition bytes,
- * Unicode mode counts scalar transitions. U64 and persistence are unsupported.
+ * Unicode mode counts scalar transitions. U64 suffix sources are unsupported.
  * `close` retains the allocation for CLOSED results; `free` deallocates it.
  * Captured snapshots survive index close/free. These identities are
  * type-scoped and MUST NOT alias generic dictionary snapshot identities. */
 LDICT_API LdictStatus ldict_suffix_index_new(
     uint32_t unit_domain, LdictSuffixIndex** out_index);
+/* Revision-12 native persistence for all three typed suffix families. The
+ * family constants above select automaton, tree, or SCDAWG. Open can create
+ * a missing store and returns a separately owned recovery report. */
+LDICT_API LdictStatus ldict_suffix_index_persistent_create(
+    uint32_t family, uint32_t unit_domain,
+    const uint8_t* path_data, size_t path_len,
+    LdictSuffixIndex** out_index);
+LDICT_API LdictStatus ldict_suffix_index_persistent_open_with_recovery(
+    uint32_t family, uint32_t unit_domain,
+    const uint8_t* path_data, size_t path_len,
+    LdictSuffixIndex** out_index, LdictRecoveryReport** out_report);
 LDICT_API LdictStatus ldict_suffix_index_close(LdictSuffixIndex* index);
 LDICT_API void ldict_suffix_index_free(LdictSuffixIndex* index);
 LDICT_API LdictStatus ldict_suffix_index_insert_text(
@@ -216,6 +230,9 @@ LDICT_API LdictStatus ldict_suffix_index_remove_text(
     uint8_t* out_removed);
 LDICT_API LdictStatus ldict_suffix_index_clear(LdictSuffixIndex* index);
 LDICT_API LdictStatus ldict_suffix_index_compact(LdictSuffixIndex* index);
+LDICT_API LdictStatus ldict_suffix_index_checkpoint(const LdictSuffixIndex* index);
+LDICT_API LdictStatus ldict_suffix_index_needs_compaction(
+    const LdictSuffixIndex* index, uint8_t* out_needed);
 LDICT_API LdictStatus ldict_suffix_index_snapshot(
     const LdictSuffixIndex* index, LdictSuffixSnapshot** out_snapshot);
 LDICT_API LdictStatus ldict_suffix_snapshot_close(LdictSuffixSnapshot* snapshot);
@@ -406,6 +423,16 @@ LDICT_API LdictStatus ldict_dictionary_compact(
     LdictDictionary* dictionary,
     size_t* out_reclaimed);
 LDICT_API LdictStatus ldict_dictionary_checkpoint(LdictDictionary* dictionary);
+/* Revision-12 vocabulary insertion returns stable native IDs in one crossing.
+ * Batch keys are prevalidated; out_indices has key_count disjoint writable
+ * slots, initialized to zero, and out_completed identifies a durable prefix
+ * if persistence fails partway through the batch. */
+LDICT_API LdictStatus ldict_vocab_insert_term(
+    LdictDictionary* dictionary, const uint8_t* data, size_t len,
+    uint64_t* out_index);
+LDICT_API LdictStatus ldict_vocab_insert_batch(
+    LdictDictionary* dictionary, const LdictTextKey* keys, size_t key_count,
+    uint64_t* out_indices, size_t* out_completed);
 LDICT_API LdictStatus ldict_vocab_get_term(
     const LdictDictionary* dictionary,
     uint64_t index,

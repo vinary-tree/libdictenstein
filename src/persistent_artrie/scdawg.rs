@@ -43,7 +43,7 @@ const LEGACY_SNAPSHOT_VERSION: u32 = 1;
 const MAX_WAL_RECORD_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CAS_RETRIES: usize = 64;
 
-trait PersistentScdawgUnit:
+pub(crate) trait PersistentScdawgUnit:
     CharUnit + Serialize + serde::de::DeserializeOwned + fmt::Debug + Send + Sync
 {
     const MAGIC: [u8; 8];
@@ -980,6 +980,43 @@ pub struct PersistentScdawgCharEntryIterator<V: DictionaryValue = ()> {
     index: usize,
 }
 
+/// A constant-time capture of one immutable native term revision for the
+/// typed foreign facade. Returned text and values borrow this view.
+pub(crate) struct PersistentScdawgSourceView<U: PersistentScdawgUnit, V: DictionaryValue> {
+    graph: Arc<NativeScdawgGraph<U, V>>,
+}
+
+impl<U: PersistentScdawgUnit, V: DictionaryValue> PersistentScdawgSourceView<U, V> {
+    pub(crate) fn source_count(&self) -> usize {
+        self.graph.sorted_active_record_indices.len()
+    }
+
+    pub(crate) fn source_at(&self, rank: usize) -> Option<(u64, &str, Option<&V>)> {
+        let index = *self.graph.sorted_active_record_indices.get(rank)?;
+        let record = self.graph.records.get(index)?;
+        Some((index as u64, &record.term, record.value.as_ref()))
+    }
+
+    pub(crate) fn contains_source(&self, text: &str) -> bool {
+        self.graph
+            .sorted_active_record_indices
+            .iter()
+            .any(|&index| self.graph.records[index].term == text)
+    }
+
+    pub(crate) fn contains_substring(&self, pattern: &str) -> bool {
+        self.graph.contains_substring(pattern)
+    }
+
+    pub(crate) fn substring_frequency(&self, pattern: &str) -> usize {
+        self.graph.freq(pattern)
+    }
+
+    pub(crate) fn revision_token(&self) -> u64 {
+        Arc::as_ptr(&self.graph) as usize as u64
+    }
+}
+
 macro_rules! impl_scdawg_record_iterator {
     ($iterator:ident) => {
         impl<V: DictionaryValue> Iterator for $iterator<V> {
@@ -1189,21 +1226,33 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentScdawg<V, S> {
             })
     }
 
+    pub fn try_remove(&self, term: &str) -> Result<bool> {
+        self.index.remove(term)
+    }
+
     pub fn remove(&self, term: &str) -> bool {
-        self.index.remove(term).unwrap_or_else(|error| {
+        self.try_remove(term).unwrap_or_else(|error| {
             log::warn!("PersistentScdawg::remove failed: {error}");
             false
         })
     }
 
+    pub fn try_clear(&self) -> Result<()> {
+        self.index.clear()
+    }
+
     pub fn clear(&self) {
-        if let Err(error) = self.index.clear() {
+        if let Err(error) = self.try_clear() {
             log::warn!("PersistentScdawg::clear failed: {error}");
         }
     }
 
+    pub fn try_compact(&self) -> Result<usize> {
+        self.index.compact()
+    }
+
     pub fn compact(&self) {
-        if let Err(error) = self.index.compact() {
+        if let Err(error) = self.try_compact() {
             log::warn!("PersistentScdawg::compact failed: {error}");
         }
     }
@@ -1237,6 +1286,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentScdawg<V, S> {
         PersistentScdawgEntryIterator {
             graph: self.index.load(),
             index: 0,
+        }
+    }
+
+    pub(crate) fn source_view(&self) -> PersistentScdawgSourceView<u8, V> {
+        PersistentScdawgSourceView {
+            graph: self.index.load(),
         }
     }
 
@@ -1409,21 +1464,33 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentScdawgChar<V, S> {
             })
     }
 
+    pub fn try_remove(&self, term: &str) -> Result<bool> {
+        self.index.remove(term)
+    }
+
     pub fn remove(&self, term: &str) -> bool {
-        self.index.remove(term).unwrap_or_else(|error| {
+        self.try_remove(term).unwrap_or_else(|error| {
             log::warn!("PersistentScdawgChar::remove failed: {error}");
             false
         })
     }
 
+    pub fn try_clear(&self) -> Result<()> {
+        self.index.clear()
+    }
+
     pub fn clear(&self) {
-        if let Err(error) = self.index.clear() {
+        if let Err(error) = self.try_clear() {
             log::warn!("PersistentScdawgChar::clear failed: {error}");
         }
     }
 
+    pub fn try_compact(&self) -> Result<usize> {
+        self.index.compact()
+    }
+
     pub fn compact(&self) {
-        if let Err(error) = self.index.compact() {
+        if let Err(error) = self.try_compact() {
             log::warn!("PersistentScdawgChar::compact failed: {error}");
         }
     }
@@ -1457,6 +1524,12 @@ impl<V: DictionaryValue, S: BlockStorage> PersistentScdawgChar<V, S> {
         PersistentScdawgCharEntryIterator {
             graph: self.index.load(),
             index: 0,
+        }
+    }
+
+    pub(crate) fn source_view(&self) -> PersistentScdawgSourceView<char, V> {
+        PersistentScdawgSourceView {
+            graph: self.index.load(),
         }
     }
 

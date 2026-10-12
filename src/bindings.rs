@@ -1343,6 +1343,14 @@ impl PersistentARTrieBinding {
         }
     }
 
+    /// Insert one term or return its existing stable index.
+    pub fn vocab_insert_term(&self, term: &str) -> Result<u64, BindingError> {
+        match &self.shared.backend {
+            PersistentBackend::Vocab(dictionary) => dictionary.insert(term).map_err(io_error),
+            _ => Err(BindingError::Unsupported),
+        }
+    }
+
     /// Look up a vocabulary term by its stable index.
     pub fn vocab_term(&self, index: u64) -> Result<Option<String>, BindingError> {
         match &self.shared.backend {
