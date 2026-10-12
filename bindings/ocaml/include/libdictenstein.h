@@ -32,7 +32,7 @@ extern "C" {
 #endif
 
 #define LDICT_ABI_VERSION 1u
-#define LDICT_API_REVISION 9u
+#define LDICT_API_REVISION 10u
 
 #define LDICT_KIND_DYNAMIC_DAWG 1u
 #define LDICT_KIND_DOUBLE_ARRAY_TRIE 2u
@@ -194,6 +194,11 @@ LDICT_API void ldict_suffix_index_free(LdictSuffixIndex* index);
 LDICT_API LdictStatus ldict_suffix_index_insert_text(
     LdictSuffixIndex* index, const uint8_t* data, size_t len,
     LdictOptionalU64 value);
+/* Additive revision-10 scalar form for foreign runtimes that pass C structs
+ * only by reference. `has_value` must be zero or one. */
+LDICT_API LdictStatus ldict_suffix_index_insert_text_value(
+    LdictSuffixIndex* index, const uint8_t* data, size_t len,
+    uint64_t value, uint8_t has_value);
 LDICT_API LdictStatus ldict_suffix_index_remove_text(
     LdictSuffixIndex* index, const uint8_t* data, size_t len,
     uint8_t* out_removed);

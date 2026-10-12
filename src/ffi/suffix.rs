@@ -146,6 +146,36 @@ pub unsafe extern "C" fn ldict_suffix_index_free(index: *mut LdictSuffixIndex) {
 }
 
 /// Append one source record, even when its text equals an existing record.
+unsafe fn insert_text(
+    index: *mut LdictSuffixIndex,
+    data: *const u8,
+    len: usize,
+    value: Option<u64>,
+) -> Result<(), Failure> {
+    let state = load_index(index)?;
+    let text = text(data, len)?;
+    match state.as_ref() {
+        IndexState::Byte(index) => match value {
+            Some(value) => {
+                index.insert_with_value(text, value);
+            }
+            None => {
+                index.insert(text);
+            }
+        },
+        IndexState::Unicode(index) => match value {
+            Some(value) => {
+                index.insert_with_value(text, value);
+            }
+            None => {
+                index.insert(text);
+            }
+        },
+    }
+    Ok(())
+}
+
+/// Append one source record, even when its text equals an existing record.
 ///
 /// # Safety
 /// `index` and `data` must be valid for their declared lengths.
@@ -157,27 +187,37 @@ pub unsafe extern "C" fn ldict_suffix_index_insert_text(
     value: LdictOptionalU64,
 ) -> LdictStatus {
     boundary(|| {
-        let state = load_index(index)?;
-        let text = text(data, len)?;
-        let value = value.decode()?;
-        match state.as_ref() {
-            IndexState::Byte(index) => match value {
-                Some(value) => {
-                    index.insert_with_value(text, value);
-                }
-                None => {
-                    index.insert(text);
-                }
-            },
-            IndexState::Unicode(index) => match value {
-                Some(value) => {
-                    index.insert_with_value(text, value);
-                }
-                None => {
-                    index.insert(text);
-                }
-            },
-        }
+        insert_text(index, data, len, value.decode()?)?;
+        Ok(LdictStatus::Ok)
+    })
+}
+
+/// Append one source record through scalar arguments. This additive entry
+/// point preserves the exact optional-value semantics of the struct-valued
+/// call for foreign runtimes that pass C structs only by reference.
+///
+/// # Safety
+/// `index` and `data` must be valid for their declared lengths.
+#[no_mangle]
+pub unsafe extern "C" fn ldict_suffix_index_insert_text_value(
+    index: *mut LdictSuffixIndex,
+    data: *const u8,
+    len: usize,
+    value: u64,
+    has_value: u8,
+) -> LdictStatus {
+    boundary(|| {
+        let value = match has_value {
+            0 => None,
+            1 => Some(value),
+            _ => {
+                return Err((
+                    LdictStatus::InvalidArgument,
+                    "has_value must be zero or one".into(),
+                ))
+            }
+        };
+        insert_text(index, data, len, value)?;
         Ok(LdictStatus::Ok)
     })
 }

@@ -1,0 +1,10 @@
+use Test;
+use Libdictenstein;
+
+is abi-version, 1, 'probe has the stable ABI major';
+is api-revision, 9, 'probe advertises revision 9 without scalar suffix insert';
+throws-like { suffix-index }, X::Libdictenstein,
+    status => STATUS-UNSUPPORTED,
+    'suffix facade rejects revision 9 before resolving the revision-10 symbol';
+
+done-testing;

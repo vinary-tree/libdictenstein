@@ -2,9 +2,10 @@
 
 High-performance dictionaries and trie-maps for approximate string matching,
 with Raku-native `Associative` and `Iterable` behavior. `Libdictenstein`
-exposes DynamicDAWG, DoubleArrayTrie, SCDAWG, persistent ARTrie, and persistent
-vocabulary backends through NativeCall while `Vinary-Tree-Interop` owns the
-retained snapshot boundary.
+exposes DynamicDAWG, PathMap, DoubleArrayTrie, SCDAWG, and persistent ARTrie
+and vocabulary backends through NativeCall. A separate typed suffix-source
+index retains duplicate records. `Vinary-Tree-Interop` owns dictionary
+snapshots; suffix snapshots have their own typed lifetime.
 
 ## Quick start
 
@@ -40,7 +41,7 @@ models its symbols, numeric constants, layouts, and the Raku facade's
 intentional coverage. `scripts/generate-raku-abi.py` compares the two
 independently maintained sources and generates three delimited regions of
 [`Libdictenstein.rakumod`](lib/Libdictenstein.rakumod): constants and enums,
-the six local C-compatible layouts, and all 75 revision-9 NativeCall
+the six local C-compatible layouts, and all 76 revision-10 NativeCall
 declarations. The [reviewable inventory](../generated/raku-abi-capabilities.tsv)
 records each C and Raku signature, the package mapping, and whether the
 idiomatic facade calls it. Run this after changing the model or C header:
@@ -61,21 +62,55 @@ The generated layout and cross-language tests pin the public C offsets.
 Generation never edits the handwritten collection, ownership, or error-handling
 methods. Every modeled C symbol has a low-level declaration, but a declaration
 does not by itself imply an idiomatic public Raku method. The model currently
-explains 37 exact raw-only symbols: the optional byte-value producer and
+explains the exact raw-only symbols: the optional byte-value producer and
 byte-entry stream await a separate Raku facade parity task; project-owned
 entry cursors are unnecessary for the retained `Vinary-Tree-Interop` iterator;
 and legacy scalar insert/get variants are superseded by the facade's explicit
 optional-value paths. In particular, absent byte values and present empty
 byte strings must not be conflated or reinterpreted as unsigned 64-bit values.
 The revision-8 `pathmap` constructor is an idiomatic `Dictionary` and gates
-`api-revision >= 8` before touching its native symbol. Typed suffix-index
-symbols are declared only at the low level in this checkpoint; `suffix-index`
-fails explicitly rather than flattening source records to `Associative`.
-Direct low-level callers must check the revision before invoking those symbols
-against an older native library.
+`api-revision >= 8` before touching its native symbol. `suffix-index` gates
+revision 10 before resolving its typed calls. Its source records preserve
+duplicates and remain separate from `Associative` dictionary semantics.
+NativeCall [passes a `CStruct` argument by reference](https://docs.raku.org/language/nativecall#Structs),
+so the Raku facade uses the additive scalar revision-10 insertion call; the revision-8 by-value
+`LdictOptionalU64` call remains a raw declaration. Direct low-level callers
+must check the required revision before invoking newer symbols.
 PathMap byte keys must not be routed through UTF-8 text conversion, and the
 suffix index must never be flattened into `Associative` key semantics. See
 the [revision-8 native contract](../../docs/bindings/backend-api-revision8.md).
+
+## In-memory backends and suffix records
+
+`dynamic-dawg-from` builds an empty DynamicDAWG with one native batch.
+`sorted-dawg` also checks nondecreasing keys in the selected byte, Unicode
+scalar, or `u64` domain; repeated keys retain the last value. Both use the
+native minimal freeze-once path. `pathmap` accepts arbitrary octets in byte
+mode and exposes normal dictionary CRUD and retained traversal.
+
+```raku
+my $words = sorted-dawg([a => 1, a => 2, b => Nil]);
+LEAVE $words.close;
+my $exact = pathmap(BYTE);
+LEAVE $exact.close;
+$exact{buf8.new(0xff)} = 0;
+
+my $index = suffix-index(UNICODE-SCALAR);
+LEAVE $index.close;
+$index.insert-source('é🙂é', 7);
+$index.insert-source('é🙂é');
+my $view = $index.snapshot;
+LEAVE $view.close;
+say $view.substring-frequency('é'); # 4 overlapping occurrences
+say $view.source-records(:page-size(32)).list; # two copied source records
+```
+
+`SuffixSnapshot` exposes source count, exact-source and substring membership,
+substring frequency, identity, and bounded source-record pages. Its copied
+Raku text survives index mutation and closure. Byte mode counts UTF-8 bytes;
+Unicode mode counts scalar values. See the
+[executable parity suite](t/03-in-memory-backend-parity.rakutest) and
+[revision-9 symbol gate](t/04-revision9-gate.rakutest).
 The generator fails if a facade use or omission is added, removed, or left
 unexplained.
 Its facade-use check recognizes actual calls after masking ordinary quoted

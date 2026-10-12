@@ -171,6 +171,13 @@ jobs:
           raku -Ibindings/raku/lib
           -I../vinary-tree-interop/bindings/raku/lib
           bindings/raku/t/01-conformance.rakutest
+      - name: Run in-memory Raku backend parity and typed suffix tests
+        env:
+          LIBDICTENSTEIN_LIBRARY: ${{ github.workspace }}/target/release/liblibdictenstein.so
+        run: >-
+          raku -Ibindings/raku/lib
+          -I../vinary-tree-interop/bindings/raku/lib
+          bindings/raku/t/03-in-memory-backend-parity.rakutest
       - name: Gate Raku PathMap against revision 7
         run: |
           mkdir -p target
@@ -180,6 +187,14 @@ jobs:
             raku -Ibindings/raku/lib \
               -I../vinary-tree-interop/bindings/raku/lib \
               bindings/raku/t/02-revision7-gate.rakutest
+      - name: Gate typed Raku suffix facade against revision 9
+        run: |
+          cc -std=c11 -shared -fPIC tests/fixtures/revision9_probe.c \
+            -o target/revision9-probe.so
+          LIBDICTENSTEIN_LIBRARY="$GITHUB_WORKSPACE/target/revision9-probe.so" \
+            raku -Ibindings/raku/lib \
+              -I../vinary-tree-interop/bindings/raku/lib \
+              bindings/raku/t/04-revision9-gate.rakutest
 
   go:
     name: Go (C1-C10)

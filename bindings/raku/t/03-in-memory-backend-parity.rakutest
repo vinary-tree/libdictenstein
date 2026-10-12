@@ -1,0 +1,169 @@
+use Test;
+use Libdictenstein;
+
+subtest 'bulk minimal DAWG construction and exact-key parity' => {
+    my @entries = (
+        Pair.new('', Nil),
+        Pair.new('a', 0),
+        Pair.new('aa', 5),
+        Pair.new('é', 9),
+    );
+    my $sorted = sorted-dawg(@entries);
+    is $sorted.kind, DYNAMIC-DAWG,
+        'sorted bulk construction retains the DynamicDAWG kind';
+    is $sorted.elems, 4, 'sorted bulk construction retains every distinct key';
+    is $sorted.AT-KEY('a'), 0, 'present zero survives bulk construction';
+    ok $sorted.EXISTS-KEY(''), 'empty key survives bulk construction';
+    ok !$sorted.AT-KEY('').defined,
+        'valueless membership survives bulk construction';
+    is-deeply $sorted.list.map(*.key).Array, ['', 'a', 'aa', 'é'],
+        'minimal DAWG traversal preserves lexical order';
+
+    my $unsorted = dynamic-dawg-from([Pair.new('é', 9),
+        Pair.new('aa', 5), Pair.new('a', 0), Pair.new('', Nil)]);
+    is-deeply $unsorted.list.Array, $sorted.list.Array,
+        'unordered native bulk build agrees with sorted freeze-once build';
+    $sorted.ASSIGN-KEY('later', 11);
+    ok $sorted.EXISTS-KEY('later'),
+        'the minimal initial graph remains a mutable dictionary';
+    nok $unsorted.EXISTS-KEY('later'), 'bulk results own independent roots';
+    dies-ok { sorted-dawg([b => 1, a => 2]) },
+        'sorted constructor rejects descending Unicode keys';
+    my $duplicates = sorted-dawg([a => 1, a => 2]);
+    is $duplicates.AT-KEY('a'), 2, 'equal sorted keys use last value';
+    $duplicates.close;
+    $sorted.close;
+    $unsorted.close;
+
+    my $byte = sorted-dawg([
+        Pair.new(Buf.new(0x00), Nil),
+        Pair.new(Buf.new(0xff), 0),
+    ], domain => BYTE);
+    is $byte.kind, DYNAMIC-DAWG, 'byte bulk build uses native byte backend';
+    ok $byte.EXISTS-KEY(Buf.new(0x00)),
+        'byte bulk build retains NUL without UTF-8 conversion';
+    is $byte.AT-KEY(Buf.new(0xff)), 0,
+        'byte bulk build retains invalid UTF-8 and present zero';
+    dies-ok { sorted-dawg([
+        Pair.new(Buf.new(0xff), 1), Pair.new(Buf.new(0x00), 2),
+    ], domain => BYTE) }, 'byte sorting uses unsigned unit order';
+    $byte.close;
+
+    my $tokens = sorted-dawg([
+        Pair.new([0], Nil), Pair.new([2**64 - 1], 8),
+    ], domain => U64);
+    is $tokens.AT-KEY([2**64 - 1]), 8,
+        'u64 bulk build preserves the full-width maximum token';
+    dies-ok { sorted-dawg([
+        Pair.new([2**64 - 1], 1), Pair.new([0], 2),
+    ], domain => U64) }, 'u64 sorting compares unsigned units';
+    $tokens.close;
+};
+
+subtest 'PathMap byte and Unicode dictionary capabilities' => {
+    my $byte = pathmap(BYTE);
+    my $unicode = pathmap(UNICODE-SCALAR);
+    is $byte.kind, PATHMAP, 'byte PathMap reports its own backend kind';
+    is $unicode.kind, PATHMAP, 'Unicode PathMap reports its own backend kind';
+    is $byte.capabilities,
+        CAP-READ +| CAP-INSERT +| CAP-REMOVE +| CAP-CLEAR,
+        'PathMap advertises its exact operation set';
+    my $raw = Buf.new(0xff, 0x00);
+    $byte.ASSIGN-KEY($raw, 0);
+    my $captured = $byte.snapshot;
+    is $byte.AT-KEY($raw), 0, 'PathMap accepts arbitrary byte keys';
+    $byte.DELETE-KEY($raw);
+    nok $byte.EXISTS-KEY($raw), 'PathMap deletion updates the live root';
+    ok $captured.EXISTS-KEY(Buf.new(0xff, 0x00)),
+        'PathMap snapshot retains the deleted byte key';
+    $captured.close;
+    $unicode.insert-batch([Pair.new('é🙂', Nil), Pair.new('éx', 7)]);
+    is-deeply $unicode.list.map(*.key).Array, ['éx', 'é🙂'],
+        'Unicode PathMap traversal is scalar-lexical';
+    $unicode.clear;
+    is $unicode.elems, 0, 'PathMap clear publishes an empty root';
+    dies-ok { $byte.compact }, 'PathMap refuses unsupported compaction';
+    dies-ok { pathmap(U64) }, 'PathMap rejects the u64 domain';
+    $byte.close;
+    $unicode.close;
+};
+
+for BYTE, UNICODE-SCALAR -> $domain {
+    subtest "typed suffix source records in domain {$domain.Int}" => {
+        my $index = suffix-index($domain);
+        nok $index ~~ Associative,
+            'suffix source multiplicity is not flattened into a map';
+        $index.insert-source('é🙂é', 0);
+        $index.insert-source('é🙂é', Nil);
+        $index.insert-source('', 7);
+        my $before = $index.snapshot;
+        my $identity = $before.identity;
+        is $identity.resource-family, 'suffix-source',
+            'suffix identity is explicitly scoped to its resource family';
+        is $before.source-count, 3,
+            'duplicate source texts remain separate insertion records';
+        ok $before.contains-source('é🙂é'), 'exact active source membership';
+        nok $before.contains-source('🙂é'),
+            'substring is not treated as an inserted source';
+        ok $before.contains-substring('🙂é'),
+            'active substring membership uses the suffix index';
+        is $before.substring-frequency('é'), 4,
+            'overlapping occurrences sum over duplicate records';
+        is $before.substring-frequency(''),
+            $domain == BYTE ?? 19 !! 9,
+            'empty pattern counts byte or scalar boundaries per source';
+        my @records = $before.source-records(page-size => 1).list;
+        is @records.elems, 3, 'bounded pages enumerate every active record';
+        is-deeply @records.map(*.text).Array, ['', 'é🙂é', 'é🙂é'],
+            'pages order source text then insertion ID';
+        is @records[0].value, 7, 'page copies mapped value';
+        is @records[1].value, 0, 'page preserves present zero';
+        ok !@records[2].value.defined, 'page preserves valueless membership';
+        ok @records[1].source-id < @records[2].source-id,
+            'duplicate source IDs retain insertion order';
+        dies-ok { $before.source-records(page-size => 0) },
+            'zero page size is rejected before NativeCall';
+
+        ok $index.remove-source('é🙂é'),
+            'remove-source deletes the oldest active duplicate once';
+        my $after = $index.snapshot;
+        is $after.source-count, 2, 'one duplicate remains active';
+        is $before.source-count, 3,
+            'earlier suffix snapshot retains its independent revision';
+        is $after.identity.producer-id, $identity.producer-id,
+            'mutations retain producer identity';
+        ok $after.identity.revision > $identity.revision,
+            'mutation advances suffix revision';
+        my @remaining = $after.source-records(page-size => 1).list;
+        ok !@remaining[*-1].value.defined,
+            'oldest-record removal leaves the valueless duplicate';
+        dies-ok { $index.insert-source('bad', 2**64) },
+            'out-of-range value is rejected before native mutation';
+        is $after.source-count, 2,
+            'invalid insertion leaves captured revision unchanged';
+        $index.clear;
+        $index.compact;
+        my $empty = $index.snapshot;
+        is $empty.source-count, 0,
+            'clear removes all active source records';
+        $empty.close;
+        $index.close;
+        $index.close;
+        nok $index.opened, 'index close is idempotent';
+        dies-ok { $index.snapshot }, 'closed index rejects new snapshots';
+        is $before.source-count, 3,
+            'snapshot remains usable after producer closes';
+        $before.close;
+        is @records[1].text, 'é🙂é',
+            'copied page text remains valid after snapshot closes';
+        dies-ok { $before.source-count },
+            'closed snapshot rejects source-count access';
+        $before.close;
+        $after.close;
+    };
+}
+
+throws-like { suffix-index(U64) }, X::Libdictenstein,
+    status => STATUS-UNSUPPORTED, 'suffix index rejects u64 sources';
+
+done-testing;

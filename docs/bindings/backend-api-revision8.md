@@ -13,7 +13,9 @@ not necessarily an inserted key. It therefore has separate
 `LdictDictionary`, `AbstractDict`, or `vt.dictionary.v1` resource.
 
 The stable ABI major remains `1`. These symbols first appeared at additive
-revision `8`; the current library reports revision `9`.
+revision `8`; the current library reports revision `10`. Revision 9 added
+lazy algebra cursors and ordered batch lookup/removal. Revision 10 adds a
+scalar-argument suffix insertion entry point.
 Clients written against revision 7 may keep using their existing symbols.
 Optional clients that load a revision-8 symbol dynamically must check
 `ldict_api_revision() >= 8` *before resolving that symbol*. This matters for
@@ -103,6 +105,7 @@ constructors initialize handle outputs to `NULL`.
 |---|---|---|
 | `ldict_suffix_index_new(domain, out)` | New byte/scalar index | `INVALID_ARGUMENT` unknown domain; `UNSUPPORTED` for U64; caller owns `out` on `OK` |
 | `ldict_suffix_index_insert_text(index, data, len, value)` | Append one record | `INVALID_ARGUMENT` for malformed optional value; input copied before return |
+| `ldict_suffix_index_insert_text_value(index, data, len, value, has_value)` | Append one record (revision 10) | Scalar equivalent of the struct-valued call; `has_value` must be 0 or 1; input copied before return |
 | `ldict_suffix_index_remove_text(index, data, len, out_removed)` | Remove oldest active exact text once | `out_removed` is `0` or `1` on `OK`; zeroed on other statuses |
 | `ldict_suffix_index_clear(index)` | Publish an empty active set | Preserves producer, advances revision when state changes; old snapshots remain valid |
 | `ldict_suffix_index_compact(index)` | Compact graph if needed | Returns only `LdictStatus`, **not** reclaimed-node count |
@@ -136,6 +139,22 @@ operation. Host facades may add their own copied-text cost. The C boundary
 copies input before return, catches panics, and never treats arbitrary pointers
 or lengths as trusted; as with every C API, invalid *non-null* pointers and
 concurrent use-after-free remain caller violations, not recoverable statuses.
+
+The revision-10 scalar insertion call has this signature:
+
+```c
+LdictStatus ldict_suffix_index_insert_text_value(
+    LdictSuffixIndex* index, const uint8_t* data, size_t len,
+    uint64_t value, uint8_t has_value);
+```
+
+`has_value = 0` means no mapped value, regardless of the `value` argument;
+`has_value = 1` preserves the entire `uint64_t` range, including zero.
+Invalid flags return `INVALID_ARGUMENT` without publishing a record.
+The byte-transition index still requires valid UTF-8 source text. This
+additive form serves hosts such as Raku whose NativeCall runtime passes
+`CStruct` arguments by reference; callers must check revision 10 before
+resolving it.
 
 ## Minimal C and Julia usage
 
@@ -202,9 +221,9 @@ The release cdylib and language-package native build enable
 `--features ffi,pathmap-backend`; feature-off builds remain a tested negative
 control. Julia exposes both backends with a revision gate before resolving
 new symbols. C sees the header directly. Raku exposes PathMap as an idiomatic
-`Dictionary` with the same pre-call revision gate; its generated NativeCall
-layer declares typed suffix symbols, but its `suffix-index` facade rejects
-them explicitly until record and snapshot lifetimes are qualified. Other
+`Dictionary` with a revision-8 gate and the typed suffix index with a
+revision-10 gate. Its source records retain multiplicity and its snapshot
+copies borrowed text before yielding host values. Other
 foreign facades must either add a native PathMap dictionary and typed suffix
 index with the above lifetimes, or fail explicitly rather than silently
 selecting an older backend. The exact per-language gate status is tracked by
