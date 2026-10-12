@@ -1115,14 +1115,19 @@ unsafe fn persistent_wal_config(
 }
 
 #[cfg(feature = "persistent-artrie")]
-unsafe fn persistent_char_with_wal(
-    path_data: *const u8,
-    path_len: usize,
+struct PersistentWalArgs {
     archive_enabled: u8,
     archive_dir_data: *const u8,
     archive_dir_len: usize,
     max_segments: usize,
     max_archive_bytes: u64,
+}
+
+#[cfg(feature = "persistent-artrie")]
+unsafe fn persistent_char_with_wal(
+    path_data: *const u8,
+    path_len: usize,
+    args: PersistentWalArgs,
     create: bool,
     out_dictionary: *mut *mut LdictDictionary,
 ) -> LdictStatus {
@@ -1133,11 +1138,11 @@ unsafe fn persistent_char_with_wal(
         out_dictionary.write(ptr::null_mut());
         let path = persistent_path(path_data, path_len)?;
         let config = persistent_wal_config(
-            archive_enabled,
-            archive_dir_data,
-            archive_dir_len,
-            max_segments,
-            max_archive_bytes,
+            args.archive_enabled,
+            args.archive_dir_data,
+            args.archive_dir_len,
+            args.max_segments,
+            args.max_archive_bytes,
         )?;
         let persistent = if create {
             PersistentARTrieBinding::create_unicode_with_wal(path, config)
@@ -1170,11 +1175,13 @@ pub unsafe extern "C" fn ldict_persistent_artrie_char_create_with_wal(
     persistent_char_with_wal(
         path_data,
         path_len,
-        archive_enabled,
-        archive_dir_data,
-        archive_dir_len,
-        max_segments,
-        max_archive_bytes,
+        PersistentWalArgs {
+            archive_enabled,
+            archive_dir_data,
+            archive_dir_len,
+            max_segments,
+            max_archive_bytes,
+        },
         true,
         out_dictionary,
     )
@@ -1200,11 +1207,13 @@ pub unsafe extern "C" fn ldict_persistent_artrie_char_open_with_wal(
     persistent_char_with_wal(
         path_data,
         path_len,
-        archive_enabled,
-        archive_dir_data,
-        archive_dir_len,
-        max_segments,
-        max_archive_bytes,
+        PersistentWalArgs {
+            archive_enabled,
+            archive_dir_data,
+            archive_dir_len,
+            max_segments,
+            max_archive_bytes,
+        },
         false,
         out_dictionary,
     )
