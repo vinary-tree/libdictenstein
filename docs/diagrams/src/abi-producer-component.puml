@@ -28,7 +28,7 @@ skinparam defaultFontSize 12
 skinparam nodesep 6
 skinparam ranksep 24
 
-title libdictenstein revision-10 producer stack\ndictionary resources and separate typed suffix snapshots
+title libdictenstein producer stack\ndictionary resources and separate typed suffix snapshots
 
 rectangle "**Trust boundary** — independently compiled consumers\nreach the producer only through the C ABI\nand the resource vtables" as consumers #FFCDD2 {
   component "liblevenshtein\ntransducer" as llev #FADBD8

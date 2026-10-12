@@ -6,5 +6,8 @@ is api-revision, 9, 'probe advertises revision 9 without scalar suffix insert';
 throws-like { suffix-index }, X::Libdictenstein,
     status => STATUS-UNSUPPORTED,
     'suffix facade rejects revision 9 before resolving the revision-10 symbol';
+throws-like { persistent-artrie(IO::Path.new('revision9-probe')) },
+    X::Libdictenstein, status => STATUS-UNSUPPORTED,
+    'persistent facade rejects revision 9 before resolving the revision-11 symbol';
 
 done-testing;

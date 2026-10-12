@@ -76,7 +76,7 @@ evolution model (see the canonical
 | Constant | Value | Meaning | Caller check |
 |---|---|---|---|
 | `LDICT_ABI_VERSION` | 1 | Breaking-change counter for the `ldict_*` surface: layouts, ownership rules, status meanings. | **Exact equality** — refuse any other value. |
-| `LDICT_API_REVISION` | 10 | Additive counter: revision 5 added bounded entries; revision 6 added algebra; revision 7 added byte-valued DAWGs/entries; revision 8 added PathMap and a separate typed suffix-source index; revision 9 added lazy algebra cursors and ordered batch lookup/removal; revision 10 adds scalar-argument suffix insertion for by-reference FFI runtimes. | **At least** — a facade checks $`n`$ before resolving a symbol added in revision $`n`$. Older calls remain usable against newer libraries. |
+| `LDICT_API_REVISION` | 11 | Additive counter: revision 5 added bounded entries; revision 6 added algebra; revision 7 added byte-valued DAWGs/entries; revision 8 added PathMap and a separate typed suffix-source index; revision 9 added lazy algebra cursors and ordered batch lookup/removal; revision 10 added scalar-argument suffix insertion for by-reference FFI runtimes; revision 11 adds persistent u64 CX profiles, Unicode ARTrie WAL archive configuration, and owned recovery reports. | **At least** — a facade checks $`n`$ before resolving a symbol added in revision $`n`$. Older calls remain usable against newer libraries. |
 
 Every fallible function reports failure twice: as an `LdictStatus` return value
 (the machine channel) and as a human-readable message retrievable through
@@ -104,7 +104,7 @@ Returns `LDICT_ABI_VERSION` (currently `1`).
 LDICT_API uint32_t ldict_api_revision(void);
 ```
 
-Returns `LDICT_API_REVISION` (currently `10`).
+Returns `LDICT_API_REVISION` (currently `11`).
 
 - **Preconditions**: none.
 - **Statuses**: none — cannot fail.
@@ -530,6 +530,94 @@ acknowledged pre-crash write is visible on `OK` (see
 - **Ownership**: on `OK` the caller owns the handle.
 - **Thread-safety**: safe from any thread; same-path arbitration as `create`.
 - **Complexity**: $`\mathcal{O}(\lvert \mathrm{WAL\ tail} \rvert)`$ replay beyond the checkpoint, then $`\mathcal{O}(1)`$.
+
+### `ldict_persistent_artrie_create_profile` and `ldict_persistent_artrie_open_profile` (API revision 11)
+
+```c
+LDICT_API LdictStatus ldict_persistent_artrie_create_profile(
+    uint32_t unit_domain, uint32_t profile,
+    const uint8_t* path_data, size_t path_len,
+    LdictDictionary** out_dictionary);
+LDICT_API LdictStatus ldict_persistent_artrie_open_profile(
+    uint32_t unit_domain, uint32_t profile,
+    const uint8_t* path_data, size_t path_len,
+    LdictDictionary** out_dictionary);
+```
+
+Profile `LDICT_PERSISTENT_PROFILE_DEFAULT` (0) has the same behavior as the
+original constructors. For u64 keys it selects the current disk-compact CX
+layout. `LDICT_PERSISTENT_PROFILE_U64_PREFIX3_COMPAT` (1) selects the older
+prefix-3 u64 layout, which must also be selected when reopening that store.
+Profile 1 with byte or Unicode keys returns `UNSUPPORTED`; unknown profile
+numbers return `INVALID_ARGUMENT`. Failed calls clear `*out_dictionary`.
+All other path, ownership, recovery, and thread-safety rules match the
+original create/open calls above.
+
+### `ldict_persistent_artrie_char_create_with_wal` and `ldict_persistent_artrie_char_open_with_wal` (API revision 11)
+
+```c
+LDICT_API LdictStatus ldict_persistent_artrie_char_create_with_wal(
+    const uint8_t* path_data, size_t path_len,
+    uint8_t archive_enabled,
+    const uint8_t* archive_dir_data, size_t archive_dir_len,
+    size_t max_segments, uint64_t max_archive_bytes,
+    LdictDictionary** out_dictionary);
+LDICT_API LdictStatus ldict_persistent_artrie_char_open_with_wal(
+    const uint8_t* path_data, size_t path_len,
+    uint8_t archive_enabled,
+    const uint8_t* archive_dir_data, size_t archive_dir_len,
+    size_t max_segments, uint64_t max_archive_bytes,
+    LdictDictionary** out_dictionary);
+```
+
+These constructors expose the native Unicode-scalar ARTrie's WAL archive
+policy. `archive_enabled` must be 0 or 1, and both limits must be positive.
+A zero-length archive directory selects the engine default; a nonempty
+directory must be UTF-8. The engine resolves relative archive directories
+against the data file's parent. Invalid settings return `INVALID_ARGUMENT`
+with a null output; other path, ownership, and checkpoint rules match the
+ordinary persistent ARTrie constructors.
+
+### Recovery-report constructors and accessors (API revision 11)
+
+```c
+LDICT_API LdictStatus ldict_persistent_artrie_open_with_recovery(
+    uint32_t unit_domain, uint32_t profile,
+    const uint8_t* path_data, size_t path_len,
+    LdictDictionary** out_dictionary, LdictRecoveryReport** out_report);
+LDICT_API LdictStatus ldict_persistent_artrie_char_open_with_wal_recovery(
+    const uint8_t* path_data, size_t path_len,
+    uint8_t archive_enabled,
+    const uint8_t* archive_dir_data, size_t archive_dir_len,
+    size_t max_segments, uint64_t max_archive_bytes,
+    LdictDictionary** out_dictionary, LdictRecoveryReport** out_report);
+LDICT_API LdictStatus ldict_persistent_vocab_open_with_recovery(
+    const uint8_t* path_data, size_t path_len,
+    LdictDictionary** out_dictionary, LdictRecoveryReport** out_report);
+LDICT_API LdictStatus ldict_recovery_report_summary(
+    const LdictRecoveryReport* report, uint32_t* out_mode,
+    uint64_t* out_records, uint64_t* out_terms,
+    uint64_t* out_duration_ms, size_t* out_archive_count);
+LDICT_API LdictStatus ldict_recovery_report_text(
+    const LdictRecoveryReport* report, uint32_t field, size_t index,
+    const uint8_t** out_data, size_t* out_len, uint8_t* out_present);
+LDICT_API void ldict_recovery_report_free(LdictRecoveryReport* report);
+```
+
+The open constructors expose the native recovery result and may create a
+missing store. On `OK`, the caller separately owns the dictionary and report;
+on failure, both output slots are null. The profile and WAL arguments follow
+the rules of the corresponding constructors above. `summary` returns the mode
+(`NORMAL` = 0, `REBUILD_FROM_WAL` = 1, `REPAIR_IN_PLACE` = 2,
+`CREATED_NEW` = 3), replayed-record count, recovered-term count, elapsed
+milliseconds, and archive-segment count. Text field 1 is the optional
+corrupted-file path, field 2 the optional reason, and field 3 the archive
+segment at `index`. Fields 1 and 2 require index zero. An absent optional
+field returns `OK` with `out_present = 0`; an archive index beyond the count
+returns `END`. All text is borrowed from the report and must be copied before
+`ldict_recovery_report_free`. The report can be freed independently of its
+dictionary. Callers must supply valid, distinct writable output slots and
+must exclude concurrent use while freeing the report.
 
 ### `ldict_persistent_vocab_create`
 

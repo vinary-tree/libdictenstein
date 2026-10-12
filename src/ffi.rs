@@ -4,6 +4,10 @@ mod bytes;
 pub use bytes::*;
 mod suffix;
 pub use suffix::*;
+#[cfg(feature = "persistent-artrie")]
+mod recovery;
+#[cfg(feature = "persistent-artrie")]
+pub use recovery::*;
 
 #[cfg(feature = "pathmap-backend")]
 use crate::bindings::PathMapBinding;
@@ -29,7 +33,7 @@ use vinary_tree_interop::{
 /// ABI version for the libdictenstein project API.
 pub const LDICT_ABI_VERSION: u32 = 1;
 /// Additive project API revision.
-pub const LDICT_API_REVISION: u32 = 10;
+pub const LDICT_API_REVISION: u32 = 11;
 
 /// DynamicDAWG backend identifier.
 pub const LDICT_KIND_DYNAMIC_DAWG: u32 = 1;
@@ -949,6 +953,7 @@ unsafe fn persistent_path<'a>(
 #[cfg(feature = "persistent-artrie")]
 unsafe fn persistent_open_or_create(
     unit_domain: u32,
+    profile: u32,
     path_data: *const u8,
     path_len: usize,
     create: bool,
@@ -961,6 +966,12 @@ unsafe fn persistent_open_or_create(
         }
         out_dictionary.write(ptr::null_mut());
         let path = persistent_path(path_data, path_len)?;
+        if profile > 1 || (vocab && profile != 0) {
+            return Err((
+                LdictStatus::InvalidArgument,
+                "invalid persistent profile".into(),
+            ));
+        }
         let persistent = if vocab {
             if create {
                 PersistentARTrieBinding::create_vocab(path)
@@ -970,9 +981,9 @@ unsafe fn persistent_open_or_create(
         } else {
             let domain = domain(unit_domain)?;
             if create {
-                PersistentARTrieBinding::create(path, domain)
+                PersistentARTrieBinding::create_with_profile(path, domain, profile == 1)
             } else {
-                PersistentARTrieBinding::open(path, domain)
+                PersistentARTrieBinding::open_with_profile(path, domain, profile == 1)
             }
         };
         let binding = LdictBinding::Persistent(binding(persistent)?);
@@ -995,6 +1006,7 @@ pub unsafe extern "C" fn ldict_persistent_artrie_create(
 ) -> LdictStatus {
     persistent_open_or_create(
         unit_domain,
+        0,
         path_data,
         path_len,
         true,
@@ -1017,9 +1029,191 @@ pub unsafe extern "C" fn ldict_persistent_artrie_open(
 ) -> LdictStatus {
     persistent_open_or_create(
         unit_domain,
+        0,
         path_data,
         path_len,
         false,
+        false,
+        out_dictionary,
+    )
+}
+
+/// Create a persistent ARTrie with an explicit on-disk profile. Profile 0 is
+/// the standard byte/Unicode/u64 layout; profile 1 is the u64 prefix-3 CX
+/// compatibility layout and is invalid for other domains.
+///
+/// # Safety
+/// The UTF-8 path and output pointer must be valid.
+#[cfg(feature = "persistent-artrie")]
+#[no_mangle]
+pub unsafe extern "C" fn ldict_persistent_artrie_create_profile(
+    unit_domain: u32,
+    profile: u32,
+    path_data: *const u8,
+    path_len: usize,
+    out_dictionary: *mut *mut LdictDictionary,
+) -> LdictStatus {
+    persistent_open_or_create(
+        unit_domain,
+        profile,
+        path_data,
+        path_len,
+        true,
+        false,
+        out_dictionary,
+    )
+}
+
+/// Open an existing persistent ARTrie with the matching on-disk profile.
+///
+/// # Safety
+/// The UTF-8 path and output pointer must be valid.
+#[cfg(feature = "persistent-artrie")]
+#[no_mangle]
+pub unsafe extern "C" fn ldict_persistent_artrie_open_profile(
+    unit_domain: u32,
+    profile: u32,
+    path_data: *const u8,
+    path_len: usize,
+    out_dictionary: *mut *mut LdictDictionary,
+) -> LdictStatus {
+    persistent_open_or_create(
+        unit_domain,
+        profile,
+        path_data,
+        path_len,
+        false,
+        false,
+        out_dictionary,
+    )
+}
+
+#[cfg(feature = "persistent-artrie")]
+unsafe fn persistent_wal_config(
+    archive_enabled: u8,
+    archive_dir_data: *const u8,
+    archive_dir_len: usize,
+    max_segments: usize,
+    max_archive_bytes: u64,
+) -> Result<crate::persistent_artrie::WalConfig, (LdictStatus, String)> {
+    if archive_enabled > 1 || max_segments == 0 || max_archive_bytes == 0 {
+        return Err((
+            LdictStatus::InvalidArgument,
+            "invalid WAL archive configuration".into(),
+        ));
+    }
+    let mut config = crate::persistent_artrie::WalConfig {
+        archive_enabled: archive_enabled == 1,
+        max_segments,
+        max_archive_bytes,
+        ..Default::default()
+    };
+    if archive_dir_len != 0 {
+        config.archive_dir = persistent_path(archive_dir_data, archive_dir_len)?.to_path_buf();
+    }
+    Ok(config)
+}
+
+#[cfg(feature = "persistent-artrie")]
+struct PersistentWalArgs {
+    archive_enabled: u8,
+    archive_dir_data: *const u8,
+    archive_dir_len: usize,
+    max_segments: usize,
+    max_archive_bytes: u64,
+}
+
+#[cfg(feature = "persistent-artrie")]
+unsafe fn persistent_char_with_wal(
+    path_data: *const u8,
+    path_len: usize,
+    args: PersistentWalArgs,
+    create: bool,
+    out_dictionary: *mut *mut LdictDictionary,
+) -> LdictStatus {
+    boundary(|| {
+        if out_dictionary.is_null() {
+            return Err((LdictStatus::NullPointer, "out_dictionary is null".into()));
+        }
+        out_dictionary.write(ptr::null_mut());
+        let path = persistent_path(path_data, path_len)?;
+        let config = persistent_wal_config(
+            args.archive_enabled,
+            args.archive_dir_data,
+            args.archive_dir_len,
+            args.max_segments,
+            args.max_archive_bytes,
+        )?;
+        let persistent = if create {
+            PersistentARTrieBinding::create_unicode_with_wal(path, config)
+        } else {
+            PersistentARTrieBinding::open_unicode_with_wal(path, config)
+        };
+        let binding = LdictBinding::Persistent(binding(persistent)?);
+        out_dictionary.write(Box::into_raw(Box::new(LdictDictionary::new(binding))));
+        Ok(LdictStatus::Ok)
+    })
+}
+
+/// Create a Unicode-scalar persistent ARTrie with a caller-selected WAL
+/// archive policy. A zero-length archive path selects the native default.
+///
+/// # Safety
+/// Input byte ranges and output pointer must be valid for their lengths.
+#[cfg(feature = "persistent-artrie")]
+#[no_mangle]
+pub unsafe extern "C" fn ldict_persistent_artrie_char_create_with_wal(
+    path_data: *const u8,
+    path_len: usize,
+    archive_enabled: u8,
+    archive_dir_data: *const u8,
+    archive_dir_len: usize,
+    max_segments: usize,
+    max_archive_bytes: u64,
+    out_dictionary: *mut *mut LdictDictionary,
+) -> LdictStatus {
+    persistent_char_with_wal(
+        path_data,
+        path_len,
+        PersistentWalArgs {
+            archive_enabled,
+            archive_dir_data,
+            archive_dir_len,
+            max_segments,
+            max_archive_bytes,
+        },
+        true,
+        out_dictionary,
+    )
+}
+
+/// Open a Unicode-scalar persistent ARTrie with a caller-selected WAL archive
+/// policy. A zero-length archive path selects the native default.
+///
+/// # Safety
+/// Input byte ranges and output pointer must be valid for their lengths.
+#[cfg(feature = "persistent-artrie")]
+#[no_mangle]
+pub unsafe extern "C" fn ldict_persistent_artrie_char_open_with_wal(
+    path_data: *const u8,
+    path_len: usize,
+    archive_enabled: u8,
+    archive_dir_data: *const u8,
+    archive_dir_len: usize,
+    max_segments: usize,
+    max_archive_bytes: u64,
+    out_dictionary: *mut *mut LdictDictionary,
+) -> LdictStatus {
+    persistent_char_with_wal(
+        path_data,
+        path_len,
+        PersistentWalArgs {
+            archive_enabled,
+            archive_dir_data,
+            archive_dir_len,
+            max_segments,
+            max_archive_bytes,
+        },
         false,
         out_dictionary,
     )
@@ -1038,6 +1232,7 @@ pub unsafe extern "C" fn ldict_persistent_vocab_create(
 ) -> LdictStatus {
     persistent_open_or_create(
         BindingUnitDomain::UnicodeScalar as u32,
+        0,
         path_data,
         path_len,
         true,
@@ -1059,6 +1254,7 @@ pub unsafe extern "C" fn ldict_persistent_vocab_open(
 ) -> LdictStatus {
     persistent_open_or_create(
         BindingUnitDomain::UnicodeScalar as u32,
+        0,
         path_data,
         path_len,
         false,

@@ -448,10 +448,13 @@ def check_symbol_parity(report: Report, model: dict) -> None:
     ffi_source = read_text(report, "symbols", ROOT / "src" / "ffi.rs")
     byte_ffi_source = read_text(report, "symbols", ROOT / "src" / "ffi" / "bytes.rs")
     suffix_ffi_source = read_text(report, "symbols", ROOT / "src" / "ffi" / "suffix.rs")
+    recovery_ffi_source = read_text(report, "symbols", ROOT / "src" / "ffi" / "recovery.rs")
     header_source = read_text(report, "symbols", ROOT / model["cHeader"])
-    if ffi_source is None or byte_ffi_source is None or suffix_ffi_source is None or header_source is None:
+    if (ffi_source is None or byte_ffi_source is None or suffix_ffi_source is None
+            or recovery_ffi_source is None or header_source is None):
         return
-    exported = parse_ffi_exports(ffi_source) | parse_ffi_exports(byte_ffi_source) | parse_ffi_exports(suffix_ffi_source)
+    exported = (parse_ffi_exports(ffi_source) | parse_ffi_exports(byte_ffi_source)
+                | parse_ffi_exports(suffix_ffi_source) | parse_ffi_exports(recovery_ffi_source))
     declared = parse_header_declarations(header_source)
 
     for label, missing in (

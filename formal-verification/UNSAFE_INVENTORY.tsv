@@ -318,8 +318,12 @@ src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_entry_cursor_next(	1	
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_entry_cursor_reduce(	1	ffi-entry-cursor-handle-ownership
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_entry_cursor_release(	1	ffi-entry-cursor-handle-ownership
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_pathmap_new(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_persistent_artrie_char_create_with_wal(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_persistent_artrie_char_open_with_wal(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_persistent_artrie_create(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_persistent_artrie_create_profile(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_persistent_artrie_open(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_persistent_artrie_open_profile(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_persistent_vocab_create(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_persistent_vocab_open(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_scdawg_contains_substring(	1	ffi-caller-pointer-contracts
@@ -328,8 +332,10 @@ src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_scdawg_substring_freq
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_vocab_get_term(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	unsafe extern "C" fn entry_reducer_trampoline(	1	ffi-entry-cursor-handle-ownership
 src/ffi.rs	unsafe_fn	unsafe fn entry_cursor_mut<'a>(	1	ffi-entry-cursor-handle-ownership
+src/ffi.rs	unsafe_fn	unsafe fn persistent_char_with_wal(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn persistent_open_or_create(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn persistent_path<'a>(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_fn	unsafe fn persistent_wal_config(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn slice<'a, T>(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn text_batch_keys<'a>(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn text_operation(	1	ffi-caller-pointer-contracts
@@ -391,6 +397,13 @@ src/ffi/bytes.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dynamic_dawg_ne
 src/ffi/bytes.rs	unsafe_extern_fn	unsafe extern "C" fn reducer_trampoline(	1	ffi-byte-value-facade-contract
 src/ffi/bytes.rs	unsafe_fn	unsafe fn copy_result(	1	ffi-byte-value-facade-contract
 src/ffi/bytes.rs	unsafe_fn	unsafe fn get_bytes(	1	ffi-byte-value-facade-contract
+src/ffi/recovery.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_persistent_artrie_char_open_with_wal_recovery(	1	ffi-recovery-report-handle-and-borrow-contract
+src/ffi/recovery.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_persistent_artrie_open_with_recovery(	1	ffi-recovery-report-handle-and-borrow-contract
+src/ffi/recovery.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_persistent_vocab_open_with_recovery(	1	ffi-recovery-report-handle-and-borrow-contract
+src/ffi/recovery.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_recovery_report_free(report: *mut LdictRecoveryReport) {	1	ffi-recovery-report-handle-and-borrow-contract
+src/ffi/recovery.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_recovery_report_summary(	1	ffi-recovery-report-handle-and-borrow-contract
+src/ffi/recovery.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_recovery_report_text(	1	ffi-recovery-report-handle-and-borrow-contract
+src/ffi/recovery.rs	unsafe_fn	unsafe fn publish_open_result(	1	ffi-recovery-report-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_clear(index: *mut LdictSuffixIndex) -> LdictStatus {	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_close(index: *mut LdictSuffixIndex) -> LdictStatus {	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_compact(index: *mut LdictSuffixIndex) -> LdictStatus {	1	ffi-suffix-handle-and-borrow-contract

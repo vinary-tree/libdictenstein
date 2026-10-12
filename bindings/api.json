@@ -216,7 +216,7 @@
     "_source": "release pins in .github/workflows/release-bindings.yml; dev facade pins in bindings/go/go.mod, Package.swift, bindings/jvm/build.gradle.kts (test scope), bindings/clojure/project.clj (:test profile), and bindings/javascript/package.json (@vinary-tree/javascript-runtime). Recorded verbatim; tag existence is a release concern tracked in docs/bindings/FINDINGS_LEDGER.md (LDICT-B1)."
   },
   "abiVersion": 1,
-  "apiRevision": 10,
+  "apiRevision": 11,
   "cPrefix": "ldict_",
   "cHeader": "include/libdictenstein.h",
   "featureGates": {
@@ -751,6 +751,83 @@
       ]
     },
     {
+      "name": "ldict_persistent_artrie_create_profile",
+      "group": "constructor",
+      "feature": "persistent-artrie",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "unit_domain", "cType": "uint32_t", "direction": "input", "ownership": "value"},
+        {"name": "profile", "cType": "uint32_t", "direction": "input", "ownership": "value"},
+        {"name": "path_data", "cType": "const uint8_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "path_len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_dictionary", "cType": "LdictDictionary**", "direction": "output", "ownership": "caller-owned-handle"}
+      ]
+    },
+    {
+      "name": "ldict_persistent_artrie_open_profile",
+      "group": "constructor",
+      "feature": "persistent-artrie",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name": "unit_domain", "cType": "uint32_t", "direction": "input", "ownership": "value"},
+        {"name": "profile", "cType": "uint32_t", "direction": "input", "ownership": "value"},
+        {"name": "path_data", "cType": "const uint8_t*", "direction": "input", "ownership": "call-borrowed"},
+        {"name": "path_len", "cType": "size_t", "direction": "input", "ownership": "value"},
+        {"name": "out_dictionary", "cType": "LdictDictionary**", "direction": "output", "ownership": "caller-owned-handle"}
+      ]
+    },
+    {
+      "name": "ldict_persistent_artrie_char_create_with_wal",
+      "group": "constructor",
+      "feature": "persistent-artrie",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name":"path_data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},
+        {"name":"path_len","cType":"size_t","direction":"input","ownership":"value"},
+        {"name":"archive_enabled","cType":"uint8_t","direction":"input","ownership":"value"},
+        {"name":"archive_dir_data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},
+        {"name":"archive_dir_len","cType":"size_t","direction":"input","ownership":"value"},
+        {"name":"max_segments","cType":"size_t","direction":"input","ownership":"value"},
+        {"name":"max_archive_bytes","cType":"uint64_t","direction":"input","ownership":"value"},
+        {"name":"out_dictionary","cType":"LdictDictionary**","direction":"output","ownership":"caller-owned-handle"}
+      ]
+    },
+    {
+      "name": "ldict_persistent_artrie_char_open_with_wal",
+      "group": "constructor",
+      "feature": "persistent-artrie",
+      "returnType": "LdictStatus",
+      "parameters": [
+        {"name":"path_data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},
+        {"name":"path_len","cType":"size_t","direction":"input","ownership":"value"},
+        {"name":"archive_enabled","cType":"uint8_t","direction":"input","ownership":"value"},
+        {"name":"archive_dir_data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},
+        {"name":"archive_dir_len","cType":"size_t","direction":"input","ownership":"value"},
+        {"name":"max_segments","cType":"size_t","direction":"input","ownership":"value"},
+        {"name":"max_archive_bytes","cType":"uint64_t","direction":"input","ownership":"value"},
+        {"name":"out_dictionary","cType":"LdictDictionary**","direction":"output","ownership":"caller-owned-handle"}
+      ]
+    },
+    {"name":"ldict_persistent_artrie_open_with_recovery","group":"constructor","feature":"persistent-artrie","returnType":"LdictStatus","parameters":[
+      {"name":"unit_domain","cType":"uint32_t","direction":"input","ownership":"value"},
+      {"name":"profile","cType":"uint32_t","direction":"input","ownership":"value"},
+      {"name":"path_data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},
+      {"name":"path_len","cType":"size_t","direction":"input","ownership":"value"},
+      {"name":"out_dictionary","cType":"LdictDictionary**","direction":"output","ownership":"caller-owned-handle"},
+      {"name":"out_report","cType":"LdictRecoveryReport**","direction":"output","ownership":"caller-owned-handle"}
+    ]},
+    {"name":"ldict_persistent_artrie_char_open_with_wal_recovery","group":"constructor","feature":"persistent-artrie","returnType":"LdictStatus","parameters":[
+      {"name":"path_data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},
+      {"name":"path_len","cType":"size_t","direction":"input","ownership":"value"},
+      {"name":"archive_enabled","cType":"uint8_t","direction":"input","ownership":"value"},
+      {"name":"archive_dir_data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},
+      {"name":"archive_dir_len","cType":"size_t","direction":"input","ownership":"value"},
+      {"name":"max_segments","cType":"size_t","direction":"input","ownership":"value"},
+      {"name":"max_archive_bytes","cType":"uint64_t","direction":"input","ownership":"value"},
+      {"name":"out_dictionary","cType":"LdictDictionary**","direction":"output","ownership":"caller-owned-handle"},
+      {"name":"out_report","cType":"LdictRecoveryReport**","direction":"output","ownership":"caller-owned-handle"}
+    ]},
+    {
       "name": "ldict_persistent_vocab_create",
       "group": "constructor",
       "feature": "persistent-artrie",
@@ -772,6 +849,31 @@
         {"name": "out_dictionary", "cType": "LdictDictionary**", "direction": "output", "ownership": "caller-owned-handle"}
       ]
     },
+    {"name":"ldict_persistent_vocab_open_with_recovery","group":"constructor","feature":"persistent-artrie","returnType":"LdictStatus","parameters":[
+      {"name":"path_data","cType":"const uint8_t*","direction":"input","ownership":"call-borrowed"},
+      {"name":"path_len","cType":"size_t","direction":"input","ownership":"value"},
+      {"name":"out_dictionary","cType":"LdictDictionary**","direction":"output","ownership":"caller-owned-handle"},
+      {"name":"out_report","cType":"LdictRecoveryReport**","direction":"output","ownership":"caller-owned-handle"}
+    ]},
+    {"name":"ldict_recovery_report_summary","group":"recovery-report","feature":"persistent-artrie","returnType":"LdictStatus","parameters":[
+      {"name":"report","cType":"const LdictRecoveryReport*","direction":"input","ownership":"borrowed-handle"},
+      {"name":"out_mode","cType":"uint32_t*","direction":"output","ownership":"caller-owned-storage"},
+      {"name":"out_records","cType":"uint64_t*","direction":"output","ownership":"caller-owned-storage"},
+      {"name":"out_terms","cType":"uint64_t*","direction":"output","ownership":"caller-owned-storage"},
+      {"name":"out_duration_ms","cType":"uint64_t*","direction":"output","ownership":"caller-owned-storage"},
+      {"name":"out_archive_count","cType":"size_t*","direction":"output","ownership":"caller-owned-storage"}
+    ]},
+    {"name":"ldict_recovery_report_text","group":"recovery-report","feature":"persistent-artrie","returnType":"LdictStatus","parameters":[
+      {"name":"report","cType":"const LdictRecoveryReport*","direction":"input","ownership":"borrowed-handle"},
+      {"name":"field","cType":"uint32_t","direction":"input","ownership":"value"},
+      {"name":"index","cType":"size_t","direction":"input","ownership":"value"},
+      {"name":"out_data","cType":"const uint8_t**","direction":"output","ownership":"borrowed-until-report-free"},
+      {"name":"out_len","cType":"size_t*","direction":"output","ownership":"caller-owned-storage"},
+      {"name":"out_present","cType":"uint8_t*","direction":"output","ownership":"caller-owned-storage"}
+    ]},
+    {"name":"ldict_recovery_report_free","group":"recovery-report","feature":"persistent-artrie","returnType":"void","parameters":[
+      {"name":"report","cType":"LdictRecoveryReport*","direction":"input","ownership":"consumed-handle"}
+    ]},
     {
       "name": "ldict_dictionary_kind",
       "group": "handle",
@@ -1327,9 +1429,12 @@
         "entry-cursor": "The idiomatic facade traverses retained Vinary-Tree-Interop snapshots; the project-owned cursor ABI remains available only as a low-level declaration.",
         "batch-collections": "The Raku collection facade has its own parity task for native batch lookup and removal; declarations remain available at the raw ABI boundary.",
         "legacy-optional-insert": "The facade uses the explicit scalar-value insertion call to preserve valueless versus zero semantics.",
-        "legacy-scalar-getter": "The facade uses the optional-value output struct and membership flag instead of the older scalar getter."
+        "legacy-scalar-getter": "The facade uses the optional-value output struct and membership flag instead of the older scalar getter.",
+        "legacy-persistent-default": "The facade uses revision-11 profile-aware constructors; the original constructors remain ABI-compatible default-profile entry points."
       },
       "rawOnly": {
+        "ldict_persistent_artrie_create": "legacy-persistent-default",
+        "ldict_persistent_artrie_open": "legacy-persistent-default",
         "ldict_suffix_index_insert_text": "byvalue-optional",
         "ldict_dynamic_dawg_new_byte_values": "byte-values",
         "ldict_dictionary_insert_text_bytes": "byte-values",

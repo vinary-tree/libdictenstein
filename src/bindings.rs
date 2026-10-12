@@ -889,6 +889,7 @@ enum PersistentBackend {
     Byte(crate::persistent_artrie::PersistentARTrie<BindingValue>),
     Unicode(crate::persistent_artrie::char::PersistentARTrieChar<BindingValue>),
     U64(crate::persistent_artrie::u64::PersistentARTrieU64<BindingValue>),
+    U64Prefix3(crate::persistent_artrie::u64::PersistentARTrieU64Prefix3Compat<BindingValue>),
     Vocab(crate::persistent_artrie::vocab::PersistentVocabARTrie),
 }
 
@@ -898,7 +899,7 @@ impl PersistentBackend {
         match self {
             Self::Byte(_) => BindingUnitDomain::Byte,
             Self::Unicode(_) | Self::Vocab(_) => BindingUnitDomain::UnicodeScalar,
-            Self::U64(_) => BindingUnitDomain::U64,
+            Self::U64(_) | Self::U64Prefix3(_) => BindingUnitDomain::U64,
         }
     }
 
@@ -907,6 +908,7 @@ impl PersistentBackend {
             Self::Byte(dictionary) => dictionary.overlay_len(),
             Self::Unicode(dictionary) => dictionary.len(),
             Self::U64(dictionary) => dictionary.term_count(),
+            Self::U64Prefix3(dictionary) => dictionary.term_count(),
             Self::Vocab(dictionary) => dictionary.len(),
         }
     }
@@ -928,6 +930,10 @@ impl PersistentBackend {
                 )
             }
             Self::U64(dictionary) => {
+                let (root, term_count) = dictionary.root_with_term_count();
+                exact_traversal_snapshot(root, term_count, VtUnitDomain::U64, false, identity)
+            }
+            Self::U64Prefix3(dictionary) => {
                 let (root, term_count) = dictionary.root_with_term_count();
                 exact_traversal_snapshot(root, term_count, VtUnitDomain::U64, false, identity)
             }
@@ -956,6 +962,19 @@ pub struct PersistentARTrieBinding {
 impl PersistentARTrieBinding {
     /// Create a new byte, Unicode-scalar, or native-u64 persistent trie.
     pub fn create(path: impl AsRef<Path>, domain: BindingUnitDomain) -> Result<Self, BindingError> {
+        Self::create_with_profile(path, domain, false)
+    }
+
+    /// Create a persistent trie using the disk-compact u64 profile by default,
+    /// or the prefix-3 compatibility profile for pre-existing CX files.
+    pub fn create_with_profile(
+        path: impl AsRef<Path>,
+        domain: BindingUnitDomain,
+        u64_prefix3_compat: bool,
+    ) -> Result<Self, BindingError> {
+        if u64_prefix3_compat && domain != BindingUnitDomain::U64 {
+            return Err(BindingError::Unsupported);
+        }
         let shared = match domain {
             BindingUnitDomain::Byte => Arc::new(SnapshotSource::new(PersistentBackend::Byte(
                 crate::persistent_artrie::PersistentARTrie::create(path).map_err(io_error)?,
@@ -963,6 +982,12 @@ impl PersistentARTrieBinding {
             BindingUnitDomain::UnicodeScalar => {
                 Arc::new(SnapshotSource::new(PersistentBackend::Unicode(
                     crate::persistent_artrie::char::PersistentARTrieChar::create(path)
+                        .map_err(io_error)?,
+                )))
+            }
+            BindingUnitDomain::U64 if u64_prefix3_compat => {
+                Arc::new(SnapshotSource::new(PersistentBackend::U64Prefix3(
+                    crate::persistent_artrie::u64::PersistentARTrieU64Prefix3Compat::create(path)
                         .map_err(io_error)?,
                 )))
             }
@@ -976,6 +1001,18 @@ impl PersistentARTrieBinding {
 
     /// Open an existing byte, Unicode-scalar, or native-u64 persistent trie.
     pub fn open(path: impl AsRef<Path>, domain: BindingUnitDomain) -> Result<Self, BindingError> {
+        Self::open_with_profile(path, domain, false)
+    }
+
+    /// Open a persistent trie using the matching on-disk u64 CX profile.
+    pub fn open_with_profile(
+        path: impl AsRef<Path>,
+        domain: BindingUnitDomain,
+        u64_prefix3_compat: bool,
+    ) -> Result<Self, BindingError> {
+        if u64_prefix3_compat && domain != BindingUnitDomain::U64 {
+            return Err(BindingError::Unsupported);
+        }
         let shared = match domain {
             BindingUnitDomain::Byte => Arc::new(SnapshotSource::new(PersistentBackend::Byte(
                 crate::persistent_artrie::PersistentARTrie::open(path).map_err(io_error)?,
@@ -986,11 +1023,120 @@ impl PersistentARTrieBinding {
                         .map_err(io_error)?,
                 )))
             }
+            BindingUnitDomain::U64 if u64_prefix3_compat => {
+                Arc::new(SnapshotSource::new(PersistentBackend::U64Prefix3(
+                    crate::persistent_artrie::u64::PersistentARTrieU64Prefix3Compat::open(path)
+                        .map_err(io_error)?,
+                )))
+            }
             BindingUnitDomain::U64 => Arc::new(SnapshotSource::new(PersistentBackend::U64(
                 crate::persistent_artrie::u64::PersistentARTrieU64::open(path).map_err(io_error)?,
             ))),
         };
         Ok(Self { shared })
+    }
+
+    /// Create a Unicode-scalar persistent trie with the native WAL archive
+    /// policy selected by the caller.
+    pub fn create_unicode_with_wal(
+        path: impl AsRef<Path>,
+        wal_config: crate::persistent_artrie::WalConfig,
+    ) -> Result<Self, BindingError> {
+        Ok(Self {
+            shared: Arc::new(SnapshotSource::new(PersistentBackend::Unicode(
+                crate::persistent_artrie::char::PersistentARTrieChar::create_with_config(
+                    path, wal_config,
+                )
+                .map_err(io_error)?,
+            ))),
+        })
+    }
+
+    /// Open a Unicode-scalar persistent trie with an explicit WAL archive
+    /// policy, preserving the same lock-free root publication as default open.
+    pub fn open_unicode_with_wal(
+        path: impl AsRef<Path>,
+        wal_config: crate::persistent_artrie::WalConfig,
+    ) -> Result<Self, BindingError> {
+        Ok(Self {
+            shared: Arc::new(SnapshotSource::new(PersistentBackend::Unicode(
+                crate::persistent_artrie::char::PersistentARTrieChar::open_with_config(
+                    path, wal_config,
+                )
+                .map_err(io_error)?,
+            ))),
+        })
+    }
+
+    /// Open a persistent ARTrie with a structured recovery report. The
+    /// optional WAL archive policy applies to byte and Unicode profiles;
+    /// native-u64 CX profiles use their fixed WAL policy.
+    pub fn open_with_recovery(
+        path: impl AsRef<Path>,
+        domain: BindingUnitDomain,
+        u64_prefix3_compat: bool,
+        wal_config: Option<crate::persistent_artrie::WalConfig>,
+    ) -> Result<(Self, crate::persistent_artrie::RecoveryReport), BindingError> {
+        if u64_prefix3_compat && domain != BindingUnitDomain::U64 {
+            return Err(BindingError::Unsupported);
+        }
+        let (backend, report) = match domain {
+            BindingUnitDomain::Byte => {
+                let (dictionary, report) =
+                    crate::persistent_artrie::PersistentARTrie::open_with_recovery_config(
+                        path,
+                        wal_config.unwrap_or_default(),
+                    )
+                    .map_err(io_error)?;
+                (PersistentBackend::Byte(dictionary), report)
+            }
+            BindingUnitDomain::UnicodeScalar => {
+                let (dictionary, report) =
+                    crate::persistent_artrie::char::PersistentARTrieChar::open_with_recovery_config(
+                        path,
+                        wal_config.unwrap_or_default(),
+                    )
+                    .map_err(io_error)?;
+                (PersistentBackend::Unicode(dictionary), report)
+            }
+            BindingUnitDomain::U64 if wal_config.is_some() => {
+                return Err(BindingError::Unsupported);
+            }
+            BindingUnitDomain::U64 if u64_prefix3_compat => {
+                let (dictionary, report) =
+                    crate::persistent_artrie::u64::PersistentARTrieU64Prefix3Compat::open_with_recovery(path)
+                        .map_err(io_error)?;
+                (PersistentBackend::U64Prefix3(dictionary), report)
+            }
+            BindingUnitDomain::U64 => {
+                let (dictionary, report) =
+                    crate::persistent_artrie::u64::PersistentARTrieU64::open_with_recovery(path)
+                        .map_err(io_error)?;
+                (PersistentBackend::U64(dictionary), report)
+            }
+        };
+        Ok((
+            Self {
+                shared: Arc::new(SnapshotSource::new(backend)),
+            },
+            report,
+        ))
+    }
+
+    /// Open the bidirectional vocabulary and return the engine's complete
+    /// crash/replay report alongside the retained dictionary producer.
+    pub fn open_vocab_with_recovery(
+        path: impl AsRef<Path>,
+    ) -> Result<(Self, crate::persistent_artrie::RecoveryReport), BindingError> {
+        let (dictionary, report) =
+            crate::persistent_artrie::vocab::PersistentVocabARTrie::open_with_recovery(path)
+                .map_err(io_error)?;
+        Ok((
+            Self {
+                shared: Arc::new(SnapshotSource::new(PersistentBackend::Vocab(dictionary))),
+            },
+            report,
+        ))
     }
 
     /// Create a persistent bidirectional term/index vocabulary.
@@ -1056,7 +1202,9 @@ impl PersistentARTrieBinding {
                     Ok(!existed)
                 }
             }
-            PersistentBackend::U64(_) => Err(BindingError::DomainMismatch),
+            PersistentBackend::U64(_) | PersistentBackend::U64Prefix3(_) => {
+                Err(BindingError::DomainMismatch)
+            }
         };
         // An I/O error may be reported after durable or overlay state changed.
         // Keep RAII's conservative dirty=true on Err; only a proven Ok(false)
@@ -1077,7 +1225,9 @@ impl PersistentARTrieBinding {
                 dictionary.remove(term).map_err(io_error)
             }
             PersistentBackend::Vocab(_) => Err(BindingError::Unsupported),
-            PersistentBackend::U64(_) => Err(BindingError::DomainMismatch),
+            PersistentBackend::U64(_) | PersistentBackend::U64Prefix3(_) => {
+                Err(BindingError::DomainMismatch)
+            }
         };
         mutation.finish(!matches!(result, Ok(false)));
         result
@@ -1095,7 +1245,9 @@ impl PersistentARTrieBinding {
                 let term = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
                 Ok(dictionary.contains(term))
             }
-            PersistentBackend::U64(_) => Err(BindingError::DomainMismatch),
+            PersistentBackend::U64(_) | PersistentBackend::U64Prefix3(_) => {
+                Err(BindingError::DomainMismatch)
+            }
         }
     }
 
@@ -1113,7 +1265,9 @@ impl PersistentARTrieBinding {
                 let term = std::str::from_utf8(term).map_err(|_| BindingError::InvalidUtf8)?;
                 Ok(dictionary.get_index(term).map(Some))
             }
-            PersistentBackend::U64(_) => Err(BindingError::DomainMismatch),
+            PersistentBackend::U64(_) | PersistentBackend::U64Prefix3(_) => {
+                Err(BindingError::DomainMismatch)
+            }
         }
     }
 
@@ -1127,6 +1281,9 @@ impl PersistentARTrieBinding {
         let mutation = self.shared.snapshots.begin_mutation();
         let result = match &self.shared.backend {
             PersistentBackend::U64(dictionary) => dictionary
+                .try_insert_sequence_with_value(term, BindingValue::from_option(value))
+                .map_err(io_error),
+            PersistentBackend::U64Prefix3(dictionary) => dictionary
                 .try_insert_sequence_with_value(term, BindingValue::from_option(value))
                 .map_err(io_error),
             _ => Err(BindingError::DomainMismatch),
@@ -1144,6 +1301,9 @@ impl PersistentARTrieBinding {
             PersistentBackend::U64(dictionary) => {
                 dictionary.try_remove_sequence(term).map_err(io_error)
             }
+            PersistentBackend::U64Prefix3(dictionary) => {
+                dictionary.try_remove_sequence(term).map_err(io_error)
+            }
             _ => Err(BindingError::DomainMismatch),
         };
         mutation.finish(!matches!(result, Ok(false)));
@@ -1154,6 +1314,7 @@ impl PersistentARTrieBinding {
     pub fn contains_u64(&self, term: &[u64]) -> Result<bool, BindingError> {
         match &self.shared.backend {
             PersistentBackend::U64(dictionary) => Ok(dictionary.contains_sequence(term)),
+            PersistentBackend::U64Prefix3(dictionary) => Ok(dictionary.contains_sequence(term)),
             _ => Err(BindingError::DomainMismatch),
         }
     }
@@ -1162,6 +1323,9 @@ impl PersistentARTrieBinding {
     pub fn value_u64(&self, term: &[u64]) -> Result<Option<Option<u64>>, BindingError> {
         match &self.shared.backend {
             PersistentBackend::U64(dictionary) => Ok(dictionary
+                .get_sequence_value(term)
+                .map(BindingValue::into_option)),
+            PersistentBackend::U64Prefix3(dictionary) => Ok(dictionary
                 .get_sequence_value(term)
                 .map(BindingValue::into_option)),
             _ => Err(BindingError::DomainMismatch),
@@ -1174,6 +1338,7 @@ impl PersistentARTrieBinding {
             PersistentBackend::Byte(dictionary) => dictionary.checkpoint().map_err(io_error),
             PersistentBackend::Unicode(dictionary) => dictionary.checkpoint().map_err(io_error),
             PersistentBackend::U64(dictionary) => dictionary.checkpoint().map_err(io_error),
+            PersistentBackend::U64Prefix3(dictionary) => dictionary.checkpoint().map_err(io_error),
             PersistentBackend::Vocab(dictionary) => dictionary.checkpoint().map_err(io_error),
         }
     }
