@@ -15,7 +15,7 @@ is nativesizeof(SuffixSourceRecord),
     8 + 2 * nativesizeof(Pointer) + nativesizeof(OptionalValue),
     'typed suffix record descriptor layout matches C';
 
-subtest 'revision-8 PathMap and explicit suffix absence' => {
+subtest 'revision-8 PathMap and typed suffix source index' => {
     my $bytes = pathmap(BYTE);
     is $bytes.kind, PATHMAP, 'PathMap reports its distinct backend kind';
     my $raw = Buf.new(0x00, 0xff, 0x80);
@@ -29,8 +29,15 @@ subtest 'revision-8 PathMap and explicit suffix absence' => {
     is $unicode.AT-KEY('é🙂'), 7, 'Unicode PathMap follows scalar domain';
     $unicode.close;
     dies-ok { pathmap(U64) }, 'PathMap rejects the unsupported token domain';
-    throws-like { suffix-index }, X::Libdictenstein,
-        status => 6, 'suffix records are explicitly unsupported by the Raku facade';
+    my $index = suffix-index;
+    $index.insert-source('banana', 0);
+    my $view = $index.snapshot;
+    ok $view.contains-source('banana'), 'suffix source membership is typed';
+    is $view.substring-frequency('ana'), 2,
+        'suffix index counts overlapping occurrences';
+    $index.close;
+    is $view.source-count, 1, 'suffix snapshot survives its producer';
+    $view.close;
 };
 
 subtest 'Unicode Associative and snapshot Iterable' => {

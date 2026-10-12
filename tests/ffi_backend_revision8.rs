@@ -56,6 +56,66 @@ unsafe fn frequency(view: *mut LdictSuffixSnapshot, pattern: &str) -> u64 {
 }
 
 #[test]
+fn scalar_suffix_insert_matches_optional_value_semantics() {
+    unsafe {
+        for domain in [1, 2] {
+            let index = open_suffix(domain);
+            assert_eq!(
+                ldict_suffix_index_insert_text_value(index, b"a".as_ptr(), 1, 7, 2),
+                LdictStatus::InvalidArgument
+            );
+            assert_eq!(
+                ldict_suffix_index_insert_text_value(index, b"\xff".as_ptr(), 1, 7, 1),
+                LdictStatus::InvalidUtf8
+            );
+            let empty = capture(index);
+            let mut count = u64::MAX;
+            assert_eq!(
+                ldict_suffix_snapshot_source_count(empty, &mut count),
+                LdictStatus::Ok
+            );
+            assert_eq!(count, 0, "rejected scalar calls must not publish records");
+            assert_eq!(ldict_suffix_snapshot_close(empty), LdictStatus::Ok);
+            ldict_suffix_snapshot_free(empty);
+
+            assert_eq!(
+                ldict_suffix_index_insert_text_value(index, b"a".as_ptr(), 1, u64::MAX, 0),
+                LdictStatus::Ok
+            );
+            assert_eq!(
+                ldict_suffix_index_insert_text_value(index, b"b".as_ptr(), 1, u64::MAX, 1),
+                LdictStatus::Ok
+            );
+            let view = capture(index);
+            let mut rows = [LdictSuffixSourceRecord::default(); 2];
+            let mut written = 0;
+            let mut total = 0;
+            assert_eq!(
+                ldict_suffix_snapshot_source_page(
+                    view,
+                    0,
+                    rows.as_mut_ptr(),
+                    rows.len(),
+                    &mut written,
+                    &mut total
+                ),
+                LdictStatus::Ok
+            );
+            assert_eq!((written, total), (2, 2));
+            assert_eq!((rows[0].value.has_value, rows[0].value.value), (0, 0));
+            assert_eq!(
+                (rows[1].value.has_value, rows[1].value.value),
+                (1, u64::MAX)
+            );
+            assert_eq!(ldict_suffix_snapshot_close(view), LdictStatus::Ok);
+            ldict_suffix_snapshot_free(view);
+            assert_eq!(ldict_suffix_index_close(index), LdictStatus::Ok);
+            ldict_suffix_index_free(index);
+        }
+    }
+}
+
+#[test]
 fn suffix_records_are_ordered_retained_and_not_dictionary_keys() {
     unsafe {
         let index = open_suffix(1);

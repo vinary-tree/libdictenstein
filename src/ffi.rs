@@ -29,7 +29,7 @@ use vinary_tree_interop::{
 /// ABI version for the libdictenstein project API.
 pub const LDICT_ABI_VERSION: u32 = 1;
 /// Additive project API revision.
-pub const LDICT_API_REVISION: u32 = 9;
+pub const LDICT_API_REVISION: u32 = 10;
 
 /// DynamicDAWG backend identifier.
 pub const LDICT_KIND_DYNAMIC_DAWG: u32 = 1;

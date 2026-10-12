@@ -41,7 +41,7 @@ Package-specific API pages live under
 
 ## Generated ABI boundary
 
-Julia's low-level constants, enums, layouts, and 70 typed native calls are
+Julia's low-level constants, enums, layouts, and 76 typed native calls are
 generated from the signature and lifetime records in
 [`bindings/api.json`](../api.json). The public C header remains an independent
 parity oracle: generation fails if a return type, parameter type, parameter

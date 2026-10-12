@@ -5,7 +5,7 @@
 [FFI boundary analysis](../security/ffi-boundary.md) ·
 [Findings ledger](FINDINGS_LEDGER.md)
 
-This is the normative reference for the **75-function `ldict_*` C ABI** exported
+This is the normative reference for the **76-function `ldict_*` C ABI** exported
 by the libdictenstein cdylib — the project-owned surface above the family
 resource ABI. Every function is documented with its exact header signature, its
 preconditions, the **exact** set of statuses it can return (derived from the
@@ -32,7 +32,7 @@ Authoritative sources, in precedence order:
 The Julia facade consumes the first source mechanically through
 [`scripts/generate-julia-abi.py`](../../scripts/generate-julia-abi.py). Its
 [`signature inventory`](../../bindings/generated/julia-abi-capabilities.tsv)
-makes all 75 generated calls and their lifetime metadata reviewable, while the
+makes all 76 generated calls and their lifetime metadata reviewable, while the
 public header remains an independent exact-signature oracle.
 
 The family layer underneath (two-word `VtResource`, retain/release,
@@ -76,7 +76,7 @@ evolution model (see the canonical
 | Constant | Value | Meaning | Caller check |
 |---|---|---|---|
 | `LDICT_ABI_VERSION` | 1 | Breaking-change counter for the `ldict_*` surface: layouts, ownership rules, status meanings. | **Exact equality** — refuse any other value. |
-| `LDICT_API_REVISION` | 9 | Additive counter: revision 5 added bounded entries; revision 6 added algebra; revision 7 added byte-valued DAWGs/entries; revision 8 added PathMap and a separate typed suffix-source index; revision 9 adds lazy algebra cursors and ordered batch lookup/removal. | **At least** — a facade checks $`n`$ before resolving a symbol added in revision $`n`$. Older calls remain usable against newer libraries. |
+| `LDICT_API_REVISION` | 10 | Additive counter: revision 5 added bounded entries; revision 6 added algebra; revision 7 added byte-valued DAWGs/entries; revision 8 added PathMap and a separate typed suffix-source index; revision 9 added lazy algebra cursors and ordered batch lookup/removal; revision 10 adds scalar-argument suffix insertion for by-reference FFI runtimes. | **At least** — a facade checks $`n`$ before resolving a symbol added in revision $`n`$. Older calls remain usable against newer libraries. |
 
 Every fallible function reports failure twice: as an `LdictStatus` return value
 (the machine channel) and as a human-readable message retrievable through
@@ -104,7 +104,7 @@ Returns `LDICT_ABI_VERSION` (currently `1`).
 LDICT_API uint32_t ldict_api_revision(void);
 ```
 
-Returns `LDICT_API_REVISION` (currently `9`).
+Returns `LDICT_API_REVISION` (currently `10`).
 
 - **Preconditions**: none.
 - **Statuses**: none — cannot fail.

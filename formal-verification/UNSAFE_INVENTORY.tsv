@@ -396,6 +396,7 @@ src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_c
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_compact(index: *mut LdictSuffixIndex) -> LdictStatus {	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_free(index: *mut LdictSuffixIndex) {	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_insert_text(	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_insert_text_value(	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_new(	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_remove_text(	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_snapshot(	1	ffi-suffix-handle-and-borrow-contract
@@ -407,6 +408,7 @@ src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_snapsho
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_snapshot_source_count(	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_snapshot_source_page(	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_snapshot_substring_frequency(	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_fn	unsafe fn insert_text(	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_fn	unsafe fn load_index(handle: *const LdictSuffixIndex) -> Result<Arc<IndexState>, Failure> {	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_fn	unsafe fn load_snapshot(handle: *const LdictSuffixSnapshot) -> Result<Arc<SnapshotState>, Failure> {	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_fn	unsafe fn query(	1	ffi-suffix-handle-and-borrow-contract
