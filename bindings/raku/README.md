@@ -41,7 +41,7 @@ models its symbols, numeric constants, layouts, and the Raku facade's
 intentional coverage. `scripts/generate-raku-abi.py` compares the two
 independently maintained sources and generates three delimited regions of
 [`Libdictenstein.rakumod`](lib/Libdictenstein.rakumod): constants and enums,
-the six local C-compatible layouts, and all 76 revision-10 NativeCall
+the six local C-compatible layouts, and all 86 revision-11 NativeCall
 declarations. The [reviewable inventory](../generated/raku-abi-capabilities.tsv)
 records each C and Raku signature, the package mapping, and whether the
 idiomatic facade calls it. Run this after changing the model or C header:
@@ -79,6 +79,23 @@ must check the required revision before invoking newer symbols.
 PathMap byte keys must not be routed through UTF-8 text conversion, and the
 suffix index must never be flattened into `Associative` key semantics. See
 the [revision-8 native contract](../../docs/bindings/backend-api-revision8.md).
+
+`persistent-artrie` accepts the typed `PersistentProfile` option. The default
+uses the current disk-compact u64 CX layout; `PERSISTENT-U64-PREFIX3-COMPAT`
+selects the older prefix-3 layout for both creation and reopening. The
+compatibility profile requires `U64`; the same profile must be used when
+reopening a checkpoint. The constructor checks native API revision 11 before
+resolving the profile-aware C symbols.
+For Unicode-scalar ARTries, `PersistentWalConfig` supplies archive enablement,
+the archive directory, and hard segment-count and byte limits to the native
+create/open calls. Invalid limits and unsupported domain combinations fail
+before crossing the C boundary.
+Opening with `:!create, :recover` attaches a `PersistentRecoveryReport` to
+the returned dictionary. Its `mode`, replayed-record and recovered-term
+counts, duration, optional corruption fields, and archive-segment paths are
+copied before the native report is freed. A missing store reports
+`RECOVERY-CREATED-NEW`; ordinary reopening reports the mode returned by the
+native engine. `persistent-vocabulary` accepts the same `:recover` option.
 
 ## In-memory backends and suffix records
 

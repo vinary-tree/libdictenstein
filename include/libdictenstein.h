@@ -32,7 +32,7 @@ extern "C" {
 #endif
 
 #define LDICT_ABI_VERSION 1u
-#define LDICT_API_REVISION 10u
+#define LDICT_API_REVISION 11u
 
 #define LDICT_KIND_DYNAMIC_DAWG 1u
 #define LDICT_KIND_DOUBLE_ARRAY_TRIE 2u
@@ -40,6 +40,17 @@ extern "C" {
 #define LDICT_KIND_PERSISTENT_ARTRIE 4u
 #define LDICT_KIND_PERSISTENT_VOCAB_ARTRIE 5u
 #define LDICT_KIND_PATHMAP 6u
+
+#define LDICT_PERSISTENT_PROFILE_DEFAULT 0u
+#define LDICT_PERSISTENT_PROFILE_U64_PREFIX3_COMPAT 1u
+
+#define LDICT_RECOVERY_MODE_NORMAL 0u
+#define LDICT_RECOVERY_MODE_REBUILD_FROM_WAL 1u
+#define LDICT_RECOVERY_MODE_REPAIR_IN_PLACE 2u
+#define LDICT_RECOVERY_MODE_CREATED_NEW 3u
+#define LDICT_RECOVERY_TEXT_CORRUPTED_FILE 1u
+#define LDICT_RECOVERY_TEXT_CORRUPTION_REASON 2u
+#define LDICT_RECOVERY_TEXT_ARCHIVE_SEGMENT 3u
 
 #define LDICT_CAP_READ (UINT64_C(1) << 0)
 #define LDICT_CAP_INSERT (UINT64_C(1) << 1)
@@ -153,6 +164,7 @@ typedef LdictStatus (*LdictByteEntryReducer)(
 typedef struct LdictDictionary LdictDictionary;
 typedef struct LdictSuffixIndex LdictSuffixIndex;
 typedef struct LdictSuffixSnapshot LdictSuffixSnapshot;
+typedef struct LdictRecoveryReport LdictRecoveryReport;
 
 LDICT_API uint32_t ldict_abi_version(void);
 LDICT_API uint32_t ldict_api_revision(void);
@@ -239,6 +251,57 @@ LDICT_API LdictStatus ldict_persistent_artrie_open(
     const uint8_t* path_data,
     size_t path_len,
     LdictDictionary** out_dictionary);
+/* The prefix-3 compatibility profile is valid only with the u64 domain. A
+ * checkpoint must be reopened with the same profile used to create it. */
+LDICT_API LdictStatus ldict_persistent_artrie_create_profile(
+    uint32_t unit_domain,
+    uint32_t profile,
+    const uint8_t* path_data,
+    size_t path_len,
+    LdictDictionary** out_dictionary);
+LDICT_API LdictStatus ldict_persistent_artrie_open_profile(
+    uint32_t unit_domain,
+    uint32_t profile,
+    const uint8_t* path_data,
+    size_t path_len,
+    LdictDictionary** out_dictionary);
+/* Unicode-scalar ARTrie WAL archive policy. A zero-length archive directory
+ * selects the native default. archive_enabled is 0 or 1; both limits must be
+ * positive. The same settings may be supplied at reopen. */
+LDICT_API LdictStatus ldict_persistent_artrie_char_create_with_wal(
+    const uint8_t* path_data, size_t path_len,
+    uint8_t archive_enabled,
+    const uint8_t* archive_dir_data, size_t archive_dir_len,
+    size_t max_segments, uint64_t max_archive_bytes,
+    LdictDictionary** out_dictionary);
+LDICT_API LdictStatus ldict_persistent_artrie_char_open_with_wal(
+    const uint8_t* path_data, size_t path_len,
+    uint8_t archive_enabled,
+    const uint8_t* archive_dir_data, size_t archive_dir_len,
+    size_t max_segments, uint64_t max_archive_bytes,
+    LdictDictionary** out_dictionary);
+/* Recovery opens may create a missing store. Both outputs are caller owned;
+ * on failure they remain NULL. The report captures the native replay result. */
+LDICT_API LdictStatus ldict_persistent_artrie_open_with_recovery(
+    uint32_t unit_domain, uint32_t profile,
+    const uint8_t* path_data, size_t path_len,
+    LdictDictionary** out_dictionary, LdictRecoveryReport** out_report);
+LDICT_API LdictStatus ldict_persistent_artrie_char_open_with_wal_recovery(
+    const uint8_t* path_data, size_t path_len,
+    uint8_t archive_enabled,
+    const uint8_t* archive_dir_data, size_t archive_dir_len,
+    size_t max_segments, uint64_t max_archive_bytes,
+    LdictDictionary** out_dictionary, LdictRecoveryReport** out_report);
+LDICT_API LdictStatus ldict_recovery_report_summary(
+    const LdictRecoveryReport* report, uint32_t* out_mode,
+    uint64_t* out_records, uint64_t* out_terms,
+    uint64_t* out_duration_ms, size_t* out_archive_count);
+/* Borrowed bytes remain valid until report free. Optional fields return
+ * OK with out_present=0; archive index beyond the end returns END. */
+LDICT_API LdictStatus ldict_recovery_report_text(
+    const LdictRecoveryReport* report, uint32_t field, size_t index,
+    const uint8_t** out_data, size_t* out_len, uint8_t* out_present);
+LDICT_API void ldict_recovery_report_free(LdictRecoveryReport* report);
 LDICT_API LdictStatus ldict_persistent_vocab_create(
     const uint8_t* path_data,
     size_t path_len,
@@ -247,6 +310,9 @@ LDICT_API LdictStatus ldict_persistent_vocab_open(
     const uint8_t* path_data,
     size_t path_len,
     LdictDictionary** out_dictionary);
+LDICT_API LdictStatus ldict_persistent_vocab_open_with_recovery(
+    const uint8_t* path_data, size_t path_len,
+    LdictDictionary** out_dictionary, LdictRecoveryReport** out_report);
 LDICT_API void ldict_dictionary_free(LdictDictionary* dictionary);
 LDICT_API LdictStatus ldict_dictionary_kind(
     const LdictDictionary* dictionary,

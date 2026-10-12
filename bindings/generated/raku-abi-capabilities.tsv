@@ -36,10 +36,20 @@ ldict_suffix_snapshot_contains_source	suffix-snapshot	LdictStatus(const LdictSuf
 ldict_suffix_snapshot_contains_substring	suffix-snapshot	LdictStatus(const LdictSuffixSnapshot*, const uint8_t*, size_t, uint64_t*)	int32(Pointer, Pointer, size_t, uint64 is rw)	facade	-
 ldict_suffix_snapshot_substring_frequency	suffix-snapshot	LdictStatus(const LdictSuffixSnapshot*, const uint8_t*, size_t, uint64_t*)	int32(Pointer, Pointer, size_t, uint64 is rw)	facade	-
 ldict_suffix_snapshot_source_page	suffix-snapshot	LdictStatus(const LdictSuffixSnapshot*, uint64_t, LdictSuffixSourceRecord*, size_t, size_t*, uint64_t*)	int32(Pointer, uint64, Pointer, size_t, size_t is rw, uint64 is rw)	facade	-
-ldict_persistent_artrie_create	constructor	LdictStatus(uint32_t, const uint8_t*, size_t, LdictDictionary**)	int32(uint32, Pointer, size_t, Pointer is rw)	facade	-
-ldict_persistent_artrie_open	constructor	LdictStatus(uint32_t, const uint8_t*, size_t, LdictDictionary**)	int32(uint32, Pointer, size_t, Pointer is rw)	facade	-
+ldict_persistent_artrie_create	constructor	LdictStatus(uint32_t, const uint8_t*, size_t, LdictDictionary**)	int32(uint32, Pointer, size_t, Pointer is rw)	raw-only:legacy-persistent-default	The facade uses revision-11 profile-aware constructors; the original constructors remain ABI-compatible default-profile entry points.
+ldict_persistent_artrie_open	constructor	LdictStatus(uint32_t, const uint8_t*, size_t, LdictDictionary**)	int32(uint32, Pointer, size_t, Pointer is rw)	raw-only:legacy-persistent-default	The facade uses revision-11 profile-aware constructors; the original constructors remain ABI-compatible default-profile entry points.
+ldict_persistent_artrie_create_profile	constructor	LdictStatus(uint32_t, uint32_t, const uint8_t*, size_t, LdictDictionary**)	int32(uint32, uint32, Pointer, size_t, Pointer is rw)	facade	-
+ldict_persistent_artrie_open_profile	constructor	LdictStatus(uint32_t, uint32_t, const uint8_t*, size_t, LdictDictionary**)	int32(uint32, uint32, Pointer, size_t, Pointer is rw)	facade	-
+ldict_persistent_artrie_char_create_with_wal	constructor	LdictStatus(const uint8_t*, size_t, uint8_t, const uint8_t*, size_t, size_t, uint64_t, LdictDictionary**)	int32(Pointer, size_t, uint8, Pointer, size_t, size_t, uint64, Pointer is rw)	facade	-
+ldict_persistent_artrie_char_open_with_wal	constructor	LdictStatus(const uint8_t*, size_t, uint8_t, const uint8_t*, size_t, size_t, uint64_t, LdictDictionary**)	int32(Pointer, size_t, uint8, Pointer, size_t, size_t, uint64, Pointer is rw)	facade	-
+ldict_persistent_artrie_open_with_recovery	constructor	LdictStatus(uint32_t, uint32_t, const uint8_t*, size_t, LdictDictionary**, LdictRecoveryReport**)	int32(uint32, uint32, Pointer, size_t, Pointer is rw, Pointer is rw)	facade	-
+ldict_persistent_artrie_char_open_with_wal_recovery	constructor	LdictStatus(const uint8_t*, size_t, uint8_t, const uint8_t*, size_t, size_t, uint64_t, LdictDictionary**, LdictRecoveryReport**)	int32(Pointer, size_t, uint8, Pointer, size_t, size_t, uint64, Pointer is rw, Pointer is rw)	facade	-
 ldict_persistent_vocab_create	constructor	LdictStatus(const uint8_t*, size_t, LdictDictionary**)	int32(Pointer, size_t, Pointer is rw)	facade	-
 ldict_persistent_vocab_open	constructor	LdictStatus(const uint8_t*, size_t, LdictDictionary**)	int32(Pointer, size_t, Pointer is rw)	facade	-
+ldict_persistent_vocab_open_with_recovery	constructor	LdictStatus(const uint8_t*, size_t, LdictDictionary**, LdictRecoveryReport**)	int32(Pointer, size_t, Pointer is rw, Pointer is rw)	facade	-
+ldict_recovery_report_summary	recovery-report	LdictStatus(const LdictRecoveryReport*, uint32_t*, uint64_t*, uint64_t*, uint64_t*, size_t*)	int32(Pointer, uint32 is rw, uint64 is rw, uint64 is rw, uint64 is rw, size_t is rw)	facade	-
+ldict_recovery_report_text	recovery-report	LdictStatus(const LdictRecoveryReport*, uint32_t, size_t, const uint8_t**, size_t*, uint8_t*)	int32(Pointer, uint32, size_t, Pointer is rw, size_t is rw, uint8 is rw)	facade	-
+ldict_recovery_report_free	recovery-report	void(LdictRecoveryReport*)	void(Pointer)	facade	-
 ldict_dictionary_kind	handle	LdictStatus(const LdictDictionary*, uint32_t*)	int32(Pointer, uint32 is rw)	facade	-
 ldict_dictionary_capabilities	handle	LdictStatus(const LdictDictionary*, uint64_t*)	int32(Pointer, uint64 is rw)	facade	-
 ldict_dictionary_free	handle	void(LdictDictionary*)	void(Pointer)	facade	-

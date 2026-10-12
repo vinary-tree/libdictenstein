@@ -152,4 +152,74 @@ subtest 'persistent checkpoint and reopen' => {
     $reopened.close;
 };
 
+subtest 'persistent u64 prefix-3 compatibility profile' => {
+    my $scratch = IO::Path.new(
+        %*ENV<LIBDICTENSTEIN_TEST_SCRATCH> // $*CWD.add('target/raku-test'));
+    $scratch.mkdir;
+    my $path = $scratch.add("persistent-prefix3-{$*PID}-{now.Int}");
+    dies-ok {
+        persistent-artrie($path, :domain(BYTE),
+            :profile(PERSISTENT-U64-PREFIX3-COMPAT))
+    }, 'u64 profile is rejected for byte keys';
+    my $created = persistent-artrie($path, :domain(U64),
+        :profile(PERSISTENT-U64-PREFIX3-COMPAT));
+    $created.ASSIGN-KEY([0, 18446744073709551615], 0);
+    $created.checkpoint;
+    $created.close;
+    my $reopened = persistent-artrie($path, :domain(U64),
+        :profile(PERSISTENT-U64-PREFIX3-COMPAT), :!create);
+    is $reopened.AT-KEY([0, 18446744073709551615]), 0,
+        'prefix-3 u64 values survive checkpoint and reopen';
+    $reopened.close;
+    my $recovered = persistent-artrie($path, :domain(U64),
+        :profile(PERSISTENT-U64-PREFIX3-COMPAT), :!create, :recover);
+    is $recovered.recovery-report.mode, RECOVERY-NORMAL,
+        'u64 recovery reports a clean checkpoint';
+    is $recovered.recovery-report.archive-segments.elems, 0,
+        'recovery report owns an empty archive-segment list';
+    $recovered.close;
+};
+
+subtest 'Unicode persistent WAL archive policy' => {
+    my $scratch = IO::Path.new(
+        %*ENV<LIBDICTENSTEIN_TEST_SCRATCH> // $*CWD.add('target/raku-test'));
+    $scratch.mkdir;
+    my $path = $scratch.add("persistent-wal-{$*PID}-{now.Int}");
+    my $wal = PersistentWalConfig.new(
+        archive-directory => IO::Path.new("wal-archive-{$*PID}-{now.Int}"),
+        max-segments => 2,
+        max-archive-bytes => 1024 * 1024,
+    );
+    dies-ok { PersistentWalConfig.new(max-segments => 0) },
+        'zero WAL segment limit is rejected before the native call';
+    dies-ok { persistent-artrie($path, :domain(BYTE), wal-config => $wal) },
+        'byte ARTrie rejects Unicode-only custom WAL policy';
+    my $created = persistent-artrie($path, wal-config => $wal);
+    $created.ASSIGN-KEY('durable🙂', 17);
+    $created.checkpoint;
+    $created.close;
+    my $reopened = persistent-artrie($path, wal-config => $wal, :!create);
+    is $reopened.AT-KEY('durable🙂'), 17,
+        'custom WAL policy preserves Unicode values across checkpoint and reopen';
+    $reopened.close;
+    my $recovered = persistent-artrie($path, wal-config => $wal,
+        :!create, :recover);
+    is $recovered.AT-KEY('durable🙂'), 17,
+        'configured recovery preserves the Unicode mapping';
+    ok $recovered.recovery-report ~~ PersistentRecoveryReport,
+        'configured recovery exposes the complete typed report';
+    $recovered.close;
+};
+
+subtest 'persistent vocabulary recovery report' => {
+    my $scratch = IO::Path.new(
+        %*ENV<LIBDICTENSTEIN_TEST_SCRATCH> // $*CWD.add('target/raku-test'));
+    $scratch.mkdir;
+    my $path = $scratch.add("persistent-vocab-recovery-{$*PID}-{now.Int}");
+    my $vocab = persistent-vocabulary($path, :!create, :recover);
+    is $vocab.recovery-report.mode, RECOVERY-CREATED-NEW,
+        'missing vocabulary is created with an explicit recovery report';
+    $vocab.close;
+};
+
 done-testing;

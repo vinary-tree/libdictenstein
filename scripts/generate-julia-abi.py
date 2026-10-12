@@ -49,10 +49,14 @@ def julia_parameter_type(parameter: dict) -> str:
     c_type = canonical_c_type(parameter["cType"])
     direction = parameter["direction"]
     name = parameter["name"]
-    if c_type in {"LdictDictionary*", "const LdictDictionary*", "LdictEntryCursor*", "LdictByteEntryCursor*", "LdictSuffixIndex*", "const LdictSuffixIndex*", "LdictSuffixSnapshot*", "const LdictSuffixSnapshot*"}:
+    if c_type in {"LdictDictionary*", "const LdictDictionary*", "LdictEntryCursor*", "LdictByteEntryCursor*", "LdictSuffixIndex*", "const LdictSuffixIndex*", "LdictSuffixSnapshot*", "const LdictSuffixSnapshot*", "LdictRecoveryReport*", "const LdictRecoveryReport*"}:
         return "Ptr{Cvoid}"
     if c_type in {"LdictDictionary**", "LdictEntryCursor**", "LdictByteEntryCursor**", "LdictSuffixIndex**", "LdictSuffixSnapshot**"}:
         return "Ref{Ptr{Cvoid}}"
+    if c_type == "LdictRecoveryReport**":
+        return "Ref{Ptr{Cvoid}}"
+    if c_type == "const uint8_t**":
+        return "Ref{Ptr{UInt8}}"
     if c_type == "uint32_t":
         return "UInt32"
     if c_type == "uint64_t":

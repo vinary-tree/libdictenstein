@@ -207,7 +207,7 @@ def nativecall_parameter(parameter: dict) -> str:
         return "Pointer" if parameter.get("ownership") == "caller-owned-array" else "OptionalValue"
     if c_type == "VtResource*":
         return "RawResource"
-    if c_type in {"LdictDictionary**", "LdictEntryCursor**", "LdictByteEntryCursor**", "LdictSuffixIndex**", "LdictSuffixSnapshot**"}:
+    if c_type in {"LdictDictionary**", "LdictEntryCursor**", "LdictByteEntryCursor**", "LdictSuffixIndex**", "LdictSuffixSnapshot**", "LdictRecoveryReport**", "const uint8_t**"}:
         return "Pointer is rw"
     pointer_types = {
         "LdictDictionary*",
@@ -218,6 +218,8 @@ def nativecall_parameter(parameter: dict) -> str:
         "const LdictSuffixIndex*",
         "LdictSuffixSnapshot*",
         "const LdictSuffixSnapshot*",
+        "LdictRecoveryReport*",
+        "const LdictRecoveryReport*",
         "LdictSuffixSourceRecord*",
         "const uint8_t*",
         "const uint64_t*",
