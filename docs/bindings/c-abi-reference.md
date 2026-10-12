@@ -76,7 +76,7 @@ evolution model (see the canonical
 | Constant | Value | Meaning | Caller check |
 |---|---|---|---|
 | `LDICT_ABI_VERSION` | 1 | Breaking-change counter for the `ldict_*` surface: layouts, ownership rules, status meanings. | **Exact equality** — refuse any other value. |
-| `LDICT_API_REVISION` | 11 | Additive counter: revision 5 added bounded entries; revision 6 added algebra; revision 7 added byte-valued DAWGs/entries; revision 8 added PathMap and a separate typed suffix-source index; revision 9 added lazy algebra cursors and ordered batch lookup/removal; revision 10 added scalar-argument suffix insertion for by-reference FFI runtimes; revision 11 adds persistent u64 CX profiles, Unicode ARTrie WAL archive configuration, and owned recovery reports. | **At least** — a facade checks $`n`$ before resolving a symbol added in revision $`n`$. Older calls remain usable against newer libraries. |
+| `LDICT_API_REVISION` | 12 | Additive counter: revision 5 added bounded entries; revision 6 added algebra; revision 7 added byte-valued DAWGs/entries; revision 8 added PathMap and a separate typed suffix-source index; revision 9 added lazy algebra cursors and ordered batch lookup/removal; revision 10 added scalar-argument suffix insertion for by-reference FFI runtimes; revision 11 added persistent u64 CX profiles, Unicode ARTrie WAL archive configuration, and owned recovery reports; revision 12 adds native persistent suffix families and direct vocabulary index assignment. | **At least** — a facade checks $`n`$ before resolving a symbol added in revision $`n`$. Older calls remain usable against newer libraries. |
 
 Every fallible function reports failure twice: as an `LdictStatus` return value
 (the machine channel) and as a human-readable message retrievable through
@@ -104,7 +104,7 @@ Returns `LDICT_ABI_VERSION` (currently `1`).
 LDICT_API uint32_t ldict_api_revision(void);
 ```
 
-Returns `LDICT_API_REVISION` (currently `11`).
+Returns `LDICT_API_REVISION` (currently `12`).
 
 - **Preconditions**: none.
 - **Statuses**: none — cannot fail.
@@ -486,6 +486,52 @@ pointer is `NULL_POINTER`, and a caught panic is `PANIC`. The official native
 binding package enables `pathmap-backend` explicitly. For batch atomicity and
 concurrent snapshot details, see the [revision-8 supplement](backend-api-revision8.md).
 
+### Persistent suffix families (API revision 12)
+
+```c
+LDICT_API LdictStatus ldict_suffix_index_persistent_create(
+    uint32_t family, uint32_t unit_domain,
+    const uint8_t* path_data, size_t path_len,
+    LdictSuffixIndex** out_index);
+LDICT_API LdictStatus ldict_suffix_index_persistent_open_with_recovery(
+    uint32_t family, uint32_t unit_domain,
+    const uint8_t* path_data, size_t path_len,
+    LdictSuffixIndex** out_index, LdictRecoveryReport** out_report);
+LDICT_API LdictStatus ldict_suffix_index_checkpoint(
+    const LdictSuffixIndex* index);
+LDICT_API LdictStatus ldict_suffix_index_needs_compaction(
+    const LdictSuffixIndex* index, uint8_t* out_needed);
+```
+
+Family 1 is the persistent suffix automaton, 2 the persistent suffix tree, and
+3 the persistent SCDAWG. Each accepts byte (domain 1) or Unicode-scalar
+(domain 2) transitions over valid UTF-8 source text. U64-token sources return
+`UNSUPPORTED`; unknown family or domain numbers return `INVALID_ARGUMENT`.
+Paths are nonempty UTF-8 file paths passed verbatim to the native suffix
+engine. The engine owns its checkpoint image and adjacent WAL files.
+`create` rejects an existing path before calling the native initializer, to
+avoid replacing an existing suffix store. The path check is not an atomic
+filesystem reservation; callers must still serialize same-path creators.
+`open_with_recovery` may create a missing
+store, and separately transfers the index and an owned recovery report on
+`OK`; both outputs are null on failure. Free the report after copying its
+borrowed text, and free the index with `ldict_suffix_index_free`.
+
+The existing typed insert, remove, clear, compact, snapshot, query, and page
+operations also accept these persistent indexes. Mutations publish an
+immutable native graph revision. `ldict_suffix_index_snapshot` captures its
+native revision in $`\mathcal{O}(1)`$ without copying source records; old
+snapshots and their borrowed page text remain valid after later mutation,
+checkpoint, compaction, and producer close/free. The caller must still exclude
+concurrent snapshot close/free while reading borrowed page text. Source IDs
+are stable within a captured revision; persistent SCDAWG IDs are record
+positions and can change after compaction. Snapshot identities are
+process-local, family-scoped tokens and must not be used as disk identities.
+`checkpoint` and `needs_compaction` return `UNSUPPORTED` for in-memory suffix
+indexes. The latter initializes `out_needed` to zero before validating the
+handle; on `OK`, it is 0 or 1. Insert, remove, clear, compact, and checkpoint
+propagate native persistence errors as `IO_ERROR`.
+
 ### `ldict_persistent_artrie_create`
 
 ```c
@@ -654,6 +700,26 @@ Opens an existing persistent vocabulary, with the same recovery semantics as
 
 - **Preconditions / Statuses / Ownership / Thread-safety**: identical to `ldict_persistent_vocab_create`, except the path must hold an existing vocabulary store.
 - **Complexity**: $`\mathcal{O}(\lvert \mathrm{WAL\ tail} \rvert)`$ replay, then $`\mathcal{O}(1)`$.
+
+### `ldict_vocab_insert_term` and `ldict_vocab_insert_batch` (API revision 12)
+
+```c
+LDICT_API LdictStatus ldict_vocab_insert_term(
+    LdictDictionary* dictionary, const uint8_t* data, size_t len,
+    uint64_t* out_index);
+LDICT_API LdictStatus ldict_vocab_insert_batch(
+    LdictDictionary* dictionary, const LdictTextKey* keys, size_t key_count,
+    uint64_t* out_indices, size_t* out_completed);
+```
+
+These operations expose the vocabulary's native auto-assigned stable index.
+Inserting a term already present returns its existing index. The batch
+validates every descriptor and UTF-8 key before the first mutation, then
+inserts in caller order and writes one index per completed term. A failure
+after a durable prefix leaves `out_completed` at the number committed;
+remaining output slots stay zero. Output arrays must be valid, writable, and
+disjoint from input descriptors and the completed-count slot. Zero count
+permits null arrays. Other dictionary backends return `UNSUPPORTED`.
 
 ---
 

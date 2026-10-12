@@ -17,7 +17,7 @@ pub struct LdictRecoveryReport {
 }
 
 impl LdictRecoveryReport {
-    fn new(report: RecoveryReport) -> Self {
+    pub(super) fn new(report: RecoveryReport) -> Self {
         let corrupted_file = report
             .corrupted_file
             .as_ref()

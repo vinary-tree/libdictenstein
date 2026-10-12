@@ -330,6 +330,8 @@ src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_scdawg_contains_subst
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_scdawg_new(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_scdawg_substring_frequency(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_vocab_get_term(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_vocab_insert_batch(	1	ffi-vocabulary-batch-output-contract
+src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_vocab_insert_term(	1	ffi-vocabulary-batch-output-contract
 src/ffi.rs	unsafe_extern_fn	unsafe extern "C" fn entry_reducer_trampoline(	1	ffi-entry-cursor-handle-ownership
 src/ffi.rs	unsafe_fn	unsafe fn entry_cursor_mut<'a>(	1	ffi-entry-cursor-handle-ownership
 src/ffi.rs	unsafe_fn	unsafe fn persistent_char_with_wal(	1	ffi-caller-pointer-contracts
@@ -404,13 +406,17 @@ src/ffi/recovery.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_recovery_rep
 src/ffi/recovery.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_recovery_report_summary(	1	ffi-recovery-report-handle-and-borrow-contract
 src/ffi/recovery.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_recovery_report_text(	1	ffi-recovery-report-handle-and-borrow-contract
 src/ffi/recovery.rs	unsafe_fn	unsafe fn publish_open_result(	1	ffi-recovery-report-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_checkpoint(	1	ffi-persistent-suffix-source-view
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_clear(index: *mut LdictSuffixIndex) -> LdictStatus {	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_close(index: *mut LdictSuffixIndex) -> LdictStatus {	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_compact(index: *mut LdictSuffixIndex) -> LdictStatus {	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_free(index: *mut LdictSuffixIndex) {	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_insert_text(	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_insert_text_value(	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_needs_compaction(	1	ffi-persistent-suffix-source-view
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_new(	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_persistent_create(	1	ffi-persistent-suffix-source-view
+src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_persistent_open_with_recovery(	1	ffi-persistent-suffix-source-view
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_remove_text(	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_index_snapshot(	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_suffix_snapshot_close(	1	ffi-suffix-handle-and-borrow-contract

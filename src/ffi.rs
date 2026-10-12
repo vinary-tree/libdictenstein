@@ -33,7 +33,7 @@ use vinary_tree_interop::{
 /// ABI version for the libdictenstein project API.
 pub const LDICT_ABI_VERSION: u32 = 1;
 /// Additive project API revision.
-pub const LDICT_API_REVISION: u32 = 11;
+pub const LDICT_API_REVISION: u32 = 12;
 
 /// DynamicDAWG backend identifier.
 pub const LDICT_KIND_DYNAMIC_DAWG: u32 = 1;
@@ -532,6 +532,14 @@ impl LdictBinding {
     fn checkpoint(&self) -> Result<(), BindingError> {
         match self {
             Self::Persistent(binding) => binding.checkpoint(),
+            _ => Err(BindingError::Unsupported),
+        }
+    }
+
+    #[cfg(feature = "persistent-artrie")]
+    fn vocab_insert_term(&self, term: &str) -> Result<u64, BindingError> {
+        match self {
+            Self::Persistent(binding) => binding.vocab_insert_term(term),
             _ => Err(BindingError::Unsupported),
         }
     }
@@ -1800,6 +1808,84 @@ pub unsafe extern "C" fn ldict_dictionary_checkpoint(
             .as_ref()
             .ok_or((LdictStatus::NullPointer, "dictionary is null".into()))?;
         binding(dictionary.binding.checkpoint())?;
+        Ok(LdictStatus::Ok)
+    })
+}
+
+/// Insert a vocabulary term once and return its stable native index. An
+/// existing term keeps its index without allocating another one.
+///
+/// # Safety
+/// The UTF-8 term range and `out_index` must be valid; output is writable.
+#[cfg(feature = "persistent-artrie")]
+#[no_mangle]
+pub unsafe extern "C" fn ldict_vocab_insert_term(
+    dictionary: *mut LdictDictionary,
+    data: *const u8,
+    len: usize,
+    out_index: *mut u64,
+) -> LdictStatus {
+    boundary(|| {
+        if out_index.is_null() {
+            return Err((LdictStatus::NullPointer, "out_index is null".into()));
+        }
+        out_index.write(0);
+        let dictionary = dictionary
+            .as_ref()
+            .ok_or((LdictStatus::NullPointer, "dictionary is null".into()))?;
+        let term = std::str::from_utf8(slice(data, len, "term")?)
+            .map_err(|error| (LdictStatus::InvalidUtf8, error.to_string()))?;
+        out_index.write(binding(dictionary.binding.vocab_insert_term(term))?);
+        Ok(LdictStatus::Ok)
+    })
+}
+
+/// Insert a batch of vocabulary terms in caller order and return every
+/// assigned index. Inputs are validated before the first insertion. If I/O
+/// fails after a prefix, `out_completed` identifies that durable prefix.
+///
+/// # Safety
+/// `keys` must address `key_count` readable descriptors and `out_indices`
+/// must address `key_count` distinct writable u64 slots. `out_completed`
+/// must be a separate writable slot. Zero count permits null arrays.
+#[cfg(feature = "persistent-artrie")]
+#[no_mangle]
+pub unsafe extern "C" fn ldict_vocab_insert_batch(
+    dictionary: *mut LdictDictionary,
+    keys: *const LdictTextKey,
+    key_count: usize,
+    out_indices: *mut u64,
+    out_completed: *mut usize,
+) -> LdictStatus {
+    boundary(|| {
+        if out_completed.is_null() || (key_count != 0 && out_indices.is_null()) {
+            return Err((
+                LdictStatus::NullPointer,
+                "vocabulary batch output is null".into(),
+            ));
+        }
+        out_completed.write(0);
+        let outputs: &mut [u64] = if key_count == 0 {
+            &mut []
+        } else {
+            std::slice::from_raw_parts_mut(out_indices, key_count)
+        };
+        outputs.fill(0);
+        let dictionary = dictionary
+            .as_ref()
+            .ok_or((LdictStatus::NullPointer, "dictionary is null".into()))?;
+        let keys = text_batch_keys(dictionary, keys, key_count)?;
+        let mut terms = Vec::with_capacity(keys.len());
+        for key in keys {
+            terms.push(
+                std::str::from_utf8(key)
+                    .map_err(|error| (LdictStatus::InvalidUtf8, error.to_string()))?,
+            );
+        }
+        for (position, (slot, term)) in outputs.iter_mut().zip(terms).enumerate() {
+            *slot = binding(dictionary.binding.vocab_insert_term(term))?;
+            out_completed.write(position + 1);
+        }
         Ok(LdictStatus::Ok)
     })
 }

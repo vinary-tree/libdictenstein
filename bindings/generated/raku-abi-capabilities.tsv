@@ -20,6 +20,8 @@ ldict_double_array_trie_new	constructor	LdictStatus(uint32_t, const LdictTextEnt
 ldict_scdawg_new	constructor	LdictStatus(uint32_t, LdictDictionary**)	int32(uint32, Pointer is rw)	facade	-
 ldict_pathmap_new	constructor	LdictStatus(uint32_t, LdictDictionary**)	int32(uint32, Pointer is rw)	facade	-
 ldict_suffix_index_new	constructor	LdictStatus(uint32_t, LdictSuffixIndex**)	int32(uint32, Pointer is rw)	facade	-
+ldict_suffix_index_persistent_create	constructor	LdictStatus(uint32_t, uint32_t, const uint8_t*, size_t, LdictSuffixIndex**)	int32(uint32, uint32, Pointer, size_t, Pointer is rw)	facade	-
+ldict_suffix_index_persistent_open_with_recovery	constructor	LdictStatus(uint32_t, uint32_t, const uint8_t*, size_t, LdictSuffixIndex**, LdictRecoveryReport**)	int32(uint32, uint32, Pointer, size_t, Pointer is rw, Pointer is rw)	facade	-
 ldict_suffix_index_close	suffix-index	LdictStatus(LdictSuffixIndex*)	int32(Pointer)	facade	-
 ldict_suffix_index_free	suffix-index	void(LdictSuffixIndex*)	void(Pointer)	facade	-
 ldict_suffix_index_insert_text	suffix-index	LdictStatus(LdictSuffixIndex*, const uint8_t*, size_t, LdictOptionalU64)	int32(Pointer, Pointer, size_t, OptionalValue)	raw-only:byvalue-optional	NativeCall passes CStruct by reference, so the Raku facade uses the revision-10 scalar suffix insertion call rather than the revision-8 by-value struct call.
@@ -27,6 +29,8 @@ ldict_suffix_index_insert_text_value	suffix-index	LdictStatus(LdictSuffixIndex*,
 ldict_suffix_index_remove_text	suffix-index	LdictStatus(LdictSuffixIndex*, const uint8_t*, size_t, uint8_t*)	int32(Pointer, Pointer, size_t, uint8 is rw)	facade	-
 ldict_suffix_index_clear	suffix-index	LdictStatus(LdictSuffixIndex*)	int32(Pointer)	facade	-
 ldict_suffix_index_compact	suffix-index	LdictStatus(LdictSuffixIndex*)	int32(Pointer)	facade	-
+ldict_suffix_index_checkpoint	suffix-index	LdictStatus(const LdictSuffixIndex*)	int32(Pointer)	facade	-
+ldict_suffix_index_needs_compaction	suffix-index	LdictStatus(const LdictSuffixIndex*, uint8_t*)	int32(Pointer, uint8 is rw)	facade	-
 ldict_suffix_index_snapshot	suffix-index	LdictStatus(const LdictSuffixIndex*, LdictSuffixSnapshot**)	int32(Pointer, Pointer is rw)	facade	-
 ldict_suffix_snapshot_close	suffix-snapshot	LdictStatus(LdictSuffixSnapshot*)	int32(Pointer)	facade	-
 ldict_suffix_snapshot_free	suffix-snapshot	void(LdictSuffixSnapshot*)	void(Pointer)	facade	-
@@ -64,6 +68,8 @@ ldict_entry_cursor_cancel	collection	LdictStatus(LdictEntryCursor*)	int32(Pointe
 ldict_entry_cursor_free	collection	LdictStatus(LdictEntryCursor*)	int32(Pointer)	raw-only:entry-cursor	The idiomatic facade traverses retained Vinary-Tree-Interop snapshots; the project-owned cursor ABI remains available only as a low-level declaration.
 ldict_dictionary_len	handle	LdictStatus(const LdictDictionary*, size_t*)	int32(Pointer, size_t is rw)	facade	-
 ldict_dictionary_checkpoint	maintenance	LdictStatus(LdictDictionary*)	int32(Pointer)	facade	-
+ldict_vocab_insert_term	vocabulary	LdictStatus(LdictDictionary*, const uint8_t*, size_t, uint64_t*)	int32(Pointer, Pointer, size_t, uint64 is rw)	facade	-
+ldict_vocab_insert_batch	vocabulary	LdictStatus(LdictDictionary*, const LdictTextKey*, size_t, uint64_t*, size_t*)	int32(Pointer, Pointer, size_t, Pointer, size_t is rw)	facade	-
 ldict_vocab_get_term	vocabulary	LdictStatus(const LdictDictionary*, uint64_t, uint8_t*, size_t, size_t*, uint8_t*)	int32(Pointer, uint64, Pointer, size_t, size_t is rw, uint8 is rw)	facade	-
 ldict_dictionary_clear	maintenance	LdictStatus(LdictDictionary*)	int32(Pointer)	facade	-
 ldict_dictionary_compact	maintenance	LdictStatus(LdictDictionary*, size_t*)	int32(Pointer, size_t is rw)	facade	-

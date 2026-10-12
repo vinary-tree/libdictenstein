@@ -13,9 +13,11 @@ not necessarily an inserted key. It therefore has separate
 `LdictDictionary`, `AbstractDict`, or `vt.dictionary.v1` resource.
 
 The stable ABI major remains `1`. These symbols first appeared at additive
-revision `8`; the current library reports revision `10`. Revision 9 added
+revision `8`; the current library reports revision `12`. Revision 9 added
 lazy algebra cursors and ordered batch lookup/removal. Revision 10 adds a
-scalar-argument suffix insertion entry point.
+scalar-argument suffix insertion entry point. Revision 12 adds native
+persistent suffix families using the same typed index and snapshot operations;
+see the [persistent suffix section](c-abi-reference.md#persistent-suffix-families-api-revision-12).
 Clients written against revision 7 may keep using their existing symbols.
 Optional clients that load a revision-8 symbol dynamically must check
 `ldict_api_revision() >= 8` *before resolving that symbol*. This matters for
@@ -80,7 +82,7 @@ measures UTF-8 *bytes*; scalar mode measures Unicode scalar values. For the
 records `"é🙂é"` and `""`, the empty-pattern frequency is `10` in byte
 mode and `5` in scalar mode. Both modes still require valid UTF-8 input;
 byte-transition mode is **not** arbitrary-byte source ingestion. `U64`
-sources and persistence are not exposed by this API.
+sources are unsupported. Persistence was added in revision 12.
 
 The active-record page is ordered lexicographically by source text, then by
 source ID for equal texts. A source ID is stable within a captured revision
