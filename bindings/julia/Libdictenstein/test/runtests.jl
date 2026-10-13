@@ -5,7 +5,7 @@ const LD = Libdictenstein
 
 @testset "ABI identity and layouts" begin
     @test LD.abi_version() == LD.ABI_VERSION == 1
-    @test LD.API_REVISION == 12
+    @test LD.API_REVISION == 13
     @test LD.api_revision() >= LD.API_REVISION
     @test fieldnames(LD.OptionalU64) == (:value, :has_value, :reserved)
     @test fieldnames(LD.TextEntry) == (:data, :len, :value)
@@ -13,6 +13,10 @@ const LD = Libdictenstein
     @test sizeof(LD.OptionalU64) == 16
     @test sizeof(LD.TextEntry) == 32
     @test sizeof(LD.U64Entry) == 32
+    @test sizeof(LD.UnitKey) == 16
+    @test sizeof(LD.ValueDiffEntry) == 48
+    @test sizeof(LD.ValueDiffBatch) == 40
+    @test fieldnames(LD.ValueDiffEntry) == (:unit_offset, :unit_len, :left, :right)
     @test sizeof(LD.SuffixSourceRecord) == 40
     @test fieldnames(LD.SuffixSourceRecord) == (:source_id, :data, :len, :value)
     @test LD.LdictEntry === LD.VTI.VtDictionaryEntryRaw

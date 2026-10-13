@@ -5,7 +5,7 @@ Cross-checks the machine-readable binding model (bindings/api.json) against the
 three sources it mirrors and the sixteen language facades that consume it:
 
   A. Symbol parity      - api.json cFunctions == `pub extern "C" fn ldict_*` in
-                          src/ffi.rs plus its bytes, suffix, and recovery modules == declarations in include/libdictenstein.h,
+                          src/ffi.rs plus its bytes, suffix, recovery, and value-diff modules == declarations in include/libdictenstein.h,
                           including persistent-artrie feature attribution.
   B. Constant parity    - LDICT_ABI_VERSION / LDICT_API_REVISION, LdictStatus
                           numeric values, LDICT_KIND_* and LDICT_CAP_* constants,
