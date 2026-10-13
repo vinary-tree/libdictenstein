@@ -54,6 +54,16 @@ LOCAL_LAYOUTS = {
     ],
     "LdictTextKey": [("data", "*const u8"), ("len", "usize")],
     "LdictU64Key": [("data", "*const u64"), ("len", "usize")],
+    "LdictUnitKey": [("data", "*const void"), ("len", "usize")],
+    "LdictValueDiffEntry": [
+        ("unit_offset", "usize"), ("unit_len", "usize"),
+        ("left", "LdictOptionalU64"), ("right", "LdictOptionalU64"),
+    ],
+    "LdictValueDiffBatch": [
+        ("entries", "*const LdictValueDiffEntry"),
+        ("entry_count", "usize"), ("units", "*const void"),
+        ("unit_count", "usize"), ("generation", "u64"),
+    ],
     "LdictSuffixSourceRecord": [
         ("source_id", "u64"),
         ("data", "*const u8"),
@@ -67,6 +77,8 @@ HEADER_FIELD_TYPES = {
     "usize": "size_t",
     "*const u8": "const uint8_t*",
     "*const u64": "const uint64_t*",
+    "*const void": "const void*",
+    "*const LdictValueDiffEntry": "const LdictValueDiffEntry*",
     "LdictOptionalU64": "LdictOptionalU64",
 }
 RETURN_TYPES = {
@@ -207,12 +219,15 @@ def nativecall_parameter(parameter: dict) -> str:
         return "Pointer" if parameter.get("ownership") == "caller-owned-array" else "OptionalValue"
     if c_type == "VtResource*":
         return "RawResource"
-    if c_type in {"LdictDictionary**", "LdictEntryCursor**", "LdictByteEntryCursor**", "LdictSuffixIndex**", "LdictSuffixSnapshot**", "LdictRecoveryReport**", "const uint8_t**"}:
+    if c_type == "LdictEntryReducer":
+        return "&callback (Pointer, Pointer --> int32)"
+    if c_type in {"LdictDictionary**", "LdictEntryCursor**", "LdictValueDiffCursor**", "LdictByteEntryCursor**", "LdictSuffixIndex**", "LdictSuffixSnapshot**", "LdictRecoveryReport**", "const uint8_t**"}:
         return "Pointer is rw"
     pointer_types = {
         "LdictDictionary*",
         "const LdictDictionary*",
         "LdictEntryCursor*",
+        "LdictValueDiffCursor*",
         "LdictByteEntryCursor*",
         "LdictSuffixIndex*",
         "const LdictSuffixIndex*",
@@ -227,13 +242,14 @@ def nativecall_parameter(parameter: dict) -> str:
         "const LdictU64Entry*",
         "const LdictTextKey*",
         "const LdictU64Key*",
+        "const LdictUnitKey*",
         "const LdictEntryBatchLimits*",
         "LdictEntryBatch*",
         "LdictEntriesInfo*",
+        "LdictValueDiffBatch*",
         "const LdictByteEntryBatchLimits*",
         "LdictByteEntryBatch*",
         "LdictByteEntriesInfo*",
-        "LdictEntryReducer",
         "LdictByteEntryReducer",
         "void*",
     }
@@ -339,6 +355,24 @@ def render_layouts(model: dict) -> str:
         "}",
         "class TextKey is repr('CStruct') does KeyDescriptor is export { }",
         "class U64Key is repr('CStruct') does KeyDescriptor is export { }",
+        "class UnitKey is repr('CStruct') does KeyDescriptor is export { }",
+        "class ValueDiffEntry is repr('CStruct') is export {",
+        "    has size_t $.unit-offset;",
+        "    has size_t $.unit-len;",
+        "    has uint64 $.left-value;",
+        "    has uint8 $.left-has-value;",
+        *[f"    has uint8 $.left-reserved{i};" for i in range(7)],
+        "    has uint64 $.right-value;",
+        "    has uint8 $.right-has-value;",
+        *[f"    has uint8 $.right-reserved{i};" for i in range(7)],
+        "}",
+        "class ValueDiffBatchView is repr('CStruct') is export {",
+        "    has Pointer $.entries;",
+        "    has size_t $.entry-count;",
+        "    has Pointer $.units;",
+        "    has size_t $.unit-count;",
+        "    has uint64 $.generation;",
+        "}",
         "class SuffixSourceRecord is repr('CStruct') is export {",
         "    has uint64 $.source-id;",
         "    has Pointer $.data;",

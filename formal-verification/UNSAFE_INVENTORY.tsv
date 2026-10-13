@@ -11,6 +11,7 @@ src/bindings.rs	unsafe_block	let (is_final, total) = unsafe {	1	abi-snapshot-cur
 src/bindings.rs	unsafe_block	let captured_context = unsafe { &*captured.raw.context.cast::<ResourceContext>() };	1	abi-test-context-probe
 src/bindings.rs	unsafe_block	let captured_observer = unsafe { context_weak_observer(captured) };	1	abi-test-context-probe
 src/bindings.rs	unsafe_block	let context = unsafe { &*context.cast::<ResourceContext>() };	1	abi-byte-value-copy
+src/bindings.rs	unsafe_block	let context = unsafe { &*resource.raw.context.cast::<ResourceContext>() };	1	abi-owned-resource-release-once
 src/bindings.rs	unsafe_block	let context = unsafe { &*self.raw.context.cast::<ResourceContext>() };	2	abi-owned-resource-release-once
 src/bindings.rs	unsafe_block	let graph_vtable = unsafe { &*graph_vtable.cast::<VtDictionaryGraphVTable>() };	1	abi-test-context-probe
 src/bindings.rs	unsafe_block	let live = unsafe { &*dynamic_resource.raw.context.cast::<ResourceContext>() };	1	abi-test-context-probe
@@ -305,6 +306,7 @@ src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_insert_u64
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_insert_u64_value(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_kind(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_len(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_prefix_entries_open(	1	ffi-entry-cursor-handle-ownership
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_remove_text(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_remove_text_batch(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_remove_u64(	1	ffi-caller-pointer-contracts
@@ -338,6 +340,7 @@ src/ffi.rs	unsafe_fn	unsafe fn persistent_char_with_wal(	1	ffi-caller-pointer-co
 src/ffi.rs	unsafe_fn	unsafe fn persistent_open_or_create(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn persistent_path<'a>(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn persistent_wal_config(	1	ffi-caller-pointer-contracts
+src/ffi.rs	unsafe_fn	unsafe fn prefix_units(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn slice<'a, T>(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn text_batch_keys<'a>(	1	ffi-caller-pointer-contracts
 src/ffi.rs	unsafe_fn	unsafe fn text_operation(	1	ffi-caller-pointer-contracts
@@ -432,6 +435,12 @@ src/ffi/suffix.rs	unsafe_fn	unsafe fn load_index(handle: *const LdictSuffixIndex
 src/ffi/suffix.rs	unsafe_fn	unsafe fn load_snapshot(handle: *const LdictSuffixSnapshot) -> Result<Arc<SnapshotState>, Failure> {	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_fn	unsafe fn query(	1	ffi-suffix-handle-and-borrow-contract
 src/ffi/suffix.rs	unsafe_fn	unsafe fn text<'a>(data: *const u8, len: usize) -> Result<&'a str, Failure> {	1	ffi-suffix-handle-and-borrow-contract
+src/ffi/value_diff.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_dictionary_value_diff_open(	1	ffi-value-diff-cursor-ownership
+src/ffi/value_diff.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_value_diff_cursor_cancel(	1	ffi-value-diff-cursor-ownership
+src/ffi/value_diff.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_value_diff_cursor_free(	1	ffi-value-diff-cursor-ownership
+src/ffi/value_diff.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_value_diff_cursor_next(	1	ffi-value-diff-cursor-ownership
+src/ffi/value_diff.rs	unsafe_extern_fn	pub unsafe extern "C" fn ldict_value_diff_cursor_release(	1	ffi-value-diff-cursor-ownership
+src/ffi/value_diff.rs	unsafe_fn	unsafe fn cursor_mut<'a>(	1	ffi-value-diff-cursor-ownership
 src/lib.rs	unsafe_block	let (is_final, total_edge_count) = unsafe {	1	snapshot-retained-edge-range-token
 src/lib.rs	unsafe_block	let edges = unsafe { std::slice::from_raw_parts(self.edges.as_ptr().add(start), len) };	1	snapshot-dense-cursor-contract
 src/lib.rs	unsafe_block	let is_final = unsafe {	1	snapshot-dense-cursor-contract

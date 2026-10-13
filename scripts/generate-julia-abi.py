@@ -49,9 +49,9 @@ def julia_parameter_type(parameter: dict) -> str:
     c_type = canonical_c_type(parameter["cType"])
     direction = parameter["direction"]
     name = parameter["name"]
-    if c_type in {"LdictDictionary*", "const LdictDictionary*", "LdictEntryCursor*", "LdictByteEntryCursor*", "LdictSuffixIndex*", "const LdictSuffixIndex*", "LdictSuffixSnapshot*", "const LdictSuffixSnapshot*", "LdictRecoveryReport*", "const LdictRecoveryReport*"}:
+    if c_type in {"LdictDictionary*", "const LdictDictionary*", "LdictEntryCursor*", "LdictValueDiffCursor*", "LdictByteEntryCursor*", "LdictSuffixIndex*", "const LdictSuffixIndex*", "LdictSuffixSnapshot*", "const LdictSuffixSnapshot*", "LdictRecoveryReport*", "const LdictRecoveryReport*"}:
         return "Ptr{Cvoid}"
-    if c_type in {"LdictDictionary**", "LdictEntryCursor**", "LdictByteEntryCursor**", "LdictSuffixIndex**", "LdictSuffixSnapshot**"}:
+    if c_type in {"LdictDictionary**", "LdictEntryCursor**", "LdictValueDiffCursor**", "LdictByteEntryCursor**", "LdictSuffixIndex**", "LdictSuffixSnapshot**"}:
         return "Ref{Ptr{Cvoid}}"
     if c_type == "LdictRecoveryReport**":
         return "Ref{Ptr{Cvoid}}"
@@ -89,6 +89,8 @@ def julia_parameter_type(parameter: dict) -> str:
         return "Ptr{TextKey}"
     if c_type == "const LdictU64Key*":
         return "Ptr{U64Key}"
+    if c_type == "const LdictUnitKey*":
+        return "Ptr{UnitKey}"
     if c_type == "LdictSuffixSourceRecord*":
         return "Ptr{SuffixSourceRecord}"
     if c_type == "VtResource*":
@@ -99,6 +101,8 @@ def julia_parameter_type(parameter: dict) -> str:
         return "Ref{VTI.VtDictionaryEntryBatchView}"
     if c_type == "LdictEntriesInfo*":
         return "Ref{VTI.VtDictionaryEntriesInfo}"
+    if c_type == "LdictValueDiffBatch*":
+        return "Ref{ValueDiffBatch}"
     if c_type in {"const LdictByteEntryBatchLimits*", "LdictByteEntryBatch*", "LdictByteEntriesInfo*"}:
         return "Ptr{Cvoid}"
     if c_type == "LdictByteEntryReducer":
@@ -165,6 +169,16 @@ def render_layouts(model: dict) -> str:
         ],
         "LdictTextKey": [("data", "*const u8"), ("len", "usize")],
         "LdictU64Key": [("data", "*const u64"), ("len", "usize")],
+        "LdictUnitKey": [("data", "*const void"), ("len", "usize")],
+        "LdictValueDiffEntry": [
+            ("unit_offset", "usize"), ("unit_len", "usize"),
+            ("left", "LdictOptionalU64"), ("right", "LdictOptionalU64"),
+        ],
+        "LdictValueDiffBatch": [
+            ("entries", "*const LdictValueDiffEntry"),
+            ("entry_count", "usize"), ("units", "*const void"),
+            ("unit_count", "usize"), ("generation", "u64"),
+        ],
         "LdictSuffixSourceRecord": [
             ("source_id", "u64"),
             ("data", "*const u8"),
@@ -205,6 +219,26 @@ def render_layouts(model: dict) -> str:
         "struct U64Key",
         "    data::Ptr{UInt64}",
         "    len::Csize_t",
+        "end",
+        "",
+        "struct UnitKey",
+        "    data::Ptr{Cvoid}",
+        "    len::Csize_t",
+        "end",
+        "",
+        "struct ValueDiffEntry",
+        "    unit_offset::Csize_t",
+        "    unit_len::Csize_t",
+        "    left::OptionalU64",
+        "    right::OptionalU64",
+        "end",
+        "",
+        "struct ValueDiffBatch",
+        "    entries::Ptr{ValueDiffEntry}",
+        "    entry_count::Csize_t",
+        "    units::Ptr{Cvoid}",
+        "    unit_count::Csize_t",
+        "    generation::UInt64",
         "end",
         "",
         "struct SuffixSourceRecord",

@@ -3482,6 +3482,117 @@ impl Iterator for BindingAlgebraEntries {
     }
 }
 
+/// A changed value in two captured revisions. Both terms are present; each
+/// mapped value independently distinguishes valueless from mapped zero.
+pub struct BindingValueDifference {
+    pub term: BindingTerm,
+    pub left: Option<u64>,
+    pub right: Option<u64>,
+}
+
+/// Lazy native merge of two immutable revisions that emits only shared keys
+/// whose optional values differ. It retains one lookahead per input.
+pub struct BindingValueDiffEntries {
+    left: BindingEntries,
+    right: BindingEntries,
+    left_entry: Option<BindingEntry>,
+    right_entry: Option<BindingEntry>,
+    left_done: bool,
+    right_done: bool,
+    ended: bool,
+    domain: BindingUnitDomain,
+}
+
+impl BindingValueDiffEntries {
+    pub fn new(
+        left: &OwnedDictionaryResource,
+        right: &OwnedDictionaryResource,
+    ) -> Result<Self, BindingAlgebraError> {
+        if left.domain() != right.domain() {
+            return Err(BindingAlgebraError::DomainMismatch);
+        }
+        Ok(Self {
+            left: left.entries(),
+            right: right.entries(),
+            left_entry: None,
+            right_entry: None,
+            left_done: false,
+            right_done: false,
+            ended: false,
+            domain: match left.domain() {
+                VtUnitDomain::Byte => BindingUnitDomain::Byte,
+                VtUnitDomain::UnicodeScalar => BindingUnitDomain::UnicodeScalar,
+                VtUnitDomain::U64 => BindingUnitDomain::U64,
+            },
+        })
+    }
+
+    pub fn domain(&self) -> BindingUnitDomain {
+        self.domain
+    }
+
+    fn fill(&mut self) -> Result<(), BindingAlgebraError> {
+        if self.left_entry.is_none() && !self.left_done {
+            self.left_entry = self
+                .left
+                .next()
+                .transpose()
+                .map_err(BindingAlgebraError::Provider)?;
+            self.left_done = self.left_entry.is_none();
+        }
+        if self.right_entry.is_none() && !self.right_done {
+            self.right_entry = self
+                .right
+                .next()
+                .transpose()
+                .map_err(BindingAlgebraError::Provider)?;
+            self.right_done = self.right_entry.is_none();
+        }
+        Ok(())
+    }
+}
+
+impl Iterator for BindingValueDiffEntries {
+    type Item = Result<BindingValueDifference, BindingAlgebraError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.ended {
+            return None;
+        }
+        loop {
+            if let Err(error) = self.fill() {
+                self.ended = true;
+                return Some(Err(error));
+            }
+            match (self.left_entry.as_ref(), self.right_entry.as_ref()) {
+                (Some(left), Some(right)) => match left.term.cmp(&right.term) {
+                    std::cmp::Ordering::Less => {
+                        self.left_entry.take();
+                    }
+                    std::cmp::Ordering::Greater => {
+                        self.right_entry.take();
+                    }
+                    std::cmp::Ordering::Equal => {
+                        let left = self.left_entry.take().expect("lookahead is present");
+                        let right = self.right_entry.take().expect("lookahead is present");
+                        if left.value != right.value {
+                            return Some(Ok(BindingValueDifference {
+                                term: left.term,
+                                left: left.value,
+                                right: right.value,
+                            }));
+                        }
+                    }
+                },
+                _ => {
+                    self.ended = true;
+                    return None;
+                }
+            }
+        }
+    }
+}
+
 /// Open the family entry ABI's bounded page cursor over a lazy algebra stream.
 ///
 /// The returned cursor owns both captured revisions. Its existing vtable
@@ -3495,6 +3606,19 @@ pub fn dictionary_algebra_entries_open(
 ) -> Result<(VtDictionaryEntriesCursor, VtDictionaryEntriesInfo), BindingAlgebraError> {
     let algebra = BindingAlgebraEntries::new(left, right, operation, value_merge)?;
     Ok(entries::open_algebra(algebra))
+}
+
+/// Seek one captured dictionary revision to a typed prefix and stream its
+/// entries through the ordinary bounded page ABI. Excluded prefixes prune
+/// complete native subtrees before those entries are visited.
+pub(crate) fn dictionary_prefix_entries_open(
+    resource: &OwnedDictionaryResource,
+    prefix: Vec<u64>,
+    excluded_prefixes: Vec<Vec<u64>>,
+) -> Result<(VtDictionaryEntriesCursor, VtDictionaryEntriesInfo), VtStatus> {
+    // SAFETY: an owned resource always retains its ResourceContext allocation.
+    let context = unsafe { &*resource.raw.context.cast::<ResourceContext>() };
+    entries::open_prefix(context.snapshot(), prefix, excluded_prefixes)
 }
 
 /// Materialize an algebraic combination of two immutable dictionary revisions.

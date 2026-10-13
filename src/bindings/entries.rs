@@ -124,6 +124,7 @@ pub(super) struct EntryCursorState {
     descriptors: Vec<VtDictionaryEntry>,
     units: UnitArena,
     values: Vec<u64>,
+    excluded_prefixes: Vec<Vec<u64>>,
     generation: u64,
     leased_generation: Option<u64>,
     cancelled: bool,
@@ -144,6 +145,7 @@ impl EntryCursorState {
             pending: None,
             descriptors: Vec::new(),
             values: Vec::new(),
+            excluded_prefixes: Vec::new(),
             generation: 0,
             leased_generation: None,
             cancelled: false,
@@ -163,11 +165,52 @@ impl EntryCursorState {
             descriptors: Vec::new(),
             units: UnitArena::new(domain),
             values: Vec::new(),
+            excluded_prefixes: Vec::new(),
             generation: 0,
             leased_generation: None,
             cancelled: false,
             ended: false,
         }
+    }
+
+    fn from_prefix(
+        snapshot: Arc<dyn SnapshotOps>,
+        prefix: Vec<u64>,
+        excluded_prefixes: Vec<Vec<u64>>,
+    ) -> Result<Self, VtStatus> {
+        let mut node = Some(snapshot.root());
+        for &unit in &prefix {
+            node = match node {
+                Some(current) => snapshot.transition(current, unit)?,
+                None => None,
+            };
+        }
+        if excluded_prefixes
+            .iter()
+            .any(|excluded| prefix.starts_with(excluded))
+        {
+            node = None;
+        }
+        // Do not open the backend's record stream. Native transition() seeks
+        // directly to the first node in O(prefix length).
+        Ok(Self {
+            units: UnitArena::new(snapshot.domain()),
+            snapshot: Some(snapshot),
+            algebra: None,
+            records: None,
+            stack: node
+                .map(|node| vec![TraversalFrame::lazy(node, 0)])
+                .unwrap_or_default(),
+            path: prefix,
+            pending: None,
+            descriptors: Vec::new(),
+            values: Vec::new(),
+            excluded_prefixes,
+            generation: 0,
+            leased_generation: None,
+            cancelled: false,
+            ended: false,
+        })
     }
 
     fn load_top(&mut self) -> Result<(), VtStatus> {
@@ -236,7 +279,12 @@ impl EntryCursorState {
             let frame = self.stack.last_mut().expect("the top frame was loaded");
             if !frame.entered {
                 frame.entered = true;
-                if frame.is_final {
+                if frame.is_final
+                    && !self
+                        .excluded_prefixes
+                        .iter()
+                        .any(|excluded| self.path.starts_with(excluded))
+                {
                     return Ok(Some(PendingEntry {
                         units: self.path.clone(),
                         value: self
@@ -250,6 +298,14 @@ impl EntryCursorState {
                 frame.next_edge += 1;
                 let restore_path_len = self.path.len();
                 self.path.push(edge.label);
+                if self
+                    .excluded_prefixes
+                    .iter()
+                    .any(|excluded| self.path.starts_with(excluded))
+                {
+                    self.path.pop();
+                    continue;
+                }
                 self.stack
                     .push(TraversalFrame::lazy(edge.node, restore_path_len));
             } else {
@@ -352,6 +408,41 @@ pub(super) fn open_algebra(
             reserved: [0; 2],
         },
     )
+}
+
+/// Capture one native revision and seek to `prefix` before the first page.
+/// Excluded paths are pruned before their descendant frames are opened.
+pub(super) fn open_prefix(
+    snapshot: Arc<dyn SnapshotOps>,
+    prefix: Vec<u64>,
+    excluded_prefixes: Vec<Vec<u64>>,
+) -> Result<(VtDictionaryEntriesCursor, VtDictionaryEntriesInfo), VtStatus> {
+    let domain = snapshot.domain();
+    let identity = snapshot.identity();
+    let state = Box::new(EntryCursorState::from_prefix(
+        snapshot,
+        prefix,
+        excluded_prefixes,
+    )?);
+    Ok((
+        VtDictionaryEntriesCursor {
+            context: Box::into_raw(state).cast(),
+            vtable: &DICTIONARY_ENTRIES_VTABLE,
+        },
+        VtDictionaryEntriesInfo {
+            unit_domain: domain as u32,
+            value_domain: VtValueDomain::OptionalU64 as u32,
+            order: VtDictionaryEntryOrder::Lexicographic as u32,
+            reserved0: 0,
+            flags: dictionary_entries_info_flags::SNAPSHOT_IDENTITY,
+            exact_len: 0,
+            identity: VtSnapshotIdentity {
+                producer: identity.producer,
+                revision: identity.revision,
+            },
+            reserved: [0; 2],
+        },
+    ))
 }
 
 unsafe fn state_mut<'a>(

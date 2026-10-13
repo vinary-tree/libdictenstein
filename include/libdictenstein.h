@@ -32,7 +32,7 @@ extern "C" {
 #endif
 
 #define LDICT_ABI_VERSION 1u
-#define LDICT_API_REVISION 12u
+#define LDICT_API_REVISION 13u
 
 #define LDICT_KIND_DYNAMIC_DAWG 1u
 #define LDICT_KIND_DOUBLE_ARRAY_TRIE 2u
@@ -124,6 +124,33 @@ typedef struct LdictU64Key {
     const uint64_t* data;
     size_t len;
 } LdictU64Key;
+
+/* A prefix interpreted through the dictionary unit domain. Byte keys use
+ * arbitrary bytes, Unicode-scalar keys use UTF-8 bytes, and u64 keys use
+ * aligned uint64_t tokens. len counts bytes or tokens accordingly. */
+typedef struct LdictUnitKey {
+    const void* data;
+    size_t len;
+} LdictUnitKey;
+
+/* A changed key present in both captured revisions. Each optional value is
+ * independent: has_value=0 means a present valueless member. */
+typedef struct LdictValueDiffEntry {
+    size_t unit_offset;
+    size_t unit_len;
+    LdictOptionalU64 left;
+    LdictOptionalU64 right;
+} LdictValueDiffEntry;
+
+typedef struct LdictValueDiffBatch {
+    const LdictValueDiffEntry* entries;
+    size_t entry_count;
+    const void* units;
+    size_t unit_count;
+    uint64_t generation;
+} LdictValueDiffBatch;
+
+typedef struct LdictValueDiffCursor LdictValueDiffCursor;
 
 /* Typed suffix-source records are not generic dictionary entries. Source IDs
  * are stable within a captured revision but may be reused after clear; the
@@ -366,6 +393,41 @@ LDICT_API LdictStatus ldict_dictionary_algebra_entries_open(
     uint32_t value_merge,
     LdictEntryCursor** out_cursor,
     LdictEntriesInfo* out_info);
+
+/* Revision 13: seek one captured revision to prefix in O(prefix length), then
+ * traverse only that subtree. Every excluded prefix prunes its full subtree;
+ * pass an empty inclusion for the whole dictionary. A zero-length exclusion
+ * suppresses all output. The cursor owns the snapshot and uses ordinary
+ * next/release/reduce/cancel/free. Descriptor storage is borrowed only during
+ * this open call. Null descriptor arrays require excluded_count == 0. */
+LDICT_API LdictStatus ldict_dictionary_prefix_entries_open(
+    const LdictDictionary* dictionary,
+    const LdictUnitKey* prefix,
+    const LdictUnitKey* excluded,
+    size_t excluded_count,
+    LdictEntryCursor** out_cursor,
+    LdictEntriesInfo* out_info);
+
+/* Revision 13: stream changed optional values at shared keys through a
+ * bounded native merge. The cursor owns both captured revisions. Limits use
+ * max_entries, max_units, and max_values (counting present mapped values on
+ * both sides); reserved must be zero. One page is leased until its generation
+ * is released. Cancellation leaves an existing lease intact. */
+LDICT_API LdictStatus ldict_dictionary_value_diff_open(
+    const LdictDictionary* left,
+    const LdictDictionary* right,
+    LdictValueDiffCursor** out_cursor,
+    uint32_t* out_unit_domain);
+LDICT_API LdictStatus ldict_value_diff_cursor_next(
+    LdictValueDiffCursor* cursor,
+    const LdictEntryBatchLimits* limits,
+    LdictValueDiffBatch* out_batch);
+LDICT_API LdictStatus ldict_value_diff_cursor_release(
+    LdictValueDiffCursor* cursor, uint64_t generation);
+LDICT_API LdictStatus ldict_value_diff_cursor_cancel(
+    LdictValueDiffCursor* cursor);
+LDICT_API LdictStatus ldict_value_diff_cursor_free(
+    LdictValueDiffCursor* cursor);
 
 /* Open one immutable lexicographic revision. The opaque cursor owns that
  * snapshot and may outlive the source dictionary. */
