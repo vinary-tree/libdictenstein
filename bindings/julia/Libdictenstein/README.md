@@ -55,6 +55,16 @@ Use `do`/`try`–`finally` around long-lived dictionaries. A finalizer protects
 abandoned objects, but deterministic `close` keeps native memory pressure
 independent of Julia garbage-collection timing.
 
+## Dictionaries implemented in Julia
+
+`host_dictionary(source)` captures a customer-defined immutable revision and
+returns a `VinaryTreeInterop.Dictionary`. Native consumers such as
+`Liblevenshtein.Transducer` can use that resource directly. Implement
+`AbstractHostDictionarySnapshot` and the provider methods described in the
+[host dictionary guide](docs/src/index.md#julia-hosted-dictionary-providers).
+The captured revision remains alive until its last native snapshot, graph, or
+entry cursor closes. Close the returned dictionary when finished.
+
 ## Fast algebra
 
 ```julia

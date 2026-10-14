@@ -81,6 +81,82 @@ text before returning it. Source IDs are meaningful within the captured
 revision and may be reused after `empty!(index)`; the identity returned by
 `source_identity` is suffix-family-specific, not a dictionary cache key.
 
+## Julia-hosted dictionary providers
+
+`host_dictionary(source)` publishes a Julia implementation through the
+versioned Vinary Tree Interop (VTI) dictionary ABI. The source's
+`provider_capture(source)` method must return one immutable
+`AbstractHostDictionarySnapshot`; the snapshot method captures itself in
+constant time. Later changes to the source must publish a new revision and
+must never mutate data reachable from an existing snapshot. A native consumer
+retains the captured revision while it uses the resource, so closing the
+original Julia dictionary does not invalidate an existing native transducer.
+
+The smallest provider implements a root, finality, and bounded outgoing edges:
+
+```julia
+using Libdictenstein
+import VinaryTreeInterop as VTI
+import Libdictenstein: provider_unit_domain, provider_value_domain,
+    provider_root, provider_isfinal, provider_value, provider_edge_page
+
+struct OneKey <: AbstractHostDictionarySnapshot end
+provider_unit_domain(::OneKey) = VTI.UNIT_BYTE
+provider_value_domain(::OneKey) = VTI.VALUE_OPTIONAL_U64
+provider_root(::OneKey) = UInt64(0)
+provider_isfinal(::OneKey, node::UInt64) = node == 1
+provider_value(::OneKey, node::UInt64) = node == 1 ? UInt64(7) : nothing
+function provider_edge_page(::OneKey, node::UInt64, start::Int, capacity::Int)
+    edges = node == 0 ? [VTI.VtDictionaryEdge(UInt64('a'), UInt64(1))] :
+        VTI.VtDictionaryEdge[]
+    start <= length(edges) || throw(ArgumentError("invalid edge offset"))
+    (edges[start + 1:min(length(edges), start + capacity)], length(edges))
+end
+
+dictionary = host_dictionary(OneKey())
+try
+    @assert dictionary[UInt8['a']] == 7
+finally
+    close(dictionary)
+end
+```
+
+The key-unit domain is `UNIT_BYTE`, `UNIT_UNICODE_SCALAR`, or `UNIT_U64`.
+The value domain is `VALUE_UNIT` or `VALUE_OPTIONAL_U64`; byte values use the
+separate VTI ABI v2 capability. `provider_value` returns `nothing` for a
+valueless final node, and `provider_isfinal` distinguishes that node from an
+absent key. `provider_edge_page(snapshot, node, start, capacity)` returns
+`(edges, total_degree)` in strictly increasing label order and never returns
+more than `capacity` edges. The default `provider_transition` scans these
+pages; a provider can specialize it for direct lookup. The default fused
+`provider_visit` combines finality and one edge page. `provider_length` may
+return the exact key count or `nothing`.
+
+Optional capabilities are supplied by `provider_identity`, `provider_graph`,
+and `provider_entries`. An identity is a VTI `SnapshotIdentity` valid for this
+process and immutable revision. A graph is `HostDictionaryGraph(nodes, edges,
+root_index)` with dense zero-based node indexes, ordered edge ranges, and
+**nonzero opaque `value_cursor` values**. Its value callback is
+`provider_graph_value(snapshot, value_cursor)`; by default it calls
+`provider_value` with the cursor. Graph arrays are copied into owned native
+memory at capture and live until the last retained resource closes.
+`provider_entries` returns a fresh finite iterator of lexicographically
+ordered `Pair`s or VTI `DictionaryEntry`s. Entry pages copy keys and optional
+`UInt64` values into bounded owned arenas; a page remains borrowed until its
+generation is released. Closing or cancelling a cursor releases its retained
+revision. A page that cannot fit the caller's limits can be retried with
+larger limits without losing the pending entry.
+
+`host_dictionary` accepts `max_graph_nodes`, `max_graph_edges`, and
+`max_key_units` to reject oversized captured graphs and entry keys. Julia
+exceptions stay inside callbacks and become provider status errors. The
+resource advertises immutability but does not advertise parallel callback
+reentrancy: native consumers must invoke callbacks synchronously on a
+Julia-owned calling thread, serializing them where required. Do not close the
+same handle concurrently with an operation using it; use a retained snapshot
+for independent lifetime. Deterministic `close` is preferable to waiting for
+Julia's finalizer.
+
 ## Algebra and value semantics
 
 For input key sets `A` and `B`, the four operations produce:
