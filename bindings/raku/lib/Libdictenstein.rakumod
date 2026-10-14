@@ -87,6 +87,33 @@ our constant CAP-SUBSTRING is export = 1 +< 5;
 our constant CAP-CHECKPOINT is export = 1 +< 6;
 # END GENERATED RAKU ABI CONSTANTS
 
+# The exact backend/domain matrix from bindings/api.json. Keep this table as
+# the single pre-NativeCall gate for constructors and public domain queries.
+my constant BACKEND-DOMAINS = Map.new(
+    (DYNAMIC-DAWG.Int) => (BYTE, UNICODE-SCALAR, U64).List,
+    (DOUBLE-ARRAY-TRIE.Int) => (BYTE, UNICODE-SCALAR).List,
+    (SCDAWG.Int) => (BYTE, UNICODE-SCALAR).List,
+    (PERSISTENT-ARTRIE.Int) => (BYTE, UNICODE-SCALAR, U64).List,
+    (PERSISTENT-VOCAB-ARTRIE.Int) => (UNICODE-SCALAR,).List,
+    (PATHMAP.Int) => (BYTE, UNICODE-SCALAR).List,
+);
+
+sub backend-domains(DictionaryKind:D $kind --> List:D) is export {
+    my $domains = BACKEND-DOMAINS{$kind.Int};
+    die "unknown dictionary backend {$kind.Int}" unless $domains.defined;
+    $domains.List
+}
+
+sub supports-domain(DictionaryKind:D $kind, UnitDomain:D $domain --> Bool:D)
+    is export {
+    so backend-domains($kind).grep(* == $domain)
+}
+
+sub require-domain(DictionaryKind:D $kind, UnitDomain:D $domain --> Nil) {
+    die "{$kind} does not support unit domain {$domain}"
+        unless supports-domain($kind, $domain);
+}
+
 our enum PersistentProfile is export (
     PERSISTENT-DEFAULT => 0,
     PERSISTENT-U64-PREFIX3-COMPAT => 1,
@@ -458,6 +485,12 @@ sub optional-value(Mu $value --> OptionalValue:D) {
     }
 }
 
+# NativeCall may expose the high bit of a uint64 CStruct member as a signed
+# integer. Reinterpret all 64 bits before coercing to Raku's unsigned type.
+sub unsigned-u64(Int:D $value --> UInt:D) {
+    ($value +& (2**64 - 1)).UInt
+}
+
 sub text-buffer(Mu:D $key, UnitDomain:D $domain --> Blob:D) {
     return Buf.new($key.list) if $domain == BYTE && $key ~~ Blob;
     return $key.encode('utf8') if $key ~~ Str &&
@@ -465,9 +498,22 @@ sub text-buffer(Mu:D $key, UnitDomain:D $domain --> Blob:D) {
     die "key is incompatible with $domain";
 }
 
+sub validated-text-buffer(Mu:D $key, UnitDomain:D $domain,
+    DictionaryKind:D $kind --> Blob:D) {
+    my $buffer = text-buffer($key, $domain);
+    # These native byte-domain backends store String terms and accept only
+    # UTF-8 byte sequences; other byte backends retain arbitrary octets.
+    if $domain == BYTE && ($kind == DOUBLE-ARRAY-TRIE || $kind == SCDAWG) {
+        die "{$kind} byte keys and patterns must be valid UTF-8"
+            unless (try $buffer.decode('utf8')).defined;
+    }
+    $buffer
+}
+
 sub u64-buffer(Mu:D $key, UnitDomain:D $domain --> CArray[uint64]) {
     die 'key is incompatible with U64' unless $domain == U64 && $key ~~ Positional;
-    my $buffer = CArray[uint64].allocate($key.elems);
+    # Keep an addressable slot for an empty key; the native length remains 0.
+    my $buffer = CArray[uint64].allocate($key.elems max 1);
     for $key.list.kv -> $index, $unit {
         die 'key unit is outside uint64' unless $unit ~~ Int && 0 <= $unit <= 2**64 - 1;
         $buffer[$index] = $unit;
@@ -475,8 +521,9 @@ sub u64-buffer(Mu:D $key, UnitDomain:D $domain --> CArray[uint64]) {
     $buffer
 }
 
+my $empty-byte-storage = Buf.new(0);
 sub raw-pointer(Blob:D $buffer --> Pointer:D) {
-    nativecast(Pointer, $buffer)
+    nativecast(Pointer, $buffer.elems ?? $buffer !! $empty-byte-storage)
 }
 
 sub recovery-text(Pointer:D $handle, Int:D $field, Int:D $index --> Mu) {
@@ -597,13 +644,18 @@ class DictionaryIterator does Iterator {
 class Dictionary does Associative does Iterable is export {
     has Pointer $!handle is required;
     has UnitDomain:D $.unit-domain is required;
+    has DictionaryKind:D $!kind is required;
+    has UInt:D $!capabilities is required;
     has PersistentRecoveryReport $.recovery-report;
     has Bool $!closed = False;
 
     submethod BUILD(Pointer:D :$handle!, UnitDomain:D :$unit-domain!,
+        DictionaryKind:D :$kind!, UInt:D :$capabilities!,
         PersistentRecoveryReport :$recovery-report) {
         $!handle = $handle;
         $!unit-domain = $unit-domain;
+        $!kind = $kind;
+        $!capabilities = $capabilities;
         $!recovery-report = $recovery-report if $recovery-report.defined;
     }
 
@@ -628,16 +680,22 @@ class Dictionary does Associative does Iterable is export {
     submethod DESTROY { self.close }
 
     method kind(--> DictionaryKind:D) {
-        my uint32 $output = 0;
-        check-status(ldict-dictionary-kind(self!handle, $output), 'dictionary-kind');
-        DictionaryKind($output)
+        self!handle;
+        $!kind
     }
 
     method capabilities(--> UInt:D) {
-        my uint64 $output = 0;
-        check-status(ldict-dictionary-capabilities(self!handle, $output),
-            'dictionary-capabilities');
-        $output.UInt
+        self!handle;
+        $!capabilities
+    }
+
+    method !require-capability(UInt:D $capability, Str:D $operation --> Nil) {
+        die "{$operation} is unsupported by {self.kind}"
+            unless self.capabilities +& $capability;
+    }
+
+    method !text-buffer(Mu:D $key --> Blob:D) {
+        validated-text-buffer($key, $!unit-domain, self.kind)
     }
 
     method elems(--> Int:D) {
@@ -647,7 +705,7 @@ class Dictionary does Associative does Iterable is export {
     }
 
     method !text-call(Str:D $stem, Mu:D $key --> Bool:D) {
-        my $buffer = text-buffer($key, $!unit-domain);
+        my $buffer = self!text-buffer($key);
         my uint8 $output = 0;
         my $status = $stem eq 'contains'
             ?? ldict-dictionary-contains-text(self!handle, raw-pointer($buffer),
@@ -684,16 +742,17 @@ class Dictionary does Associative does Iterable is export {
             $status = ldict-dictionary-get-u64(self!handle,
                 nativecast(Pointer, $buffer), $key.elems, $found, $value);
         } else {
-            my $buffer = text-buffer($key, $!unit-domain);
+            my $buffer = self!text-buffer($key);
             $status = ldict-dictionary-get-text(self!handle, raw-pointer($buffer),
                 $buffer.elems, $found, $value);
         }
         check-status($status, 'dictionary-get');
         return Nil unless $found;
-        $value.has-value ?? $value.value.UInt !! Nil
+        $value.has-value ?? unsigned-u64($value.value) !! Nil
     }
 
     method ASSIGN-KEY(Mu:D $key, Mu $value --> Mu) {
+        self!require-capability(CAP-INSERT, 'dictionary insertion');
         my uint8 $inserted = 0;
         my $optional = optional-value($value);
         my $status;
@@ -703,7 +762,7 @@ class Dictionary does Associative does Iterable is export {
                 nativecast(Pointer, $buffer), $key.elems, $optional.value,
                 $optional.has-value, $inserted);
         } else {
-            my $buffer = text-buffer($key, $!unit-domain);
+            my $buffer = self!text-buffer($key);
             $status = ldict-dictionary-insert-text-value(self!handle,
                 raw-pointer($buffer), $buffer.elems, $optional.value,
                 $optional.has-value, $inserted);
@@ -713,6 +772,7 @@ class Dictionary does Associative does Iterable is export {
     }
 
     method DELETE-KEY(Mu:D $key --> Mu) {
+        self!require-capability(CAP-REMOVE, 'dictionary removal');
         my $present = self.EXISTS-KEY($key);
         my $old = $present ?? self.AT-KEY($key) !! Nil;
         $!unit-domain == U64 ?? self!u64-call('remove', $key) !!
@@ -721,11 +781,13 @@ class Dictionary does Associative does Iterable is export {
     }
 
     method clear(--> Dictionary:D) {
+        self!require-capability(CAP-CLEAR, 'dictionary clear');
         check-status(ldict-dictionary-clear(self!handle), 'dictionary-clear');
         self
     }
 
     method compact(--> Int:D) {
+        self!require-capability(CAP-COMPACT, 'dictionary compaction');
         my size_t $reclaimed = 0;
         check-status(ldict-dictionary-compact(self!handle, $reclaimed),
             'dictionary-compact');
@@ -733,6 +795,7 @@ class Dictionary does Associative does Iterable is export {
     }
 
     method checkpoint(--> Dictionary:D) {
+        self!require-capability(CAP-CHECKPOINT, 'dictionary checkpoint');
         check-status(ldict-dictionary-checkpoint(self!handle), 'dictionary-checkpoint');
         self
     }
@@ -772,8 +835,28 @@ class Dictionary does Associative does Iterable is export {
 
     method Seq(--> Seq:D) { Seq.new(self.iterator) }
     method list(--> List:D) { self.Seq.list }
+    method pairs(--> Seq:D) { self.Seq }
+    method keys(--> Seq:D) { self.pairs.map(*.key) }
+    method values(--> Seq:D) { self.pairs.map(*.value) }
+    method kv(--> Seq:D) { self.pairs.map({ (.key, .value) }).flat }
+
+    # Membership remains separate from the optional u64 value: a valueless
+    # member is present even though AT-KEY returns Nil.
+    method add-member(Mu:D $key --> Dictionary:D) {
+        self!require-capability(CAP-INSERT, 'dictionary member insertion');
+        self.ASSIGN-KEY($key, Nil) unless self.EXISTS-KEY($key);
+        self
+    }
+
+    method discard-member(Mu:D $key --> Bool:D) {
+        self!require-capability(CAP-REMOVE, 'dictionary member removal');
+        my $present = self.EXISTS-KEY($key);
+        self.DELETE-KEY($key) if $present;
+        $present
+    }
 
     method insert-batch(Mu:D $entries --> Int:D) {
+        self!require-capability(CAP-INSERT, 'dictionary batch insertion');
         my @pairs = pairs-from($entries);
         my size_t $inserted = 0;
         if $!unit-domain == U64 {
@@ -797,7 +880,7 @@ class Dictionary does Associative does Iterable is export {
                 @pairs.elems, $inserted), 'dictionary-insert-u64-batch');
         } else {
             my @buffers;
-            @buffers.push(text-buffer(.key, $!unit-domain)) for @pairs;
+            @buffers.push(self!text-buffer(.key)) for @pairs;
             my @descriptors;
             for @pairs.kv -> $index, $pair {
                 my $optional = optional-value($pair.value);
@@ -824,7 +907,7 @@ class Dictionary does Associative does Iterable is export {
         my Pointer $output .= new;
         check-status(ldict-dictionary-algebra(self!handle, $right!handle,
             $operation.Int, $merge.Int, $output), 'dictionary-algebra');
-        Dictionary.new(handle => $output, unit-domain => $!unit-domain)
+        dictionary-from($output, $!unit-domain)
     }
 
     method union(Dictionary:D $right, ValueMerge:D :$merge = VALUE-MERGE-LAST
@@ -845,16 +928,18 @@ class Dictionary does Associative does Iterable is export {
         self.algebra($right, ALGEBRA-SYMMETRIC-DIFFERENCE, VALUE-MERGE-FIRST)
     }
 
-    method contains-substring(Str:D $pattern --> Bool:D) {
-        my $buffer = $pattern.encode('utf8');
+    method contains-substring(Mu:D $pattern --> Bool:D) {
+        self!require-capability(CAP-SUBSTRING, 'substring membership');
+        my $buffer = self!text-buffer($pattern);
         my uint8 $output = 0;
         check-status(ldict-scdawg-contains-substring(self!handle, raw-pointer($buffer),
             $buffer.elems, $output), 'scdawg-contains-substring');
         so $output
     }
 
-    method substring-frequency(Str:D $pattern --> Int:D) {
-        my $buffer = $pattern.encode('utf8');
+    method substring-frequency(Mu:D $pattern --> Int:D) {
+        self!require-capability(CAP-SUBSTRING, 'substring frequency');
+        my $buffer = self!text-buffer($pattern);
         my size_t $output = 0;
         check-status(ldict-scdawg-substring-frequency(self!handle, raw-pointer($buffer),
             $buffer.elems, $output), 'scdawg-substring-frequency');
@@ -914,7 +999,18 @@ sub dictionary-from(Pointer:D $handle, UnitDomain:D $domain,
         operation => 'constructor',
         detail => 'native constructor returned null',
     ).throw unless $handle;
-    Dictionary.new(:$handle, unit-domain => $domain, :$recovery-report)
+    my $published = False;
+    LEAVE ldict-dictionary-free($handle) unless $published;
+    my uint32 $kind = 0;
+    my uint64 $capabilities = 0;
+    check-status(ldict-dictionary-kind($handle, $kind), 'dictionary-kind');
+    check-status(ldict-dictionary-capabilities($handle, $capabilities),
+        'dictionary-capabilities');
+    my $dictionary = Dictionary.new(:$handle, unit-domain => $domain,
+        kind => DictionaryKind($kind),
+        capabilities => unsigned-u64($capabilities), :$recovery-report);
+    $published = True;
+    $dictionary
 }
 
 sub dictionary-from-recovery(Pointer:D $handle, UnitDomain:D $domain,
@@ -922,12 +1018,12 @@ sub dictionary-from-recovery(Pointer:D $handle, UnitDomain:D $domain,
     my $transferred = False;
     LEAVE ldict-dictionary-free($handle) if $handle && !$transferred;
     my $report = recovery-report-from($report-handle);
-    my $dictionary = dictionary-from($handle, $domain, recovery-report => $report);
     $transferred = True;
-    $dictionary
+    dictionary-from($handle, $domain, recovery-report => $report)
 }
 
 sub dynamic-dawg(UnitDomain:D $domain = UNICODE-SCALAR --> Dictionary:D) is export {
+    require-domain(DYNAMIC-DAWG, $domain);
     my Pointer $output .= new;
     check-status(ldict-dynamic-dawg-new($domain.Int, $output), 'dynamic-dawg-new');
     dictionary-from($output, $domain)
@@ -962,6 +1058,7 @@ sub sorted-dawg(Mu:D $entries, UnitDomain:D :$domain = UNICODE-SCALAR
 # PathMap is an ordinary exact-key dictionary. The suffix-source index is not:
 # its duplicate records must not be coerced into Associative semantics.
 sub pathmap(UnitDomain:D $domain = UNICODE-SCALAR --> Dictionary:D) is export {
+    require-domain(PATHMAP, $domain);
     X::Libdictenstein.new(
         status => 6,
         operation => 'pathmap-new',
@@ -1089,7 +1186,8 @@ class SuffixSnapshot does Iterable is export {
                     take SourceRecord.new(
                         source-id => $raw.source-id.Int,
                         text => $text.decode('utf8'),
-                        value => $raw.has-value ?? $raw.mapped-value.UInt !! Nil,
+                        value => $raw.has-value
+                            ?? unsigned-u64($raw.mapped-value) !! Nil,
                     );
                 }
                 $offset += $written;
@@ -1256,6 +1354,7 @@ sub persistent-suffix-index(IO::Path:D $path,
 }
 
 sub scdawg(UnitDomain:D $domain = UNICODE-SCALAR --> Dictionary:D) is export {
+    require-domain(SCDAWG, $domain);
     my Pointer $output .= new;
     check-status(ldict-scdawg-new($domain.Int, $output), 'scdawg-new');
     dictionary-from($output, $domain)
@@ -1263,10 +1362,11 @@ sub scdawg(UnitDomain:D $domain = UNICODE-SCALAR --> Dictionary:D) is export {
 
 sub double-array-trie(Mu:D $entries, UnitDomain:D :$domain = UNICODE-SCALAR
     --> Dictionary:D) is export {
-    die 'DoubleArrayTrie does not support U64' if $domain == U64;
+    require-domain(DOUBLE-ARRAY-TRIE, $domain);
     my @pairs = pairs-from($entries);
     my @buffers;
-    @buffers.push(text-buffer(.key, $domain)) for @pairs;
+    @buffers.push(validated-text-buffer(.key, $domain, DOUBLE-ARRAY-TRIE))
+        for @pairs;
     my @descriptors;
     for @pairs.kv -> $index, $pair {
         my $optional = optional-value($pair.value);
@@ -1291,6 +1391,7 @@ sub persistent-artrie(IO::Path:D $path, UnitDomain:D :$domain = UNICODE-SCALAR,
     PersistentWalConfig :$wal-config,
     Bool:D :$recover = False,
     Bool:D :$create = True --> Dictionary:D) is export {
+    require-domain(PERSISTENT-ARTRIE, $domain);
     X::Libdictenstein.new(
         status => 6,
         operation => 'persistent-artrie',

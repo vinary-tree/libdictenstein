@@ -1,0 +1,163 @@
+use Test;
+use Libdictenstein;
+
+my @all-domains = BYTE, UNICODE-SCALAR, U64;
+my %expected = (
+    DYNAMIC-DAWG.Int => [BYTE, UNICODE-SCALAR, U64],
+    DOUBLE-ARRAY-TRIE.Int => [BYTE, UNICODE-SCALAR],
+    SCDAWG.Int => [BYTE, UNICODE-SCALAR],
+    PERSISTENT-ARTRIE.Int => [BYTE, UNICODE-SCALAR, U64],
+    PERSISTENT-VOCAB-ARTRIE.Int => [UNICODE-SCALAR],
+    PATHMAP.Int => [BYTE, UNICODE-SCALAR],
+);
+
+subtest 'backend-by-domain contract' => {
+    my $scratch = IO::Path.new(
+        %*ENV<LIBDICTENSTEIN_TEST_SCRATCH> // $*CWD.add('target/raku-test'));
+    $scratch.mkdir;
+    my $serial = 0;
+    for DYNAMIC-DAWG, DOUBLE-ARRAY-TRIE, SCDAWG, PERSISTENT-ARTRIE,
+        PERSISTENT-VOCAB-ARTRIE, PATHMAP -> $kind {
+        my @allowed = %expected{$kind.Int}.list;
+        is-deeply backend-domains($kind).map(*.Int).Array,
+            @allowed.map(*.Int).Array, "{$kind} domains match the native model";
+        for @all-domains -> $domain {
+            is supports-domain($kind, $domain), so @allowed.grep(* == $domain),
+                "{$kind} / {$domain} support is explicit";
+            next unless supports-domain($kind, $domain);
+            my $path = $scratch.add(
+                "domain-cell-{$*PID}-{++$serial}-{$kind.Int}-{$domain.Int}");
+            my $dictionary = do given $kind {
+                when DYNAMIC-DAWG { dynamic-dawg($domain) }
+                when DOUBLE-ARRAY-TRIE { double-array-trie([], :$domain) }
+                when SCDAWG { scdawg($domain) }
+                when PERSISTENT-ARTRIE { persistent-artrie($path, :$domain) }
+                when PERSISTENT-VOCAB-ARTRIE { persistent-vocabulary($path) }
+                when PATHMAP { pathmap($domain) }
+            };
+            is $dictionary.kind, $kind,
+                "{$kind} / {$domain} constructs the intended backend";
+            is $dictionary.unit-domain, $domain,
+                "{$kind} / {$domain} preserves its unit domain";
+            $dictionary.close;
+        }
+    }
+    dies-ok { double-array-trie([], domain => U64) },
+        'DAT rejects U64 before native construction';
+    dies-ok { scdawg(U64) }, 'SCDAWG rejects U64 before native construction';
+    dies-ok { pathmap(U64) }, 'PathMap rejects U64 before native construction';
+};
+
+subtest 'collection traversal, optional values, and valueless membership' => {
+    my $dictionary = dynamic-dawg(BYTE);
+    LEAVE $dictionary.close;
+    my $empty = Buf.new;
+    my $nul = Buf.new(0x00);
+    my $high = Buf.new(0xff);
+    $dictionary{$empty} = Nil;
+    $dictionary{$nul} = 0;
+    $dictionary{$high} = 2**64 - 1;
+    ok $dictionary{$empty}:exists, 'empty valueless byte key is present';
+    ok !$dictionary{$empty}.defined, 'valueless lookup remains Nil';
+    is $dictionary{$nul}, 0, 'NUL key retains present zero';
+    is $dictionary{$high}, 2**64 - 1,
+        'invalid UTF-8 byte key retains maximum u64 value';
+    $dictionary.add-member($high);
+    is $dictionary{$high}, 2**64 - 1,
+        'set-style add does not erase an existing mapped value';
+    is-deeply $dictionary.keys.map(*.list.Array).Array,
+        [[], [0], [255]], 'keys traverse in unsigned byte order';
+    is-deeply $dictionary.values.list, (Nil, 0, 2**64 - 1),
+        'values retain Nil and numeric zero in positional order';
+    is-deeply $dictionary.pairs.list.map(*.key.list.Array).Array,
+        [[], [0], [255]], 'pairs retain the same key order';
+    is-deeply $dictionary.kv.list.map({ $_ ~~ Blob ?? $_.list.Array !! $_ }).Array,
+        [[], Nil, [0], 0, [255], 2**64 - 1],
+        'kv retains every key/value slot';
+    $dictionary.add-member(Buf.new(0x61));
+    ok $dictionary.EXISTS-KEY(Buf.new(0x61)),
+        'set-style member is present without a value';
+    ok !$dictionary.AT-KEY(Buf.new(0x61)).defined,
+        'set-style member is valueless';
+    ok $dictionary.discard-member(Buf.new(0x61)),
+        'discard reports an existing member';
+    nok $dictionary.discard-member(Buf.new(0x61)),
+        'discard reports an absent member';
+};
+
+subtest 'Unicode scalar and U64 keys' => {
+    my $unicode = dynamic-dawg(UNICODE-SCALAR);
+    LEAVE $unicode.close;
+    my $high = chr(0x10ffff);
+    $unicode{"a\0$high"} = 0;
+    is $unicode{"a\0$high"}, 0,
+        'NUL and highest Unicode scalar survive exact lookup';
+    my $tokens = dynamic-dawg(U64);
+    LEAVE $tokens.close;
+    $tokens.ASSIGN-KEY([0, 2**64 - 1], 2**64 - 1);
+    is $tokens.AT-KEY([0, 2**64 - 1]), 2**64 - 1,
+        'maximum U64 key unit and value are preserved';
+    dies-ok { $tokens.ASSIGN-KEY([2**64], 1) },
+        'out-of-range U64 unit fails before mutation';
+    is $tokens.elems, 1, 'invalid U64 insertion does not publish a key';
+
+    my $scratch = IO::Path.new(
+        %*ENV<LIBDICTENSTEIN_TEST_SCRATCH> // $*CWD.add('target/raku-test'));
+    $scratch.mkdir;
+    my $path = $scratch.add("raw-byte-artrie-{$*PID}-{now.Int}");
+    my $persistent = persistent-artrie($path, domain => BYTE);
+    $persistent.ASSIGN-KEY(Buf.new(0xff, 0x00), 2**64 - 1);
+    is $persistent.AT-KEY(Buf.new(0xff, 0x00)), 2**64 - 1,
+        'persistent byte ARTrie preserves raw octets and maximum value';
+    $persistent.checkpoint;
+    $persistent.close;
+    my $reopened = persistent-artrie($path, domain => BYTE, :!create);
+    is $reopened.AT-KEY(Buf.new(0xff, 0x00)), 2**64 - 1,
+        'persistent raw-byte value survives checkpoint and reopen';
+    $reopened.close;
+};
+
+subtest 'text-only byte backends and read-only DAT' => {
+    my $scdawg = scdawg(BYTE);
+    LEAVE $scdawg.close;
+    my $term = Buf.new(0x61, 0x00, 0xc3, 0xa9, 0xc3, 0xa9);
+    $scdawg{$term} = Nil;
+    ok $scdawg.contains-substring(Buf.new(0x00, 0xc3, 0xa9)),
+        'byte SCDAWG accepts a valid UTF-8 Blob pattern with NUL';
+    is $scdawg.substring-frequency(Buf.new(0xc3, 0xa9)), 2,
+        'byte SCDAWG counts UTF-8 Blob occurrences';
+    dies-ok { $scdawg.contains-substring(Buf.new(0xff)) },
+        'SCDAWG rejects unsupported raw byte patterns before NativeCall';
+    dies-ok { $scdawg{Buf.new(0xff)} = 1 },
+        'SCDAWG rejects unsupported raw byte keys before NativeCall';
+
+    my $dat = double-array-trie([Pair.new(Buf.new(0x00), Nil),
+        Pair.new(Buf.new(0xc3, 0xa9), 0)], domain => BYTE);
+    LEAVE $dat.close;
+    ok $dat.EXISTS-KEY(Buf.new(0x00)), 'DAT retains a NUL byte key';
+    is $dat.AT-KEY(Buf.new(0xc3, 0xa9)), 0,
+        'DAT retains a present zero';
+    dies-ok { $dat{Buf.new(0xff)}:exists },
+        'DAT rejects unsupported raw byte queries before NativeCall';
+    dies-ok { $dat{'later'} = 1 }, 'DAT is read-only';
+    dies-ok { $dat.add-member(Buf.new(0x00)) },
+        'DAT rejects membership mutation even for an existing key';
+    dies-ok { $dat.DELETE-KEY(Buf.new(0x00)) }, 'DAT cannot delete';
+    dies-ok { $dat.clear }, 'DAT cannot clear';
+    dies-ok { $dat.insert-batch([a => 1]) }, 'DAT cannot batch insert';
+    dies-ok { double-array-trie([Pair.new(Buf.new(0xff), 1)], domain => BYTE) },
+        'DAT rejects invalid UTF-8 before construction';
+    my $highest = chr(0x10ffff);
+    my $unicode-dat = double-array-trie([Pair.new($highest, Nil)],
+        domain => UNICODE-SCALAR);
+    ok $unicode-dat.EXISTS-KEY($highest),
+        'Unicode DAT accepts the highest scalar';
+    $unicode-dat.close;
+    my $unicode-scdawg = scdawg(UNICODE-SCALAR);
+    $unicode-scdawg.ASSIGN-KEY($highest, Nil);
+    ok $unicode-scdawg.contains-substring($highest),
+        'Unicode SCDAWG accepts the highest scalar';
+    $unicode-scdawg.close;
+};
+
+done-testing;

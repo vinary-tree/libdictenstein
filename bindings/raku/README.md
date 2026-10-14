@@ -34,6 +34,54 @@ say $words.list;
 The complete executable contract is
 [`bindings/raku/t/01-conformance.rakutest`](t/01-conformance.rakutest).
 
+## Dictionary domains and collection behavior
+
+`backend-domains($kind)` returns the supported unit domains for a backend;
+`supports-domain($kind, $domain)` checks one cell. Constructors use the same
+table and reject unsupported combinations before calling native code. A
+**byte** key is a `Blob` of octets or a `Str` encoded as UTF-8. A
+**Unicode-scalar** key is a `Str`. A **U64** key is a positional sequence of
+unsigned 64-bit integers.
+
+| Backend | Byte keys | Unicode-scalar keys | U64 keys | Generic mutation |
+|---|---|---|---|---|
+| DynamicDAWG | Arbitrary octets | Yes | Yes | Insert, remove, clear, compact |
+| DoubleArrayTrie | UTF-8 bytes only | Yes | No | Read-only |
+| SCDAWG | UTF-8 bytes only | Yes | No | Insert; substring queries |
+| PathMap | Arbitrary octets | Yes | No | Insert, remove, clear |
+| Persistent ARTrie | Arbitrary octets | Yes | Yes | Insert, remove, checkpoint |
+| Persistent vocabulary ARTrie | No | Yes | No | Insert and checkpoint |
+
+DoubleArrayTrie and SCDAWG use native `String` terms even in their byte
+variants. Their `Blob` keys and SCDAWG substring patterns must therefore
+contain valid UTF-8. This restriction is checked before NativeCall. The
+DynamicDAWG, PathMap, and byte ARTrie preserve raw octets such as `0xff` and
+NUL. SCDAWG byte substring queries accept a valid UTF-8 `Blob`, including a
+NUL-containing pattern; a partial UTF-8 code point is unsupported.
+
+`Dictionary` implements exact-key `Associative` operations. `keys`, `values`,
+`pairs`, and `kv` traverse one immutable native snapshot in domain order.
+An absent key and a present key without a value both read as `Nil`; use
+`:exists` to distinguish them. `add-member` stores a valueless member, while
+`discard-member` returns whether one was present. Numeric zero and the
+maximum U64 value remain distinct from valueless membership. Mutating a
+read-only DoubleArrayTrie fails before converting a key for NativeCall.
+For positional U64 keys, call `ASSIGN-KEY`, `AT-KEY`, and `EXISTS-KEY`
+directly; Raku's `{}` indexing stringifies a positional key.
+
+```raku
+my $bytes = dynamic-dawg(BYTE);
+LEAVE $bytes.close;
+$bytes{Buf.new(0xff, 0x00)} = 0;
+$bytes.add-member(Buf.new(0x61));
+say $bytes{Buf.new(0x61)}:exists; # True, despite a Nil mapped value
+say $bytes.pairs.list;          # snapshot-owned Pair values
+```
+
+The [domain and collection test](t/05-domain-collection.rakutest) checks the
+table, raw byte and high Unicode keys, U64 bounds, immutable mutation gates,
+and ordered traversal.
+
 ## Generated NativeCall boundary
 
 The public C header defines the binary interface (ABI); `bindings/api.json`
