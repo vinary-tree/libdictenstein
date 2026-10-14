@@ -3,6 +3,8 @@ using Libdictenstein
 
 const LD = Libdictenstein
 
+include("host_provider.jl")
+
 @testset "ABI identity and layouts" begin
     @test LD.abi_version() == LD.ABI_VERSION == 1
     @test LD.API_REVISION == 13

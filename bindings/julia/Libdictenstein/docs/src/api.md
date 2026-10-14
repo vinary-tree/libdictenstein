@@ -15,6 +15,28 @@ PersistentARTrie
 PersistentVocabulary
 ```
 
+## Julia-hosted providers
+
+```@docs
+AbstractHostDictionarySnapshot
+HostDictionaryGraph
+host_dictionary
+provider_capture
+provider_unit_domain
+provider_value_domain
+provider_root
+provider_isfinal
+provider_value
+provider_length
+provider_edge_page
+provider_transition
+provider_visit
+provider_identity
+provider_graph
+provider_graph_value
+provider_entries
+```
+
 ## Collections, snapshots, and maintenance
 
 ```@docs
